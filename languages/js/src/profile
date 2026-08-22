@@ -104,7 +104,7 @@ uses_normalize_class = true
 "console.info"      = { emit = "print",                    min_args = 0, max_args = 255 }
 "console.debug"     = { emit = "print",                    min_args = 0, max_args = 255 }
 alert               = { emit = "print",                    min_args = 1, max_args = 1 }
-prompt              = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 1 }
+prompt              = { emit = "intrinsic:readline",   min_args = 0, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 #
@@ -344,11 +344,17 @@ queueMicrotask       = { emit = "host:ecma:promise:queueMicrotask", min_args = 1
 
 # ── path module ──────────────────────────────────────────────────────────────
 
-"path.join"          = { emit = "host:wasi:filesystem:pathCombine",      min_args = 1, max_args = 255 }
-"path.dirname"       = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 1 }
-"path.basename"      = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 1 }
-"path.extname"       = { emit = "host:wasi:filesystem:pathGetExtension", min_args = 1, max_args = 1 }
-"path.resolve"       = { emit = "host:wasi:filesystem:pathGetFullPath",  min_args = 1, max_args = 255 }
+# `common:path.*`, the shared string lowering — NOT `wasi:filesystem`, which
+# these named five verbs (`pathCombine`, `pathGetDirectory`, …) that no WIT
+# declares and that are now unregistered, so every one of these was an
+# unresolved import. They are also not filesystem calls in the first place:
+# `path.extname("a/b.txt")` is ".txt" whether or not the file exists, which is
+# why WASI has no path interface to move them to.
+"path.join"          = { emit = "common:path.combine",   min_args = 1, max_args = 255 }
+"path.dirname"       = { emit = "common:path.directory", min_args = 1, max_args = 1 }
+"path.basename"      = { emit = "common:path.file_name", min_args = 1, max_args = 1 }
+"path.extname"       = { emit = "common:path.extension", min_args = 1, max_args = 1 }
+"path.resolve"       = { emit = "common:path.full_path", min_args = 1, max_args = 255 }
 
 # ── os module ────────────────────────────────────────────────────────────────
 
@@ -356,18 +362,34 @@ queueMicrotask       = { emit = "host:ecma:promise:queueMicrotask", min_args = 1
 "os.platform"        = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
 "os.type"            = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
 "os.arch"            = { emit = "host:wasi:cli:platform",        min_args = 0, max_args = 0 }
-"os.tmpdir"          = { emit = "host:wasi:filesystem:pathGetTempPath", min_args = 0, max_args = 0 }
+"os.tmpdir"          = { emit = "common:path.temp_path", min_args = 0, max_args = 0 }
 "os.homedir"         = { emit = "host:wasi:cli:userName",        min_args = 0, max_args = 0 }
 
 # ── fs module ────────────────────────────────────────────────────────────────
 
-"fs.readFileSync"    = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 2 }
-"fs.writeFileSync"   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 3 }
-"fs.existsSync"      = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-"fs.mkdirSync"       = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 2 }
-"fs.readdirSync"     = { emit = "host:wasi:filesystem:listDir",   min_args = 1, max_args = 1 }
-"fs.unlinkSync"      = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
-"fs.statSync"        = { emit = "host:wasi:filesystem:stat",      min_args = 1, max_args = 1 }
+# `node:fs`, NOT the invented `wasi:filesystem` verbs. These used to bind
+# `readFile`/`writeFile`/`exists`/`listDir`/`remove`/`stat` — names that are
+# not in `wasi:filesystem@0.3.1` at all (its 26 functions overlap ours only on
+# `stat`, and even that is `[method]descriptor.stat`). So JS got a surface that
+# was neither Node-shaped nor WASI-conformant, while the Node-shaped
+# implementation sat in `platforms/node/src/fs.rs` unreachable from JS.
+#
+# `node:*` is the Node compatibility layer and `fs` IS a Node module, so this
+# is where it belongs; `node:fs` composes `vybe_platform_wasi::fsops`
+# underneath, so there is still ONE implementation below both surfaces.
+"fs.readFileSync"    = { emit = "host:node:fs:readFileSync",  min_args = 1, max_args = 2 }
+"fs.writeFileSync"   = { emit = "host:node:fs:writeFileSync", min_args = 2, max_args = 3 }
+"fs.appendFileSync"  = { emit = "host:node:fs:appendFileSync", min_args = 2, max_args = 3 }
+"fs.existsSync"      = { emit = "host:node:fs:existsSync",    min_args = 1, max_args = 1 }
+"fs.mkdirSync"       = { emit = "host:node:fs:mkdirSync",     min_args = 1, max_args = 2 }
+"fs.readdirSync"     = { emit = "host:node:fs:readdirSync",   min_args = 1, max_args = 1 }
+"fs.unlinkSync"      = { emit = "host:node:fs:unlinkSync",    min_args = 1, max_args = 1 }
+"fs.statSync"        = { emit = "host:node:fs:statSync",      min_args = 1, max_args = 1 }
+"fs.lstatSync"       = { emit = "host:node:fs:lstatSync",     min_args = 1, max_args = 1 }
+"fs.rmSync"          = { emit = "host:node:fs:rmSync",        min_args = 1, max_args = 2 }
+"fs.renameSync"      = { emit = "host:node:fs:renameSync",    min_args = 2, max_args = 2 }
+"fs.copyFileSync"    = { emit = "host:node:fs:copyFileSync",  min_args = 2, max_args = 3 }
+"fs.realpathSync"    = { emit = "host:node:fs:realpathSync",  min_args = 1, max_args = 2 }
 
 # ── net module ───────────────────────────────────────────────────────────────
 
@@ -706,17 +728,24 @@ module = "ecma:finalization-registry"
 [[esm_default]]
 kind = "namespace"
 alias = "fs"
-# Compatibility alias over the legacy flat `wasi:filesystem` module.
-# The actual WASI filesystem interfaces are `wasi:filesystem/preopens`
-# and `wasi:filesystem/types`.
-module = "wasi:filesystem"
+# `node:fs` — `fs` IS a Node module, so it resolves to the Node compatibility
+# layer, exactly as the per-function bindings above already do.
+#
+# ⚠This said `wasi:filesystem`, the flat INVENTED module, and that module is
+# gone. The per-function rows (`fs.readFileSync` → `host:node:fs:readFileSync`)
+# had already been migrated, but a namespace import resolves the MODULE first,
+# so `require('fs')` failed before any of them was consulted — every JS program
+# that imported fs died on the import line while the correct bindings sat
+# unreachable underneath.
+module = "node:fs"
 
 [[esm_default]]
 kind = "namespace"
 alias = "clock"
-# Wall-clock time (seconds + nanoseconds). Use `wasi:clocks/monotonic-clock`
+# System-clock time (seconds + nanoseconds). 0.3.1 renamed 0.2's
+# `wall-clock` interface to `system-clock`. Use `wasi:clocks/monotonic-clock`
 # for high-resolution elapsed timing.
-module = "wasi:clocks/wall-clock"
+module = "wasi:clocks/system-clock"
 
 [[esm_default]]
 kind = "namespace"
@@ -836,7 +865,10 @@ module = "wasi:sockets/udp"
 [[esm_default]]
 kind = "namespace"
 alias = "path"
-module = "wasi:filesystem"
+# `node:path`, for the same reason as `fs` above — and note WASI has no path
+# interface AT ALL, because path syntax is a language concern. There was never
+# a conformant module for this alias to point at.
+module = "node:path"
 
 [[esm_default]]
 kind = "namespace"
@@ -868,10 +900,12 @@ module = "web:dom-parser"
 # There is no `gui` namespace. A JS program builds its UI the way a browser
 # takes it — `document.createElement("button")`, `appendChild`,
 # `addEventListener` — and `document` is a global the web platform binds, not
-# something to import. This alias used to point the whole of `vybe:gui` at the
-# name `gui`, which is how `examples/js/*.js` came to be written against a
-# toolkit API instead of the DOM; because it aliased a MODULE, every name under
-# it was reachable at once and no per-name search could see the dependency.
+# something to import.
+#
+# ⛔ Do not re-add one. An alias here pointed a whole toolkit MODULE at the name
+# `gui`, which is how `examples/js/*.js` came to be written against a toolkit
+# API instead of the DOM — and because it aliased a module, every name under it
+# was reachable at once and no per-name search could see the dependency.
 
 [[esm_default]]
 kind = "namespace"

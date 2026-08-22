@@ -55,6 +55,7 @@ pub fn normalize_class(
                     access: Access::from(m.visibility),
                     readonly: false,
                     value_type: None,
+                    storage: None,
                 };
                 out.push_field(m.is_static, field);
             }

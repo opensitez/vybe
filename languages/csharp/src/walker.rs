@@ -148,7 +148,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         // Declared in the profile's `[async]` section; see python's note.
         imports,
-        directives: Default::default(),
+        directives: Directives {
+            // A `new`-hiding field is a SEPARATE field from the one it hides;
+            // both live on the object and a read binds to the reference's
+            // declared type. Stated once for the module — whether a given
+            // declaration hides is `Modifiers::is_hiding`.
+            field_shadowing: Some(FieldShadowing::Hide),
+            ..Default::default()
+        },
     };
     // First rewrite: caller-info reads `span.start_line` off the nodes the
     // walk just produced. Every pass below rebuilds expressions, and a rebuilt

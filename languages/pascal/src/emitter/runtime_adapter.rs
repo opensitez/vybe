@@ -747,7 +747,6 @@ pub fn emit_pascal_write(
     // clobbered the ENCLOSING function's locals, so a form constructor lost
     // `Self` and reported "undefined is not callable". Each part is written
     // separately instead, which needs no extra locals at all.
-    let stream = chunks[current].alloc_scratch(1);
     let mut slots = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
         let s = chunks[current].alloc_scratch(1);
@@ -756,27 +755,22 @@ pub fn emit_pascal_write(
     }
     slots.reverse();
 
-    let stdout_idx = chunks[current].add_import("wasi:cli/stdout", "get-stdout");
-    let write_idx = chunks[current].add_import(
-        "wasi:io/streams",
-        "[method]output-stream.blocking-write-and-flush",
-    );
-    chunks[current].emit_call(stdout_idx, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
-
-    // Pascal concatenates its arguments with NO separator.
+    // Pascal concatenates its arguments with NO separator. Each part goes
+    // through `io::emit_write_or_buffer` — the funnel the doc comment above
+    // has always claimed. The code did NOT: it opened its own stream with the
+    // WASI 0.2 pair (`get-stdout` + `[method]output-stream.
+    // blocking-write-and-flush`), which is a `wasi:io` package 0.3 DELETED,
+    // and which reaches the sink WITHOUT consulting the output buffer. That is
+    // the defect `io.rs` describes in its own header — a buffer some writers
+    // respect and others bypass is not a buffer.
     for s in &slots {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *s, line);
         vybe_compiler::primitives::strings::emit_to_string(&mut chunks[current], line);
-        chunks[current].emit_call(write_idx, 2, line);
-        chunks[current].emit_op(Op::DROP, line);
+        vybe_compiler::primitives::io::emit_write_or_buffer(chunks, current, line);
     }
     if newline {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
         chunks[current].emit_string_const("\n", line);
-        chunks[current].emit_call(write_idx, 2, line);
-        chunks[current].emit_op(Op::DROP, line);
+        vybe_compiler::primitives::io::emit_write_or_buffer(chunks, current, line);
     }
 }
 
@@ -882,10 +876,10 @@ pub fn emit_ansi_case(chunks: &mut [Chunk], current: usize, upper: bool, line: u
 /// `'.'`, which is why this is a branch and not a concatenation.
 pub fn emit_extract_file_ext(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let path_ext = chunk.add_import("wasi:filesystem", "pathGetExtension");
+
     let ext = chunk.alloc_scratch(1);
 
-    chunk.emit_call(path_ext, 1, line);
+    vybe_compiler::primitives::paths::emit_extension(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ext, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, ext, line);

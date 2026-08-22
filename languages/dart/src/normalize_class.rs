@@ -73,6 +73,7 @@ pub fn normalize_class(
                     access: Access::Public, // Dart's `_name` convention isn't enforced
                     readonly: field_modifiers.is_readonly,
                     value_type: None,
+                    storage: None,
                 };
                 m.push_field(field_modifiers.is_static, field);
             }

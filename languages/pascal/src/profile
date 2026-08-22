@@ -102,9 +102,14 @@ IntToHex      = { emit = "common:pascal.int_to_hex",      min_args = 1, max_args
 # behaviour for `alert`, and it is what Delphi's dialog does too.
 ShowMessage     = { emit = "host:web:window:alert",                    min_args = 1, max_args = 1 }
 
-ExtractFileName = { emit = "host:wasi:filesystem:pathGetFileName",     min_args = 1, max_args = 1 }
-ExtractFileDir  = { emit = "host:wasi:filesystem:pathGetDirectory",    min_args = 1, max_args = 1 }
-ChangeFileExt   = { emit = "host:wasi:filesystem:pathChangeExtension", min_args = 2, max_args = 2 }
+# `common:path.*` — path SYNTAX, which never touches disk and which WASI
+# therefore has no interface for. These named `pathGetFileName`,
+# `pathGetDirectory` and `pathChangeExtension` inside the `wasi:filesystem`
+# namespace: verbs no WIT declares, unregistered since the flat shim retired,
+# so every one of them was an unresolved import.
+ExtractFileName = { emit = "common:path.file_name",        min_args = 1, max_args = 1 }
+ExtractFileDir  = { emit = "common:path.directory",        min_args = 1, max_args = 1 }
+ChangeFileExt   = { emit = "common:path.change_extension", min_args = 2, max_args = 2 }
 ExtractFileExt  = { emit = "common:pascal.extract_file_ext",           min_args = 1, max_args = 1 }
 # Graphics. A `TColor` is a CSS colour here, not a packed integer — see
 # `emit_rgb`.
@@ -142,40 +147,50 @@ VarToDateTime   = { emit = "host:ecma:date:parse",               min_args = 1, m
 VarCast         = { emit = "common:pascal.var_as_type",          min_args = 2, max_args = 2 }
 StrToIntDef   = { emit = "common:pascal.str_to_int_def",  min_args = 2, max_args = 2 }
 write         = { emit = "common:pascal.write",            min_args = 0, max_args = 255 }
-readln        = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
-read          = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
+readln        = { emit = "intrinsic:readline",         min_args = 0, max_args = 1 }
+read          = { emit = "intrinsic:readline",         min_args = 0, max_args = 1 }
 eof           = { emit = "common:pascal.file_eof",          min_args = 1, max_args = 1 }
-fileexists    = { emit = "host:wasi:filesystem:exists",     min_args = 1, max_args = 1 }
+fileexists    = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
 
 # SysUtils file/directory routines. Every one of these binds to a
 # `wasi:filesystem` export that ALREADY exists — the same surface go, php and
 # python reach — so this adds no host function, only the Delphi spelling for
 # one. Unbound, each was "undefined is not callable".
-directoryexists  = { emit = "host:wasi:filesystem:isDir",           min_args = 1, max_args = 1 }
-deletefile       = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
+directoryexists  = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
+deletefile       = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
 # `RemoveDir` and `DeleteFile` are one operation on a path; `wasi:filesystem`
 # does not split them either.
-removedir        = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
-createdir        = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 1 }
+removedir        = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
+createdir        = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 1 }
 # `ForceDirectories` creates the whole chain; `mkdir` takes the recursive flag
 # as its second argument, which is what makes these the same call.
-forcedirectories = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
-renamefile       = { emit = "host:wasi:filesystem:rename",          min_args = 2, max_args = 2 }
+forcedirectories = { emit = "common:filesystem.mkdir_all", min_args = 1, max_args = 2 }
+renamefile       = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
 # NOT bound: `FileAge` wants the last-modified stamp, and `modified` is a
 # FIELD of what `wasi:filesystem:stat` returns, not an export of its own. A
 # profile emit names a function, so this one needs a lowering, not a binding —
 # left unbound rather than pointed at an import that does not resolve.
-expandfilename   = { emit = "host:wasi:filesystem:pathGetFullPath", min_args = 1, max_args = 1 }
+expandfilename   = { emit = "common:path.full_path", min_args = 1, max_args = 1 }
 # `wasi:cli/environment` exposes the working directory under BOTH proposal
 # spellings (`initial-cwd` in 0.2.x, `get-initial-cwd` in 0.3.x); this binds the
 # 0.2.x one the platform registers alongside the other.
 getcurrentdir    = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
 flush         = { emit = "noop",                            min_args = 1, max_args = 1 }
-__pascal_file_open      = { emit = "host:wasi:filesystem:openFile",          min_args = 3, max_args = 3 }
-__pascal_file_close     = { emit = "host:wasi:filesystem:closeFile",         min_args = 1, max_args = 1 }
-__pascal_file_println   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
-__pascal_file_writeln   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
-__pascal_file_writecsv  = { emit = "host:wasi:filesystem:writeFile_handle",  min_args = 1, max_args = 255 }
+# `common:filesystem.*` — the numbered-handle lowering in `fs_path.rs`, the same
+# one VB's `Open #1 For Output` reaches. It is `open-at` plus the positioned
+# via-stream pair, with `{path, mode, pos}` in a guest global; `pos` is a BYTE
+# offset because `read-via-stream` takes a `filesize`, and advancing by a
+# string's length would desynchronise on the first non-ASCII character.
+#
+# These named `openFile`/`closeFile`/`printFile`/`writeFile_handle` — invented
+# verbs in a real WASI namespace, unregistered and unresolvable — while the
+# lowering they describe already existed and had no `common:` name to be
+# reached by.
+__pascal_file_open      = { emit = "common:filesystem.open_file",         min_args = 3, max_args = 3 }
+__pascal_file_close     = { emit = "common:filesystem.close_file",        min_args = 1, max_args = 1 }
+__pascal_file_println   = { emit = "common:filesystem.print_file",        min_args = 1, max_args = 255 }
+__pascal_file_writeln   = { emit = "common:filesystem.print_file",        min_args = 1, max_args = 255 }
+__pascal_file_writecsv  = { emit = "common:filesystem.write_file_handle", min_args = 1, max_args = 255 }
 # `TStringList.CommaText` / `DelimitedText` — the SHARED csv primitive, the same
 # one php `str_getcsv`/`fputcsv` and fortran `str_getcsv` bind. Delimiter and
 # quote char are runtime arguments because `Delimiter`/`QuoteChar` are settable
@@ -185,15 +200,15 @@ __pascal_file_writecsv  = { emit = "host:wasi:filesystem:writeFile_handle",  min
 # `apple,"has,comma","has space","has""quote"`.
 __pascal_csv_join   = { emit = "common:csv.format_row_quote_ws", min_args = 3, max_args = 3 }
 __pascal_csv_split  = { emit = "common:csv.parse_line",          min_args = 3, max_args = 3 }
-__pascal_file_readline  = { emit = "host:wasi:filesystem:lineInput",         min_args = 1, max_args = 1 }
-__pascal_file_readcsv   = { emit = "host:wasi:filesystem:inputFile",         min_args = 1, max_args = 1 }
-__pascal_file_exists    = { emit = "host:wasi:filesystem:exists",            min_args = 1, max_args = 1 }
+__pascal_file_readline  = { emit = "common:filesystem.line_input", min_args = 1, max_args = 1 }
+__pascal_file_readcsv   = { emit = "common:filesystem.input_file",  min_args = 1, max_args = 1 }
+__pascal_file_exists    = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
 # System.IOUtils, bound to the SAME exports the SysUtils spellings use.
-__pascal_path_combine   = { emit = "host:wasi:filesystem:pathCombine",       min_args = 2, max_args = 2 }
-__pascal_file_read_all  = { emit = "host:wasi:filesystem:readFile",          min_args = 1, max_args = 1 }
-__pascal_file_write_all = { emit = "host:wasi:filesystem:writeFile",         min_args = 2, max_args = 2 }
-__pascal_dir_exists     = { emit = "host:wasi:filesystem:isDir",             min_args = 1, max_args = 1 }
-__pascal_dir_create     = { emit = "host:wasi:filesystem:mkdir",             min_args = 1, max_args = 2 }
+__pascal_path_combine   = { emit = "common:path.combine", min_args = 2, max_args = 2 }
+__pascal_file_read_all  = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+__pascal_file_write_all = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+__pascal_dir_exists     = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
+__pascal_dir_create     = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 2 }
 
 # ── Positional file I/O — the real WASI 0.2.8 descriptor interface ─────────
 #
@@ -228,8 +243,8 @@ __pascal_fs_setsize  = { emit = "host:wasi:filesystem/types:[method]descriptor.s
 __pascal_thread_spawn = { emit = "common:threading.thread_spawn", min_args = 2, max_args = 2 }
 __pascal_thread_join  = { emit = "common:threading.thread_join",  min_args = 1, max_args = 1 }
 __pascal_thread_sleep = { emit = "common:threading.sleep",        min_args = 1, max_args = 1 }
-__pascal_file_remove    = { emit = "host:wasi:filesystem:remove",            min_args = 1, max_args = 1 }
-__pascal_file_rename    = { emit = "host:wasi:filesystem:rename",            min_args = 2, max_args = 2 }
+__pascal_file_remove    = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
+__pascal_file_rename    = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
 __pascal_file_flush     = { emit = "noop",                                   min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────

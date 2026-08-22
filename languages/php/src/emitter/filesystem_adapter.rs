@@ -13,6 +13,8 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::{fs_path, paths};
+
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
@@ -55,21 +57,14 @@ fn call_import(
 /// on the stack. Stack on entry: `[path]` ; Stack on exit:
 /// `[stat_record_or_null]`.
 fn emit_stat_at(chunks: &mut [Chunk], current: usize, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "stat", 1, line);
+    fs_path::emit_stat(&mut chunks[current], line);
 }
 
 /// PHP `basename($path, $suffix = "")` — filename component, with an
 /// optional trailing suffix stripped (unless it equals the whole name).
 pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 2 {
-        call_import(
-            chunks,
-            current,
-            "wasi:filesystem",
-            "pathGetFileName",
-            1,
-            line,
-        );
+        paths::emit_file_name(&mut chunks[current], line);
         return;
     }
     // stack: [path, suffix]
@@ -83,14 +78,7 @@ pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         lset(chunk, path_slot, line);
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileName",
-        1,
-        line,
-    );
+    paths::emit_file_name(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, name_slot, line);
 
@@ -132,14 +120,7 @@ pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 /// components (default 1).
 pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 2 {
-        call_import(
-            chunks,
-            current,
-            "wasi:filesystem",
-            "pathGetDirectory",
-            1,
-            line,
-        );
+        paths::emit_directory(&mut chunks[current], line);
         return;
     }
     // stack: [path, levels]
@@ -164,14 +145,7 @@ pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetDirectory",
-        1,
-        line,
-    );
+    paths::emit_directory(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
@@ -187,15 +161,30 @@ pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
 }
 
-/// PHP `file_get_contents($path, ...)` — current MVP behavior forwards to
-/// the text filesystem shim and ignores the optional stream/context args.
+/// PHP `file_get_contents($path, ...)` — reads the whole file, ignoring the
+/// optional stream/context args.
+///
+/// PHP answers `false` on failure, so the `null` the spec lowering reports is
+/// mapped here. The verb this replaced answered the string
+/// `"Error: No such file or directory (os error 2)"` AS THE CONTENTS, which
+/// `file_get_contents` can never return — `false` is the documented failure.
 pub fn emit_file_get_contents(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
+    let chunk = &mut chunks[current];
+    let text = alloc_local(chunk);
+    lset(chunk, text, line);
+    lget(chunk, text, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_else(line);
+    lget(chunk, text, line);
+    chunk.emit_end(line);
 }
 
 /// PHP `file_put_contents($path, $data, $flags = 0, ...)` — writes (or,
@@ -204,7 +193,7 @@ pub fn emit_file_get_contents(chunks: &mut [Chunk], current: usize, argc: u8, li
 /// value `>= 8` carries the append bit.
 pub fn emit_file_put_contents(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+        fs_path::emit_write_file(&mut chunks[current], line);
         return;
     }
     // stack: [path, data, flags, (context?)]
@@ -230,14 +219,14 @@ pub fn emit_file_put_contents(chunks: &mut [Chunk], current: usize, argc: u8, li
         lget(chunk, path_slot, line);
         lget(chunk, data_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "appendFile", 2, line);
+    fs_path::emit_append_file(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
         lget(chunk, path_slot, line);
         lget(chunk, data_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_end(line);
@@ -252,23 +241,23 @@ pub fn emit_mkdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::DROP, line);
     }
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "mkdir", 1, line);
+    fs_path::emit_mkdir(&mut chunks[current], line);
 }
 
 /// PHP `file_exists($path)` — true iff the filesystem host reports the
 /// path exists.
 pub fn emit_file_exists(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
+    fs_path::emit_exists(&mut chunks[current], line);
 }
 
 /// PHP `is_file($path)` — direct file check through the runtime fs shim.
 pub fn emit_is_file(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "isFile", 1, line);
+    fs_path::emit_is_file(&mut chunks[current], line);
 }
 
 /// PHP `is_dir($path)` — direct directory check through the runtime fs shim.
 pub fn emit_is_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "isDir", 1, line);
+    fs_path::emit_is_dir(&mut chunks[current], line);
 }
 
 /// PHP `is_link($path)` — `node:fs.lstatSync(path)` then
@@ -326,14 +315,14 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
         chunk.emit_else(line);
         lget(chunk, path_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "fileSize", 1, line);
+    fs_path::emit_file_size(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_end(line); // end inner if
         chunk.emit_else(line); // registry was null
         lget(chunk, path_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "fileSize", 1, line);
+    fs_path::emit_file_size(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_end(line); // end outer if
@@ -360,7 +349,7 @@ pub fn emit_unlink(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
             chunk.emit_op(Op::DROP, line);
         }
     }
-    call_import(chunks, current, "wasi:filesystem", "remove", 1, line);
+    fs_path::emit_unlink(&mut chunks[current], line);
     let result_slot = {
         let chunk = &mut chunks[current];
         let slot = alloc_local(chunk);
@@ -412,14 +401,7 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetDirectory",
-        1,
-        line,
-    );
+    paths::emit_directory(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -431,14 +413,7 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileName",
-        1,
-        line,
-    );
+    paths::emit_file_name(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -450,28 +425,14 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetExtension",
-        1,
-        line,
-    );
+    paths::emit_extension(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
         // else FILENAME (8)
         lget(chunk, path_slot, line);
     }
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileNameWithoutExt",
-        1,
-        line,
-    );
+    paths::emit_file_stem(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_end(line);
@@ -496,53 +457,25 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetDirectory",
-        1,
-        line,
-    );
+    paths::emit_directory(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, dirname_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileName",
-        1,
-        line,
-    );
+    paths::emit_file_name(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, basename_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetExtension",
-        1,
-        line,
-    );
+    paths::emit_extension(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, extension_slot, line);
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileNameWithoutExt",
-        1,
-        line,
-    );
+    paths::emit_file_stem(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, filename_slot, line);
 
@@ -607,27 +540,13 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetDirectory",
-        1,
-        line,
-    );
+    paths::emit_directory(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, dir_slot, line);
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFileName",
-        1,
-        line,
-    );
+    paths::emit_file_name(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, file_pattern_slot, line);
 
@@ -681,7 +600,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, dir_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+    fs_path::emit_list_dir(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, entries_slot, line);
 
@@ -765,7 +684,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, full_path_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "isFile", 1, line);
+    fs_path::emit_is_file(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
@@ -792,7 +711,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
+    fs_path::emit_exists(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
@@ -825,7 +744,7 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let entries_slot = alloc_local(chunk);
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+    fs_path::emit_list_dir(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, entries_slot, line);
 
@@ -925,26 +844,12 @@ fn str_concat(chunk: &mut Chunk, line: u32) {
 
 /// PHP `sys_get_temp_dir()` — the host temp directory.
 pub fn emit_sys_get_temp_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetTempPath",
-        0,
-        line,
-    );
+    paths::emit_temp_path(&mut chunks[current], line);
 }
 
 /// PHP `realpath($path)` — canonical absolute path.
 pub fn emit_realpath(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFullPath",
-        1,
-        line,
-    );
+    paths::emit_full_path(&mut chunks[current], line);
 }
 
 /// PHP `copy($src, $dst, $context = null)` — drops the optional context.
@@ -952,7 +857,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc >= 3 {
         chunks[current].emit_op(Op::DROP, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "copy", 2, line);
+    fs_path::emit_copy(&mut chunks[current], line);
 }
 
 /// PHP `rename($old, $new, $context = null)` — drops the optional context.
@@ -960,7 +865,7 @@ pub fn emit_rename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc >= 3 {
         chunks[current].emit_op(Op::DROP, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "rename", 2, line);
+    fs_path::emit_rename(&mut chunks[current], line);
 }
 
 /// PHP `rmdir($dir, $context = null)` — drops the optional context.
@@ -968,14 +873,18 @@ pub fn emit_rmdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc >= 2 {
         chunks[current].emit_op(Op::DROP, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "remove", 1, line);
+    // `remove-directory-at`, not the kind-dispatching remove: PHP's `rmdir()`
+    // fails on a plain file and on a NON-EMPTY directory, exactly as POSIX
+    // `rmdir` does. The shim it replaces called `remove_dir_all`, so a
+    // non-empty directory was silently deleted RECURSIVELY.
+    fs_path::emit_rmdir(&mut chunks[current], line);
 }
 
 /// PHP `is_readable($path)` / `is_writable($path)` — approximated by
 /// existence through the fs host (the sandbox grants access to what it
 /// exposes).
 pub fn emit_is_readable(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
+    fs_path::emit_exists(&mut chunks[current], line);
 }
 
 /// PHP `filetype($path)` — `"dir"` for directories, else `"file"`.
@@ -1037,7 +946,7 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lget(chunk, dir_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+    fs_path::emit_list_dir(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, entries_slot, line);
@@ -1108,7 +1017,7 @@ pub fn emit_tempnam(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         lget(chunk, path_slot, line);
         push_str(chunk, "", line);
     }
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line); // drop writeFile bool
@@ -1120,14 +1029,7 @@ pub fn emit_tempnam(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 /// generic fallback.
 pub fn emit_mime_content_type(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // stack: [path] -> extension
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetExtension",
-        1,
-        line,
-    );
+    paths::emit_extension(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     let ext_slot = alloc_local(chunk);
     lset(chunk, ext_slot, line);
@@ -1177,21 +1079,36 @@ pub fn emit_fileperms(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_end(line);
 }
 
-/// PHP `disk_free_space($dir)` — host `diskFreeSpace`.
-pub fn emit_disk_free_space(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "diskFreeSpace", 1, line);
+/// PHP `disk_free_space($dir)` / `disk_total_space($dir)` — both `false`.
+///
+/// These used to emit `wasi:filesystem.diskFreeSpace` / `.diskTotalSpace`.
+/// Neither was registered ANYWHERE, so both were unresolved imports that trap
+/// at the call — and `wasi:filesystem` is the PACKAGE name, not an importable
+/// interface, so the module was wrong on top of the verb being invented.
+///
+/// WASI 0.3.1 has no disk-space interface at all: `filesystem/types` describes
+/// descriptors, and nothing in the package reports free or total bytes for a
+/// mount. There is therefore nothing honest to call.
+///
+/// PHP documents `false` as the return "on failure" for both, which is exactly
+/// what a host that cannot answer should say — so `false` is the truthful
+/// lowering rather than a stub standing in for a missing feature.
+fn emit_unsupported_disk_space(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Drop the path argument(s) the caller pushed; nothing consumes them.
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_bool_const(false, line);
 }
 
-/// PHP `disk_total_space($dir)` — host `diskTotalSpace`.
-pub fn emit_disk_total_space(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "diskTotalSpace",
-        1,
-        line,
-    );
+/// PHP `disk_free_space($dir)` — `false`; WASI 0.3.1 cannot answer it.
+pub fn emit_disk_free_space(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_unsupported_disk_space(chunks, current, argc, line);
+}
+
+/// PHP `disk_total_space($dir)` — `false`; WASI 0.3.1 cannot answer it.
+pub fn emit_disk_total_space(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_unsupported_disk_space(chunks, current, argc, line);
 }
 
 // ── php://memory stream resources ────────────────────────────────────
@@ -1262,8 +1179,7 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_op(Op::I32_AND, line);
         lget(chunk, path_slot, line);
-        let exists = chunk.add_import("wasi:filesystem", "exists");
-        chunk.emit_call(exists, 1, line);
+        fs_path::emit_exists(chunk, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_op(Op::I32_AND, line);

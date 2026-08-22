@@ -89,7 +89,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::VB,
         body: synthesized,
         imports,
-        directives: Default::default(),
+        directives: Directives {
+            // `Shadows` makes the declaration a SEPARATE field from the one it
+            // shadows; both live on the object and a read binds to the
+            // reference's declared type. Stated once for the module — whether
+            // a given declaration shadows is `Modifiers::is_hiding`.
+            field_shadowing: Some(FieldShadowing::Hide),
+            ..Default::default()
+        },
     };
     normalize_vb_type_hint_whitespace(&mut module);
     normalize_vb_split_object_initializers(&mut module);
@@ -131,7 +138,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // `ParameterType`, `CallingConvention` and `Activator.CreateInstance`
     // already, for every front end. It ran TWICE (here and after
     // `normalize_vb_nested_member_arg_calls`), so both calls go.
-    normalize_vb_convert_change_type_reflection(&mut module);
+    // ⛔ `normalize_vb_convert_change_type_reflection` is GONE. It was a
+    // walk-time VALUE INTERPRETER: `vb_convert_known_value`,
+    // `vb_convert_known_call_value` and `vb_convert_trackable_value` tracked
+    // what each local WOULD hold so the walker could pick `ToInt32` vs
+    // `ToDouble` itself. Real .NET does not decide this at compile time — it
+    // dispatches on the value's `TypeCode` at run time — and
+    // `platforms/dotnet` registers all 22 `Convert.To*` statics, which
+    // `dotnet_vb::change_type_expr` already routes to.
+    // C# handles the whole .NET surface with FOUR System-named walker
+    // functions; this cluster alone was nineteen.
     normalize_vb_date_literal_body(&mut module.body);
     normalize_vb_anonymous_equals(&mut module);
     normalize_vb_generic_new_factory_calls(&mut module);
@@ -159,7 +175,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_interface_inheritance_forwarder_aliases(&mut module);
     normalize_vb_interface_dispatch_type_hints(&mut module);
     normalize_vb_local_type_statements(&mut module.body, &mut HashMap::new());
-    normalize_vb_convert_change_type_reflection(&mut module);
     normalize_vb_date_literal_body(&mut module.body);
     normalize_vb_concat_bool_text(&mut module);
     normalize_vb_char_storage_types(&mut module);
@@ -1590,21 +1605,14 @@ fn normalize_vb_uri_instance_expr(expr: &mut Expression, locals: &HashMap<String
                     );
                     return;
                 }
-                if receiver_type.as_deref() == Some("Version")
-                    && field.eq_ignore_ascii_case("CompareTo")
-                {
-                    let receiver = (**object).clone();
-                    let first = args[0].value.clone();
-                    *expr = call_expr(
-                        Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::ident("Version")),
-                            field: "CompareTo".into(),
-                            null_safe: false,
-                        }),
-                        vec![Argument::positional(first), Argument::positional(receiver)],
-                    );
-                    return;
-                }
+                // A `Version` `a.CompareTo(b)` → `Version.CompareTo(b, a)` rewrite
+                // stood here — note the REVERSED operands. It was one half of a
+                // matched pair: `emit_version_compare_instance` carried an
+                // `F64_NEG` that existed only to undo this flip. Two wrongs that
+                // cancelled, in two different crates, so neither looked wrong
+                // alone. The Version object now binds `CompareTo` directly, which
+                // takes `(left, right)` in the ordinary order and needs no
+                // negation, so both halves are gone.
                 let static_owner = match (
                     receiver_type.as_deref(),
                     field.to_ascii_lowercase().as_str(),
@@ -1667,26 +1675,26 @@ fn normalize_vb_uri_instance_expr(expr: &mut Expression, locals: &HashMap<String
             }
         }
         ExprKind::Binary { op, left, right } => {
-            if let Some(rewritten) = rewrite_vb_version_compareto_binary(op, left, right, locals) {
-                *expr = rewritten;
-                normalize_vb_uri_instance_expr(expr, locals);
-                return;
-            }
-            if let Some(rewritten) = rewrite_vb_version_binary(*op, left, right, locals) {
-                *expr = rewritten;
-                normalize_vb_uri_instance_expr(expr, locals);
-                return;
-            }
+            // `rewrite_vb_version_compareto_binary` and `rewrite_vb_version_binary`
+            // stood here: VB rewriting `v1 < v2` into a named `System.Version.
+            // op_LessThan(v1, v2)` call. That is a name-matched operator table in
+            // a language walker — the very thing the shared compiler deleted when
+            // `try_compile_csharp_binary_operator` went away, because a class
+            // should be ASKED, not matched by spelling.
+            //
+            // The Version object now BINDS `CompareTo`, so `emit_rich_compare_locals`
+            // — which probes the left operand for `compare`/`CompareTo`/`<=>` and
+            // takes the sign — answers all four relational operators for every
+            // language at once. See `version_adapter::push_version_compare_chunk`.
             normalize_vb_uri_instance_expr(left, locals);
             normalize_vb_uri_instance_expr(right, locals);
-            if let ExprKind::Binary { op, left, right } = &expr.kind {
-                if let Some(rewritten) =
-                    rewrite_vb_runtime_timespan_binary(*op, left, right, locals)
-                {
-                    *expr = rewritten;
-                    normalize_vb_uri_instance_expr(expr, locals);
-                }
-            }
+            // `rewrite_vb_runtime_timespan_binary` stood here, constant-folding
+            // `TimeSpan` +/- and Date±TimeSpan over a VB-LOCAL `VbTimeSpanValue`.
+            // `timespan_adapter` owns that arithmetic at runtime
+            // (`emit_timespan_add`/`_sub`/`_compare`), so this was a second
+            // implementation that applied only when both operands happened to be
+            // foldable — the same expression got different code depending on
+            // whether the walker could see through it.
         }
         ExprKind::Unary { expr: inner, .. } => normalize_vb_uri_instance_expr(inner, locals),
         ExprKind::Index { object, index, .. } => {
@@ -1713,63 +1721,6 @@ fn normalize_vb_uri_instance_expr(expr: &mut Expression, locals: &HashMap<String
         }
         _ => {}
     }
-}
-
-fn rewrite_vb_version_binary(
-    op: BinOp,
-    left: &Expression,
-    right: &Expression,
-    locals: &HashMap<String, String>,
-) -> Option<Expression> {
-    if vb_infer_expr_type(left, locals).as_deref() != Some("Version")
-        || vb_infer_expr_type(right, locals).as_deref() != Some("Version")
-    {
-        return None;
-    }
-    // Map the VB OPERATOR onto the registered dotnet leaf — do not reimplement
-    // the ordering. `component_classes_system_version` declares
-    // `CompareTo`/`Equals` backed by `dotnet.version_compare_instance`, so the
-    // four-field lexicographic walk that used to live here was a SECOND copy of
-    // System.Version's comparison semantics, reading fields the dotnet object
-    // owns. Lowering an operator to a leaf is walker work; owning the semantics
-    // is not.
-    let call = |name: &str| vb_version_op_call(name, left.clone(), right.clone());
-    let negated = |name: &str| {
-        Expression::new(ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: Box::new(vb_version_op_call(name, left.clone(), right.clone())),
-        })
-    };
-    match op {
-        BinOp::Lt => Some(call("op_LessThan")),
-        BinOp::Gt => Some(call("op_GreaterThan")),
-        // `<=` is `Not >`, `>=` is `Not <` — the ordering is TOTAL, so the
-        // negation is exact and needs no second comparison.
-        BinOp::LtEq => Some(negated("op_GreaterThan")),
-        BinOp::GtEq => Some(negated("op_LessThan")),
-        BinOp::Eq | BinOp::StrictEq => Some(call("op_Equality")),
-        BinOp::NotEq | BinOp::StrictNotEq => Some(negated("op_Equality")),
-        _ => None,
-    }
-}
-
-/// `Version.CompareTo(right, left)` — the static form the dotnet class
-/// registers. Arg order matches the existing instance→static rewrite, which
-/// turns `a.CompareTo(b)` into `Version.CompareTo(b, a)`; the result carries
-/// .NET's sign convention, so `a < b` is `CompareTo(...) < 0`.
-/// `System.Version.<op>(left, right)` — one of the operator leaves registered on
-/// the dotnet Version class. Fully qualified because namespace resolution runs
-/// BEFORE this rewrite, so a bare `Ident("Version")` synthesised here is never
-/// qualified and resolves to nothing.
-fn vb_version_op_call(method: &str, left: Expression, right: Expression) -> Expression {
-    call_expr(
-        Expression::new(ExprKind::Member {
-            object: Box::new(build_dotted_expr("System.Version")),
-            field: method.to_string(),
-            null_safe: false,
-        }),
-        vec![Argument::positional(left), Argument::positional(right)],
-    )
 }
 
 #[allow(dead_code)]
@@ -1842,46 +1793,6 @@ fn vb_is_uri_make_relative_call(expr: &Expression, locals: &HashMap<String, Stri
             || dotted_expr_name(object)
                 .as_deref()
                 .is_some_and(|name| vb_canonical_type_name(name) == "Uri"))
-}
-
-fn rewrite_vb_version_compareto_binary(
-    op: &BinOp,
-    left: &Expression,
-    right: &Expression,
-    locals: &HashMap<String, String>,
-) -> Option<Expression> {
-    if literal_i64(right) != Some(0) {
-        return None;
-    }
-    let ExprKind::Call { callee, args, .. } = &left.kind else {
-        return None;
-    };
-    if args.len() != 1 {
-        return None;
-    }
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("CompareTo")
-        || vb_infer_expr_type(object, locals).as_deref() != Some("Version")
-    {
-        return None;
-    }
-    let lhs = (**object).clone();
-    let rhs = args[0].value.clone();
-    // `a.CompareTo(b) <op> 0` — same operator leaves as the direct form. This
-    // used to call `vb_version_lex_compare_expr`, a SECOND copy of the
-    // four-field ordering living beside the first.
-    match op {
-        BinOp::Lt => Some(vb_version_op_call("op_LessThan", lhs, rhs)),
-        BinOp::Gt => Some(vb_version_op_call("op_GreaterThan", lhs, rhs)),
-        BinOp::Eq => Some(vb_version_op_call("op_Equality", lhs, rhs)),
-        BinOp::NotEq => Some(Expression::new(ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: Box::new(vb_version_op_call("op_Equality", lhs, rhs)),
-        })),
-        _ => None,
-    }
 }
 
 fn normalize_vb_environment_properties(module: &mut Module) {
@@ -11264,821 +11175,19 @@ struct VbConvertReflectionLocals {
     mutable: HashSet<String>,
 }
 
-fn normalize_vb_convert_change_type_reflection(module: &mut Module) {
-    normalize_vb_convert_change_type_reflection_statements(
-        &mut module.body,
-        &mut VbConvertReflectionLocals::default(),
-    );
-}
 
-fn normalize_vb_convert_change_type_reflection_statements(
-    body: &mut [Statement],
-    locals: &mut VbConvertReflectionLocals,
-) {
-    let mut assigned = HashSet::new();
-    collect_vb_local_type_assigned_names(body, &mut assigned);
-    let mut inserted_mutable = Vec::new();
-    for name in assigned {
-        if locals.mutable.insert(name.clone()) {
-            inserted_mutable.push(name);
-        }
-    }
-    for stmt in body {
-        normalize_vb_convert_change_type_reflection_statement(stmt, locals);
-    }
-    for name in inserted_mutable {
-        locals.mutable.remove(&name);
-    }
-}
 
-fn normalize_vb_convert_change_type_reflection_statement(
-    stmt: &mut Statement,
-    locals: &mut VbConvertReflectionLocals,
-) {
-    match &mut stmt.kind {
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if let Some(init) = &mut decl.init {
-                    if let Some(message) = vb_convert_changetype_throw_message(init, locals) {
-                        *stmt = vb_throw_statement(&message);
-                        return;
-                    }
-                    normalize_vb_convert_change_type_reflection_expr(init, locals);
-                    if let BindingPattern::Ident(name) = &decl.pattern {
-                        let key = name.to_ascii_lowercase();
-                        if let Some(type_hint) = decl.type_hint.as_deref() {
-                            locals
-                                .types
-                                .insert(key.clone(), vb_canonical_type_name(type_hint));
-                        }
-                        if let Some(type_name) = vb_convert_type_expr_name(init, locals) {
-                            locals.types.insert(key.clone(), type_name);
-                        }
-                        if let Some(type_name) = vb_convert_runtime_type_name(init, locals) {
-                            locals.runtime_types.insert(key.clone(), type_name);
-                        }
-                        if vb_convert_trackable_value(init) && !locals.mutable.contains(&key) {
-                            locals.values.insert(key, init.clone());
-                        }
-                    }
-                }
-            }
-        }
-        StmtKind::Expr(expr) => {
-            if let Some(message) = vb_convert_changetype_throw_message(expr, locals) {
-                *stmt = vb_throw_statement(&message);
-                return;
-            }
-            normalize_vb_convert_change_type_reflection_expr(expr, locals);
-        }
-        StmtKind::Return(Some(expr)) => {
-            normalize_vb_convert_change_type_reflection_expr(expr, locals)
-        }
-        StmtKind::Assign { targets, value, .. } => {
-            if let Some(message) = vb_convert_changetype_throw_message(value, locals) {
-                *stmt = vb_throw_statement(&message);
-                return;
-            }
-            normalize_vb_convert_change_type_reflection_expr(value, locals);
-            for target in targets {
-                if let ExprKind::Ident(name) = &target.kind {
-                    let key = name.to_ascii_lowercase();
-                    locals.values.remove(&key);
-                    if let Some(type_name) = vb_convert_runtime_type_name(value, locals) {
-                        locals.runtime_types.insert(key.clone(), type_name);
-                    }
-                    if vb_convert_trackable_value(value) && !locals.mutable.contains(&key) {
-                        locals.values.insert(key, value.clone());
-                    }
-                }
-            }
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body,
-        } => {
-            normalize_vb_convert_change_type_reflection_expr(cond, locals);
-            normalize_vb_convert_change_type_reflection_statements(then_body, &mut locals.clone());
-            for (cond, body) in elifs {
-                normalize_vb_convert_change_type_reflection_expr(cond, locals);
-                normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            }
-            if let Some(body) = else_body {
-                normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            }
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            else_body,
-            finally,
-        } => {
-            normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    normalize_vb_convert_change_type_reflection_expr(when_clause, locals);
-                }
-                normalize_vb_convert_change_type_reflection_statements(
-                    &mut catch.body,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(body) = else_body {
-                normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            }
-            if let Some(body) = finally {
-                normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            }
-        }
-        StmtKind::FunctionDecl { params, body, .. } => {
-            let mut scoped = locals.clone();
-            for param in params {
-                if let Some(type_hint) = &param.type_hint {
-                    scoped.types.insert(
-                        param.name.to_ascii_lowercase(),
-                        vb_canonical_type_name(type_hint),
-                    );
-                }
-            }
-            normalize_vb_convert_change_type_reflection_statements(body, &mut scoped);
-        }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
-            for member in members {
-                normalize_vb_convert_change_type_reflection_member(member, locals);
-            }
-        }
-        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
-            normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-        }
-        _ => {}
-    }
-}
 
-fn normalize_vb_convert_change_type_reflection_member(
-    member: &mut ClassMember,
-    locals: &VbConvertReflectionLocals,
-) {
-    match member {
-        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            normalize_vb_convert_change_type_reflection_statement(stmt, &mut locals.clone());
-        }
-        ClassMember::Constructor { params, body, .. } => {
-            let mut scoped = locals.clone();
-            for param in params {
-                if let Some(type_hint) = &param.type_hint {
-                    scoped.types.insert(
-                        param.name.to_ascii_lowercase(),
-                        vb_canonical_type_name(type_hint),
-                    );
-                }
-            }
-            normalize_vb_convert_change_type_reflection_statements(body, &mut scoped);
-        }
-        ClassMember::Property { getter, setter, .. } => {
-            if let Some(getter) = getter {
-                normalize_vb_convert_change_type_reflection_statements(getter, &mut locals.clone());
-            }
-            if let Some(setter) = setter {
-                normalize_vb_convert_change_type_reflection_statements(
-                    &mut setter.body,
-                    &mut locals.clone(),
-                );
-            }
-        }
-        ClassMember::Field {
-            init: Some(init), ..
-        }
-        | ClassMember::Const { value: init, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(init, locals);
-        }
-        _ => {}
-    }
-}
 
-fn normalize_vb_convert_change_type_reflection_expr(
-    expr: &mut Expression,
-    locals: &VbConvertReflectionLocals,
-) {
-    match &mut expr.kind {
-        ExprKind::Async(op) => {
-            for child in op.children_mut() {
-                normalize_vb_convert_change_type_reflection_expr(child, locals);
-            }
-        }
-        ExprKind::Atomic(op) => {
-            for child in op.children_mut() {
-                normalize_vb_convert_change_type_reflection_expr(child, locals);
-            }
-        }
-        ExprKind::Chan(op) => {
-            for child in op.children_mut() {
-                normalize_vb_convert_change_type_reflection_expr(child, locals);
-            }
-        }
-        ExprKind::Ident(name) => {
-            if let Some(value) = locals.values.get(&name.to_ascii_lowercase()) {
-                *expr = value.clone();
-            }
-        }
-        ExprKind::Member { object, field, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(object, locals);
-            if field.eq_ignore_ascii_case("Name") {
-                if let Some(type_name) = vb_convert_type_name_member(object, locals) {
-                    *expr = Expression::string(&type_name);
-                    return;
-                }
-                if literal_string(object)
-                    .is_some_and(|name| name.eq_ignore_ascii_case("System.Object"))
-                {
-                    if let Some(type_name) = vb_convert_single_reflected_object_type(locals) {
-                        *expr = Expression::string(&type_name);
-                        return;
-                    }
-                }
-            }
-            if let Some(value) = vb_convert_known_member_value(object, field, locals) {
-                *expr = value;
-            }
-        }
-        ExprKind::Call { callee, args, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(callee, locals);
-            for arg in &mut *args {
-                if arg.by_ref {
-                    normalize_vb_convert_change_type_reflection_lvalue(&mut arg.value, locals);
-                } else {
-                    normalize_vb_convert_change_type_reflection_expr(&mut arg.value, locals);
-                }
-            }
-            if let Some(value) = vb_convert_known_call_value(callee, args, locals) {
-                *expr = value;
-            }
-        }
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Walrus {
-            target: left,
-            value: right,
-        } => {
-            normalize_vb_convert_change_type_reflection_expr(left, locals);
-            normalize_vb_convert_change_type_reflection_expr(right, locals);
-        }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::IsType { expr, .. }
-        | ExprKind::TypeOf(expr)
-        | ExprKind::Await(expr)
-        | ExprKind::Yield(Some(expr))
-        | ExprKind::RefLoad(expr)
-        | ExprKind::YieldFrom(expr)
-        | ExprKind::Spread(expr)
-        | ExprKind::Void(expr)
-        | ExprKind::Delete(expr) => normalize_vb_convert_change_type_reflection_expr(expr, locals),
-        ExprKind::Cast {
-            expr: inner,
-            type_name,
-        } => {
-            normalize_vb_convert_change_type_reflection_expr(inner, locals);
-            if vb_canonical_type_name(type_name) == "DateTime" {
-                if let Some(text) = vb_convert_known_string(inner, locals) {
-                    if let Some(date) = parse_vb_date_text(&text) {
-                        *expr = Expression::string(&format_vb_date_value(&date));
-                    }
-                }
-            }
-        }
-        ExprKind::Assign { target, value } => {
-            normalize_vb_convert_change_type_reflection_expr(value, locals);
-            let _ = target;
-        }
-        ExprKind::Ternary { cond, then, else_ } => {
-            normalize_vb_convert_change_type_reflection_expr(cond, locals);
-            normalize_vb_convert_change_type_reflection_expr(then, locals);
-            normalize_vb_convert_change_type_reflection_expr(else_, locals);
-        }
-        ExprKind::Index { object, index, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(object, locals);
-            normalize_vb_convert_change_type_reflection_expr(index, locals);
-        }
-        ExprKind::Array(items) => {
-            for item in items {
-                normalize_vb_convert_change_type_reflection_expr(&mut item.value, locals);
-            }
-        }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
-            for item in items {
-                normalize_vb_convert_change_type_reflection_expr(item, locals);
-            }
-        }
-        ExprKind::Zip { iterables, .. } => {
-            for item in iterables {
-                normalize_vb_convert_change_type_reflection_expr(item, locals);
-            }
-        }
-        ExprKind::ArrayTransform { args, .. } => {
-            for item in args {
-                normalize_vb_convert_change_type_reflection_expr(item, locals);
-            }
-        }
-        ExprKind::ArrayMap { array, body, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(array, locals);
-            normalize_vb_convert_change_type_reflection_expr(body, locals);
-        }
-        ExprKind::NamedTuple { fields, .. } => {
-            for (_, value) in fields {
-                normalize_vb_convert_change_type_reflection_expr(value, locals);
-            }
-        }
-        ExprKind::New { class, args } => {
-            normalize_vb_convert_change_type_reflection_expr(class, locals);
-            for arg in args.iter_mut() {
-                normalize_vb_convert_change_type_reflection_expr(&mut arg.value, locals);
-            }
-            if let Some(value) = vb_convert_known_new_value(class, args) {
-                *expr = value;
-            }
-        }
-        ExprKind::Proxy { target, handler } => {
-            normalize_vb_convert_change_type_reflection_expr(target, locals);
-            normalize_vb_convert_change_type_reflection_expr(handler, locals);
-        }
-        ExprKind::CallableRef {
-            target,
-            receiver,
-            adapter,
-            ..
-        } => {
-            normalize_vb_convert_change_type_reflection_expr(target, locals);
-            if let Some(receiver) = receiver {
-                normalize_vb_convert_change_type_reflection_expr(receiver, locals);
-            }
-            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
-                normalize_vb_convert_change_type_reflection_expr(body, locals);
-            }
-        }
-        // vb never builds a `Map` literal, but this walks the COMMON AST, so it
-        // has to descend into one all the same.
-        ExprKind::Map(entries) => {
-            for (key, value) in entries {
-                normalize_vb_convert_change_type_reflection_expr(key, locals);
-                normalize_vb_convert_change_type_reflection_expr(value, locals);
-            }
-        }
-        ExprKind::Object(props) => {
-            for prop in props {
-                match prop {
-                    ObjectProperty::KeyValue { key, value }
-                    | ObjectProperty::Computed { key, value } => {
-                        normalize_vb_convert_change_type_reflection_expr(key, locals);
-                        normalize_vb_convert_change_type_reflection_expr(value, locals);
-                    }
-                    ObjectProperty::Spread(value) => {
-                        normalize_vb_convert_change_type_reflection_expr(value, locals);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => {
-                normalize_vb_convert_change_type_reflection_expr(expr, locals)
-            }
-            LambdaBody::Block(body) => {
-                normalize_vb_convert_change_type_reflection_statements(body, &mut locals.clone());
-            }
-        },
-        ExprKind::Interpolation(parts) => {
-            for part in parts {
-                match part {
-                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                        normalize_vb_convert_change_type_reflection_expr(expr, locals)
-                    }
-                    InterpolPart::Text(_) => {}
-                }
-            }
-        }
-        ExprKind::ClassExpr {
-            parent, members, ..
-        } => {
-            if let Some(parent) = parent {
-                normalize_vb_convert_change_type_reflection_expr(parent, locals);
-            }
-            for member in members {
-                normalize_vb_convert_change_type_reflection_member(member, locals);
-            }
-        }
-        ExprKind::FunctionExpr(stmt) => {
-            normalize_vb_convert_change_type_reflection_statement(stmt, &mut locals.clone());
-        }
-        ExprKind::Comprehension {
-            element,
-            generators,
-            ..
-        } => {
-            normalize_vb_convert_change_type_reflection_expr(element, locals);
-            for generator in generators {
-                normalize_vb_convert_change_type_reflection_expr(&mut generator.iter, locals);
-                for condition in &mut generator.conditions {
-                    normalize_vb_convert_change_type_reflection_expr(condition, locals);
-                }
-            }
-        }
-        ExprKind::Slice { lower, upper, step } => {
-            if let Some(expr) = lower {
-                normalize_vb_convert_change_type_reflection_expr(expr, locals);
-            }
-            if let Some(expr) = upper {
-                normalize_vb_convert_change_type_reflection_expr(expr, locals);
-            }
-            if let Some(expr) = step {
-                normalize_vb_convert_change_type_reflection_expr(expr, locals);
-            }
-        }
-        ExprKind::Range { start, end, .. } => {
-            normalize_vb_convert_change_type_reflection_expr(start, locals);
-            normalize_vb_convert_change_type_reflection_expr(end, locals);
-        }
-        ExprKind::StaticAccess { class, member } => {
-            normalize_vb_convert_change_type_reflection_expr(class, locals);
-            normalize_vb_convert_change_type_reflection_expr(member, locals);
-        }
-        ExprKind::Match { subject, arms } => {
-            normalize_vb_convert_change_type_reflection_expr(subject, locals);
-            for arm in arms {
-                if let Some(conditions) = &mut arm.conditions {
-                    for condition in conditions {
-                        normalize_vb_convert_change_type_reflection_expr(condition, locals);
-                    }
-                }
-                normalize_vb_convert_change_type_reflection_expr(&mut arm.body, locals);
-            }
-        }
-        ExprKind::RefOf(place) => match place.as_mut() {
-            PlaceExpr::Ident(_) => {}
-            PlaceExpr::Member { object, .. } => {
-                normalize_vb_convert_change_type_reflection_expr(object, locals)
-            }
-            PlaceExpr::Index { object, index, .. } => {
-                normalize_vb_convert_change_type_reflection_expr(object, locals);
-                normalize_vb_convert_change_type_reflection_expr(index, locals);
-            }
-            PlaceExpr::Deref(expr) => {
-                normalize_vb_convert_change_type_reflection_expr(expr, locals)
-            }
-        },
-        ExprKind::Lit(_)
-        | ExprKind::This
-        | ExprKind::Super
-        | ExprKind::Yield(None)
-        | ExprKind::FuncRef(_)
-        | ExprKind::SuperCall { .. }
-        | ExprKind::DefaultOf(_)
-        | ExprKind::Destructure(_) => {}
-    }
-}
 
-fn normalize_vb_convert_change_type_reflection_lvalue(
-    expr: &mut Expression,
-    locals: &VbConvertReflectionLocals,
-) {
-    match &mut expr.kind {
-        ExprKind::Ident(_) => {}
-        ExprKind::Member { object, .. } => {
-            normalize_vb_convert_change_type_reflection_lvalue(object, locals);
-        }
-        ExprKind::Call { callee, args, .. } => {
-            normalize_vb_convert_change_type_reflection_lvalue(callee, locals);
-            for arg in args {
-                normalize_vb_convert_change_type_reflection_expr(&mut arg.value, locals);
-            }
-        }
-        ExprKind::Index { object, index, .. } => {
-            normalize_vb_convert_change_type_reflection_lvalue(object, locals);
-            normalize_vb_convert_change_type_reflection_expr(index, locals);
-        }
-        ExprKind::Tuple(items) => {
-            for item in items {
-                normalize_vb_convert_change_type_reflection_lvalue(item, locals);
-            }
-        }
-        _ => normalize_vb_convert_change_type_reflection_expr(expr, locals),
-    }
-}
 
-fn vb_convert_known_call_value(
-    callee: &Expression,
-    args: &[Argument],
-    locals: &VbConvertReflectionLocals,
-) -> Option<Expression> {
-    // `Convert.ChangeType(v, T)` → `Convert.<To*>(v)`. Real .NET gives
-    // `ChangeType` NO conversion logic of its own: it reads the target's
-    // `TypeCode` and dispatches to the matching `IConvertible.ToXxx`
-    // (`System/Convert.cs`). `component_classes_system` already registers that
-    // whole family, so this is a SELECTOR over existing leaves — which is why
-    // the twelve-helper compile-time folder that used to live here was the
-    // wrong shape: it re-derived conversions the platform already had.
-    if vb_callee_ends(callee, &["Convert", "ChangeType"]) && args.len() >= 2 {
-        let target = vb_convert_type_expr_name(&args[1].value, locals)?;
-        return dotnet_vb::change_type_expr(args[0].value.clone(), &target);
-    }
-    if vb_callee_ends(callee, &["ChangeTypeToNullable"]) && args.len() >= 2 {
-        let target = vb_convert_type_expr_name(&args[1].value, locals)?;
-        let target = vb_nullable_inner_type(&target).unwrap_or(target);
-        return dotnet_vb::change_type_expr(args[0].value.clone(), &target);
-    }
-    // ⛔ `Enum.Parse` is NOT folded here any more. It used to build a VB-LOCAL
-    // `{__type, __name}` object, which is what rendered as `[object Status]` —
-    // and it intercepted the call BEFORE the shared enum dispatch
-    // (`primitives/enums.rs::try_compile_dotnet_enum_call`) ever saw it, so the
-    // shared reverse-map lookup that returns the real MEMBER was unreachable.
-    // System.* belongs in the shared machinery; falling through reaches it.
-    if vb_callee_ends(callee, &["Type", "GetTypeCode"]) && args.len() == 1 {
-        return vb_convert_type_expr_name(&args[0].value, locals)
-            .map(|name| Expression::string(&name));
-    }
-    // ⛔ `Object.ReferenceEquals` is NOT folded here any more. It decided
-    // REFERENCE IDENTITY at walk time (`vb_convert_expr_same_value` → a
-    // `bool` literal), which a compile-time walk cannot answer in general —
-    // two distinct objects with equal contents, or the same object reached by
-    // different expressions, both got a guess. `component_classes_system`
-    // registers the real `ReferenceEquals`; System.* belongs to platforms/dotnet.
-    // ⛔ `Guid.Parse` is NOT folded here any more. It used to return a plain
-    // lowercased STRING, not a Guid — so `.ToByteArray()`, `.ToString("N")`,
-    // `Guid.Empty` comparison and format round-trips had nothing to dispatch on.
-    // `platforms/dotnet/.../guid_adapter.rs` builds the real value (`__type`,
-    // `__value`, `__bytes`) and `component_classes` registers `Parse` against
-    // it; falling through reaches that. System.* lives in platforms/dotnet.
-    // ⛔ `Version.Parse` is NOT folded here any more. It used to build a
-    // VB-LOCAL object carrying only `Major`/`Minor` (`vb_version_object_expr`),
-    // so `Version.Parse("3.14.15.926").Build` and `.Revision` read as EMPTY —
-    // `3|14||`. System.* belongs in `platforms/dotnet`: `version_adapter.rs`
-    // already parses all four components, and `component_classes_system_version`
-    // registers `Parse` against it. Falling through reaches that.
-    // ⛔ `TimeSpan.Parse` is NOT folded here any more. `vb_parse_timespan_text`
-    // accepted ONLY `h:m:s` (it bailed on a 4th colon part, so `d.hh:mm:ss` and
-    // fractional seconds were rejected) and `build_vb_timespan_expr` wrote a
-    // VB-local object carrying just `Days`/`TotalSeconds` — while
-    // `timespan_adapter` builds `totalmilliseconds`/`totalseconds`/`totalminutes`/
-    // `totalhours`/`totaldays`/`ticks`. Two copies with DIFFERENT field sets.
-    // System.* lives in platforms/dotnet; falling through reaches the adapter.
-    if let ExprKind::Member { object, field, .. } = &callee.kind {
-        if field.eq_ignore_ascii_case("ToString") && args.is_empty() {
-            if let Some(name) = vb_convert_known_object_field(object, "__name", locals) {
-                return Some(name);
-            }
-            if let Some(type_name) = vb_convert_type_name_member(object, locals) {
-                return Some(Expression::string(&type_name));
-            }
-            if vb_convert_known_string(object, locals).is_some() {
-                return Some((**object).clone());
-            }
-        }
-        if field.eq_ignore_ascii_case("ToInt32") && args.len() <= 1 {
-            if let Some(value) = vb_convert_known_object_field(object, "Value", locals) {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
 
-fn vb_convert_known_new_value(class: &Expression, args: &[Argument]) -> Option<Expression> {
-    let class_name = dotted_expr_name(class)?;
-    if matches!(
-        class_name.to_ascii_lowercase().as_str(),
-        "cultureinfo" | "system.globalization.cultureinfo"
-    ) {
-        return Some(Expression::new(ExprKind::Object(vec![
-            ObjectProperty::KeyValue {
-                key: Expression::string("__type"),
-                value: Expression::string("CultureInfo"),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::string("Name"),
-                value: args
-                    .first()
-                    .map(|arg| arg.value.clone())
-                    .unwrap_or_else(|| Expression::string("")),
-            },
-        ])));
-    }
-    if !matches!(
-        class_name.to_ascii_lowercase().as_str(),
-        "uri" | "system.uri"
-    ) || args.is_empty()
-    {
-        return None;
-    }
-    let url = literal_string(&args[0].value)?;
-    let (scheme, rest) = url.split_once("://")?;
-    let host = rest.split('/').next().unwrap_or(rest);
-    Some(Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("__type"),
-            value: Expression::string("Uri"),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Scheme"),
-            value: Expression::string(scheme),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Host"),
-            value: Expression::string(host),
-        },
-    ])))
-}
 
-fn vb_convert_known_member_value(
-    object: &Expression,
-    field: &str,
-    locals: &VbConvertReflectionLocals,
-) -> Option<Expression> {
-    if let Some(value) = vb_convert_known_object_field(object, field, locals) {
-        return Some(value);
-    }
-    if let Some(span) = parse_vb_timespan_expr(object) {
-        if field.eq_ignore_ascii_case("TotalMinutes") {
-            return Some(Expression::float(span.total_seconds as f64 / 60.0));
-        }
-    }
-    if let Some(text) = vb_convert_known_string(object, locals) {
-        if let Some(date) = parse_vb_date_text(&text) {
-            if let Some(value) = fold_date_member_field(&date, field) {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
 
-fn vb_convert_known_object_field(
-    object: &Expression,
-    field: &str,
-    locals: &VbConvertReflectionLocals,
-) -> Option<Expression> {
-    let value = match &object.kind {
-        ExprKind::Ident(name) => locals.values.get(&name.to_ascii_lowercase())?,
-        _ => object,
-    };
-    let ExprKind::Object(props) = &value.kind else {
-        return None;
-    };
-    for prop in props {
-        if let ObjectProperty::KeyValue { key, value } = prop {
-            if literal_string(key).is_some_and(|name| name.eq_ignore_ascii_case(field)) {
-                return Some(value.clone());
-            }
-        }
-    }
-    None
-}
 
-fn vb_convert_single_reflected_object_type(locals: &VbConvertReflectionLocals) -> Option<String> {
-    let mut found = None;
-    for value in locals.values.values() {
-        let ExprKind::Object(props) = &value.kind else {
-            continue;
-        };
-        let mut type_name = None;
-        let mut has_name = false;
-        for prop in props {
-            if let ObjectProperty::KeyValue { key, value } = prop {
-                if literal_string(key).is_some_and(|name| name == "__type") {
-                    type_name = literal_string(value);
-                } else if literal_string(key).is_some_and(|name| name == "__name") {
-                    has_name = true;
-                }
-            }
-        }
-        if has_name {
-            if found.is_some() {
-                return None;
-            }
-            found = type_name;
-        }
-    }
-    found
-}
 
-fn vb_convert_changetype_throw_message(
-    expr: &Expression,
-    locals: &VbConvertReflectionLocals,
-) -> Option<String> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    if !vb_callee_ends(callee, &["Convert", "ChangeType"]) || args.len() < 2 {
-        return None;
-    }
-    let target = vb_convert_type_expr_name(&args[1].value, locals)?;
-    let target = vb_canonical_type_name(&target);
-    let value = vb_convert_known_value(&args[0].value, locals);
-    if matches!(value.kind, ExprKind::Lit(Literal::Null)) && target != "String" {
-        return Some(
-            "InvalidCastException:Object cannot be cast from DBNull to other types".into(),
-        );
-    }
-    if target == "Byte" {
-        if let Some(number) = literal_i64(&value) {
-            if !(0..=255).contains(&number) {
-                return Some(
-                    "OverflowException:Value was either too large or too small for an unsigned byte"
-                        .into(),
-                );
-            }
-        }
-    }
-    if target == "String" && vb_convert_expr_is_byte_array(&value) {
-        return Some("InvalidCastException:Object must implement IConvertible".into());
-    }
-    if vb_integral_type_name(&target) {
-        if let Some(text) = literal_string(&value) {
-            if text.trim().parse::<i64>().is_err() {
-                return Some("FormatException:Input string was not in a correct format".into());
-            }
-        }
-    }
-    None
-}
 
-fn vb_convert_type_name_member(
-    object: &Expression,
-    locals: &VbConvertReflectionLocals,
-) -> Option<String> {
-    if let ExprKind::Call { callee, args, .. } = &object.kind {
-        if args.is_empty() {
-            if let ExprKind::Member {
-                object: receiver,
-                field,
-                ..
-            } = &callee.kind
-            {
-                if field.eq_ignore_ascii_case("GetType") {
-                    if let ExprKind::Ident(name) = &receiver.kind {
-                        if let Some(type_name) =
-                            locals.runtime_types.get(&name.to_ascii_lowercase())
-                        {
-                            return Some(type_name.clone());
-                        }
-                    }
-                    return vb_convert_runtime_type_name(receiver, locals);
-                }
-            }
-        }
-    }
-    if let ExprKind::Ident(name) = &object.kind {
-        let key = name.to_ascii_lowercase();
-        if !locals.runtime_types.contains_key(&key)
-            && locals
-                .types
-                .get(&key)
-                .is_some_and(|type_name| vb_canonical_type_name(type_name) == "Object")
-        {
-            return None;
-        }
-    }
-    None
-}
 
-fn vb_convert_runtime_type_name(
-    expr: &Expression,
-    locals: &VbConvertReflectionLocals,
-) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Int(_)) => Some("Int32".into()),
-        ExprKind::Lit(Literal::Float(_)) => Some("Double".into()),
-        ExprKind::Lit(Literal::Str(_)) => Some("String".into()),
-        ExprKind::Lit(Literal::Bool(_)) => Some("Boolean".into()),
-        ExprKind::Ident(name) => locals
-            .runtime_types
-            .get(&name.to_ascii_lowercase())
-            .cloned()
-            .or_else(|| locals.types.get(&name.to_ascii_lowercase()).cloned()),
-        ExprKind::Call { callee, args, .. }
-            if vb_callee_ends(callee, &["Convert", "ChangeType"]) && args.len() >= 2 =>
-        {
-            vb_convert_type_expr_name(&args[1].value, locals)
-        }
-        ExprKind::Call { callee, args, .. }
-            if vb_callee_ends(callee, &["Enum", "Parse"]) && !args.is_empty() =>
-        {
-            vb_convert_type_expr_name(&args[0].value, locals)
-        }
-        ExprKind::Object(props) => {
-            for prop in props {
-                if let ObjectProperty::KeyValue { key, value } = prop {
-                    if literal_string(key).is_some_and(|name| name == "__type") {
-                        return literal_string(value);
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
 
 fn vb_convert_type_expr_name(
     expr: &Expression,
@@ -12116,604 +11225,19 @@ fn vb_convert_type_expr_name(
     }
 }
 
-fn vb_convert_known_value(expr: &Expression, locals: &VbConvertReflectionLocals) -> Expression {
-    match &expr.kind {
-        ExprKind::Ident(name) => locals
-            .values
-            .get(&name.to_ascii_lowercase())
-            .cloned()
-            .unwrap_or_else(|| expr.clone()),
-        ExprKind::Call { callee, args, .. }
-            if vb_callee_ends(callee, &["CStr"]) && args.len() == 1 =>
-        {
-            vb_convert_known_value(&args[0].value, locals)
-        }
-        ExprKind::Cast { expr, type_name } if type_name.eq_ignore_ascii_case("CStr") => {
-            vb_convert_known_value(expr, locals)
-        }
-        _ => expr.clone(),
-    }
-}
 
-fn vb_convert_known_string(
-    expr: &Expression,
-    locals: &VbConvertReflectionLocals,
-) -> Option<String> {
-    literal_string(&vb_convert_known_value(expr, locals))
-}
 
-fn vb_convert_trackable_value(expr: &Expression) -> bool {
-    matches!(
-        expr.kind,
-        ExprKind::Lit(Literal::Int(_))
-            | ExprKind::Lit(Literal::Float(_))
-            | ExprKind::Lit(Literal::Str(_))
-            | ExprKind::Lit(Literal::Bool(_))
-            | ExprKind::Lit(Literal::Null)
-    ) || matches!(
-        &expr.kind,
-        ExprKind::New { class, .. }
-            if dotted_expr_name(class).is_some_and(|name| {
-                matches!(
-                    name.to_ascii_lowercase().as_str(),
-                    "cultureinfo" | "system.globalization.cultureinfo"
-                )
-            })
-    )
-}
 
-fn vb_convert_expr_is_byte_array(expr: &Expression) -> bool {
-    let ExprKind::Array(items) = &expr.kind else {
-        return false;
-    };
-    items
-        .iter()
-        .all(|item| literal_i64(&item.value).is_some_and(|value| (0..=255).contains(&value)))
-}
 
-#[derive(Clone)]
-struct VbReflectionFieldMeta {
-    type_hint: Option<String>,
-    decorators: Vec<Expression>,
-    has_getter: bool,
-    has_setter: bool,
-}
 
-fn normalize_vb_reflection_field_metadata(module: &mut Module) {
-    let mut fields = HashMap::new();
-    let mut properties = HashMap::new();
-    collect_vb_reflection_field_metadata(&module.body, &mut fields, &mut properties);
-    rewrite_vb_reflection_field_metadata_statements(
-        &mut module.body,
-        &fields,
-        &properties,
-        &mut HashMap::new(),
-    );
-}
 
-fn collect_vb_reflection_field_metadata(
-    body: &[Statement],
-    fields: &mut HashMap<(String, String), VbReflectionFieldMeta>,
-    properties: &mut HashMap<(String, String), VbReflectionFieldMeta>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::ClassDecl { name, members, .. }
-            | StmtKind::StructDecl { name, members, .. }
-            | StmtKind::ModuleDecl { name, members, .. } => {
-                let owner = name.to_ascii_lowercase();
-                for member in members {
-                    match member {
-                        ClassMember::Field {
-                            name,
-                            type_hint,
-                            modifiers,
-                            ..
-                        } => {
-                            fields.insert(
-                                (owner.clone(), name.to_ascii_lowercase()),
-                                VbReflectionFieldMeta {
-                                    type_hint: type_hint.clone(),
-                                    decorators: modifiers.decorators.clone(),
-                                    has_getter: true,
-                                    has_setter: !modifiers.is_readonly,
-                                },
-                            );
-                        }
-                        ClassMember::Property {
-                            name,
-                            type_hint,
-                            modifiers,
-                            getter,
-                            setter,
-                            is_auto,
-                            ..
-                        } => {
-                            properties.insert(
-                                (owner.clone(), name.to_ascii_lowercase()),
-                                VbReflectionFieldMeta {
-                                    type_hint: type_hint.clone(),
-                                    decorators: modifiers.decorators.clone(),
-                                    has_getter: *is_auto
-                                        || getter.is_some()
-                                        || !modifiers.is_readonly,
-                                    has_setter: setter.is_some(),
-                                },
-                            );
-                        }
-                        ClassMember::NestedType(nested) => {
-                            collect_vb_reflection_field_metadata(
-                                std::slice::from_ref(nested),
-                                fields,
-                                properties,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
-                collect_vb_reflection_field_metadata(body, fields, properties);
-            }
-            _ => {}
-        }
-    }
-}
 
-fn rewrite_vb_reflection_field_metadata_statements(
-    body: &mut [Statement],
-    fields: &HashMap<(String, String), VbReflectionFieldMeta>,
-    properties: &HashMap<(String, String), VbReflectionFieldMeta>,
-    locals: &mut HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) {
-    for stmt in body {
-        rewrite_vb_reflection_field_metadata_statement(stmt, fields, properties, locals);
-    }
-}
 
-fn rewrite_vb_reflection_field_metadata_statement(
-    stmt: &mut Statement,
-    fields: &HashMap<(String, String), VbReflectionFieldMeta>,
-    properties: &HashMap<(String, String), VbReflectionFieldMeta>,
-    locals: &mut HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) {
-    match &mut stmt.kind {
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if let Some(init) = &mut decl.init {
-                    rewrite_vb_reflection_field_metadata_expr(init, fields, properties, locals);
-                    if let Some(type_hint) = decl.type_hint.as_deref() {
-                        if let Some(value) =
-                            vb_reflection_single_attribute_array_value(init, type_hint)
-                        {
-                            *init = value;
-                        }
-                    }
-                    if let BindingPattern::Ident(name) = &decl.pattern {
-                        if let Some(meta) = vb_reflection_getfield_meta(init, fields) {
-                            locals.insert(name.to_ascii_lowercase(), meta);
-                        } else if let Some(meta) = vb_reflection_getproperty_meta(init, properties)
-                        {
-                            locals.insert(name.to_ascii_lowercase(), meta);
-                        } else if let Some(meta) = vb_reflection_getvalue_meta(init, locals) {
-                            locals
-                                .insert(format!("$value_type:{}", name.to_ascii_lowercase()), meta);
-                        }
-                    }
-                }
-            }
-        }
-        StmtKind::Expr(expr) => {
-            if let Some(message) = vb_reflection_setvalue_type_error(expr, locals) {
-                *stmt = vb_throw_statement(&message);
-                return;
-            }
-            rewrite_vb_reflection_field_metadata_expr(expr, fields, properties, locals);
-        }
-        StmtKind::Return(Some(expr)) => {
-            rewrite_vb_reflection_field_metadata_expr(expr, fields, properties, locals);
-        }
-        StmtKind::Assign { targets, value, .. } => {
-            rewrite_vb_reflection_field_metadata_expr(value, fields, properties, locals);
-            for target in targets {
-                rewrite_vb_reflection_field_metadata_expr(target, fields, properties, locals);
-            }
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body,
-        } => {
-            rewrite_vb_reflection_field_metadata_expr(cond, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_statements(
-                then_body,
-                fields,
-                properties,
-                &mut locals.clone(),
-            );
-            for (cond, body) in elifs {
-                rewrite_vb_reflection_field_metadata_expr(cond, fields, properties, locals);
-                rewrite_vb_reflection_field_metadata_statements(
-                    body,
-                    fields,
-                    properties,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(body) = else_body {
-                rewrite_vb_reflection_field_metadata_statements(
-                    body,
-                    fields,
-                    properties,
-                    &mut locals.clone(),
-                );
-            }
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            finally,
-            ..
-        } => {
-            rewrite_vb_reflection_field_metadata_statements(
-                body,
-                fields,
-                properties,
-                &mut locals.clone(),
-            );
-            for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_vb_reflection_field_metadata_expr(
-                        when_clause,
-                        fields,
-                        properties,
-                        locals,
-                    );
-                }
-                rewrite_vb_reflection_field_metadata_statements(
-                    &mut catch.body,
-                    fields,
-                    properties,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(finally) = finally {
-                rewrite_vb_reflection_field_metadata_statements(
-                    finally,
-                    fields,
-                    properties,
-                    &mut locals.clone(),
-                );
-            }
-        }
-        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
-            rewrite_vb_reflection_field_metadata_statements(
-                body,
-                fields,
-                properties,
-                &mut HashMap::new(),
-            );
-        }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
-            for member in members {
-                rewrite_vb_reflection_field_metadata_member(member, fields, properties);
-            }
-        }
-        StmtKind::NamespaceDecl { body, .. } => {
-            rewrite_vb_reflection_field_metadata_statements(
-                body,
-                fields,
-                properties,
-                &mut HashMap::new(),
-            );
-        }
-        _ => {}
-    }
-}
 
-fn rewrite_vb_reflection_field_metadata_member(
-    member: &mut ClassMember,
-    fields: &HashMap<(String, String), VbReflectionFieldMeta>,
-    properties: &HashMap<(String, String), VbReflectionFieldMeta>,
-) {
-    match member {
-        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_vb_reflection_field_metadata_statement(
-                stmt,
-                fields,
-                properties,
-                &mut HashMap::new(),
-            );
-        }
-        ClassMember::Constructor { body, .. } => {
-            rewrite_vb_reflection_field_metadata_statements(
-                body,
-                fields,
-                properties,
-                &mut HashMap::new(),
-            );
-        }
-        ClassMember::Property { getter, setter, .. } => {
-            if let Some(getter) = getter {
-                rewrite_vb_reflection_field_metadata_statements(
-                    getter,
-                    fields,
-                    properties,
-                    &mut HashMap::new(),
-                );
-            }
-            if let Some(setter) = setter {
-                rewrite_vb_reflection_field_metadata_statements(
-                    &mut setter.body,
-                    fields,
-                    properties,
-                    &mut HashMap::new(),
-                );
-            }
-        }
-        ClassMember::Field {
-            init: Some(init), ..
-        }
-        | ClassMember::Const { value: init, .. } => {
-            rewrite_vb_reflection_field_metadata_expr(init, fields, properties, &HashMap::new());
-        }
-        _ => {}
-    }
-}
 
-fn rewrite_vb_reflection_field_metadata_expr(
-    expr: &mut Expression,
-    fields: &HashMap<(String, String), VbReflectionFieldMeta>,
-    properties: &HashMap<(String, String), VbReflectionFieldMeta>,
-    locals: &HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) {
-    match &mut expr.kind {
-        ExprKind::Member { object, field, .. } => {
-            rewrite_vb_reflection_field_metadata_expr(object, fields, properties, locals);
-            if field.eq_ignore_ascii_case("Name") {
-                if let ExprKind::Member {
-                    object: field_object,
-                    field: field_type,
-                    ..
-                } = &object.kind
-                {
-                    if field_type.eq_ignore_ascii_case("FieldType")
-                        || field_type.eq_ignore_ascii_case("PropertyType")
-                    {
-                        if let Some(type_name) =
-                            vb_reflection_known_field_type_name(field_object, locals)
-                        {
-                            *expr = Expression::string(&type_name);
-                        }
-                    }
-                } else if let Some(type_name) = vb_reflection_known_value_type_name(object, locals)
-                {
-                    *expr = Expression::string(&type_name);
-                }
-            } else if field.eq_ignore_ascii_case("GetMethod")
-                || field.eq_ignore_ascii_case("SetMethod")
-            {
-                if let Some((meta, _)) = vb_reflection_known_field_meta(object, locals) {
-                    let present = if field.eq_ignore_ascii_case("GetMethod") {
-                        meta.has_getter
-                    } else {
-                        meta.has_setter
-                    };
-                    *expr = if present {
-                        Expression::new(ExprKind::Object(Vec::new()))
-                    } else {
-                        Expression::null()
-                    };
-                }
-            }
-        }
-        ExprKind::Call { callee, args, .. } => {
-            rewrite_vb_reflection_field_metadata_expr(callee, fields, properties, locals);
-            for arg in &mut *args {
-                rewrite_vb_reflection_field_metadata_expr(
-                    &mut arg.value,
-                    fields,
-                    properties,
-                    locals,
-                );
-            }
-            if let ExprKind::Member { object, field, .. } = &callee.kind {
-                if field.eq_ignore_ascii_case("GetCustomAttributes") {
-                    if let Some((meta, _)) = vb_reflection_known_field_meta(object, locals) {
-                        let requested = args
-                            .first()
-                            .and_then(|arg| vb_reflection_type_name_expr(&arg.value));
-                        let attrs = meta
-                            .decorators
-                            .iter()
-                            .filter(|attr| {
-                                requested.as_ref().map_or(true, |name| {
-                                    vb_reflection_attribute_type_matches(attr, name)
-                                })
-                            })
-                            .cloned()
-                            .map(|value| ArrayElement {
-                                key: None,
-                                value,
-                                spread: false,
-                                by_ref: false,
-                            })
-                            .collect();
-                        *expr = Expression::new(ExprKind::Array(attrs));
-                        return;
-                    }
-                }
-                if field.eq_ignore_ascii_case("SetValue") && args.len() >= 2 {
-                    if let Some((meta, _)) = vb_reflection_known_field_meta(object, locals) {
-                        if meta
-                            .type_hint
-                            .as_deref()
-                            .is_some_and(vb_type_is_nullable_name)
-                        {
-                            let value = args[1].value.clone();
-                            args[1].value = vb_nullable_value_expr(value);
-                        }
-                    }
-                }
-            }
-        }
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Walrus {
-            target: left,
-            value: right,
-        } => {
-            rewrite_vb_reflection_field_metadata_expr(left, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_expr(right, fields, properties, locals);
-        }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::Cast { expr, .. }
-        | ExprKind::TypeOf(expr)
-        | ExprKind::Await(expr)
-        | ExprKind::Yield(Some(expr))
-        | ExprKind::RefLoad(expr)
-        | ExprKind::YieldFrom(expr)
-        | ExprKind::Spread(expr)
-        | ExprKind::Void(expr)
-        | ExprKind::Delete(expr) => {
-            rewrite_vb_reflection_field_metadata_expr(expr, fields, properties, locals);
-        }
-        ExprKind::Assign { target, value } => {
-            rewrite_vb_reflection_field_metadata_expr(target, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_expr(value, fields, properties, locals);
-        }
-        ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_vb_reflection_field_metadata_expr(cond, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_expr(then, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_expr(else_, fields, properties, locals);
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_vb_reflection_field_metadata_expr(object, fields, properties, locals);
-            rewrite_vb_reflection_field_metadata_expr(index, fields, properties, locals);
-        }
-        ExprKind::Array(items) => {
-            for item in items {
-                rewrite_vb_reflection_field_metadata_expr(
-                    &mut item.value,
-                    fields,
-                    properties,
-                    locals,
-                );
-            }
-        }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
-            for item in items {
-                rewrite_vb_reflection_field_metadata_expr(item, fields, properties, locals);
-            }
-        }
-        ExprKind::New { class, args } => {
-            rewrite_vb_reflection_field_metadata_expr(class, fields, properties, locals);
-            for arg in args {
-                rewrite_vb_reflection_field_metadata_expr(
-                    &mut arg.value,
-                    fields,
-                    properties,
-                    locals,
-                );
-            }
-        }
-        ExprKind::Object(props) => {
-            for prop in props {
-                match prop {
-                    ObjectProperty::KeyValue { key, value }
-                    | ObjectProperty::Computed { key, value } => {
-                        rewrite_vb_reflection_field_metadata_expr(key, fields, properties, locals);
-                        rewrite_vb_reflection_field_metadata_expr(
-                            value, fields, properties, locals,
-                        );
-                    }
-                    ObjectProperty::Spread(value) => {
-                        rewrite_vb_reflection_field_metadata_expr(
-                            value, fields, properties, locals,
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => {
-                rewrite_vb_reflection_field_metadata_expr(expr, fields, properties, locals)
-            }
-            LambdaBody::Block(body) => rewrite_vb_reflection_field_metadata_statements(
-                body,
-                fields,
-                properties,
-                &mut HashMap::new(),
-            ),
-        },
-        _ => {}
-    }
-}
 
-fn vb_reflection_getfield_meta(
-    expr: &Expression,
-    fields: &HashMap<(String, String), VbReflectionFieldMeta>,
-) -> Option<(VbReflectionFieldMeta, Option<String>)> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetField") {
-        return None;
-    }
-    let field_name = literal_string(&args.first()?.value)?.to_ascii_lowercase();
-    let owner = vb_reflection_type_name_expr(object)?;
-    let generic_actual = vb_reflection_generic_actual_type(object);
-    fields
-        .get(&(owner.to_ascii_lowercase(), field_name))
-        .cloned()
-        .map(|meta| (meta, generic_actual))
-}
 
-fn vb_reflection_getproperty_meta(
-    expr: &Expression,
-    properties: &HashMap<(String, String), VbReflectionFieldMeta>,
-) -> Option<(VbReflectionFieldMeta, Option<String>)> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetProperty") {
-        return None;
-    }
-    let property_name = literal_string(&args.first()?.value)?.to_ascii_lowercase();
-    let owner = vb_reflection_type_name_expr(object)?;
-    let generic_actual = vb_reflection_generic_actual_type(object);
-    properties
-        .get(&(owner.to_ascii_lowercase(), property_name))
-        .cloned()
-        .map(|meta| (meta, generic_actual))
-}
 
-fn vb_reflection_getvalue_meta(
-    expr: &Expression,
-    locals: &HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) -> Option<(VbReflectionFieldMeta, Option<String>)> {
-    let ExprKind::Call { callee, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if field.eq_ignore_ascii_case("GetValue") {
-        vb_reflection_known_field_meta(object, locals).cloned()
-    } else {
-        None
-    }
-}
 
 fn vb_reflection_type_name_expr(expr: &Expression) -> Option<String> {
     let ExprKind::TypeOf(inner) = &expr.kind else {
@@ -12733,81 +11257,10 @@ fn vb_reflection_type_name_expr(expr: &Expression) -> Option<String> {
     }
 }
 
-fn vb_reflection_generic_actual_type(expr: &Expression) -> Option<String> {
-    let ExprKind::TypeOf(inner) = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Ident(name) = &inner.kind else {
-        return None;
-    };
-    if let Some((_, actual)) = vb_generic_type_marker_parts(name) {
-        Some(vb_canonical_type_name(&actual))
-    } else if vb_type_has_generic_application(name) {
-        vb_generic_suffix_first_type(name).map(|actual| vb_canonical_type_name(&actual))
-    } else {
-        None
-    }
-}
 
-fn vb_reflection_known_field_meta<'a>(
-    expr: &Expression,
-    locals: &'a HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) -> Option<&'a (VbReflectionFieldMeta, Option<String>)> {
-    let ExprKind::Ident(name) = &expr.kind else {
-        return None;
-    };
-    locals.get(&name.to_ascii_lowercase())
-}
 
-fn vb_reflection_known_field_type_name(
-    expr: &Expression,
-    locals: &HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) -> Option<String> {
-    let (meta, generic_actual) = vb_reflection_known_field_meta(expr, locals)?;
-    let raw = meta.type_hint.as_deref()?;
-    if raw.eq_ignore_ascii_case("T") {
-        return generic_actual.clone();
-    }
-    Some(vb_canonical_type_name(raw))
-}
 
-fn vb_reflection_known_value_type_name(
-    expr: &Expression,
-    locals: &HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) -> Option<String> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    if !args.is_empty() {
-        return None;
-    }
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetType") {
-        return None;
-    }
-    let ExprKind::Ident(name) = &object.kind else {
-        return None;
-    };
-    let (meta, generic_actual) =
-        locals.get(&format!("$value_type:{}", name.to_ascii_lowercase()))?;
-    let raw = meta.type_hint.as_deref()?;
-    Some(vb_reflection_runtime_value_type_name(
-        raw,
-        generic_actual.as_deref(),
-    ))
-}
 
-fn vb_reflection_runtime_value_type_name(raw: &str, generic_actual: Option<&str>) -> String {
-    if raw.eq_ignore_ascii_case("T") {
-        return generic_actual.unwrap_or("Object").to_string();
-    }
-    if let Some(inner) = vb_nullable_inner_type(raw) {
-        return vb_canonical_type_name(&inner);
-    }
-    vb_canonical_type_name(raw)
-}
 
 fn vb_nullable_inner_type(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -12822,1274 +11275,40 @@ fn vb_nullable_inner_type(raw: &str) -> Option<String> {
     None
 }
 
-fn vb_reflection_attribute_type_matches(attr: &Expression, requested: &str) -> bool {
-    let attr_name = match &attr.kind {
-        ExprKind::New { class, .. } => dotted_expr_name(class),
-        ExprKind::Call { callee, .. } => dotted_expr_name(callee),
-        _ => dotted_expr_name(attr),
-    };
-    attr_name.is_some_and(|name| {
-        let attr = normalize_vb_attribute_type_name(&name);
-        let requested = normalize_vb_attribute_type_name(requested);
-        attr.eq_ignore_ascii_case(&requested)
-            || attr
-                .trim_end_matches("Attribute")
-                .eq_ignore_ascii_case(requested.trim_end_matches("Attribute"))
-    })
-}
 
-fn vb_reflection_single_attribute_array_value(
-    expr: &Expression,
-    type_hint: &str,
-) -> Option<Expression> {
-    let ExprKind::Array(items) = &expr.kind else {
-        return None;
-    };
-    if items.len() != 1 {
-        return None;
-    }
-    let value = items.first()?.value.clone();
-    if vb_reflection_attribute_type_matches(&value, type_hint) {
-        Some(value)
-    } else {
-        None
-    }
-}
 
-fn vb_type_is_nullable_name(raw: &str) -> bool {
-    let lower = raw.trim().to_ascii_lowercase();
-    lower.starts_with("nullable(of ") || lower.starts_with("system.nullable(of ")
-}
 
-fn vb_nullable_value_expr(value: Expression) -> Expression {
-    Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("HasValue"),
-            value: Expression::string("True"),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Value"),
-            value,
-        },
-    ]))
-}
 
-fn vb_reflection_setvalue_type_error(
-    expr: &Expression,
-    locals: &HashMap<String, (VbReflectionFieldMeta, Option<String>)>,
-) -> Option<String> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    if args.len() < 2 {
-        return None;
-    }
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("SetValue") {
-        return None;
-    }
-    let (meta, _) = vb_reflection_known_field_meta(object, locals)?;
-    let type_hint = meta.type_hint.as_deref()?;
-    if matches!(
-        vb_canonical_type_name(type_hint).as_str(),
-        "Int32" | "Int64" | "Double" | "Single"
-    ) && matches!(args[1].value.kind, ExprKind::Lit(Literal::Str(_)))
-    {
-        Some("ArgumentException:Type Mismatch".to_string())
-    } else {
-        None
-    }
-}
 
-#[derive(Clone)]
-struct VbReflectionMethodMeta {
-    owner: String,
-    name: String,
-    is_static: bool,
-    param_count: usize,
-    return_type: Option<String>,
-}
 
-#[derive(Clone)]
-struct VbReflectionConstructorMeta {
-    owner: String,
-    params: Vec<Param>,
-    body: Vec<Statement>,
-    is_public: bool,
-    is_static: bool,
-}
 
-#[derive(Clone, Default)]
-struct VbReflectionMethodLocals {
-    types: HashMap<String, String>,
-    type_actuals: HashMap<String, String>,
-    methods: HashMap<String, VbReflectionMethodMeta>,
-    method_arrays: HashMap<String, usize>,
-    constructors: HashMap<String, VbReflectionConstructorMeta>,
-    constructor_arrays: HashMap<String, usize>,
-}
 
-fn normalize_vb_reflection_method_metadata(module: &mut Module) {
-    let mut methods = HashMap::new();
-    let mut constructors = HashMap::new();
-    collect_vb_reflection_method_metadata(&module.body, &mut methods, &mut constructors);
-    rewrite_vb_reflection_method_metadata_statements(
-        &mut module.body,
-        &methods,
-        &constructors,
-        &mut VbReflectionMethodLocals::default(),
-    );
-}
 
-fn collect_vb_reflection_method_metadata(
-    body: &[Statement],
-    methods: &mut HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    constructors: &mut HashMap<String, Vec<VbReflectionConstructorMeta>>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::ClassDecl { name, members, .. }
-            | StmtKind::StructDecl { name, members, .. }
-            | StmtKind::ModuleDecl { name, members, .. } => {
-                let owner = vb_canonical_type_name(name);
-                let mut saw_instance_constructor = false;
-                for member in members {
-                    match member {
-                        ClassMember::Method(stmt) => {
-                            if let StmtKind::FunctionDecl {
-                                name,
-                                params,
-                                return_type,
-                                modifiers,
-                                ..
-                            } = &stmt.kind
-                            {
-                                if name.starts_with("__vb_myclass_") {
-                                    continue;
-                                }
-                                methods
-                                    .entry((owner.to_ascii_lowercase(), name.to_ascii_lowercase()))
-                                    .or_default()
-                                    .push(VbReflectionMethodMeta {
-                                        owner: owner.clone(),
-                                        name: name.clone(),
-                                        is_static: modifiers.is_static || modifiers.is_shared,
-                                        param_count: params.len(),
-                                        return_type: return_type.clone(),
-                                    });
-                            }
-                        }
-                        ClassMember::NestedType(nested) => {
-                            collect_vb_reflection_method_metadata(
-                                std::slice::from_ref(nested),
-                                methods,
-                                constructors,
-                            );
-                        }
-                        ClassMember::Constructor {
-                            params,
-                            body,
-                            visibility,
-                            initializer_target: _,
-                            ..
-                        } => {
-                            saw_instance_constructor = true;
-                            constructors
-                                .entry(owner.to_ascii_lowercase())
-                                .or_default()
-                                .push(VbReflectionConstructorMeta {
-                                    owner: owner.clone(),
-                                    params: params.clone(),
-                                    body: body.clone(),
-                                    is_public: matches!(visibility, Visibility::Public),
-                                    is_static: false,
-                                });
-                        }
-                        _ => {}
-                    }
-                }
-                if !saw_instance_constructor {
-                    constructors
-                        .entry(owner.to_ascii_lowercase())
-                        .or_default()
-                        .push(VbReflectionConstructorMeta {
-                            owner: owner.clone(),
-                            params: Vec::new(),
-                            body: Vec::new(),
-                            is_public: true,
-                            is_static: false,
-                        });
-                }
-            }
-            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
-                collect_vb_reflection_method_metadata(body, methods, constructors);
-            }
-            _ => {}
-        }
-    }
-}
 
-fn rewrite_vb_reflection_method_metadata_statements(
-    body: &mut [Statement],
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-    locals: &mut VbReflectionMethodLocals,
-) {
-    for stmt in body {
-        rewrite_vb_reflection_method_metadata_statement(stmt, methods, constructors, locals);
-    }
-}
 
-fn rewrite_vb_reflection_method_metadata_statement(
-    stmt: &mut Statement,
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-    locals: &mut VbReflectionMethodLocals,
-) {
-    match &mut stmt.kind {
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if let Some(init) = &mut decl.init {
-                    let original_init = init.clone();
-                    rewrite_vb_reflection_method_metadata_expr(init, methods, constructors, locals);
-                    if let BindingPattern::Ident(name) = &decl.pattern {
-                        let key = name.to_ascii_lowercase();
-                        if let Some(type_name) = vb_reflection_gettype_name(&original_init, locals)
-                            .or_else(|| vb_reflection_gettype_name(init, locals))
-                        {
-                            if let Some(actual) = vb_reflection_generic_actual_type(&original_init)
-                            {
-                                locals.type_actuals.insert(key.clone(), actual);
-                            }
-                            locals.types.insert(key, type_name);
-                        } else if let Some(method) =
-                            vb_reflection_getmethod_meta(&original_init, methods, locals)
-                                .or_else(|| vb_reflection_getmethod_meta(init, methods, locals))
-                        {
-                            locals.methods.insert(key, method);
-                        } else if let Some(items) =
-                            vb_reflection_getmethods_array(&original_init, methods, locals)
-                                .or_else(|| vb_reflection_getmethods_array(init, methods, locals))
-                        {
-                            locals.method_arrays.insert(key, items.len());
-                            *init = vb_reflection_method_array_expr(items);
-                        } else if let Some(ctor) =
-                            vb_reflection_getconstructor_meta(&original_init, constructors, locals)
-                                .or_else(|| {
-                                    vb_reflection_getconstructor_meta(init, constructors, locals)
-                                })
-                        {
-                            locals.constructors.insert(key, ctor);
-                        } else if let Some(items) = vb_reflection_getconstructors_array(
-                            &original_init,
-                            constructors,
-                            locals,
-                        )
-                        .or_else(|| vb_reflection_getconstructors_array(init, constructors, locals))
-                        {
-                            if key == "ctor" && items.len() == 1 {
-                                if let Some(ctor) = items.into_iter().next() {
-                                    locals.constructors.insert(key, ctor.clone());
-                                    *init = vb_reflection_constructor_object_expr(&ctor);
-                                }
-                            } else {
-                                locals.constructor_arrays.insert(key, items.len());
-                                *init = vb_reflection_constructor_array_expr(items);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        StmtKind::Expr(expr) => {
-            if let Some(replacement) =
-                vb_reflection_constructor_byref_invoke_statement(expr, locals)
-            {
-                *stmt = replacement;
-                return;
-            }
-            rewrite_vb_reflection_method_metadata_expr(expr, methods, constructors, locals);
-        }
-        StmtKind::Return(Some(expr)) => {
-            rewrite_vb_reflection_method_metadata_expr(expr, methods, constructors, locals);
-        }
-        StmtKind::Assign { targets, value, .. } => {
-            rewrite_vb_reflection_method_metadata_expr(value, methods, constructors, locals);
-            if let Some(Expression {
-                kind: ExprKind::Ident(name),
-                ..
-            }) = targets.first()
-            {
-                let key = name.to_ascii_lowercase();
-                if let Some(type_name) = vb_reflection_gettype_name(value, locals) {
-                    locals.types.insert(key, type_name);
-                } else if let Some(method) = vb_reflection_getmethod_meta(value, methods, locals) {
-                    locals.methods.insert(key, method);
-                } else if let Some(ctor) =
-                    vb_reflection_getconstructor_meta(value, constructors, locals)
-                {
-                    locals.constructors.insert(key, ctor);
-                }
-            }
-            for target in targets {
-                rewrite_vb_reflection_method_metadata_expr(target, methods, constructors, locals);
-            }
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body,
-        } => {
-            rewrite_vb_reflection_method_metadata_expr(cond, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_statements(
-                then_body,
-                methods,
-                constructors,
-                &mut locals.clone(),
-            );
-            for (cond, body) in elifs {
-                rewrite_vb_reflection_method_metadata_expr(cond, methods, constructors, locals);
-                rewrite_vb_reflection_method_metadata_statements(
-                    body,
-                    methods,
-                    constructors,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(body) = else_body {
-                rewrite_vb_reflection_method_metadata_statements(
-                    body,
-                    methods,
-                    constructors,
-                    &mut locals.clone(),
-                );
-            }
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            else_body,
-            finally,
-        } => {
-            rewrite_vb_reflection_method_metadata_statements(
-                body,
-                methods,
-                constructors,
-                &mut locals.clone(),
-            );
-            for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_vb_reflection_method_metadata_expr(
-                        when_clause,
-                        methods,
-                        constructors,
-                        locals,
-                    );
-                }
-                rewrite_vb_reflection_method_metadata_statements(
-                    &mut catch.body,
-                    methods,
-                    constructors,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(else_body) = else_body {
-                rewrite_vb_reflection_method_metadata_statements(
-                    else_body,
-                    methods,
-                    constructors,
-                    &mut locals.clone(),
-                );
-            }
-            if let Some(finally) = finally {
-                rewrite_vb_reflection_method_metadata_statements(
-                    finally,
-                    methods,
-                    constructors,
-                    &mut locals.clone(),
-                );
-            }
-        }
-        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
-            rewrite_vb_reflection_method_metadata_statements(
-                body,
-                methods,
-                constructors,
-                &mut VbReflectionMethodLocals::default(),
-            );
-        }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
-            for member in members {
-                rewrite_vb_reflection_method_metadata_member(member, methods, constructors);
-            }
-        }
-        StmtKind::NamespaceDecl { body, .. } => {
-            rewrite_vb_reflection_method_metadata_statements(
-                body,
-                methods,
-                constructors,
-                &mut VbReflectionMethodLocals::default(),
-            );
-        }
-        _ => {}
-    }
-}
 
-fn rewrite_vb_reflection_method_metadata_member(
-    member: &mut ClassMember,
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-) {
-    match member {
-        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_vb_reflection_method_metadata_statement(
-                stmt,
-                methods,
-                constructors,
-                &mut VbReflectionMethodLocals::default(),
-            );
-        }
-        ClassMember::Constructor { body, .. } => {
-            rewrite_vb_reflection_method_metadata_statements(
-                body,
-                methods,
-                constructors,
-                &mut VbReflectionMethodLocals::default(),
-            );
-        }
-        ClassMember::Property { getter, setter, .. } => {
-            if let Some(getter) = getter {
-                rewrite_vb_reflection_method_metadata_statements(
-                    getter,
-                    methods,
-                    constructors,
-                    &mut VbReflectionMethodLocals::default(),
-                );
-            }
-            if let Some(setter) = setter {
-                rewrite_vb_reflection_method_metadata_statements(
-                    &mut setter.body,
-                    methods,
-                    constructors,
-                    &mut VbReflectionMethodLocals::default(),
-                );
-            }
-        }
-        ClassMember::Field {
-            init: Some(init), ..
-        }
-        | ClassMember::Const { value: init, .. } => {
-            rewrite_vb_reflection_method_metadata_expr(
-                init,
-                methods,
-                constructors,
-                &VbReflectionMethodLocals::default(),
-            );
-        }
-        _ => {}
-    }
-}
 
-fn rewrite_vb_reflection_method_metadata_expr(
-    expr: &mut Expression,
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-    locals: &VbReflectionMethodLocals,
-) {
-    match &mut expr.kind {
-        ExprKind::Call {
-            callee,
-            args,
-            optional,
-        } => {
-            let original_callee = callee.clone();
-            let original_args = args.clone();
-            rewrite_vb_reflection_method_metadata_expr(callee, methods, constructors, locals);
-            for arg in &mut *args {
-                rewrite_vb_reflection_method_metadata_expr(
-                    &mut arg.value,
-                    methods,
-                    constructors,
-                    locals,
-                );
-            }
-            let call_snapshot = Expression::new(ExprKind::Call {
-                callee: callee.clone(),
-                args: args.clone(),
-                optional: *optional,
-            });
-            if let Some(replacement) =
-                vb_reflection_constructor_calling_convention_tostring(callee, locals)
-            {
-                *expr = replacement;
-            } else if let Some(replacement) = vb_reflection_constructor_getparameter_index_expr(
-                &original_callee,
-                &original_args,
-                locals,
-            ) {
-                *expr = replacement;
-            } else if let Some(replacement) =
-                vb_reflection_activator_array_create_expr(callee, args)
-            {
-                *expr = replacement;
-            } else if let Some(replacement) =
-                vb_reflection_static_method_invoke_expr(callee, args, locals)
-            {
-                *expr = replacement;
-            } else if let Some(items) =
-                vb_reflection_getmethods_array(&call_snapshot, methods, locals)
-            {
-                *expr = vb_reflection_method_array_expr(items);
-            } else if let Some(items) =
-                vb_reflection_getconstructors_array(&call_snapshot, constructors, locals)
-            {
-                *expr = vb_reflection_constructor_array_expr(items);
-            } else if let Some(params) =
-                vb_reflection_constructor_getparameters_expr(callee, locals)
-            {
-                *expr = params;
-            }
-        }
-        ExprKind::Member { object, field, .. } => {
-            if let ExprKind::Array(items) = &object.kind {
-                if items.len() == 1 {
-                    *object = Box::new(items[0].value.clone());
-                }
-            }
-            if field.eq_ignore_ascii_case("Name") {
-                if let ExprKind::Member {
-                    object: method_object,
-                    field: return_type,
-                    ..
-                } = &object.kind
-                {
-                    if return_type.eq_ignore_ascii_case("ReturnType") {
-                        if let Some(name) =
-                            vb_reflection_method_return_type_name(method_object, locals)
-                        {
-                            *expr = Expression::string(&name);
-                            return;
-                        }
-                    }
-                }
-            }
-            if field.eq_ignore_ascii_case("Length") {
-                if let ExprKind::Ident(name) = &object.kind {
-                    if let Some(length) = locals.method_arrays.get(&name.to_ascii_lowercase()) {
-                        *expr = Expression::int(*length as i64);
-                        return;
-                    } else if let Some(length) =
-                        locals.constructor_arrays.get(&name.to_ascii_lowercase())
-                    {
-                        *expr = Expression::int(*length as i64);
-                        return;
-                    }
-                }
-            } else if let Some(value) = vb_reflection_constructor_flag_expr(object, field, locals) {
-                *expr = value;
-                return;
-            } else if field.eq_ignore_ascii_case("CallingConvention") {
-                if let ExprKind::Ident(name) = &object.kind {
-                    if locals.constructors.contains_key(&name.to_ascii_lowercase()) {
-                        *expr = Expression::string("HasThis");
-                        return;
-                    }
-                }
-            }
-            rewrite_vb_reflection_method_metadata_expr(object, methods, constructors, locals);
-        }
-        ExprKind::Binary { op, left, right } => {
-            if let Some(value) =
-                vb_reflection_method_return_type_is_void_expr(op, left, right, locals)
-            {
-                *expr = value;
-                return;
-            }
-            rewrite_vb_reflection_method_metadata_expr(left, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(right, methods, constructors, locals);
-        }
-        ExprKind::NullCoalesce { left, right }
-        | ExprKind::Walrus {
-            target: left,
-            value: right,
-        } => {
-            rewrite_vb_reflection_method_metadata_expr(left, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(right, methods, constructors, locals);
-        }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::Cast { expr, .. }
-        | ExprKind::TypeOf(expr)
-        | ExprKind::Await(expr)
-        | ExprKind::Yield(Some(expr))
-        | ExprKind::RefLoad(expr)
-        | ExprKind::YieldFrom(expr)
-        | ExprKind::Spread(expr)
-        | ExprKind::Void(expr)
-        | ExprKind::Delete(expr) => {
-            rewrite_vb_reflection_method_metadata_expr(expr, methods, constructors, locals);
-        }
-        ExprKind::Assign { target, value } => {
-            rewrite_vb_reflection_method_metadata_expr(target, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(value, methods, constructors, locals);
-        }
-        ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_vb_reflection_method_metadata_expr(cond, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(then, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(else_, methods, constructors, locals);
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_vb_reflection_method_metadata_expr(object, methods, constructors, locals);
-            rewrite_vb_reflection_method_metadata_expr(index, methods, constructors, locals);
-        }
-        ExprKind::Array(items) => {
-            for item in items {
-                rewrite_vb_reflection_method_metadata_expr(
-                    &mut item.value,
-                    methods,
-                    constructors,
-                    locals,
-                );
-            }
-        }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
-            for item in items {
-                rewrite_vb_reflection_method_metadata_expr(item, methods, constructors, locals);
-            }
-        }
-        ExprKind::New { class, args } => {
-            rewrite_vb_reflection_method_metadata_expr(class, methods, constructors, locals);
-            for arg in args {
-                rewrite_vb_reflection_method_metadata_expr(
-                    &mut arg.value,
-                    methods,
-                    constructors,
-                    locals,
-                );
-            }
-        }
-        ExprKind::Object(props) => {
-            for prop in props {
-                match prop {
-                    ObjectProperty::KeyValue { key, value }
-                    | ObjectProperty::Computed { key, value } => {
-                        rewrite_vb_reflection_method_metadata_expr(
-                            key,
-                            methods,
-                            constructors,
-                            locals,
-                        );
-                        rewrite_vb_reflection_method_metadata_expr(
-                            value,
-                            methods,
-                            constructors,
-                            locals,
-                        );
-                    }
-                    ObjectProperty::Spread(value) => {
-                        rewrite_vb_reflection_method_metadata_expr(
-                            value,
-                            methods,
-                            constructors,
-                            locals,
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => {
-                rewrite_vb_reflection_method_metadata_expr(expr, methods, constructors, locals)
-            }
-            LambdaBody::Block(body) => rewrite_vb_reflection_method_metadata_statements(
-                body,
-                methods,
-                constructors,
-                &mut VbReflectionMethodLocals::default(),
-            ),
-        },
-        _ => {}
-    }
-}
 
-fn vb_reflection_gettype_name(
-    expr: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<String> {
-    match &expr.kind {
-        ExprKind::TypeOf(inner) => {
-            dotted_expr_name(inner).map(|name| vb_canonical_type_name(&name))
-        }
-        ExprKind::Ident(name) => locals.types.get(&name.to_ascii_lowercase()).cloned(),
-        _ => None,
-    }
-}
 
-fn vb_reflection_type_actual(
-    expr: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<String> {
-    vb_reflection_generic_actual_type(expr).or_else(|| {
-        let ExprKind::Ident(name) = &expr.kind else {
-            return None;
-        };
-        locals.type_actuals.get(&name.to_ascii_lowercase()).cloned()
-    })
-}
 
-fn vb_reflection_getmethod_meta(
-    expr: &Expression,
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    locals: &VbReflectionMethodLocals,
-) -> Option<VbReflectionMethodMeta> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetMethod") {
-        return None;
-    }
-    let owner = vb_reflection_gettype_name(object, locals)?;
-    let method_name = literal_string(&args.first()?.value)?;
-    methods
-        .get(&(owner.to_ascii_lowercase(), method_name.to_ascii_lowercase()))?
-        .first()
-        .cloned()
-}
 
-fn vb_reflection_getmethods_array(
-    expr: &Expression,
-    methods: &HashMap<(String, String), Vec<VbReflectionMethodMeta>>,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Vec<VbReflectionMethodMeta>> {
-    let ExprKind::Call { callee, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetMethods") {
-        return None;
-    }
-    let owner = vb_reflection_gettype_name(object, locals)?;
-    let owner_key = owner.to_ascii_lowercase();
-    let mut seen = HashSet::new();
-    let mut result = methods
-        .iter()
-        .filter(|((method_owner, _), _)| method_owner == &owner_key)
-        .flat_map(|(_, entries)| entries.iter().cloned())
-        .filter(|method| seen.insert((method.name.to_ascii_lowercase(), method.param_count)))
-        .collect::<Vec<_>>();
-    result.sort_by(|a, b| {
-        a.name
-            .to_ascii_lowercase()
-            .cmp(&b.name.to_ascii_lowercase())
-    });
-    Some(result)
-}
 
-fn vb_reflection_getconstructor_meta(
-    expr: &Expression,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-    locals: &VbReflectionMethodLocals,
-) -> Option<VbReflectionConstructorMeta> {
-    if let ExprKind::Call { callee, args, .. } = &expr.kind {
-        if literal_int(&args.first()?.value) == Some(0) {
-            if let Some(first) = vb_reflection_getconstructors_array(callee, constructors, locals)?
-                .into_iter()
-                .next()
-            {
-                return Some(first);
-            }
-        }
-    }
-    if let ExprKind::Index { object, index, .. } = &expr.kind {
-        if literal_int(index) == Some(0) {
-            return vb_reflection_getconstructors_array(object, constructors, locals)?
-                .into_iter()
-                .next();
-        }
-    }
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetConstructor") {
-        return None;
-    }
-    let owner = vb_reflection_gettype_name(object, locals)?;
-    let entries = constructors.get(&owner.to_ascii_lowercase())?;
-    let wanted = vb_reflection_constructor_param_count(args);
-    entries
-        .iter()
-        .find(|ctor| wanted.map_or(true, |count| ctor.params.len() == count))
-        .cloned()
-}
 
-fn vb_reflection_getconstructors_array(
-    expr: &Expression,
-    constructors: &HashMap<String, Vec<VbReflectionConstructorMeta>>,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Vec<VbReflectionConstructorMeta>> {
-    let ExprKind::Call { callee, .. } = &expr.kind else {
-        return None;
-    };
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetConstructors") {
-        return None;
-    }
-    let owner = vb_reflection_gettype_name(object, locals)?;
-    let actual = vb_reflection_type_actual(object, locals);
-    let mut entries = constructors
-        .get(&owner.to_ascii_lowercase())?
-        .iter()
-        .filter(|ctor| !ctor.is_static)
-        .cloned()
-        .map(|mut ctor| {
-            if let Some(actual) = actual.as_deref() {
-                vb_reflection_substitute_ctor_type_param(&mut ctor, actual);
-            }
-            ctor
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|ctor| ctor.params.len());
-    Some(entries)
-}
 
-fn vb_reflection_substitute_ctor_type_param(ctor: &mut VbReflectionConstructorMeta, actual: &str) {
-    for param in &mut ctor.params {
-        if param
-            .type_hint
-            .as_deref()
-            .is_some_and(|hint| hint.eq_ignore_ascii_case("T"))
-        {
-            param.type_hint = Some(actual.to_string().into());
-        }
-    }
-}
 
-fn vb_reflection_constructor_param_count(args: &[Argument]) -> Option<usize> {
-    if args.is_empty() {
-        return Some(0);
-    }
-    for arg in args {
-        match &arg.value.kind {
-            ExprKind::Array(items) => return Some(items.len()),
-            ExprKind::Member { object, field, .. }
-                if field.eq_ignore_ascii_case("EmptyTypes")
-                    && dotted_expr_name(object).is_some_and(|name| {
-                        name.eq_ignore_ascii_case("Type")
-                            || name.eq_ignore_ascii_case("System.Type")
-                            || name.eq_ignore_ascii_case("dotnet.System.Type")
-                    }) =>
-            {
-                return Some(0);
-            }
-            _ => {}
-        }
-    }
-    None
-}
 
-fn vb_reflection_constructor_array_expr(ctors: Vec<VbReflectionConstructorMeta>) -> Expression {
-    Expression::new(ExprKind::Array(
-        ctors
-            .into_iter()
-            .map(|ctor| ArrayElement {
-                key: None,
-                value: vb_reflection_constructor_object_expr(&ctor),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    ))
-}
 
-fn vb_reflection_constructor_object_expr(ctor: &VbReflectionConstructorMeta) -> Expression {
-    Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("IsPublic"),
-            value: Expression::bool(ctor.is_public),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("IsPrivate"),
-            value: Expression::bool(!ctor.is_public),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("IsStatic"),
-            value: Expression::bool(ctor.is_static),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("CallingConvention"),
-            value: Expression::string("HasThis"),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Owner"),
-            value: Expression::string(&ctor.owner),
-        },
-    ]))
-}
 
-fn vb_reflection_constructor_getparameters_expr(
-    callee: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("GetParameters") {
-        return None;
-    }
-    let ExprKind::Ident(name) = &object.kind else {
-        return None;
-    };
-    let ctor = locals.constructors.get(&name.to_ascii_lowercase())?;
-    Some(Expression::new(ExprKind::Array(
-        ctor.params
-            .iter()
-            .map(|param| ArrayElement {
-                key: None,
-                value: vb_reflection_parameter_object_expr(param),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    )))
-}
 
-fn vb_reflection_constructor_getparameter_index_expr(
-    callee: &Expression,
-    args: &[Argument],
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    if args.len() != 1 {
-        return None;
-    }
-    let index = literal_int(&args.first()?.value)?;
-    if index < 0 {
-        return None;
-    }
-    let ExprKind::Call {
-        callee: inner_callee,
-        args: inner_args,
-        ..
-    } = &callee.kind
-    else {
-        return None;
-    };
-    if !inner_args.is_empty() {
-        return None;
-    }
-    let params = vb_reflection_constructor_getparameters_expr(inner_callee, locals)?;
-    let ExprKind::Array(items) = params.kind else {
-        return None;
-    };
-    items.get(index as usize).map(|item| item.value.clone())
-}
 
-fn vb_reflection_parameter_object_expr(param: &Param) -> Expression {
-    let type_name = param
-        .type_hint
-        .as_deref()
-        .map(vb_canonical_type_name)
-        .unwrap_or_else(|| "Object".to_string());
-    Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("Name"),
-            value: Expression::string(&param.name),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("ParameterType"),
-            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
-                key: Expression::string("Name"),
-                value: Expression::string(&type_name),
-            }])),
-        },
-    ]))
-}
 
-fn vb_reflection_constructor_flag_expr(
-    object: &Expression,
-    field: &str,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    let ExprKind::Ident(name) = &object.kind else {
-        return None;
-    };
-    let ctor = locals.constructors.get(&name.to_ascii_lowercase())?;
-    if field.eq_ignore_ascii_case("IsPublic") {
-        Some(Expression::bool(ctor.is_public))
-    } else if field.eq_ignore_ascii_case("IsPrivate") {
-        Some(Expression::bool(!ctor.is_public))
-    } else if field.eq_ignore_ascii_case("IsStatic") {
-        Some(Expression::bool(ctor.is_static))
-    } else {
-        None
-    }
-}
 
-fn vb_reflection_constructor_byref_invoke_statement(
-    expr: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Statement> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
-        return None;
-    };
-    if args.len() != 1 {
-        return None;
-    }
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("Invoke") {
-        return None;
-    }
-    let ExprKind::Ident(ctor_name) = &object.kind else {
-        return None;
-    };
-    let ctor = locals.constructors.get(&ctor_name.to_ascii_lowercase())?;
-    let first_param = ctor.params.first()?;
-    if !matches!(first_param.pass_by, PassBy::Ref | PassBy::Alias) {
-        return None;
-    }
-    let ExprKind::Ident(args_name) = &args.first()?.value.kind else {
-        return None;
-    };
-    let assigned = vb_constructor_body_param_assignment_value(&ctor.body, &first_param.name)?;
-    Some(Statement::new(StmtKind::Assign {
-        targets: vec![Expression::new(ExprKind::Index {
-            object: Box::new(Expression::ident(args_name)),
-            index: Box::new(Expression::int(0)),
-            null_safe: false,
-        })],
-        value: assigned,
-        by_ref: false,
-    }))
-}
 
-fn vb_constructor_body_param_assignment_value(
-    body: &[Statement],
-    param_name: &str,
-) -> Option<Expression> {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Assign { targets, value, .. } => {
-                if targets.iter().any(|target| {
-                    matches!(&target.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(param_name))
-                }) {
-                    return Some(value.clone());
-                }
-            }
-            StmtKind::Block(body) => {
-                if let Some(value) = vb_constructor_body_param_assignment_value(body, param_name) {
-                    return Some(value);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
 
-fn vb_reflection_constructor_calling_convention_tostring(
-    callee: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("ToString") {
-        return None;
-    }
-    let ExprKind::Member {
-        object: ctor_object,
-        field: convention,
-        ..
-    } = &object.kind
-    else {
-        return None;
-    };
-    if !convention.eq_ignore_ascii_case("CallingConvention") {
-        return None;
-    }
-    let ExprKind::Ident(name) = &ctor_object.kind else {
-        return None;
-    };
-    locals
-        .constructors
-        .contains_key(&name.to_ascii_lowercase())
-        .then(|| Expression::string("HasThis"))
-}
 
-fn vb_reflection_activator_array_create_expr(
-    callee: &Expression,
-    args: &[Argument],
-) -> Option<Expression> {
-    if args.len() != 2 || !vb_expr_name_ends(callee, &["Activator", "CreateInstance"]) {
-        return None;
-    }
-    let ExprKind::TypeOf(type_expr) = &args.first()?.value.kind else {
-        return None;
-    };
-    let type_name = dotted_expr_name(type_expr)?;
-    let is_array_type = type_name.ends_with("()")
-        || type_name.ends_with("[]")
-        || matches!(
-            vb_canonical_type_name(&type_name).as_str(),
-            "String" | "Object" | "Int32" | "Double" | "Boolean"
-        );
-    if !is_array_type {
-        return None;
-    }
-    let len = literal_int(&args.get(1)?.value)?;
-    if len < 0 || len > 4096 {
-        return None;
-    }
-    Some(Expression::new(ExprKind::Array(
-        (0..len)
-            .map(|_| ArrayElement {
-                key: None,
-                value: Expression::null(),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    )))
-}
 
-fn vb_reflection_method_array_expr(methods: Vec<VbReflectionMethodMeta>) -> Expression {
-    Expression::new(ExprKind::Array(
-        methods
-            .into_iter()
-            .map(|method| ArrayElement {
-                key: None,
-                value: Expression::new(ExprKind::Object(vec![
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("Name"),
-                        value: Expression::string(&method.name),
-                    },
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("IsStatic"),
-                        value: Expression::bool(method.is_static),
-                    },
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("ReturnType"),
-                        value: Expression::string(method.return_type.as_deref().unwrap_or("Void")),
-                    },
-                ])),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    ))
-}
 
-fn vb_reflection_static_method_invoke_expr(
-    callee: &Expression,
-    args: &[Argument],
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    if args.len() < 2 || !matches!(args.first()?.value.kind, ExprKind::Lit(Literal::Null)) {
-        return None;
-    }
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !field.eq_ignore_ascii_case("Invoke") {
-        return None;
-    }
-    let ExprKind::Ident(name) = &object.kind else {
-        return None;
-    };
-    let method = locals.methods.get(&name.to_ascii_lowercase())?;
-    if !method.is_static {
-        return None;
-    }
-    let invoke_args = vb_reflection_invoke_argument_array(&args[1].value);
-    if invoke_args.len() != method.param_count {
-        return None;
-    }
-    Some(call_expr(
-        Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(&method.owner)),
-            field: method.name.clone(),
-            null_safe: false,
-        }),
-        invoke_args.into_iter().map(Argument::positional).collect(),
-    ))
-}
 
-fn vb_reflection_method_return_type_name(
-    expr: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<String> {
-    let ExprKind::Ident(name) = &expr.kind else {
-        return None;
-    };
-    let method = locals.methods.get(&name.to_ascii_lowercase())?;
-    Some(
-        method
-            .return_type
-            .as_deref()
-            .map(vb_canonical_type_name)
-            .unwrap_or_else(|| "Void".to_string()),
-    )
-}
-
-fn vb_reflection_method_return_type_is_void_expr(
-    op: &BinOp,
-    left: &Expression,
-    right: &Expression,
-    locals: &VbReflectionMethodLocals,
-) -> Option<Expression> {
-    if !matches!(op, BinOp::Is | BinOp::Eq | BinOp::StrictEq) {
-        return None;
-    }
-    let ExprKind::Member {
-        object,
-        field: return_type,
-        ..
-    } = &left.kind
-    else {
-        return None;
-    };
-    if !return_type.eq_ignore_ascii_case("ReturnType") {
-        return None;
-    }
-    let ExprKind::TypeOf(type_expr) = &right.kind else {
-        return None;
-    };
-    let type_name = dotted_expr_name(type_expr)?;
-    if !type_name.eq_ignore_ascii_case("Void") {
-        return None;
-    }
-    let ExprKind::Ident(name) = &object.kind else {
-        return None;
-    };
-    let key = name.to_ascii_lowercase();
-    let method = locals.methods.get(&key)?;
-    Some(Expression::bool(method.return_type.is_none()))
-}
-
-fn vb_reflection_invoke_argument_array(expr: &Expression) -> Vec<Expression> {
-    match &expr.kind {
-        ExprKind::Array(items) => items.iter().map(|item| item.value.clone()).collect(),
-        ExprKind::New { args, .. } => args.iter().map(|arg| arg.value.clone()).collect(),
-        ExprKind::Lit(Literal::Null) => Vec::new(),
-        _ => vec![expr.clone()],
-    }
-}
 
 fn vb_enum_name_expr(
     enum_type: &str,
@@ -15063,106 +12282,6 @@ fn build_vb_bankers_round_expr(value: Expression) -> Expression {
     })
 }
 
-fn round_decimal_text_to_even(text: &str, digits: usize) -> Option<f64> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let (negative, body) = if let Some(rest) = trimmed.strip_prefix('-') {
-        (true, rest)
-    } else if let Some(rest) = trimmed.strip_prefix('+') {
-        (false, rest)
-    } else {
-        (false, trimmed)
-    };
-
-    let mut parts = body.splitn(2, '.');
-    let mut whole = parts.next().unwrap_or("0").to_string();
-    let frac = parts.next().unwrap_or("");
-    if digits >= frac.len() {
-        return trimmed.parse().ok();
-    }
-
-    let mut kept: Vec<u8> = frac.as_bytes()[..digits].to_vec();
-    let next = frac.as_bytes()[digits];
-    let rest_nonzero = frac.as_bytes()[digits + 1..]
-        .iter()
-        .any(|digit| *digit != b'0');
-    let last_kept = kept
-        .last()
-        .copied()
-        .or_else(|| whole.as_bytes().last().copied())
-        .unwrap_or(b'0');
-    let round_up = match next.cmp(&b'5') {
-        std::cmp::Ordering::Greater => true,
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => rest_nonzero || ((last_kept - b'0') % 2 == 1),
-    };
-
-    if round_up {
-        let mut carry = true;
-        for digit in kept.iter_mut().rev() {
-            if *digit == b'9' {
-                *digit = b'0';
-            } else {
-                *digit += 1;
-                carry = false;
-                break;
-            }
-        }
-        if carry {
-            let mut whole_digits: Vec<u8> = whole.into_bytes();
-            for digit in whole_digits.iter_mut().rev() {
-                if *digit == b'9' {
-                    *digit = b'0';
-                } else if digit.is_ascii_digit() {
-                    *digit += 1;
-                    carry = false;
-                    break;
-                }
-            }
-            if carry {
-                whole_digits.insert(0, b'1');
-            }
-            whole = String::from_utf8(whole_digits).ok()?;
-        }
-    }
-
-    let frac_text = String::from_utf8(kept).ok()?;
-    let rounded = if digits == 0 {
-        whole
-    } else {
-        format!("{}.{}", whole, frac_text)
-    };
-    let signed = if negative {
-        format!("-{}", rounded)
-    } else {
-        rounded
-    };
-    signed.parse().ok()
-}
-
-fn try_fold_vb_decimal_round(value: &Expression, digits: &Expression) -> Option<Expression> {
-    let digits = literal_number(digits)?;
-    if digits < 0.0 || digits.fract() != 0.0 {
-        return None;
-    }
-    let digits = digits as usize;
-    let ExprKind::Call { callee, args, .. } = &value.kind else {
-        return None;
-    };
-    let ExprKind::Ident(name) = &callee.kind else {
-        return None;
-    };
-    if !name.eq_ignore_ascii_case("cdec") || args.len() != 1 {
-        return None;
-    }
-    let text = literal_string(&args[0].value)?;
-    let rounded = round_decimal_text_to_even(&text, digits)?;
-    Some(Expression::new(ExprKind::Lit(Literal::Float(rounded))))
-}
-
 fn try_fold_vb_double_round(value: &Expression, digits: &Expression) -> Option<Expression> {
     let digits = literal_number(digits)?;
     if digits < 0.0 || digits.fract() != 0.0 {
@@ -15174,10 +12293,6 @@ fn try_fold_vb_double_round(value: &Expression, digits: &Expression) -> Option<E
 }
 
 fn build_vb_precision_round_expr(value: Expression, digits: Expression) -> Expression {
-    if let Some(folded) = try_fold_vb_decimal_round(&value, &digits) {
-        return folded;
-    }
-
     let pow_left = call_expr(
         build_dotted_expr("Math.Pow"),
         vec![
@@ -15542,80 +12657,6 @@ fn vb_regex_literal_pattern(expr: &Expression, locals: &HashMap<String, String>)
         .and_then(|arg| vb_known_string_value(&arg.value, locals))
 }
 
-fn vb_regex_group_names(pattern: &str) -> Vec<String> {
-    let mut names = vec!["0".to_string()];
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut i = 0;
-    let mut in_class = false;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' => i += 2,
-            '[' => {
-                in_class = true;
-                i += 1;
-            }
-            ']' if in_class => {
-                in_class = false;
-                i += 1;
-            }
-            '(' if !in_class => {
-                if chars.get(i + 1) == Some(&'?') {
-                    if chars.get(i + 2) == Some(&'<')
-                        && !matches!(chars.get(i + 3), Some('=') | Some('!'))
-                    {
-                        let start = i + 3;
-                        if let Some(end_offset) = chars[start..].iter().position(|ch| *ch == '>') {
-                            names.push(chars[start..start + end_offset].iter().collect());
-                        }
-                    } else if chars.get(i + 2) == Some(&'\'') {
-                        let start = i + 3;
-                        if let Some(end_offset) = chars[start..].iter().position(|ch| *ch == '\'') {
-                            names.push(chars[start..start + end_offset].iter().collect());
-                        }
-                    }
-                } else {
-                    names.push(names.len().to_string());
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    names
-}
-
-fn vb_regex_group_names_array(pattern: &str) -> Expression {
-    Expression::new(ExprKind::Array(
-        vb_regex_group_names(pattern)
-            .into_iter()
-            .map(|name| ArrayElement {
-                key: None,
-                value: Expression::string(&name),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    ))
-}
-
-fn vb_regex_group_name_from_number(pattern: &str, number: i64) -> Expression {
-    let names = vb_regex_group_names(pattern);
-    names
-        .get(usize::try_from(number).unwrap_or(usize::MAX))
-        .map(|name| Expression::string(name))
-        .unwrap_or_else(|| Expression::string(""))
-}
-
-fn vb_regex_group_number_from_name(pattern: &str, name: &str) -> Expression {
-    let names = vb_regex_group_names(pattern);
-    let number = names
-        .iter()
-        .position(|candidate| candidate == name)
-        .map(|idx| idx as i64)
-        .unwrap_or(-1);
-    Expression::int(number)
-}
-
 fn vb_type_name_from_suffix(suffix: &str, has_decimal: bool) -> Option<&'static str> {
     match suffix.to_ascii_uppercase().as_str() {
         "S" => Some("Int16"),
@@ -15696,45 +12737,6 @@ fn parse_vb_numeric_literal(raw: &str) -> Expression {
     } else {
         expr
     }
-}
-
-fn last_day_of_month(year: i32, month: u32) -> Option<u32> {
-    let (next_year, next_month) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
-    Some((first_of_next - Duration::days(1)).day())
-}
-
-fn normalize_year_month(year: i64, month: i64) -> Option<(i32, u32)> {
-    let total_months = year.checked_mul(12)?.checked_add(month - 1)?;
-    let normalized_year = total_months.div_euclid(12);
-    let normalized_month = total_months.rem_euclid(12) + 1;
-    Some((
-        i32::try_from(normalized_year).ok()?,
-        u32::try_from(normalized_month).ok()?,
-    ))
-}
-
-fn build_date_serial(year: i64, month: i64, day: i64) -> Option<NaiveDate> {
-    let (normalized_year, normalized_month) = normalize_year_month(year, month)?;
-    let first_of_month = NaiveDate::from_ymd_opt(normalized_year, normalized_month, 1)?;
-    Some(first_of_month + Duration::days(day - 1))
-}
-
-fn build_time_serial(hour: i64, minute: i64, second: i64) -> Option<NaiveTime> {
-    let total_seconds = hour
-        .checked_mul(3600)?
-        .checked_add(minute.checked_mul(60)?)?
-        .checked_add(second)?;
-    let seconds_in_day = 24 * 3600;
-    let normalized = total_seconds.rem_euclid(seconds_in_day);
-    let hours = (normalized / 3600) as u32;
-    let minutes = ((normalized % 3600) / 60) as u32;
-    let seconds = (normalized % 60) as u32;
-    NaiveTime::from_hms_opt(hours, minutes, seconds)
 }
 
 fn parse_vb_date_text(text: &str) -> Option<VbDateValue> {
@@ -15935,6 +12937,18 @@ fn format_vb_date(value: NaiveDate) -> String {
     format!("{}/{}/{}", value.month(), value.day(), value.year())
 }
 
+/// The ISO-8601 spelling of a VB date literal — what `ecma:date.parse`, and so
+/// the `System.DateTime` leaf, actually understands. A time-only literal
+/// (`#3:45 PM#`) anchors at `DateTime.MinValue`'s date, which is where VB puts
+/// it too.
+fn format_vb_date_iso(value: &VbDateValue) -> String {
+    match value {
+        VbDateValue::Time(time) => format!("0001-01-01T{}", time.format("%H:%M:%S")),
+        VbDateValue::Date(date) => format!("{}T00:00:00", date.format("%Y-%m-%d")),
+        VbDateValue::DateTime(datetime) => datetime.format("%Y-%m-%dT%H:%M:%S").to_string(),
+    }
+}
+
 fn format_vb_date_value(value: &VbDateValue) -> String {
     match value {
         VbDateValue::Date(date) => format_vb_date(*date),
@@ -15969,155 +12983,6 @@ fn date_value_as_datetime(value: &VbDateValue) -> Option<NaiveDateTime> {
             time.nanosecond(),
         ),
         VbDateValue::DateTime(datetime) => Some(*datetime),
-    }
-}
-
-fn add_months_to_date(date: NaiveDate, months: i64) -> Option<NaiveDate> {
-    let total_months = i64::from(date.year())
-        .checked_mul(12)?
-        .checked_add(i64::from(date.month()) - 1)?
-        .checked_add(months)?;
-    let year = total_months.div_euclid(12);
-    let month = total_months.rem_euclid(12) + 1;
-    let year = i32::try_from(year).ok()?;
-    let month = u32::try_from(month).ok()?;
-    let day = date.day().min(last_day_of_month(year, month)?);
-    NaiveDate::from_ymd_opt(year, month, day)
-}
-
-fn add_interval(value: &VbDateValue, interval: &str, amount: i64) -> Option<VbDateValue> {
-    match interval {
-        "day" | "dayofyear" | "weekday" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::Date(*date + Duration::days(amount))),
-            VbDateValue::DateTime(datetime) => {
-                Some(VbDateValue::DateTime(*datetime + Duration::days(amount)))
-            }
-            VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
-        },
-        "week" => add_interval(value, "day", amount.checked_mul(7)?),
-        "hour" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::DateTime(
-                date.and_hms_opt(0, 0, 0)? + Duration::hours(amount),
-            )),
-            VbDateValue::DateTime(datetime) => {
-                Some(VbDateValue::DateTime(*datetime + Duration::hours(amount)))
-            }
-            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(
-                i64::from(time.hour()) + amount,
-                i64::from(time.minute()),
-                i64::from(time.second()),
-            )?)),
-        },
-        "month" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::Date(add_months_to_date(*date, amount)?)),
-            VbDateValue::DateTime(datetime) => {
-                let next_date = add_months_to_date(datetime.date(), amount)?;
-                Some(VbDateValue::DateTime(next_date.and_hms_opt(
-                    datetime.hour(),
-                    datetime.minute(),
-                    datetime.second(),
-                )?))
-            }
-            VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
-        },
-        "quarter" => add_interval(value, "month", amount.checked_mul(3)?),
-        "year" => add_interval(value, "month", amount.checked_mul(12)?),
-        "minute" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::DateTime(
-                date.and_hms_opt(0, 0, 0)? + Duration::minutes(amount),
-            )),
-            VbDateValue::DateTime(datetime) => {
-                Some(VbDateValue::DateTime(*datetime + Duration::minutes(amount)))
-            }
-            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(
-                i64::from(time.hour()),
-                i64::from(time.minute()) + amount,
-                i64::from(time.second()),
-            )?)),
-        },
-        "second" => match value {
-            VbDateValue::Date(date) => Some(VbDateValue::DateTime(
-                date.and_hms_opt(0, 0, 0)? + Duration::seconds(amount),
-            )),
-            VbDateValue::DateTime(datetime) => {
-                Some(VbDateValue::DateTime(*datetime + Duration::seconds(amount)))
-            }
-            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(
-                i64::from(time.hour()),
-                i64::from(time.minute()),
-                i64::from(time.second()) + amount,
-            )?)),
-        },
-        _ => None,
-    }
-}
-
-fn normalize_vb_date_interval(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "yyyy" | "year" => Some("year"),
-        "q" | "quarter" => Some("quarter"),
-        "m" | "month" => Some("month"),
-        "y" | "dayofyear" => Some("dayofyear"),
-        "d" | "day" => Some("day"),
-        "w" | "weekday" => Some("weekday"),
-        "ww" | "week" | "weekofyear" => Some("week"),
-        "h" | "hour" => Some("hour"),
-        "n" | "minute" => Some("minute"),
-        "s" | "second" => Some("second"),
-        _ => None,
-    }
-}
-
-fn parse_interval_expr(expr: &Expression) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Member { object, field, .. } => match &object.kind {
-            ExprKind::Ident(name) if name.eq_ignore_ascii_case("DateInterval") => {
-                normalize_vb_date_interval(field).map(str::to_string)
-            }
-            _ => None,
-        },
-        ExprKind::Lit(Literal::Str(value)) => normalize_vb_date_interval(value).map(str::to_string),
-        _ => None,
-    }
-}
-
-fn date_diff(interval: &str, start: &VbDateValue, end: &VbDateValue) -> Option<i64> {
-    let start_dt = date_value_as_datetime(start)?;
-    let end_dt = date_value_as_datetime(end)?;
-    match interval {
-        "day" | "dayofyear" | "weekday" => Some((end_dt - start_dt).num_days()),
-        "week" => Some((end_dt - start_dt).num_days() / 7),
-        "hour" => Some((end_dt - start_dt).num_hours()),
-        "minute" => Some((end_dt - start_dt).num_minutes()),
-        "second" => Some((end_dt - start_dt).num_seconds()),
-        "month" => Some(
-            i64::from(end_dt.year() - start_dt.year()) * 12 + i64::from(end_dt.month())
-                - i64::from(start_dt.month()),
-        ),
-        "quarter" => Some(
-            (i64::from(end_dt.year() - start_dt.year()) * 12 + i64::from(end_dt.month())
-                - i64::from(start_dt.month()))
-                / 3,
-        ),
-        "year" => Some(i64::from(end_dt.year() - start_dt.year())),
-        _ => None,
-    }
-}
-
-fn date_part(interval: &str, value: &VbDateValue) -> Option<i64> {
-    let datetime = date_value_as_datetime(value)?;
-    match interval {
-        "year" => Some(i64::from(datetime.year())),
-        "month" => Some(i64::from(datetime.month())),
-        "quarter" => Some(i64::from(((datetime.month() - 1) / 3) + 1)),
-        "dayofyear" => Some(i64::from(datetime.ordinal())),
-        "day" => Some(i64::from(datetime.day())),
-        "weekday" => weekday_index(value),
-        "week" => Some(i64::from(((datetime.ordinal() - 1) / 7) + 1)),
-        "hour" => Some(i64::from(datetime.hour())),
-        "minute" => Some(i64::from(datetime.minute())),
-        "second" => Some(i64::from(datetime.second())),
-        _ => None,
     }
 }
 
@@ -16243,14 +13108,6 @@ fn parse_vb_timespan_expr(expr: &Expression) -> Option<VbTimeSpanValue> {
     }
 }
 
-fn fold_timespan_member_field(value: &VbTimeSpanValue, field: &str) -> Option<Expression> {
-    match field.to_ascii_lowercase().as_str() {
-        "days" => Some(Expression::int(value.days)),
-        "totalseconds" => Some(Expression::int(value.total_seconds)),
-        _ => None,
-    }
-}
-
 fn compare_vb_dates(op: BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
     let left = date_value_as_datetime(&parse_vb_date_expr(left)?)?;
     let right = date_value_as_datetime(&parse_vb_date_expr(right)?)?;
@@ -16299,55 +13156,6 @@ fn compare_vb_runtime_dates(
         left: Box::new(cmp),
         right: Box::new(Expression::int(0)),
     }))
-}
-
-fn rewrite_vb_runtime_timespan_binary(
-    op: BinOp,
-    left: &Expression,
-    right: &Expression,
-    locals: &HashMap<String, String>,
-) -> Option<Expression> {
-    let left_type = vb_infer_expr_type(left, locals)?;
-    let right_type = vb_infer_expr_type(right, locals)?;
-    if left_type.as_str() != "TimeSpan" || right_type.as_str() != "TimeSpan" {
-        return None;
-    }
-
-    match op {
-        BinOp::Add | BinOp::Sub => {
-            let field = if op == BinOp::Add { "Add" } else { "Subtract" };
-            Some(call_expr(
-                Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident("TimeSpan")),
-                    field: field.into(),
-                    null_safe: false,
-                }),
-                vec![
-                    Argument::positional(left.clone()),
-                    Argument::positional(right.clone()),
-                ],
-            ))
-        }
-        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-            let cmp = call_expr(
-                Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident("TimeSpan")),
-                    field: "Compare".into(),
-                    null_safe: false,
-                }),
-                vec![
-                    Argument::positional(left.clone()),
-                    Argument::positional(right.clone()),
-                ],
-            );
-            Some(Expression::new(ExprKind::Binary {
-                op,
-                left: Box::new(cmp),
-                right: Box::new(Expression::int(0)),
-            }))
-        }
-        _ => None,
-    }
 }
 
 fn fold_vb_date_arithmetic(op: BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
@@ -16759,138 +13567,6 @@ fn vb_datetime_style_has(expr: Option<&Expression>, needle: &str) -> bool {
     }
 }
 
-fn fold_date_constructor(args: &[Argument], is_time: bool) -> Option<Expression> {
-    if is_time {
-        let hour = literal_i64(&args.get(0)?.value)?;
-        let minute = literal_i64(&args.get(1)?.value)?;
-        let second = literal_i64(&args.get(2)?.value)?;
-        let time = build_time_serial(hour, minute, second)?;
-        return Some(Expression::string(&format_vb_date_value(
-            &VbDateValue::Time(time),
-        )));
-    }
-
-    let year = literal_i64(&args.get(0)?.value)?;
-    let month = literal_i64(&args.get(1)?.value)?;
-    let day = literal_i64(&args.get(2)?.value)?;
-    let date = build_date_serial(year, month, day)?;
-    Some(Expression::string(&format_vb_date_value(
-        &VbDateValue::Date(date),
-    )))
-}
-
-fn fold_month_name(args: &[Argument]) -> Option<Expression> {
-    let month = literal_i64(&args.get(0)?.value)?;
-    let abbreviate = args
-        .get(1)
-        .and_then(|arg| literal_bool(&arg.value))
-        .unwrap_or(false);
-    let names = if abbreviate {
-        [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ]
-    } else {
-        [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ]
-    };
-    let index = usize::try_from(month.checked_sub(1)?).ok()?;
-    Some(Expression::string(names.get(index)?))
-}
-
-fn fold_weekday_name(args: &[Argument]) -> Option<Expression> {
-    let weekday = literal_i64(&args.get(0)?.value)?;
-    let abbreviate = args
-        .get(1)
-        .and_then(|arg| literal_bool(&arg.value))
-        .unwrap_or(false);
-    let names = if abbreviate {
-        ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    } else {
-        [
-            "Sunday",
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-        ]
-    };
-    let index = usize::try_from(weekday.checked_sub(1)?).ok()?;
-    Some(Expression::string(names.get(index)?))
-}
-
-fn fold_date_value(name: &str, args: &[Argument]) -> Option<Expression> {
-    let interval = args.get(0).and_then(|arg| parse_interval_expr(&arg.value));
-    match name.to_ascii_lowercase().as_str() {
-        "dateserial" => fold_date_constructor(args, false),
-        "timeserial" => fold_date_constructor(args, true),
-        "datevalue" | "timevalue" | "cdate" => {
-            let parsed = parse_vb_date_text(&literal_string(&args.get(0)?.value)?)?;
-            Some(Expression::string(&format_vb_date_value(&parsed)))
-        }
-        "dateadd" => {
-            let amount = literal_i64(&args.get(1)?.value)?;
-            let input = parse_vb_date_expr(&args.get(2)?.value)?;
-            let value = add_interval(&input, interval.as_deref()?, amount)?;
-            Some(Expression::string(&format_vb_date_value(&value)))
-        }
-        "datediff" => {
-            let start = parse_vb_date_expr(&args.get(1)?.value)?;
-            let end = parse_vb_date_expr(&args.get(2)?.value)?;
-            Some(Expression::int(date_diff(
-                interval.as_deref()?,
-                &start,
-                &end,
-            )?))
-        }
-        "datepart" => {
-            let value = parse_vb_date_expr(&args.get(1)?.value)?;
-            Some(Expression::int(date_part(interval.as_deref()?, &value)?))
-        }
-        "year" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.year(),
-        ))),
-        "month" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.month(),
-        ))),
-        "day" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.day(),
-        ))),
-        "hour" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.hour(),
-        ))),
-        "minute" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.minute(),
-        ))),
-        "second" => Some(Expression::int(i64::from(
-            date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.second(),
-        ))),
-        "weekday" => Some(Expression::int(weekday_index(&parse_vb_date_expr(
-            &args.get(0)?.value,
-        )?)?)),
-        "monthname" => fold_month_name(args),
-        "weekdayname" => fold_weekday_name(args),
-        "isdate" => {
-            let is_valid = parse_vb_date_text(&literal_string(&args.get(0)?.value)?).is_some();
-            Some(Expression::bool(is_valid))
-        }
-        _ => None,
-    }
-}
-
 fn fold_vb_isnumeric(args: &[Argument]) -> Option<Expression> {
     let value = args.get(0)?;
     let is_numeric = match &value.value.kind {
@@ -17002,9 +13678,14 @@ fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
             literal_i64(&arguments[0].value).map(Expression::int)
         }
         "cobj" if arguments.len() == 1 => Some(arguments[0].value.clone()),
-        "dateserial" | "timeserial" | "dateadd" | "datediff" | "datepart" | "datevalue"
-        | "timevalue" | "cdate" | "year" | "month" | "day" | "hour" | "minute" | "second"
-        | "weekday" | "monthname" | "weekdayname" | "isdate" => fold_date_value(name, arguments),
+        // `DateSerial` / `TimeSerial` / `DateAdd` / `DateDiff` / `DatePart` /
+        // `Weekday` / `MonthName` / `WeekdayName` — and the `Year(d)`-style
+        // extractors — used to be EVALUATED here, in chrono, at walk time. They
+        // are `Microsoft.VisualBasic.DateAndTime`, so they now lower through
+        // `common:dotnet.vb_*` into `platforms/dotnet`, beside the
+        // `System.DateTime` adapter they are built on. A walk-time fold only
+        // answered when every operand was literal enough to see through, and
+        // the runtime rows behind it emitted `noop`.
         _ => None,
     }
 }
@@ -17112,12 +13793,7 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     };
     if let Some(function) = date_field_fn {
         if let Some(value) = parse_vb_date_expr(&object) {
-            if let Some(folded) = fold_date_value(
-                function,
-                &[Argument::positional(Expression::string(
-                    &format_vb_date_value(&value),
-                ))],
-            ) {
+            if let Some(folded) = fold_date_member_field(&value, function) {
                 return folded;
             }
         }
@@ -19268,12 +15944,10 @@ fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String,
                     return;
                 }
             }
-            if let Some(value) = parse_vb_timespan_expr(object) {
-                if let Some(folded) = fold_timespan_member_field(&value, field) {
-                    *expr = folded;
-                    return;
-                }
-            }
+            // `fold_timespan_member_field` stood here — a compile-time
+            // `.TotalHours`/`.Minutes`/… over the VB-local `VbTimeSpanValue`.
+            // The dotnet TimeSpan object carries those fields itself, so the
+            // ordinary member read below reaches them.
             *expr = canonicalize_member_access((**object).clone(), field);
         }
         ExprKind::Member { object, .. } => normalize_vb_date_literal_expr(object, dates),
@@ -19407,49 +16081,14 @@ fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String,
                         }
                     }
                 }
-                if field.eq_ignore_ascii_case("Compare") && args.len() == 2 {
-                    if let Some(path) = vb_date_method_receiver_name(object) {
-                        if matches!(
-                            path.to_ascii_lowercase().as_str(),
-                            "date" | "datetime" | "system.datetime"
-                        ) {
-                            let left = parse_vb_date_expr(&args[0].value)
-                                .and_then(|value| date_value_as_datetime(&value));
-                            let right = parse_vb_date_expr(&args[1].value)
-                                .and_then(|value| date_value_as_datetime(&value));
-                            if let (Some(left), Some(right)) = (left, right) {
-                                let value = if left < right {
-                                    -1
-                                } else if left > right {
-                                    1
-                                } else {
-                                    0
-                                };
-                                *expr = Expression::int(value);
-                                return;
-                            }
-                            *expr = vb_datetime_compare_value_expr(
-                                args[0].value.clone(),
-                                args[1].value.clone(),
-                            );
-                            return;
-                        }
-                    }
-                }
-                if field.eq_ignore_ascii_case("Equals") && args.len() == 2 {
-                    if let Some(path) = vb_date_method_receiver_name(object) {
-                        if matches!(
-                            path.to_ascii_lowercase().as_str(),
-                            "date" | "datetime" | "system.datetime"
-                        ) {
-                            *expr = vb_datetime_ticks_eq_expr(
-                                args[0].value.clone(),
-                                args[1].value.clone(),
-                            );
-                            return;
-                        }
-                    }
-                }
+                // `Date.Compare(a, b)` and `Date.Equals(a, b)` used to be
+                // answered here — first by evaluating both operands in chrono,
+                // and failing that by BUILDING a `.Ticks < .Ticks` ternary. The
+                // leaf declares both as static methods on the DateTime
+                // component class (`dotnet.datetime_compare`,
+                // `dotnet.datetime_equals`), so the rewrite was a second
+                // implementation standing in front of them — and it was what
+                // kept `emit_compare_numeric_slots`' void-`if` bug invisible.
             }
         }
         ExprKind::New { class, args } => {
@@ -19550,8 +16189,32 @@ fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String,
                 }
             }
         }
-        ExprKind::IsType { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
+        ExprKind::IsType { expr: inner, .. } => {
             normalize_vb_date_literal_expr(inner, dates);
+        }
+        ExprKind::Cast { expr: inner, type_name } => {
+            normalize_vb_date_literal_expr(inner, dates);
+            // A `#…#` literal parses as `Cast(Str, "Date")` — VB SPELLING. Once
+            // no walk-time fold consumes it, it has to become a date VALUE, or
+            // the leaf reads `__time` off a string and answers NaN. `CDate`
+            // lowers to `common:dotnet.datetime_parse`, i.e. the same
+            // System.DateTime object every other date expression produces.
+            if type_name.eq_ignore_ascii_case("Date") {
+                if let Some(text) = literal_string(inner) {
+                    // The leaf parses with `ecma:date.parse`, which is ECMA-262
+                    // §21.4.3.2 — it does NOT understand VB's `3:45 PM` or
+                    // `#5/14/2024#`. Re-spelling the literal as ISO is the
+                    // walker's remaining job here; the calendar VALUE is the
+                    // leaf's.
+                    if let Some(iso) = parse_vb_date_text(&text).map(|v| format_vb_date_iso(&v)) {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Ident("CDate".into()))),
+                            args: vec![Argument::positional(Expression::string(&iso))],
+                            optional: false,
+                        });
+                    }
+                }
+            }
         }
         ExprKind::NullCoalesce { left, right }
         | ExprKind::Walrus {
@@ -20385,62 +17048,6 @@ fn vb_multidim_array_expr(bounds: &[Expression], default_value: Expression) -> E
     })
 }
 
-fn vb_expr_has_decimal(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::Cast { expr, type_name } => {
-            vb_canonical_type_name(type_name) == "Decimal" || vb_expr_has_decimal(expr)
-        }
-        ExprKind::Binary { left, right, .. } => {
-            vb_expr_has_decimal(left) || vb_expr_has_decimal(right)
-        }
-        ExprKind::Unary { expr, .. } => vb_expr_has_decimal(expr),
-        _ => false,
-    }
-}
-
-fn vb_expr_has_decimal_with_locals(expr: &Expression, locals: &HashMap<String, String>) -> bool {
-    match &expr.kind {
-        ExprKind::Ident(name) => {
-            locals.contains_key(&format!("$decimal:{}", name.to_ascii_lowercase()))
-        }
-        _ => vb_expr_has_decimal(expr),
-    }
-}
-
-fn literal_number_with_locals(expr: &Expression, locals: &HashMap<String, String>) -> Option<f64> {
-    match &expr.kind {
-        ExprKind::Ident(name) => locals
-            .get(&format!("$value:{}", name.to_ascii_lowercase()))
-            .and_then(|value| value.parse().ok()),
-        _ => literal_number(expr),
-    }
-}
-
-fn vb_fold_decimal_comparison(
-    op: BinOp,
-    left: &Expression,
-    right: &Expression,
-    locals: &HashMap<String, String>,
-) -> Option<Expression> {
-    if !vb_expr_has_decimal_with_locals(left, locals)
-        && !vb_expr_has_decimal_with_locals(right, locals)
-    {
-        return None;
-    }
-    let left = literal_number_with_locals(left, locals)?;
-    let right = literal_number_with_locals(right, locals)?;
-    let epsilon = 1e-13;
-    let value = match op {
-        BinOp::Eq => (left - right).abs() <= epsilon,
-        BinOp::NotEq => (left - right).abs() > epsilon,
-        BinOp::Lt => left < right && (left - right).abs() > epsilon,
-        BinOp::Gt => left > right && (left - right).abs() > epsilon,
-        BinOp::LtEq => left < right || (left - right).abs() <= epsilon,
-        BinOp::GtEq => left > right || (left - right).abs() <= epsilon,
-        _ => return None,
-    };
-    Some(Expression::bool(value))
-}
 
 fn format_vb_number(value: f64) -> String {
     if value.is_finite() && value.fract() == 0.0 {
@@ -23198,11 +19805,19 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
                 args.first().map(|arg| arg.value.clone())
             }
         }
-        "sizeof" => Some(
+        "sizeof" => Some(Expression::int(
             args.first()
-                .map_or(Expression::int(8), |arg| vb_marshal_sizeof(&arg.value)),
-        ),
-        "offsetof" => Some(vb_marshal_offsetof(args)),
+                .and_then(|arg| vb_marshal_type_name(&arg.value))
+                .map_or(8, |name| dotnet_vb::marshal_size_of(&name)),
+        )),
+        "offsetof" => Some(Expression::int(
+            args.get(1)
+                .and_then(|arg| match &arg.value.kind {
+                    ExprKind::Lit(Literal::Str(value)) => Some(value.as_str()),
+                    _ => None,
+                })
+                .map_or(0, dotnet_vb::marshal_offset_of),
+        )),
         "getlastwin32error" => Some(Expression::int(0)),
         "readbyte" => dotnet_vb::marshal_read(args, 1),
         "readint16" => dotnet_vb::marshal_read(args, 2),
@@ -23260,8 +19875,11 @@ fn vb_gchandle_type_arg_is_pinned(expr: &Expression) -> bool {
         || matches!(&expr.kind, ExprKind::Lit(Literal::Int(value)) if *value == 3)
 }
 
-fn vb_marshal_sizeof(expr: &Expression) -> Expression {
-    let name = match &expr.kind {
+/// The TYPE NAME a `Marshal.SizeOf` argument denotes — VB SPELLING work, which
+/// is what a walker owns. The size that name maps to belongs to the dotnet leaf
+/// (`dotnet_vb::marshal_size_of`), beside `marshal_read`/`marshal_write`.
+fn vb_marshal_type_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
         ExprKind::TypeOf(inner) => vb_expr_tail_name(inner),
         ExprKind::Call { callee, args, .. } if vb_expr_name_ends(callee, &["GetType"]) => {
             args.first().and_then(|arg| vb_expr_tail_name(&arg.value))
@@ -23269,34 +19887,6 @@ fn vb_marshal_sizeof(expr: &Expression) -> Expression {
         ExprKind::Ident(_) | ExprKind::Member { .. } => vb_expr_tail_name(expr),
         _ => None,
     }
-    .unwrap_or_default();
-    let size = match name.to_ascii_lowercase().as_str() {
-        "boolean" | "bool" | "byte" | "sbyte" => 1,
-        "char" | "short" | "ushort" | "int16" | "uint16" => 2,
-        "integer" | "uinteger" | "int32" | "uint32" | "single" => 4,
-        "long" | "ulong" | "int64" | "uint64" | "double" | "intptr" | "uintptr" => 8,
-        "element" => 1,
-        name if name.starts_with("genericpair") => 16,
-        _ => 8,
-    };
-    Expression::int(size)
-}
-
-fn vb_marshal_offsetof(args: &[Argument]) -> Expression {
-    let field = args
-        .get(1)
-        .and_then(|arg| match &arg.value.kind {
-            ExprKind::Lit(Literal::Str(value)) => Some(value.as_str()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    Expression::int(match field.to_ascii_lowercase().as_str() {
-        "b" | "b1" => 4,
-        "i1" => 0,
-        "b2" => 8,
-        "l1" => 16,
-        _ => 0,
-    })
 }
 
 fn vb_callee_ends(callee: &Expression, suffix: &[&str]) -> bool {
@@ -30616,28 +27206,15 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                         }
                     }
                 }
-                if let ExprKind::Ident(name) = &object.kind {
-                    if let Some(pattern) =
-                        locals.get(&format!("$regex_pattern:{}", name.to_ascii_lowercase()))
-                    {
-                        if field.eq_ignore_ascii_case("GetGroupNames") && args.is_empty() {
-                            *expr = vb_regex_group_names_array(pattern);
-                            return;
-                        }
-                        if field.eq_ignore_ascii_case("GroupNameFromNumber") && args.len() == 1 {
-                            if let Some(number) = literal_i64(&args[0].value) {
-                                *expr = vb_regex_group_name_from_number(pattern, number);
-                                return;
-                            }
-                        }
-                        if field.eq_ignore_ascii_case("GroupNumberFromName") && args.len() == 1 {
-                            if let Some(name) = vb_known_string_value(&args[0].value, locals) {
-                                *expr = vb_regex_group_number_from_name(pattern, &name);
-                                return;
-                            }
-                        }
-                    }
-                }
+                // A compile-time `GetGroupNames`/`GroupNameFromNumber`/
+                // `GroupNumberFromName` stood here, re-deriving a pattern's group
+                // names in Rust from a LITERAL pattern tracked in `locals`.
+                // `component_classes_text` declares all three on the dotnet Regex
+                // class and `dispatch.rs` routes them to `regex_adapter`'s
+                // `emit_regex_get_group_names` / `..._group_name_from_number` /
+                // `..._group_number_from_name`, which read the `__group_names`
+                // the object already carries — so this was a second parser for
+                // group syntax that only worked when the pattern was a literal.
                 if field.eq_ignore_ascii_case("Contains") && args.len() == 1 {
                     if let (Some(haystack), Some(needle)) =
                         (literal_string(object), literal_string(&args[0].value))
@@ -30819,9 +27396,13 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                     return;
                 }
             }
-            if let Some(folded) = vb_fold_decimal_comparison(*op, left, right, locals) {
-                *expr = folded;
-            }
+            // `vb_fold_decimal_comparison` stood here: a COMPILE-TIME `Decimal`
+            // comparison that compared two `f64`s with a 1e-13 epsilon. That is
+            // not `System.Decimal` (exact base-10) by any reading, and it only
+            // ever fired on literal-foldable operands — so two spellings of the
+            // same comparison disagreed depending on whether the walker could
+            // constant-fold them. Decimal comparison belongs to the dotnet
+            // Decimal representation, not to a walker fold.
         }
         ExprKind::NullCoalesce { left, right }
         | ExprKind::Walrus {

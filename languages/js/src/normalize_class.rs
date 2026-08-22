@@ -71,6 +71,7 @@ pub fn normalize_class(
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
                     value_type: None,
+                    storage: None,
                 };
                 out.push_field(modifiers.is_static, field);
             }
@@ -222,6 +223,7 @@ fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalF
         access: Access::Private,
         readonly: false,
         value_type: None,
+        storage: None,
     }
 }
 

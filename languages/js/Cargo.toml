@@ -13,7 +13,6 @@ inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_compiler = { workspace = true }
-vybe_platform_vybe = { workspace = true, features = ["gui"] }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 vybe_platform_dotnet = { workspace = true }
@@ -23,6 +22,3 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 
-[[test]]
-name = "js"
-path = "tests/js/main.rs"

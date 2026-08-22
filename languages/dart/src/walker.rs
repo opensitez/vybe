@@ -5965,6 +5965,7 @@ fn override_inherited_getter_fields(body: &mut [Statement]) {
                 modifiers: modifiers.clone(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
             let value_param = Param {
                 name: "__dart_ovr_value".to_string(),
@@ -8616,6 +8617,7 @@ fn walk_extension_type_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<St
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         },
     );
     members.insert(
@@ -8793,6 +8795,7 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         },
     );
     class_members.insert(
@@ -8804,6 +8807,7 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         },
     );
 
@@ -8857,6 +8861,7 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
             modifiers: static_modifiers.clone(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
         values.push(ArrayElement {
             key: None,
@@ -8875,6 +8880,7 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
         modifiers: static_modifiers,
         with_events: false,
         array_bounds: None,
+        storage: None,
     });
 
     Ok(StmtKind::ClassDecl {
@@ -9404,6 +9410,7 @@ fn walk_field(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Option<ClassMemb
                 modifiers,
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             }))
         }
     } else {

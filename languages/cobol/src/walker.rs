@@ -56,11 +56,55 @@ struct CobolFileBinding {
     key_name: Option<String>,
     record_name: Option<String>,
     record_fields: Vec<CobolRecordField>,
+    /// How the bytes lie, from `ORGANIZATION`. Defaults to SEQUENTIAL, which
+    /// is what COBOL itself defaults to when the clause is absent.
+    organization: FileOrganization,
+    /// How this program walks them, from `ACCESS MODE`.
+    access: FileAccess,
+}
+
+impl CobolFileBinding {
+    /// Whether this file's transfers go through the shared record emitter
+    /// (`FileDecl` / `RecordTransfer`) rather than the VB6 file-number nodes.
+    ///
+    /// ALL of a file's verbs must agree: writes through a descriptor and reads
+    /// through a `__vb_*` handle are two views of one file, and a round trip
+    /// between them sees nothing. So this is one question asked per FILE, from
+    /// its declaration, never per statement.
+    fn uses_record_transfer(&self) -> bool {
+        // Fixed-width records only, for now. LINE SEQUENTIAL has no width so a
+        // record is not at `n × width`; RELATIVE and INDEXED need the emitter's
+        // addressing arms, which are still loud.
+        self.organization == FileOrganization::Sequential
+    }
 }
 
 struct CobolWalkerContext {
     file_bindings: HashMap<String, CobolFileBinding>,
     record_to_file: HashMap<String, String>,
+    /// Folded key → the file's SOURCE spelling. `file_bindings` is keyed by
+    /// the folded name and a `RecordTransfer` has to name the file the way the
+    /// program wrote it, so the spelling has to be kept rather than recovered.
+    file_names: HashMap<String, String>,
+    /// Record LAYOUT types, held aside for module scope.
+    ///
+    /// A COBOL unit is a lambda and its declarations are that frame's locals,
+    /// so a `StructDecl` emitted alongside the record lands INSIDE the lambda
+    /// — where the declaration pass never walks, because it does not descend
+    /// into a `VarDecl`'s initialiser. The type then exists at runtime and is
+    /// invisible to `normalized_classes`, so a `FileDecl` asking for its byte
+    /// extent gets nothing and the whole program fails to compile. A layout is
+    /// a program-level type; this is where it waits to be emitted as one.
+    layout_structs: Vec<Statement>,
+    /// Records that actually GOT a layout type, by folded name.
+    ///
+    /// The gate for the record-file path is not "is this file SEQUENTIAL" on
+    /// its own — it is that plus "does its record have a byte extent the
+    /// declaration states". A record with one field that has no PICTURE has no
+    /// width at all, and a `FileDecl` naming it would fail the whole program
+    /// where the old path handled it. So the fallback is per RECORD, decided
+    /// by whether a layout could be built, not guessed from the organization.
+    layout_types: HashSet<String>,
     record_fields: HashMap<String, Vec<CobolRecordField>>,
     group_layouts: HashMap<String, Vec<Expression>>,
     condition_names: HashMap<String, Expression>,
@@ -139,6 +183,9 @@ impl CobolWalkerContext {
         Self {
             file_bindings: HashMap::new(),
             record_to_file: HashMap::new(),
+            file_names: HashMap::new(),
+            layout_structs: Vec::new(),
+            layout_types: HashSet::new(),
             record_fields: HashMap::new(),
             group_layouts: HashMap::new(),
             condition_names: HashMap::new(),
@@ -225,6 +272,74 @@ impl CobolWalkerContext {
 
     fn field_pic(&self, name: &str) -> Option<CobolPicFmt> {
         self.field_pics.get(&cobol_name_key(name)).copied()
+    }
+
+    /// The field's PICTURE as a DECLARED EXTENT the AST can carry.
+    ///
+    /// This is the one function that moves a record's layout out of this
+    /// walker's private maps. Until now `PIC X(10)`'s ten lived only in
+    /// `field_pics`, so nothing downstream could state how many bytes a record
+    /// occupies — which is why `WRITE R FROM H` lost `R`'s width and why
+    /// RELATIVE/INDEXED files, where record *n* sits at *n × width*, could not
+    /// be addressed at all.
+    ///
+    /// The mapping is 1:1 because COBOL's model and the AST's agree: four sign
+    /// forms on both sides, an implied decimal point that is declared rather
+    /// than stored, and padding that follows from the category.
+    fn field_storage(&self, name: &str) -> Option<vybe_ast::FieldStorage> {
+        use vybe_ast::{FieldStorage, Justify, SignFormat};
+        let attrs = self.field_attrs(name);
+        let sign = attrs.sign.map(|s| match s {
+            CobolSignFmt::Leading => SignFormat::LeadingOverpunch,
+            CobolSignFmt::Trailing => SignFormat::TrailingOverpunch,
+            CobolSignFmt::LeadingSeparate => SignFormat::LeadingSeparate,
+            CobolSignFmt::TrailingSeparate => SignFormat::TrailingSeparate,
+        });
+        // A SEPARATE sign is a character of its own; an overpunched one rides
+        // on a digit already counted. Getting this wrong shifts every
+        // subsequent field in the record by one byte.
+        let sign_bytes = match sign {
+            Some(SignFormat::LeadingSeparate) | Some(SignFormat::TrailingSeparate) => 1,
+            _ => 0,
+        };
+        Some(match self.field_pic(name)? {
+            CobolPicFmt::Numeric(n) => FieldStorage {
+                bytes: n as u32,
+                decimal_places: 0,
+                sign: None,
+                justify: Justify::Right,
+            },
+            CobolPicFmt::SignedNumeric(n) => FieldStorage {
+                bytes: n as u32 + sign_bytes,
+                decimal_places: 0,
+                sign,
+                justify: Justify::Right,
+            },
+            // `digits` is every stored digit position; the point itself is
+            // never stored, so it costs no byte. `frac` says where it goes.
+            CobolPicFmt::ImpliedDecimal {
+                digits,
+                frac,
+                signed,
+            } => FieldStorage {
+                bytes: digits as u32 + if signed { sign_bytes } else { 0 },
+                decimal_places: frac as u8,
+                sign: if signed { sign } else { None },
+                justify: Justify::Right,
+            },
+            CobolPicFmt::Alpha(n) => FieldStorage {
+                bytes: n as u32,
+                decimal_places: 0,
+                sign: None,
+                // Alphanumeric pads right unless JUSTIFIED RIGHT says otherwise
+                // — the same rule Fortran applies to `character(len=n)`.
+                justify: if attrs.justified_right {
+                    Justify::Right
+                } else {
+                    Justify::Left
+                },
+            },
+        })
     }
 
     fn register_field_edit_pic(&mut self, name: &str, pic: CobolEditPic) {
@@ -460,8 +575,11 @@ impl CobolWalkerContext {
         path: Expression,
         status_var: Option<String>,
         key_name: Option<String>,
+        organization: FileOrganization,
+        access: FileAccess,
     ) {
         let key = cobol_name_key(file_name);
+        self.file_names.insert(key.clone(), file_name.to_string());
         let existing = self.file_bindings.get(&key);
         let record_name = self
             .file_bindings
@@ -482,6 +600,8 @@ impl CobolWalkerContext {
                     .or_else(|| existing.and_then(|binding| binding.key_name.clone())),
                 record_name,
                 record_fields,
+                organization,
+                access,
             },
         );
         self.next_file_number += 1;
@@ -598,8 +718,112 @@ impl CobolWalkerContext {
             .unwrap_or_default()
     }
 
+    /// The fields a record is made of, in storage order.
+    ///
+    /// A COBOL record is very often ELEMENTARY — `01 R PIC X(20).` is a whole
+    /// record with a PICTURE and no children at all, and it outnumbers the
+    /// group form 111 to 21 in this corpus. Treating "record" as a synonym for
+    /// "group" is what made the layout empty for the common case, and an empty
+    /// layout silently declined the whole record path.
+    fn record_member_names(&self, record: &str) -> Vec<String> {
+        let children = self.group_child_names(record);
+        if !children.is_empty() {
+            return children;
+        }
+        // An elementary record is a record of ONE field, and that field is the
+        // record itself.
+        if self.field_pic(record).is_some() {
+            return vec![record.to_string()];
+        }
+        Vec::new()
+    }
+
+    /// The synthetic object a transfer moves through.
+    ///
+    /// The emitter reads and writes a record as an aggregate of named fields,
+    /// but an elementary record's variable holds a STRING — there is nowhere
+    /// to put a field on it. One record area, used by both shapes, keeps that
+    /// difference out of the emitter entirely: the walker copies between the
+    /// area and the program's own variables on each side of the transfer.
+    fn record_area_name(record: &str) -> String {
+        format!("{record}$area")
+    }
+
+    /// Whether this group is the record of an FD — i.e. bytes that reach a
+    /// file, not just working storage. Only these get a layout type: a
+    /// `StructDecl` claims a global name, so minting one for every 01 group
+    /// in the program would be a lot of types nobody reads.
+    /// Whether this file's transfers go through the shared record emitter.
+    ///
+    /// Both halves are required: the ORGANIZATION has to be one the positioned
+    /// emitter can address, and the record has to have a stated byte extent.
+    /// Asking only the first sent records with no measurable width down a path
+    /// that then refused them — a compile error where the old path had worked.
+    fn file_uses_record_transfer(&self, binding: &CobolFileBinding) -> bool {
+        binding.uses_record_transfer()
+            && binding
+                .record_name
+                .as_deref()
+                .is_some_and(|record| self.layout_types.contains(&cobol_name_key(record)))
+    }
+
+    fn is_file_record(&self, name: &str) -> bool {
+        self.record_to_file.contains_key(&cobol_name_key(name))
+    }
+
+    /// The record's LAYOUT as a declared type: one member per elementary
+    /// child, in storage order, each carrying the byte extent its PICTURE
+    /// states.
+    ///
+    /// This is what lets a `RecordTransfer` say where record *n* starts
+    /// without asking COBOL anything — the width is the sum of the members.
+    /// The group itself stays an object-valued `VarDecl` and the children
+    /// stay directly addressable; this is a description of the bytes laid
+    /// alongside them, not a replacement for either.
+    ///
+    /// Returns `None` when any child has no stated PICTURE, because a record
+    /// with one unmeasurable field has no width at all — better no type than
+    /// a type whose extent is quietly short.
+    fn record_layout_struct(&self, name: &str, span: Span) -> Option<Statement> {
+        let children = self.record_member_names(name);
+        if children.is_empty() {
+            return None;
+        }
+        let mut members = Vec::with_capacity(children.len());
+        for child in &children {
+            members.push(ClassMember::Field {
+                name: child.clone(),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+                storage: Some(self.field_storage(child)?),
+            });
+        }
+        Some(Statement::with_span(
+            StmtKind::StructDecl {
+                name: cobol_record_layout_type(name),
+                interfaces: Vec::new(),
+                members,
+                visibility: Visibility::Public,
+                decorators: Vec::new(),
+                semantics: ValueSemantics::default(),
+            },
+            span,
+        ))
+    }
+
     fn file_binding(&self, file_name: &str) -> Option<&CobolFileBinding> {
         self.file_bindings.get(&cobol_name_key(file_name))
+    }
+
+    /// The file a record belongs to, in its SOURCE spelling — a
+    /// `RecordTransfer` names the file, and `record_to_file` holds only the
+    /// folded key.
+    fn file_name_for_record(&self, record_name: &str) -> Option<String> {
+        let file_key = self.record_to_file.get(&cobol_name_key(record_name))?;
+        self.file_names.get(file_key).cloned()
     }
 
     fn file_binding_for_record(&self, record_name: &str) -> Option<&CobolFileBinding> {
@@ -1264,6 +1488,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // separate namespaces — put both in global `t` and the data item read `00`
     // where GnuCOBOL reads `01`. As a frame local the data item has no global
     // name to collide with, and the unit's own global holds only its entry.
+    // Layout types first: a unit's `FileDecl` reads its record's byte extent
+    // out of the declaration, so the declaration has to be somewhere the
+    // declaration pass reaches.
+    module.body.extend(std::mem::take(&mut ctx.layout_structs));
+
     for (name, body) in called_units.into_iter().chain(run_units) {
         module.body.push(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
@@ -1651,6 +1880,8 @@ fn walk_select_entry(pair: Pair<Rule>, ctx: &mut CobolWalkerContext) -> Result<(
     let mut assign_target: Option<Expression> = None;
     let mut status_var: Option<String> = None;
     let mut key_name: Option<String> = None;
+    let mut organization = FileOrganization::default();
+    let mut access = FileAccess::default();
 
     for child in children {
         match child.as_rule() {
@@ -1665,6 +1896,34 @@ fn walk_select_entry(pair: Pair<Rule>, ctx: &mut CobolWalkerContext) -> Result<(
             }
             Rule::select_clause => {
                 let clause_children: Vec<Pair<Rule>> = child.into_inner().collect();
+                let has = |rule: Rule| clause_children.iter().any(|p| p.as_rule() == rule);
+                // ORGANIZATION says how the bytes lie; ACCESS says how this
+                // program walks them. Both were being dropped, which is why
+                // every file looked alike to everything downstream.
+                //
+                // `LINE SEQUENTIAL` is `kw_line ~ kw_sequential`, so the LINE
+                // keyword has to be tested BEFORE the bare SEQUENTIAL it
+                // precedes or a line file reads as a fixed-width one.
+                if has(Rule::kw_organization) {
+                    organization = if has(Rule::kw_line) {
+                        FileOrganization::Line
+                    } else if has(Rule::kw_relative) {
+                        FileOrganization::Relative
+                    } else if has(Rule::kw_indexed) {
+                        FileOrganization::Indexed
+                    } else {
+                        FileOrganization::Sequential
+                    };
+                }
+                if has(Rule::kw_access) {
+                    access = if has(Rule::kw_random) {
+                        FileAccess::Random
+                    } else if has(Rule::kw_dynamic) {
+                        FileAccess::Dynamic
+                    } else {
+                        FileAccess::Sequential
+                    };
+                }
                 if clause_children
                     .iter()
                     .any(|part| part.as_rule() == Rule::kw_file_status)
@@ -1701,6 +1960,8 @@ fn walk_select_entry(pair: Pair<Rule>, ctx: &mut CobolWalkerContext) -> Result<(
             assign_target.unwrap_or_else(|| Expression::string(&file_name.to_ascii_lowercase())),
             status_var,
             key_name,
+            organization,
+            access,
         );
     }
     Ok(())
@@ -1793,6 +2054,24 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
         }
         _ => {}
     }
+}
+
+/// The type name for a record's layout.
+///
+/// A COBOL record and its layout describe the same thing, but `StructDecl`
+/// and `VarDecl` both claim a global of their own name, so `01 EMP-REC` as
+/// both a variable and a type would collide. `$` cannot occur in a COBOL
+/// word, so the suffix can never shadow a user name.
+/// Where a READ reports its outcome when the program declared no FILE STATUS.
+///
+/// Per FILE, not one shared scratch: two files being read in the same
+/// paragraph would otherwise overwrite each other's end-of-file.
+fn cobol_read_status_var(file_name: &str) -> String {
+    format!("{file_name}$status")
+}
+
+fn cobol_record_layout_type(record: &str) -> String {
+    format!("{record}$rec")
 }
 
 fn cobol_file_status_assign(status_var: Option<&str>, value: &str) -> Option<Statement> {
@@ -1939,6 +2218,47 @@ fn walk_file_description(
     for child in children {
         if child.as_rule() == Rule::data_item {
             walk_data_item(child, body, ctx)?;
+        }
+    }
+
+    // The handle lives in the unit frame, declared alongside the record it
+    // holds. `OPEN` then ASSIGNS to a binding that already exists, so every
+    // paragraph sees the same file — a first assignment inside one paragraph
+    // would create that paragraph's local and leave the others reading
+    // nothing. Declared after the data items because whether the file takes
+    // this path depends on the layout they just registered.
+    if !file_name.is_empty()
+        && ctx
+            .file_binding(&file_name)
+            .is_some_and(|binding| ctx.file_uses_record_transfer(binding))
+    {
+        body.push(Statement::new(StmtKind::VarDecl {
+            kind: VarDeclKind::Dim,
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(file_name.clone()),
+                type_hint: None,
+                init: Some(Expression::null()),
+                array_bounds: None,
+                with_events: false,
+            }],
+        }));
+        // The record AREA travels with the handle: a transfer moves an
+        // aggregate of named fields, and an elementary record's own variable
+        // is a string with nowhere to put one.
+        if let Some(record) = ctx
+            .file_binding(&file_name)
+            .and_then(|binding| binding.record_name.clone())
+        {
+            body.push(Statement::new(StmtKind::VarDecl {
+                kind: VarDeclKind::Dim,
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(CobolWalkerContext::record_area_name(&record)),
+                    type_hint: None,
+                    init: Some(Expression::new(ExprKind::Object(Vec::new()))),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+            }));
         }
     }
     Ok(())
@@ -2644,6 +2964,16 @@ fn walk_regular_data_item(
     }
     if is_global {
         ctx.register_global_field(&name, span.clone());
+    }
+
+    // A file record's LAYOUT, declared alongside the record itself. The
+    // children have all been walked by now, so every PICTURE is registered
+    // and each member can state its own byte extent.
+    if ctx.is_file_record(&name) {
+        if let Some(layout) = ctx.record_layout_struct(&name, span.clone()) {
+            ctx.layout_structs.push(layout);
+            ctx.layout_types.insert(cobol_name_key(&name));
+        }
     }
 
     let stmt = StmtKind::VarDecl {
@@ -9466,11 +9796,17 @@ fn walk_open_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     let mut stmts = Vec::new();
     let mut current_mode = FileMode::Input;
+    let mut current_open_mode = OpenMode::Read;
 
     for child in children {
         match child.as_rule() {
             Rule::file_open_mode => {
                 let mode_text = child.as_str().to_uppercase();
+                // The VB6 mapping, UNCHANGED. `OPEN I-O` falls through to
+                // Input here exactly as it always did — the old emitter's
+                // behaviour for files still on that path is not this change's
+                // business, and altering it moved files the gate never
+                // selected.
                 current_mode = if mode_text.contains("INPUT") {
                     FileMode::Input
                 } else if mode_text.contains("OUTPUT") {
@@ -9479,6 +9815,18 @@ fn walk_open_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
                     FileMode::Append
                 } else {
                     FileMode::Input
+                };
+                // What the new model needs is a different question, so it is
+                // asked separately rather than by widening the answer above.
+                // `I-O` is the one mode the VB6 enum cannot name.
+                current_open_mode = if mode_text.contains("I-O") {
+                    OpenMode::ReadWrite
+                } else if mode_text.contains("OUTPUT") {
+                    OpenMode::Write
+                } else if mode_text.contains("EXTEND") {
+                    OpenMode::Append
+                } else {
+                    OpenMode::Read
                 };
             }
             Rule::ident_name => {
@@ -9493,12 +9841,32 @@ fn walk_open_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
                             key_name: None,
                             record_name: None,
                             record_fields: Vec::new(),
+                            organization: FileOrganization::default(),
+                            access: FileAccess::default(),
                         });
-                stmts.push(Statement::new(StmtKind::OpenFile {
-                    path: binding.path,
-                    mode: current_mode,
-                    file_number: Expression::int(binding.file_number as i64),
-                }));
+                if ctx.file_uses_record_transfer(&binding) {
+                    // The DECLARATION is the open: name, path, record type,
+                    // organization and what the mode permits, stated once. The
+                    // file number is gone with it — a file's identity is its
+                    // own name.
+                    stmts.push(Statement::new(StmtKind::FileDecl {
+                        name: file_name.clone(),
+                        path: binding.path.clone(),
+                        record: TypeRef::named(cobol_record_layout_type(
+                            binding.record_name.as_deref().unwrap_or(&file_name),
+                        )),
+                        organization: binding.organization,
+                        access: binding.access,
+                        mode: current_open_mode,
+                        keys: Vec::new(),
+                    }));
+                } else {
+                    stmts.push(Statement::new(StmtKind::OpenFile {
+                        path: binding.path.clone(),
+                        mode: current_mode,
+                        file_number: Expression::int(binding.file_number as i64),
+                    }));
+                }
                 if let Some(status_stmt) =
                     cobol_file_status_assign(binding.status_var.as_deref(), "00")
                 {
@@ -9526,6 +9894,17 @@ fn walk_close_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKin
 
     let mut stmts = Vec::new();
     for name in names {
+        // A record file's handle holds a path-based descriptor and no OS
+        // file handle, and every transfer is positioned, so there is no
+        // buffered state for CLOSE to flush and nothing to release. Emitting
+        // a `CloseFile` against a file number the new model never allocated
+        // would close somebody else's file.
+        if ctx
+            .file_binding(&name)
+            .is_some_and(|binding| ctx.file_uses_record_transfer(binding))
+        {
+            continue;
+        }
         let file_number = ctx
             .file_binding(&name)
             .map(|binding| Expression::int(binding.file_number as i64))
@@ -9614,6 +9993,7 @@ fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
         }
     }
 
+    let into_var_name = into_var.clone();
     let target_name = into_var
         .or_else(|| {
             ctx.file_binding(&file_name)
@@ -9630,7 +10010,64 @@ fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
             key_name: None,
             record_name: Some(target_name.clone()),
             record_fields: Vec::new(),
+            organization: FileOrganization::default(),
+            access: FileAccess::default(),
         });
+
+    // ── Record-file READ ────────────────────────────────────────────────
+    //
+    // One positioned transfer plus a status test, instead of a node that
+    // carried a file number and a list of variable names and inferred EOF
+    // from the first one coming back null. `AT END` is now the status the
+    // transfer REPORTED, not a guess made from the data it wrote.
+    if ctx.file_uses_record_transfer(&binding) && into_var_name.is_none() {
+        let status_var = binding
+            .status_var
+            .clone()
+            // A program with no FILE STATUS still has to be able to tell
+            // end-of-file from a record of blanks, so the transfer always gets
+            // somewhere to report; this is that place when the source named
+            // none of its own.
+            .unwrap_or_else(|| cobol_read_status_var(&file_name));
+
+        let area = CobolWalkerContext::record_area_name(&target_name);
+        let mut stmts = vec![Statement::new(StmtKind::RecordTransfer {
+            file: Expression::ident(&file_name),
+            record_type: TypeRef::named(cobol_record_layout_type(&target_name)),
+            direction: RecordDirection::Read,
+            at: RecordAddress::Next,
+            record: Some(Expression::ident(&area)),
+            status: Some(Expression::ident(&status_var)),
+        })];
+
+        // A record's fields are ALSO free-standing variables in COBOL — an
+        // elementary record IS one — so what the transfer put in the area has
+        // to reach them. Dropping this is what would make a `DISPLAY` after a
+        // READ show the value from before it.
+        for member in ctx.record_member_names(&target_name) {
+            stmts.push(cobol_assign_to(
+                &member,
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&area)),
+                    field: member.clone(),
+                    null_safe: false,
+                }),
+            ));
+        }
+
+        let on_end = fail_body;
+        stmts.push(Statement::new(StmtKind::If {
+            cond: binary(
+                BinOp::Eq,
+                Expression::ident(&status_var),
+                Expression::string("10"),
+            ),
+            then_body: on_end,
+            elifs: Vec::new(),
+            else_body: (!success_body.is_empty()).then_some(success_body),
+        }));
+        return Ok(StmtKind::Block(stmts));
+    }
 
     let record_fields = if binding.record_fields.is_empty() {
         ctx.record_fields_for_name(&target_name)
@@ -9725,6 +10162,49 @@ fn walk_write_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKin
         .map(|binding| Expression::int(binding.file_number as i64))
         .unwrap_or_else(|| Expression::int(1));
 
+    // ── Record-file WRITE ───────────────────────────────────────────────
+    //
+    // The record's bytes are laid out by the shared emitter from the widths
+    // the DECLARATION states, so the walker's job here is only to say WHICH
+    // record and where — not to concatenate anything. The old path built the
+    // bytes itself out of `group_layout_for_name`, which is why the layout
+    // lived in the COBOL walker rather than in the type.
+    if let Some(binding) = binding.as_ref().filter(|b| ctx.file_uses_record_transfer(b)) {
+        let target = ctx
+            .file_name_for_record(&record_name)
+            .unwrap_or_else(|| record_name.clone());
+
+        // The children are the live values — `MOVE` writes THEM, not the group
+        // object — so the record handed to the transfer is assembled from them
+        // at the write, not read out of a group object that nothing updates.
+        let members = ctx.record_member_names(&record_name);
+        // `WRITE rec FROM x` writes x's bytes: the source replaces the record's
+        // OWN contents, so it fills the single field of an elementary record
+        // and is laid out by the same declared width.
+        let value_for = |member: &String| match (&source_expr, members.len()) {
+            (Some(source), 1) => source.clone(),
+            _ => Expression::ident(member),
+        };
+        let record_expr = Expression::new(ExprKind::Object(
+            members
+                .iter()
+                .map(|member| ObjectProperty::KeyValue {
+                    key: Expression::string(member),
+                    value: value_for(member),
+                })
+                .collect(),
+        ));
+
+        return Ok(StmtKind::RecordTransfer {
+            file: Expression::ident(&target),
+            record_type: TypeRef::named(cobol_record_layout_type(&record_name)),
+            direction: RecordDirection::Write,
+            at: RecordAddress::Next,
+            record: Some(record_expr),
+            status: binding.status_var.as_deref().map(Expression::ident),
+        });
+    }
+
     let record_fields = binding
         .as_ref()
         .map(|binding| binding.record_fields.clone())
@@ -9798,6 +10278,38 @@ fn walk_rewrite_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
         .file_binding_for_record(&record_name)
         .cloned()
         .or_else(|| ctx.file_binding(&record_name).cloned());
+
+    // REWRITE replaces the record the last READ handed over — `Current`, not
+    // `Next`. Same transfer as WRITE otherwise; the only difference between
+    // the two verbs is where they land.
+    if let Some(binding) = binding.as_ref().filter(|b| ctx.file_uses_record_transfer(b)) {
+        let target = ctx
+            .file_name_for_record(&record_name)
+            .unwrap_or_else(|| record_name.clone());
+        let members = ctx.record_member_names(&record_name);
+        let value_for = |member: &String| match (&source_expr, members.len()) {
+            (Some(source), 1) => source.clone(),
+            _ => Expression::ident(member),
+        };
+        let record_expr = Expression::new(ExprKind::Object(
+            members
+                .iter()
+                .map(|member| ObjectProperty::KeyValue {
+                    key: Expression::string(member),
+                    value: value_for(member),
+                })
+                .collect(),
+        ));
+        return Ok(StmtKind::RecordTransfer {
+            file: Expression::ident(&target),
+            record_type: TypeRef::named(cobol_record_layout_type(&record_name)),
+            direction: RecordDirection::Rewrite,
+            at: RecordAddress::Current,
+            record: Some(record_expr),
+            status: binding.status_var.as_deref().map(Expression::ident),
+        });
+    }
+
     let file_number = binding
         .as_ref()
         .map(|binding| Expression::int(binding.file_number as i64))
@@ -10260,6 +10772,7 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                                     modifiers: Modifiers::default(),
                                     with_events: false,
                                     array_bounds: None,
+                                    storage: local_ctx.field_storage(name),
                                 });
                             }
                         }
@@ -10314,6 +10827,7 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                                                 modifiers: Modifiers::default(),
                                                 with_events: false,
                                                 array_bounds: None,
+                                                storage: local_ctx.field_storage(name),
                                             });
                                         }
                                     }

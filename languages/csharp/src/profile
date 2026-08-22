@@ -13,7 +13,6 @@ extensions = ["cs"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
-field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
 # namespaceplan.md (dotnet phase): qualified System.* chains resolve through
 # the common resolver over the dotnet.* tree; legacy cascade is the fallback

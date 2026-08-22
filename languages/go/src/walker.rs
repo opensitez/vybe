@@ -346,7 +346,7 @@ func main() {}
 
 /// Go-source runtime prelude for the `time` package. `time.Time` is modeled as
 /// `{sec, nsec, loc}` — the wasi wall-clock datetime shape — for nanosecond
-/// precision. `Now()` reads `wasi:clocks/wall-clock`; calendar breakdown uses
+/// precision. `Now()` reads `wasi:clocks/system-clock`; calendar breakdown uses
 /// `ecma:date` (both reached via the `__go_date_*` / `__go_wall_now` builtins).
 const GO_TIME_PRELUDE: &str = r#"package main
 
@@ -9445,6 +9445,7 @@ fn normalize_go_statement(
                         modifiers,
                         with_events,
                         array_bounds,
+                        storage,
                     } => ClassMember::Field {
                         name: name.clone(),
                         type_hint: type_hint.clone(),
@@ -9459,6 +9460,11 @@ fn normalize_go_statement(
                                 .map(|expr| normalize_go_expr(expr, env, signatures, state))
                                 .collect()
                         }),
+                        // Carried, never re-defaulted — same rule as the
+                        // `semantics` field below. This arm REBUILDS the
+                        // member, so `None` here would drop a declared width
+                        // the walker had already established.
+                        storage: *storage,
                     },
                     _ => member.clone(),
                 })
@@ -19314,6 +19320,17 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         params.push(go_hidden_named_result_param(param));
     }
 
+    // `goto`/labels → structured control flow via the shared relooper. Without
+    // this the label parsed, `StmtKind::GoTo` was produced, and NOTHING
+    // consumed it: the jump silently did nothing and execution fell through.
+    // No-op when the body has no labels.
+    let body_stmts = vybe_compiler::primitives::control_flow::lower_gotos(
+        body_stmts,
+        "__go_goto_pc",
+        "__go_goto_dispatch",
+        false, // Go labels are case-sensitive
+    );
+
     Ok(Statement::new(StmtKind::FunctionDecl {
         name,
         params,
@@ -20019,6 +20036,7 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                     modifiers,
                     with_events: false,
                     array_bounds: field_type.as_deref().and_then(go_fixed_array_bounds_exprs),
+                    storage: None,
                 });
             }
         }

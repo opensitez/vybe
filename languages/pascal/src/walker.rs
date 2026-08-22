@@ -25686,6 +25686,7 @@ fn synthesize_exception_class() -> Statement {
                     modifiers: Modifiers::default(),
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 },
                 ClassMember::Field {
                     name: "HelpContext".into(),
@@ -25697,6 +25698,7 @@ fn synthesize_exception_class() -> Statement {
                     modifiers: Modifiers::default(),
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 },
                 ClassMember::Constructor {
                     name: None,
@@ -36314,7 +36316,15 @@ fn lower_pascal_gotos_in_body(body: &mut Vec<Statement>) {
     for stmt in body.iter_mut() {
         lower_pascal_gotos_in_stmt(stmt);
     }
-    *body = lower_pascal_goto_block(std::mem::take(body));
+    // `fold_labels: true` because pascal declares `case_sensitive = false` —
+    // `goto Done` reaches `done:`, the same folding its locals get from
+    // `Scope::fold_case`.
+    *body = vybe_compiler::primitives::control_flow::lower_gotos(
+        std::mem::take(body),
+        "__pascal_goto_pc",
+        "__pascal_goto_dispatch",
+        true,
+    );
 }
 
 fn lower_pascal_gotos_in_stmt(stmt: &mut Statement) {
@@ -36408,212 +36418,8 @@ fn lower_pascal_gotos_in_member(member: &mut ClassMember) {
     }
 }
 
-fn lower_pascal_goto_block(body: Vec<Statement>) -> Vec<Statement> {
-    let mut label_to_block = std::collections::HashMap::new();
-    let mut blocks: Vec<Vec<Statement>> = vec![Vec::new()];
-
-    for stmt in body {
-        if let StmtKind::Label(name) = stmt.kind {
-            let idx = blocks.len() as i64;
-            label_to_block.insert(name.to_lowercase(), idx);
-            blocks.push(Vec::new());
-        } else if let Some(block) = blocks.last_mut() {
-            block.push(stmt);
-        }
-    }
-
-    if label_to_block.is_empty() {
-        return blocks.into_iter().next().unwrap_or_default();
-    }
-
-    let mut prelude = Vec::new();
-    if let Some(first) = blocks.first_mut() {
-        while first
-            .first()
-            .map(is_pascal_goto_prelude_stmt)
-            .unwrap_or(false)
-        {
-            prelude.push(first.remove(0));
-        }
-    }
-
-    let dispatch_label = "__pascal_goto_dispatch".to_string();
-    let pc_name = "__pascal_goto_pc".to_string();
-    let total_blocks = blocks.len();
-    let mut cases = Vec::new();
-
-    for (idx, block) in blocks.into_iter().enumerate() {
-        let next_pc = if idx + 1 < total_blocks {
-            pascal_int((idx + 1) as i64)
-        } else {
-            pascal_int(-1)
-        };
-        let mut case_body = vec![pascal_assign_stmt(&pc_name, next_pc)];
-        case_body.extend(rewrite_pascal_gotos_in_stmts(
-            block,
-            &label_to_block,
-            &pc_name,
-            &dispatch_label,
-        ));
-        case_body.push(Statement::new(StmtKind::Break(BreakTarget::Implicit)));
-        cases.push(SwitchCase {
-            conditions: vec![CaseCondition::Value(pascal_int(idx as i64))],
-            body: case_body,
-        });
-    }
-
-    let while_body = vec![
-        Statement::new(StmtKind::Switch {
-            expr: Expression::ident(&pc_name),
-            cases,
-            default: Some(vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))]),
-        }),
-        Statement::new(StmtKind::If {
-            cond: Expression::new(ExprKind::Binary {
-                op: BinOp::Lt,
-                left: Box::new(Expression::ident(&pc_name)),
-                right: Box::new(pascal_int(0)),
-            }),
-            then_body: vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))],
-            elifs: Vec::new(),
-            else_body: None,
-        }),
-    ];
-
-    prelude.push(Statement::new(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(pc_name.clone()),
-            type_hint: Some("Integer".to_string().into()),
-            init: Some(pascal_int(0)),
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Dim,
-    }));
-    prelude.push(Statement::new(StmtKind::Labeled {
-        label: dispatch_label,
-        body: Box::new(Statement::new(StmtKind::While {
-            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
-            body: while_body,
-            else_body: None,
-        })),
-    }));
-    prelude
-}
-
-fn is_pascal_goto_prelude_stmt(stmt: &Statement) -> bool {
-    matches!(
-        stmt.kind,
-        StmtKind::VarDecl { .. }
-            | StmtKind::FunctionDecl { .. }
-            | StmtKind::ClassDecl { .. }
-            | StmtKind::StructDecl { .. }
-            | StmtKind::ModuleDecl { .. }
-    )
-}
-
-fn rewrite_pascal_gotos_in_stmts(
-    stmts: Vec<Statement>,
-    label_to_block: &std::collections::HashMap<String, i64>,
-    pc_name: &str,
-    dispatch_label: &str,
-) -> Vec<Statement> {
-    stmts
-        .into_iter()
-        .flat_map(|stmt| {
-            rewrite_pascal_gotos_in_stmt(stmt, label_to_block, pc_name, dispatch_label)
-        })
-        .collect()
-}
-
-fn rewrite_pascal_gotos_in_stmt(
-    stmt: Statement,
-    label_to_block: &std::collections::HashMap<String, i64>,
-    pc_name: &str,
-    dispatch_label: &str,
-) -> Vec<Statement> {
-    match stmt.kind {
-        StmtKind::GoTo(target) => label_to_block
-            .get(&target.to_lowercase())
-            .map(|idx| {
-                vec![
-                    pascal_assign_stmt(pc_name, pascal_int(*idx)),
-                    Statement::new(StmtKind::Continue(ContinueTarget::Label(
-                        dispatch_label.to_string(),
-                    ))),
-                ]
-            })
-            .unwrap_or_default(),
-        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(
-            rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-        ))],
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body,
-        } => vec![Statement::new(StmtKind::If {
-            cond,
-            then_body: rewrite_pascal_gotos_in_stmts(
-                then_body,
-                label_to_block,
-                pc_name,
-                dispatch_label,
-            ),
-            elifs: elifs
-                .into_iter()
-                .map(|(cond, body)| {
-                    (
-                        cond,
-                        rewrite_pascal_gotos_in_stmts(
-                            body,
-                            label_to_block,
-                            pc_name,
-                            dispatch_label,
-                        ),
-                    )
-                })
-                .collect(),
-            else_body: else_body.map(|body| {
-                rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
-            }),
-        })],
-        StmtKind::While {
-            cond,
-            body,
-            else_body,
-        } => vec![Statement::new(StmtKind::While {
-            cond,
-            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-            else_body: else_body.map(|body| {
-                rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
-            }),
-        })],
-        StmtKind::For {
-            init,
-            cond,
-            update,
-            body,
-        } => vec![Statement::new(StmtKind::For {
-            init,
-            cond,
-            update,
-            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-        })],
-        other => vec![Statement::new(other)],
-    }
-}
-
 fn pascal_int(value: i64) -> Expression {
     Expression::new(ExprKind::Lit(Literal::Int(value)))
-}
-
-fn pascal_assign_stmt(name: &str, value: Expression) -> Statement {
-    Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(name)],
-        value,
-        by_ref: false,
-    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -37472,6 +37278,7 @@ fn walk_field_decl_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: array_bounds.clone(),
+            storage: None,
         })
         .collect())
 }
@@ -37488,6 +37295,7 @@ fn variant_field_member(name: String, type_hint: Option<String>) -> ClassMember 
         modifiers,
         with_events: false,
         array_bounds: None,
+        storage: None,
     }
 }
 
@@ -38905,6 +38713,7 @@ fn walk_class_var_decl_impl(pair: Pair<Rule>) -> Result<Statement, String> {
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             }],
             modifiers: ClassModifiers::default(),
             decorators: Vec::new(),

@@ -145,8 +145,8 @@ uses_common_resolver = true
 "String.fromCharCode" = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 
 # Line-read primitive backing the libc stdin token reader (scanf/getchar/fgets).
-# intrinsic:readline → emitter::io::emit_input → wasi:cli/stdin.get-stdin +
-# wasi:io/streams.blocking-read. WASM/WASI under the hood; the libc surface is
+# intrinsic:readline → emitter::io::emit_input → wasi:cli/stdin.read-via-stream
+# + canon stream.read. WASM/WASI under the hood; the libc surface is
 # shared across languages via platforms/libc/stdio_adapter.rs.
 "__libc_readline" = { emit = "intrinsic:readline", min_args = 0, max_args = 0 }
 

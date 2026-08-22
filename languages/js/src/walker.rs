@@ -2901,6 +2901,7 @@ fn walk_class_member(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<ClassMember
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             })
         }
         Rule::accessor_property => {
@@ -2926,6 +2927,7 @@ fn walk_class_member(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<ClassMember
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             })
         }
         other => Err(format!("Unexpected class member: {:?}", other)),

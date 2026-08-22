@@ -234,10 +234,10 @@ materialize_bool_results = true
 "time.Now"        = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
 
 # ── time primitives exposed to the Go time prelude ───────────────────────────
-# time.Time is modeled as {seconds, nanoseconds, loc} (the wasi wall-clock
-# datetime shape). Now() uses wasi:clocks/wall-clock; calendar breakdown uses
+# time.Time is modeled as {seconds, nanoseconds, loc} (the wasi system-clock
+# instant shape). Now() uses wasi:clocks/system-clock; calendar breakdown uses
 # ecma:date. These builtins let the prelude reach those host surfaces.
-"__go_wall_now"   = { emit = "host:wasi:clocks/wall-clock:now",  min_args = 0, max_args = 0 }
+"__go_wall_now"   = { emit = "host:wasi:clocks/system-clock:now", min_args = 0, max_args = 0 }
 "__go_date_utc"   = { emit = "host:ecma:date:UTC",              min_args = 6, max_args = 7 }
 "__go_date_new"   = { emit = "host:ecma:date:new",              min_args = 1, max_args = 1 }
 "__go_date_year"  = { emit = "host:ecma:date:getUTCFullYear",   min_args = 1, max_args = 1 }
@@ -262,10 +262,10 @@ materialize_bool_results = true
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
-"os.ReadFile"     = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
-"os.WriteFile"    = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
-"os.Mkdir"        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 2 }
-"os.Remove"       = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+"os.ReadFile"     = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+"os.WriteFile"    = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+"os.Mkdir"        = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 2 }
+"os.Remove"       = { emit = "common:filesystem.remove", min_args = 1, max_args = 1 }
 
 # ── Environment ──────────────────────────────────────────────────────────────
 

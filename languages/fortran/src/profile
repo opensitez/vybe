@@ -93,8 +93,8 @@ __fortran_to_number = { emit = "host:ecma:number:Number",  min_args = 1, max_arg
 # bytes. TRANSFER is `UnaryOp::Reinterpret` now — an AST node, not a row.
 
 # `INQUIRE(file=…)` — the same `wasi:filesystem` surface python and php bind.
-__fortran_file_exists = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
-__fortran_file_size   = { emit = "host:wasi:filesystem:fileSize", min_args = 1, max_args = 1 }
+__fortran_file_exists = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+__fortran_file_size   = { emit = "common:filesystem.file_size", min_args = 1, max_args = 1 }
 # One FIELD of a formatted internal read: the characters a descriptor covers.
 __fortran_substring   = { emit = "host:ecma:string:substring",    min_args = 2, max_args = 3 }
 

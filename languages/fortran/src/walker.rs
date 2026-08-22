@@ -4637,10 +4637,11 @@ fn walk_select(pair: Pair<Rule>) -> Result<Statement, String> {
                         if cv.as_rule() != Rule::case_value {
                             continue;
                         }
+                        let cv_text = cv.as_str();
+                        let cv_start = cv.as_span().start();
                         let cv_children: Vec<Pair<Rule>> =
-                            cv.into_inner().filter(|p| meaningful(p)).collect();
+                            cv.clone().into_inner().filter(|p| meaningful(p)).collect();
                         // Range: expr? ":" expr?  — two expressions separated by ":"
-                        // Detect range by checking if the raw text contains ":"
                         // cv children for `e1:e2` are two expr pairs; for `e1` just one.
                         let cv_exprs: Vec<Pair<Rule>> = cv_children
                             .into_iter()
@@ -4653,7 +4654,35 @@ fn walk_select(pair: Pair<Rule>) -> Result<Statement, String> {
                             let to = walk_expr(cv_exprs[1].clone())?;
                             conds.push(CaseCondition::Range { from, to });
                         } else if let Some(first) = cv_exprs.into_iter().next() {
-                            conds.push(CaseCondition::Value(walk_expr(first)?));
+                            // One expression can still be a RANGE: `case (:hi)`
+                            // and `case (lo:)` are open-ended, and an open end
+                            // is a one-sided comparison against the bound that
+                            // IS written. The ":" is a bare literal in the
+                            // grammar, so it has no child pair — locate it by
+                            // position, and only OUTSIDE the expression's own
+                            // span, or `case (':')` would read as a range.
+                            let expr_start = first.as_span().start() - cv_start;
+                            let expr_end = first.as_span().end() - cv_start;
+                            let colon = cv_text
+                                .char_indices()
+                                .find(|(i, ch)| {
+                                    *ch == ':' && (*i < expr_start || *i >= expr_end)
+                                })
+                                .map(|(i, _)| i);
+                            let value = walk_expr(first)?;
+                            conds.push(match colon {
+                                // `case (:hi)` — every value up to and including hi.
+                                Some(at) if at < expr_start => CaseCondition::Comparison {
+                                    op: ComparisonOp::LtEq,
+                                    expr: value,
+                                },
+                                // `case (lo:)` — lo and everything above it.
+                                Some(_) => CaseCondition::Comparison {
+                                    op: ComparisonOp::GtEq,
+                                    expr: value,
+                                },
+                                None => CaseCondition::Value(value),
+                            });
                         }
                     }
                 }
@@ -4866,8 +4895,145 @@ fn build_fortran_select_type_condition(
 fn lower_fortran_select_type_specificity(body: &mut Vec<Statement>) {
     let mut parents = HashMap::new();
     collect_fortran_type_parents(body, &mut parents);
-    rewrite_fortran_select_type_chains(body, &parents);
+    rewrite_fortran_select_type_chains(body, &parents, None);
+    strip_fortran_alloc_type_markers(body);
 }
+
+/// Marks the intrinsic dynamic type a typed `allocate` gave a variable.
+/// `__fortran_alloc_type:val:integer`.
+const FORTRAN_ALLOC_TYPE_MARKER: &str = "__fortran_alloc_type:";
+
+/// The intrinsic dynamic type of every unlimited polymorphic that a typed
+/// `allocate` named — the ONLY record of it, since an `integer` and a `real`
+/// are the same f64 once the program is running.
+///
+/// A variable allocated twice with DIFFERENT types is dropped rather than
+/// guessed at: its dynamic type genuinely depends on which allocation ran, and
+/// answering from one of them would be a coin flip dressed as a fact.
+///
+/// ⛔ ONE SCOPE. It walks the nested bodies of `if`/`do` — an `allocate` under a
+/// branch is the same scope — but stops at a procedure, because a `val`
+/// allocated in one subroutine says nothing about a `val` in the next, and a
+/// tree-wide map would let one fold a `select type` it never allocated.
+fn collect_fortran_alloc_types(body: &[Statement], out: &mut HashMap<String, Option<String>>) {
+    for statement in body {
+        if let StmtKind::Labeled { label, .. } = &statement.kind {
+            if let Some(rest) = label.strip_prefix(FORTRAN_ALLOC_TYPE_MARKER) {
+                if let Some((var, type_name)) = rest.split_once(':') {
+                    out.entry(var.to_string())
+                        .and_modify(|seen| {
+                            if seen.as_deref() != Some(type_name) {
+                                *seen = None;
+                            }
+                        })
+                        .or_insert_with(|| Some(type_name.to_string()));
+                }
+            }
+        }
+        if matches!(
+            statement.kind,
+            StmtKind::FunctionDecl { .. }
+                | StmtKind::ModuleDecl { .. }
+                | StmtKind::ClassDecl { .. }
+                | StmtKind::StructDecl { .. }
+        ) {
+            continue;
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_alloc_types(stmts, out)
+        });
+    }
+}
+
+/// The markers are spent once the chains have read them. They become an empty
+/// block rather than being removed, so this can run over the `&mut [Statement]`
+/// slices the nested-body traversal hands out.
+fn strip_fortran_alloc_type_markers(body: &mut [Statement]) {
+    for statement in body.iter_mut() {
+        strip_fortran_alloc_type_markers_in_statement(statement);
+    }
+}
+
+fn strip_fortran_alloc_type_markers_in_statement(statement: &mut Statement) {
+    if let StmtKind::Labeled { label, .. } = &statement.kind {
+        if label.starts_with(FORTRAN_ALLOC_TYPE_MARKER) {
+            *statement = Statement::new(StmtKind::Block(Vec::new()));
+            return;
+        }
+    }
+    match &mut statement.kind {
+        StmtKind::FunctionDecl { body, .. } => strip_fortran_alloc_type_markers(body),
+        StmtKind::ModuleDecl { members, .. }
+        | StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. } => {
+            for member in members.iter_mut() {
+                if let ClassMember::Method(inner) | ClassMember::NestedType(inner) = member {
+                    strip_fortran_alloc_type_markers_in_statement(inner);
+                }
+            }
+        }
+        _ => {}
+    }
+    for_each_fortran_nested_body_mut(&mut statement.kind, &mut |stmts| {
+        strip_fortran_alloc_type_markers(stmts)
+    });
+}
+
+/// Resolve a `select type` chain whose selector has a KNOWN intrinsic dynamic
+/// type: keep the branch that names it and drop the rest.
+///
+/// This is not an optimisation — it is the only correct answer available. The
+/// runtime test behind `type is (integer)` asks whether the value is a number,
+/// and a `real` is one too, so every intrinsic branch claims every intrinsic
+/// value and the first one written always wins.
+fn fold_fortran_select_type_by_alloc(
+    chain: &Statement,
+    alloc_types: &HashMap<String, Option<String>>,
+) -> Option<Statement> {
+    let StmtKind::If {
+        cond,
+        then_body,
+        elifs,
+        else_body,
+    } = &chain.kind
+    else {
+        return None;
+    };
+    let selector_type = |expr: &Expression| -> Option<String> {
+        let ExprKind::IsType { expr: selector, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Ident(name) = &selector.kind else {
+            return None;
+        };
+        alloc_types.get(&name.to_ascii_lowercase())?.clone()
+    };
+    let dynamic = selector_type(cond)?;
+    let branch_matches = |expr: &Expression| -> bool {
+        let ExprKind::IsType { type_name, .. } = &expr.kind else {
+            return false;
+        };
+        type_name
+            .strip_prefix(FORTRAN_EXACT_TYPE_PREFIX)
+            .unwrap_or(type_name)
+            .eq_ignore_ascii_case(&dynamic)
+    };
+    if branch_matches(cond) {
+        return Some(Statement::new(StmtKind::Block(then_body.clone())));
+    }
+    for (elif_cond, elif_body) in elifs {
+        // ⛔ Every arm has to be one of ours. A chain that mixes in a condition
+        // this pass cannot read is not a chain it may collapse.
+        selector_type(elif_cond)?;
+        if branch_matches(elif_cond) {
+            return Some(Statement::new(StmtKind::Block(elif_body.clone())));
+        }
+    }
+    Some(Statement::new(StmtKind::Block(
+        else_body.clone().unwrap_or_default(),
+    )))
+}
+
 
 fn collect_fortran_type_parents(body: &[Statement], out: &mut HashMap<String, Vec<String>>) {
     for statement in body {
@@ -4918,7 +5084,21 @@ fn fortran_type_extends(
 fn rewrite_fortran_select_type_chains(
     body: &mut [Statement],
     parents: &HashMap<String, Vec<String>>,
+    scope_alloc_types: Option<&HashMap<String, Option<String>>>,
 ) {
+    // The enclosing scope's typed allocations, or this body's own when it IS
+    // the scope. A procedure starts a fresh one — see
+    // `collect_fortran_alloc_types`.
+    let owned_alloc_types = scope_alloc_types.is_none().then(|| {
+        let mut collected = HashMap::new();
+        collect_fortran_alloc_types(body, &mut collected);
+        collected
+    });
+    let alloc_types = scope_alloc_types.unwrap_or_else(|| {
+        owned_alloc_types
+            .as_ref()
+            .expect("collected when no scope was inherited")
+    });
     for statement in body.iter_mut() {
         // ⛔ Procedure and class bodies too: the general traversal skips them
         // (a GOTO cannot leave its procedure), but a `select type` inside one
@@ -4926,21 +5106,25 @@ fn rewrite_fortran_select_type_chains(
         // can match — the chain would then fall through every branch.
         match &mut statement.kind {
             StmtKind::FunctionDecl { body, .. } => {
-                rewrite_fortran_select_type_chains(body, parents)
+                rewrite_fortran_select_type_chains(body, parents, None)
             }
             StmtKind::ModuleDecl { members, .. }
             | StmtKind::ClassDecl { members, .. }
             | StmtKind::StructDecl { members, .. } => {
                 for member in members.iter_mut() {
                     if let ClassMember::Method(inner) | ClassMember::NestedType(inner) = member {
-                        rewrite_fortran_select_type_chains(std::slice::from_mut(inner), parents);
+                        rewrite_fortran_select_type_chains(
+                            std::slice::from_mut(inner),
+                            parents,
+                            None,
+                        );
                     }
                 }
             }
             _ => {}
         }
         for_each_fortran_nested_body_mut(&mut statement.kind, &mut |stmts| {
-            rewrite_fortran_select_type_chains(stmts, parents)
+            rewrite_fortran_select_type_chains(stmts, parents, Some(alloc_types))
         });
         let StmtKind::Labeled { label, body: inner } = &mut statement.kind else {
             continue;
@@ -4949,6 +5133,12 @@ fn rewrite_fortran_select_type_chains(
             continue;
         }
         let mut chain = (**inner).clone();
+        // A known intrinsic dynamic type answers the chain outright; the
+        // specificity rules are for the hierarchy questions that remain.
+        if let Some(folded) = fold_fortran_select_type_by_alloc(&chain, alloc_types) {
+            *statement = folded;
+            continue;
+        }
         apply_fortran_select_type_rules(&mut chain, parents);
         *statement = chain;
     }
@@ -6406,6 +6596,7 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
     let mut mold = None;
     let mut stat = None;
     let mut typed_constructions = Vec::new();
+    let mut dynamic_type_markers = Vec::new();
     for part in split_fortran_top_level_commas(inner) {
         if let Some((name, value_text)) = split_fortran_top_level_equals(part) {
             if name.eq_ignore_ascii_case("source") {
@@ -6428,13 +6619,37 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
         // ⛔ Only a DERIVED type names a constructor. `allocate(character(len=5)
         // :: s)` carries a type spec too, and treating that as a class emitted
         // `new character(len=5(` and dropped the allocation outright.
-        let (part, typed_as) = match split_fortran_alloc_type_spec(part) {
-            Some((type_spec, rest)) => (rest, fortran_derived_type_spec_name(type_spec)),
-            None => (part, None),
+        let (part, typed_as, intrinsic_spec) = match split_fortran_alloc_type_spec(part) {
+            Some((type_spec, rest)) => {
+                let derived = fortran_derived_type_spec_name(type_spec);
+                // An INTRINSIC spec names the dynamic type just as surely as a
+                // derived one does; it just has no constructor to call. Kept so
+                // `select type` can answer for it — see the marker below.
+                let intrinsic = derived.is_none().then(|| type_spec.to_string());
+                (rest, derived, intrinsic)
+            }
+            None => (part, None, None),
         };
         let mut origins = Vec::new();
         let target = parse_fortran_alloc_target_text(part, &mut origins)?;
         origin_statements.extend(fortran_allocate_origin_statement(&target, &origins));
+        if let Some(spec) = intrinsic_spec {
+            if let ExprKind::Ident(name) = &target.kind {
+                // `allocate(integer :: val)` is the ONLY thing that gives an
+                // unlimited polymorphic an intrinsic dynamic type, and the
+                // runtime cannot recover it: an integer and a real are the same
+                // f64 by the time `select type` asks. So the fact is carried
+                // from here, where it is written, to the pass that needs it.
+                dynamic_type_markers.push(Statement::new(StmtKind::Labeled {
+                    label: format!(
+                        "{FORTRAN_ALLOC_TYPE_MARKER}{}:{}",
+                        name.to_ascii_lowercase(),
+                        fortran_canonical_select_type_name(&spec)
+                    ),
+                    body: Box::new(Statement::new(StmtKind::Block(Vec::new()))),
+                }));
+            }
+        }
         if let Some(type_name) = typed_as {
             // Constructing it IS the allocation: a derived type is built by
             // naming it, and that is what gives the object its dynamic type.
@@ -6466,6 +6681,7 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
         && stat.is_none()
         && origin_statements.is_empty()
         && typed_constructions.is_empty()
+        && dynamic_type_markers.is_empty()
     {
         return Ok(allocate_call);
     }
@@ -6475,6 +6691,7 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
     } else {
         vec![allocate_call]
     };
+    statements.append(&mut dynamic_type_markers);
     statements.append(&mut typed_constructions);
     statements.append(&mut origin_statements);
     if let Some(source) = source {
@@ -6947,6 +7164,7 @@ fn walk_type(pair: Pair<Rule>) -> Result<Statement, String> {
                                         modifiers: Modifiers::default(),
                                         with_events: false,
                                         array_bounds: d.array_bounds.clone(),
+                                        storage: None,
                                     });
                                 }
                             }
@@ -7611,6 +7829,26 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             if nm.eq_ignore_ascii_case("kind") && arg_texts.len() == 1 {
                 if let Some(kind) = fortran_literal_kind_from_text(&arg_texts[0]) {
                     return Ok(Expression::int(kind));
+                }
+            }
+            // `out_of_range` reads its MOLD's kind from the literal suffix, so
+            // it has to fold here while `arg_texts` still exists.
+            if nm.eq_ignore_ascii_case("out_of_range") && args.len() >= 2 && arg_texts.len() >= 2 {
+                let round = args
+                    .iter()
+                    .find(|a| {
+                        a.name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("round"))
+                    })
+                    .map(|a| a.value.clone())
+                    .or_else(|| args.get(2).map(|a| a.value.clone()));
+                if let Some(folded) = build_fortran_out_of_range_expr(
+                    args[0].value.clone(),
+                    &arg_texts[1],
+                    round,
+                ) {
+                    return Ok(folded);
                 }
             }
             let callee = Expression::new(ExprKind::Ident(nm));
@@ -12749,15 +12987,19 @@ fn lower_fortran_array_expressions_with_env(
                     let BindingPattern::Ident(name) = &declaration.pattern else {
                         continue;
                     };
+                    // ⛔ A scalar CHARACTER does NOT belong here. This set drives
+                    // the ELEMENTWISE lowerings below — binary, unary and
+                    // intrinsic broadcasting — and a `character(len=4) :: c` is
+                    // one scalar value, not four. Listing it turned `c == 'zz'`
+                    // into a map over the characters, whose non-empty array
+                    // result is TRUTHY: every character comparison written
+                    // against a bare variable answered `.true.`. A character
+                    // ARRAY still arrives through `array_bounds`.
                     if declaration.array_bounds.is_some()
                         || declaration
                             .init
                             .as_ref()
                             .is_some_and(is_array_initializer_expr)
-                        || declaration
-                            .type_hint
-                            .as_deref()
-                            .is_some_and(is_fortran_string_type_hint)
                     {
                         arrays.insert(name.to_ascii_lowercase());
                     }
@@ -14586,6 +14828,78 @@ fn build_fortran_nested_array_intrinsic_call_with_args(
     )
 }
 
+/// `REDUCE(ARRAY, OPERATION [, MASK] [, IDENTITY])` — F2018 16.9.161.
+///
+/// OPERATION is a PURE FUNCTION of two arguments, not an operator: `operator(+)`
+/// is a generic-spec and cannot be an actual argument at all. The fold is the
+/// ordinary `reduce` the array reductions already use, with the user's function
+/// as the reducer body.
+///
+/// `MASK` selects first, which is exactly `PACK` — the shared ranked-array node
+/// rather than a second filtering path. Without a mask a ranked array is
+/// FLATTENED, because a `REDUCE` with no `DIM` folds every element whatever the
+/// rank, and reducing a rank-2 nest would otherwise hand the function ROWS.
+fn build_fortran_reduce_call(
+    array: Expression,
+    function: &str,
+    mask: Option<Expression>,
+    identity: Option<Expression>,
+) -> Expression {
+    let acc_name = "__fortran_reduce_acc";
+    let item_name = "__fortran_reduce_item";
+    let source = match mask {
+        Some(mask) => Expression::new(ExprKind::ArrayTransform {
+            op: ArrayTransformOp::PackMask,
+            args: vec![array, mask],
+            order: ArrayTraversalOrder::ColumnMajor,
+        }),
+        None => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(array),
+                field: "flat".to_string(),
+                null_safe: false,
+            })),
+            args: Vec::new(),
+            optional: false,
+        }),
+    };
+    let param = |name: &str| Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let body = fortran_call(
+        function,
+        vec![
+            Expression::ident(acc_name),
+            Expression::ident(item_name),
+        ],
+    );
+    let mut args = vec![Argument::positional(Expression::new(ExprKind::Lambda {
+        params: vec![param(acc_name), param(item_name)],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: Vec::new(),
+    }))];
+    if let Some(identity) = identity {
+        args.push(Argument::positional(identity));
+    }
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "reduce".to_string(),
+            null_safe: false,
+        })),
+        args,
+        optional: false,
+    })
+}
+
 fn build_fortran_array_reduction(kind: &str, array_expr: Expression, depth: usize) -> Expression {
     let acc_name = format!("__fortran_{}_acc_{depth}", kind);
     let item_name = format!("__fortran_{}_item_{depth}", kind);
@@ -14723,7 +15037,16 @@ fn is_known_fortran_array_expr(
     match &expr.kind {
         ExprKind::Ident(name) => arrays.contains(&name.to_ascii_lowercase()),
         ExprKind::Member { field, .. } => array_fields.contains(&field.to_ascii_lowercase()),
-        ExprKind::Array(_) | ExprKind::Slice { .. } | ExprKind::ArrayTransform { .. } => true,
+        ExprKind::Array(_) | ExprKind::Slice { .. } => true,
+        // The NODE states where its shape comes from; this only has to ask.
+        // `PACK` yields a vector whatever went in (`None`); the others wear the
+        // shape of one argument, so a `MERGE` under a scalar mask is a SCALAR.
+        ExprKind::ArrayTransform { op, args, .. } => match op.shape_source_arg() {
+            None => true,
+            Some(index) => args.get(index).is_some_and(|arg| {
+                is_known_fortran_array_expr(arg, arrays, array_fields, array_functions)
+            }),
+        },
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => {
                 matches!(name.to_ascii_lowercase().as_str(), "array")
@@ -15674,7 +15997,11 @@ fn lower_fortran_transfer_markers_in_statement(
                             lower_fortran_transfer_markers_in_expr(from, type_env);
                             lower_fortran_transfer_markers_in_expr(to, type_env);
                         }
-                        _ => {}
+                        // An open-ended range carries its one written bound
+                        // here — skipping it would leave a marker unlowered.
+                        CaseCondition::Comparison { expr, .. } => {
+                            lower_fortran_transfer_markers_in_expr(expr, type_env)
+                        }
                     }
                 }
             }
@@ -15720,6 +16047,16 @@ fn lower_fortran_transfer_markers_in_expr(
     type_env: &HashMap<String, String>,
 ) {
     match &mut expr.kind {
+        // `MERGE`/`PACK`/`UNPACK`/`RESHAPE` are ArrayTransform NODES, and
+        // their arguments are ORDINARY expressions. Without an arm here the
+        // pass walks straight past them — which is how `nearest(...)` inside
+        // a `merge(...)` stopped being folded the moment MERGE became a node
+        // instead of a call.
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args.iter_mut() {
+                lower_fortran_transfer_markers_in_expr(arg, type_env);
+            }
+        }
         ExprKind::Call { callee, args, .. } => {
             lower_fortran_transfer_markers_in_expr(callee, type_env);
             for arg in args.iter_mut() {
@@ -16275,6 +16612,16 @@ fn rewrite_fortran_complex_expressions_in_expr(
         ExprKind::Index { object, index, .. } => {
             rewrite_fortran_complex_expressions_in_expr(object, type_env);
             rewrite_fortran_complex_expressions_in_expr(index, type_env);
+        }
+        // `MERGE`/`PACK`/`UNPACK`/`RESHAPE` are ArrayTransform NODES, and
+        // their arguments are ORDINARY expressions. Without an arm here the
+        // pass walks straight past them — which is how `nearest(...)` inside
+        // a `merge(...)` stopped being folded the moment MERGE became a node
+        // instead of a call.
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_fortran_complex_expressions_in_expr(arg, type_env);
+            }
         }
         ExprKind::Call { callee, args, .. } => {
             rewrite_fortran_complex_expressions_in_expr(callee, type_env);
@@ -16904,6 +17251,25 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         // return 0/1 there) and `ordered` fixes an evaluation order that is
         // unobservable for associative `+`/`*` — both drop out.
         "reduce" if positional_args.len() >= 2 => {
+            // The STANDARD form: OPERATION is a pure function's NAME.
+            if let ExprKind::Ident(function) = &positional_args[1].kind {
+                let named = |key: &str| {
+                    args.iter()
+                        .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+                        .map(|a| a.value.clone())
+                };
+                // `DIM` reduces along one axis and needs the ranked machinery;
+                // leave it alone rather than answer it wrongly.
+                if named("dim").is_some() {
+                    return None;
+                }
+                return Some(build_fortran_reduce_call(
+                    positional_args[0].clone(),
+                    function,
+                    named("mask"),
+                    named("identity"),
+                ));
+            }
             let ExprKind::Lit(Literal::Str(op)) = &positional_args[1].kind else {
                 return None;
             };
@@ -17469,11 +17835,6 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             ),
             args[1].value.clone(),
         )),
-        // Arrays here are contiguous by construction — nothing produces a
-        // strided view that survives as one.
-        "is_contiguous" if args.len() == 1 => {
-            Some(Expression::new(ExprKind::Lit(Literal::Bool(true))))
-        }
         // ── Reductions with `dim=` — ONE lowering for the whole family ──────
         //
         // Each is the scalar reduction it already has, mapped over the lanes of
@@ -19059,20 +19420,6 @@ fn build_fortran_spread_dim2_expr(source: Expression, ncopies: Expression) -> Ex
 /// "Did this argument arrive as a whole array, or as one value?" — the question
 /// `merge` has to ask of its mask and of each source.
 ///
-/// It used to be spelled `Array.isArray(x)`, and Fortran is CASE-INSENSITIVE:
-/// `Array` folds to `array`, resolves to nothing, and the test silently
-/// answered false — so `merge` with an array mask always took its scalar branch
-/// and returned the false-source for the whole array. `rank(x) > 0` is no good
-/// either: it is a COMPARISON whose left operand reads as array-ish to the
-/// elementwise lowering, which then maps over a scalar. So it is asked as one
-/// builtin that answers a boolean and nothing else.
-fn fortran_expr_is_array(expr: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__fortran_is_array")),
-        args: vec![Argument::positional(expr)],
-        optional: false,
-    })
-}
 
 /// `MERGE(tsource, fsource, mask)` as the shared ranked-array node.
 ///
@@ -19200,6 +19547,72 @@ fn fortran_real_kind_model(kind: i64) -> (i64, i64, i64, i64) {
 /// `Literal::Float`, so the AST cannot distinguish them. Returns `None` for
 /// anything that is not a literal, leaving the ordinary type-inquiry fold to
 /// answer from the declared type.
+/// `OUT_OF_RANGE(X, MOLD [, ROUND])` — F2018 16.9.146. True when X cannot be
+/// represented in MOLD's type and kind.
+///
+/// MOLD is a value used only for its TYPE AND KIND, so the range comes from the
+/// literal's kind suffix: `0_1` is int8's [-128, 127], `0` is default integer.
+/// That suffix is only readable from the SOURCE TEXT, which is why this folds
+/// where `arg_texts` is still in scope rather than in the intrinsic pass.
+///
+/// A real X is converted before the test — truncated toward zero, or rounded
+/// when ROUND is true. NaN needs its own arm because every comparison against
+/// it is false; ±Infinity needs none, since it fails the bounds test already.
+fn build_fortran_out_of_range_expr(
+    value: Expression,
+    mold_text: &str,
+    round: Option<Expression>,
+) -> Option<Expression> {
+    let lowered = mold_text.trim().to_ascii_lowercase();
+    let kind = fortran_literal_kind_from_text(&lowered).unwrap_or(4);
+    let mold_is_real = lowered.contains('.') || lowered.contains('e') || lowered.contains('d');
+
+    let (lo, hi) = if mold_is_real {
+        match kind {
+            8 => (f64::MIN, f64::MAX),
+            _ => (-(f32::MAX as f64), f32::MAX as f64),
+        }
+    } else {
+        let (l, h) = match kind {
+            1 => (i8::MIN as i64, i8::MAX as i64),
+            2 => (i16::MIN as i64, i16::MAX as i64),
+            8 => (i64::MIN, i64::MAX),
+            _ => (i32::MIN as i64, i32::MAX as i64),
+        };
+        (l as f64, h as f64)
+    };
+
+    // Truncation toward zero is `int`; `nint` rounds. Both are already lowered.
+    let converted = if mold_is_real {
+        value.clone()
+    } else {
+        match round {
+            Some(flag) => fortran_ternary(
+                fortran_expr_is_true(flag),
+                fortran_call("nint", vec![value.clone()]),
+                fortran_call("int", vec![value.clone()]),
+            ),
+            None => fortran_call("int", vec![value.clone()]),
+        }
+    };
+
+    let num = |v: f64| {
+        if v.fract() == 0.0 && v.abs() < 9.0e15 {
+            Expression::int(v as i64)
+        } else {
+            Expression::float(v)
+        }
+    };
+    let is_nan = fortran_bin(BinOp::NotEq, value.clone(), value);
+    let below = fortran_bin(BinOp::Lt, converted.clone(), num(lo));
+    let above = fortran_bin(BinOp::Gt, converted, num(hi));
+    Some(fortran_bin(
+        BinOp::Or,
+        is_nan,
+        fortran_bin(BinOp::Or, below, above),
+    ))
+}
+
 fn fortran_literal_kind_from_text(text: &str) -> Option<i64> {
     let text = text.trim();
     // A complex literal `(1.0, 2.0)` — kind comes from its components, and a
@@ -19490,6 +19903,16 @@ fn fold_fortran_type_inquiry(
 
 fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<String, String>) {
     match &mut expr.kind {
+        // `MERGE`/`PACK`/`UNPACK`/`RESHAPE` are ArrayTransform NODES, and
+        // their arguments are ORDINARY expressions. Without an arm here the
+        // pass walks straight past them — which is how `nearest(...)` inside
+        // a `merge(...)` stopped being folded the moment MERGE became a node
+        // instead of a call.
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args.iter_mut() {
+                lower_fortran_type_inquiry_in_expr(arg, type_env);
+            }
+        }
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
                 lower_fortran_type_inquiry_in_expr(&mut arg.value, type_env);
@@ -19548,6 +19971,44 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                 }
             }
             match lowered.as_str() {
+                // F2003 type inquiry. Both ask about the DYNAMIC type of the
+                // first argument, and for a NON-POLYMORPHIC entity that is its
+                // declared type — which is exactly what this pass carries and
+                // nothing else does.
+                //
+                // `extends_type_of(a, mold)` is "a's type IS mold's type or an
+                // extension of it", which `IsType` without the exact-match
+                // prefix already means, so the hierarchy answer comes from the
+                // machinery `class is` uses. `same_type_as` demands the exact
+                // type, and the exact-match prefix is only ever resolved inside
+                // a marked `select type` chain — so it is answered here from
+                // the two declared names, which is the whole truth when neither
+                // entity is polymorphic.
+                "extends_type_of" | "same_type_as" if positional.len() == 2 => {
+                    let arg_hint = fortran_type_hint_for_expr(&positional[0], type_env);
+                    let mold_hint = fortran_type_hint_for_expr(&positional[1], type_env);
+                    if let Some(mold) = mold_hint {
+                        let mold_name = fortran_canonical_select_type_name(&mold);
+                        if lowered == "extends_type_of" {
+                            *expr = Expression::new(ExprKind::IsType {
+                                expr: Box::new(positional[0].clone()),
+                                type_name: mold_name,
+                            });
+                        } else if let Some(arg) = arg_hint {
+                            // ⛔ Only when NEITHER is polymorphic: a `class(T)`
+                            // entity's declared type is an upper bound, not an
+                            // answer, and folding it would state a fact the
+                            // program has not established.
+                            let polymorphic = arg.trim().to_ascii_lowercase().starts_with("class(")
+                                || mold.trim().to_ascii_lowercase().starts_with("class(");
+                            if !polymorphic {
+                                let same =
+                                    fortran_canonical_select_type_name(&arg) == mold_name;
+                                *expr = Expression::new(ExprKind::Lit(Literal::Bool(same)));
+                            }
+                        }
+                    }
+                }
                 "nearest" if positional.len() == 2 => {
                     let wide = fortran_expr_is_kind8_real(&positional[0], type_env);
                     let up = if wide {
@@ -19881,6 +20342,7 @@ fn to_class_member(stmt: Statement) -> ClassMember {
                         modifiers: Modifiers::default(),
                         with_events: false,
                         array_bounds: d.array_bounds.clone(),
+                        storage: None,
                     };
                 }
             }

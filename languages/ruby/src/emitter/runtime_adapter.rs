@@ -3579,7 +3579,7 @@ fn emit_ruby_dir_entries(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     collections::emit_array_new(chunks, current, 2, line);
     if let Some(path_s) = slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *path_s, line);
-        call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+        vybe_compiler::primitives::fs_path::emit_list_dir(&mut chunks[current], line);
         call_import(chunks, current, "ecma:array", "concat", 2, line);
     }
 }
@@ -3588,7 +3588,7 @@ fn emit_ruby_dir_empty(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let slots = emit_store_args(chunks, current, argc, line);
     if let Some(path_s) = slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *path_s, line);
-        call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+        vybe_compiler::primitives::fs_path::emit_list_dir(&mut chunks[current], line);
         collections::emit_len(chunks, current, line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
         chunks[current].emit_op(Op::I32_EQ, line);
@@ -3602,7 +3602,7 @@ fn emit_ruby_dir_children(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let slots = emit_store_args(chunks, current, argc, line);
     if let Some(path_s) = slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *path_s, line);
-        call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+        vybe_compiler::primitives::fs_path::emit_list_dir(&mut chunks[current], line);
     } else {
         collections::emit_array_new(chunks, current, 0, line);
     }
@@ -3642,7 +3642,7 @@ fn emit_ruby_dir_each(
         emit_ruby_dir_entries(chunks, current, 1, line);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
-        call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+        vybe_compiler::primitives::fs_path::emit_list_dir(&mut chunks[current], line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
     if slots.len() < 2 {
@@ -3828,7 +3828,7 @@ fn emit_ruby_io_readlines(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let item_s = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, *path_s, line);
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    vybe_compiler::primitives::fs_path::emit_read_file(&mut chunks[current], line);
     chunks[current].emit_string_const("\n", line);
     call_import(chunks, current, "ecma:string", "split", 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, lines_s, line);
@@ -15509,7 +15509,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.dir_glob" => {
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_string_const(".", line);
-            call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+            vybe_compiler::primitives::fs_path::emit_list_dir(&mut chunks[current], line);
         }
         "ruby.dir_open" => {
             emit_ruby_dir_open(chunks, current, argc, line);

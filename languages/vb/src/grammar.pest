@@ -109,7 +109,7 @@ array_rank_commas = { ","+ }
 dim_declaration_part = {
     identifier ~
     array_rank_spec* ~
-    (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
+    (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ (from_initializer | with_initializer)?)? ~
     ("=" ~ expression)?
 }
 
@@ -135,13 +135,15 @@ lset_statement = { ^"LSet" ~ l_value_expression ~ "=" ~ expression }
 rset_statement = { ^"RSet" ~ l_value_expression ~ "=" ~ expression }
 mid_assign_statement = { ^"Mid" ~ "(" ~ l_value_expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" ~ "=" ~ expression }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "\\=" | "&=" | "^=" | "<<=" | ">>=" }
-l_value_expression = { (generic_type_reference | identifier) ~ ( ("." ~ member_identifier) | ("(" ~ argument_list? ~ ")") )* }
+l_value_expression = { (generic_type_reference | identifier) ~ ( ("." ~ member_identifier) | ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")") )* }
 compound_assign_statement = { l_value_expression ~ compound_assign_op ~ expression }
 assign_statement = { l_value_expression ~ "=" ~ expression }
 preserve_keyword = { ^"Preserve" }
 redim_statement = { ^"ReDim" ~ preserve_keyword? ~ identifier ~ "(" ~ array_bounds ~ ")" }
 erase_statement = { ^"Erase" ~ identifier }
-raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
+// `RaiseEvent c.Step2()` — the event may be reached through a receiver, so the
+// target is a member access, not only a bare name.
+raiseevent_statement = { ^"RaiseEvent" ~ (member_access | identifier) ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? }
 yield_statement = { ^"Yield" ~ expression? }
 
 // Array support
@@ -277,15 +279,17 @@ using_statement = {
     ~ (!using_end ~ line)*
     ~ using_end
 }
+// The `As`/`=` clause is OPTIONAL: `Using r` acquires an ALREADY-BOUND
+// resource, which real VB allows and which this rule rejected outright.
 using_resource_decl = {
-    identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression)
+    identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression)?
 }
 using_end = { ^"End" ~ ^"Using" }
 
 // Dot-member access for With blocks: .Property = value, .Method(args)
 dot_assign_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ "=" ~ expression }
 dot_compound_assign_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ compound_assign_op ~ expression }
-dot_call_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ "(" ~ argument_list? ~ ")" }
+dot_call_statement = { "." ~ member_identifier ~ ("." ~ member_identifier)* ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 dot_member_access = { "." ~ member_identifier ~ ("." ~ member_identifier)* }
 
 // Try-Catch-Finally
@@ -325,7 +329,11 @@ on_error_statement = {
         | ^"GoTo" ~ (^"0" | "-1" | identifier)
     )
 }
-resume_statement = { ^"Resume" ~ (^"Next" | identifier)? }
+// `next_kw` is BOUNDARY-GUARDED and atomic: as a bare `^"Next"` it matched the
+// first four letters of `Resume NextLine`, leaving `Line` dangling and killing
+// the line. Same shape as `case_else_kw` above.
+next_kw = @{ ^"Next" ~ !(ASCII_ALPHANUMERIC | "_") }
+resume_statement = { ^"Resume" ~ (next_kw | identifier | line_label)? }
 
 // VB6 File I/O statements
 open_statement = { ^"Open" ~ expression ~ ^"For" ~ file_mode ~ ^"As" ~ "#"? ~ expression }
@@ -348,7 +356,7 @@ implements_target = { type_name ~ ("." ~ member_identifier)? }
 implements_member_clause = { ^"Implements" ~ implements_target ~ ("," ~ implements_target)* }
 sub_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ handles_clause? ~ implements_member_clause?
+    sub_modifier* ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ handles_clause? ~ implements_member_clause?
     ~ (sub_expr_body | sub_inline_body | sub_block_body | abstract_body)
 }
 abstract_body = { &(NEWLINE | EOI) }
@@ -359,7 +367,7 @@ sub_end = { ^"End" ~ ^"Sub" }
 
 function_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
+    sub_modifier* ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
     ~ (func_expr_body | func_inline_body | func_block_body | abstract_body)
 }
 func_expr_body = { "=>" ~ expression }
@@ -369,7 +377,7 @@ func_end = { ^"End" ~ ^"Function" }
 
 operator_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Operator" ~ operator_symbol ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
+    sub_modifier* ~ ^"Operator" ~ operator_symbol ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)?
     ~ (operator_inline_body | operator_block_body | abstract_body)
 }
 operator_symbol = { ^"IsTrue" | ^"IsFalse" | ^"CType" | ^"Like" | "<>" | ">=" | "<=" | "=" | "+" | "-" | "*" | "/" | "\\" | ^"Mod" | ^"Not" | ">" | "<" }
@@ -377,11 +385,14 @@ operator_inline_body = { ":" ~ (statement ~ ":")* ~ operator_end }
 operator_block_body = { (NEWLINE | EOI) ~ (!operator_end ~ line)* ~ operator_end }
 operator_end = { ^"End" ~ ^"Operator" }
 
-param_list = { param ~ ("," ~ param)* }
+param_list = { param ~ (nl_skip ~ "," ~ nl_skip ~ param)* }
 pass_type_keyword = { ^"ByVal" | ^"ByRef" }
 optional_keyword = { ^"Optional" }
 paramarray_keyword = { ^"ParamArray" }
-param = { attribute* ~ paramarray_keyword? ~ optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ ("(" ~ ")")? ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+// `ParamArray` appears on BOTH sides of `ByVal` because real VB writes
+// `ByVal ParamArray items() As Integer`, and the rank spec takes commas:
+// `Sub Mutate(arr(,) As Integer)` declares a 2-D array parameter.
+param = { attribute* ~ paramarray_keyword? ~ optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ paramarray_keyword? ~ identifier ~ ("(" ~ ","* ~ ")")? ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
@@ -437,10 +448,10 @@ interface_decl = {
 }
 interface_end = { ^"End" ~ ^"Interface" }
 interface_member_modifier = _{ default_keyword | ^"Shadows" | ^"ReadOnly" | ^"WriteOnly" }
-interface_sub = { (^"Shadows")? ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI | ":") }
-interface_function = { (^"Shadows")? ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
-interface_property = { interface_member_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
-interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ (NEWLINE | EOI | ":") }
+interface_sub = { (^"Shadows")? ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (NEWLINE | EOI | ":") }
+interface_function = { (^"Shadows")? ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
+interface_property = { interface_member_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
+interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")")? ~ (NEWLINE | EOI | ":") }
 
 // Structure declarations
 structure_decl = {
@@ -462,20 +473,20 @@ namespace_decl = {
 namespace_end = { ^"End" ~ ^"Namespace" }
 
 // Event declarations
-event_header = { sub_modifier* ~ (^"Custom")? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ implements_member_clause? }
+event_header = { sub_modifier* ~ (^"Custom")? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")")? ~ implements_member_clause? }
 event_decl = { event_header }
 event_line = _{ event_decl ~ (NEWLINE | EOI) }
 custom_event_decl = { event_header ~ (NEWLINE | EOI | ":") ~ custom_event_accessor* ~ ^"End" ~ ^"Event" }
 custom_event_accessor = {
-    visibility_modifier? ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI | ":")
+    visibility_modifier? ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (NEWLINE | EOI | ":")
     ~ (!custom_event_accessor_end ~ line)*
     ~ custom_event_accessor_end ~ (NEWLINE | EOI | ":")?
 }
 custom_event_accessor_end = _{ ^"End" ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") }
 
 // Delegate declarations
-delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ generic_suffix? ~ "(" ~ param_list? ~ ")" }
-delegate_function_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
+delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" }
+delegate_function_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)? }
 delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI) }
 
 // Enum declarations
@@ -492,7 +503,7 @@ enum_end = { ^"End" ~ ^"Enum" }
 // Field declarations: now support Friend, WithEvents, and dotted type names
 withevents_keyword = { ^"WithEvents" }
 field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyword | ^"ReadOnly" }
-field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")?)? ~ ("=" ~ expression)? }
+field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")?)? ~ ("=" ~ expression)? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
 default_keyword = { ^"Default" }
@@ -528,7 +539,7 @@ auto_property_decl = {
 auto_property_line = _{ auto_property_decl ~ ((NEWLINE ~ !(visibility_modifier? ~ (^"Get" | ^"Set"))) | EOI) }
 
 property_decl = {
-    attribute_line* ~ property_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ implements_member_clause?
+    attribute_line* ~ property_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")")? ~ (^"As" ~ type_name)? ~ implements_member_clause?
     ~ (property_expr_body | ((NEWLINE | EOI | ":") ~ ((property_get | property_set | NEWLINE)* ~ property_end)?))
 }
 property_expr_body = { "=>" ~ expression }
@@ -555,8 +566,8 @@ set_end = { ^"End" ~ ^"Set" }
 
 // Lambda Expressions
 lambda_expression = {
-    (^"Function" ~ "(" ~ param_list? ~ ")" ~ (expression | (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end))
-    | (^"Sub" ~ "(" ~ param_list? ~ ")" ~ (sub_end | statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
+    (^"Function" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (expression | (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end))
+    | (^"Sub" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (sub_end | statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
 }
 
 expression = { logical_imp }
@@ -596,13 +607,13 @@ await_op = { ^"Await" }
 // Me keyword rules
 me_keyword = @{ ^"Me" ~ !(ASCII_ALPHANUMERIC | "_") }
 async_kw = { ^"Async" }
-me_member_call = { me_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
+me_member_call = { me_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 me_member_access = { me_keyword ~ ("." ~ member_identifier)+ }
 me_assign_statement = { me_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
 
 // MyBase keyword rules
 mybase_keyword = @{ ^"MyBase" ~ !(ASCII_ALPHANUMERIC | "_") }
-mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
+mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 mybase_member_access = { mybase_keyword ~ ("." ~ member_identifier)+ }
 mybase_assign_statement = { mybase_keyword ~ "." ~ l_value_expression ~ "=" ~ expression }
 
@@ -635,9 +646,41 @@ primary = _{
     | member_access
     | addressof_expr
     | identifier
-    | member_identifier
+    // `member_identifier` is deliberately NOT keyword-guarded so `x.Close` and
+    // `Enum E : Error = 3` work. In EXPRESSION position that same permissiveness
+    // let a keyword that BEGINS A STATEMENT match as a bare name and swallow the
+    // rest of the line — a parse error on a construct the grammar already
+    // supports. It happened three times: `Case Else` matched `case_block` with
+    // the condition `Ident("Else")`; `Static x As Integer` died because
+    // `call_statement` reached here first; and `SyncLock obj` still does, for 19
+    // corpus tests, because `synclock_statement` sits AFTER `call_statement` in
+    // the `statement` alternation. The first two were patched by REORDERING
+    // alternatives, which fixes one spelling and leaves the trap armed.
+    //
+    // `statement_head` is the guard instead of the whole `keyword` list, because
+    // the VB6 I/O verbs (`Open`, `Close`, `Input`, `Write`, `Print`, `Line`) are
+    // in `keyword` yet are ordinary names in expression position — their
+    // statements are already matched earlier in the alternation.
+    | (!statement_head ~ member_identifier)
     | tuple_literal
     | "(" ~ expression ~ ")"
+}
+
+/// Keywords that can only START a statement, so they are never a bare name in
+/// expression position. Boundary-guarded: `Resume` must not match `ResumeFlag`.
+///
+/// ⛔ ATOMIC (`@`) is load-bearing. As `_{ … ~ !(ASCII_ALPHANUMERIC|"_") }` pest
+/// inserts implicit WHITESPACE before the lookahead, so `SyncLock lockObj`
+/// matched the keyword, skipped the space, tested the boundary against `l` of
+/// `lockObj`, failed — and the guard silently never fired.
+statement_head = @{
+    (^"SyncLock" | ^"Static" | ^"Erase" | ^"ReDim" | ^"Preserve" | ^"GoTo"
+    | ^"Resume" | ^"Throw" | ^"Yield" | ^"AddHandler" | ^"RemoveHandler"
+    | ^"RaiseEvent" | ^"Using" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue"
+    | ^"Exit" | ^"Return" | ^"Dim" | ^"Const" | ^"LSet" | ^"RSet" | ^"Wend"
+    | ^"Loop" | ^"Then" | ^"Else" | ^"End" | ^"Handles" | ^"Implements"
+    | ^"Inherits" | ^"Namespace" | ^"Imports" | ^"Declare")
+    ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 nameof_expression = { ^"NameOf" ~ "(" ~ dotted_identifier ~ ")" }
@@ -655,7 +698,7 @@ cast_member_call = { cast_expression ~ member_chain+ }
 if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
 
 aggregate_expression = { ^"Aggregate" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ^"Into" ~ aggregate_call ~ ("," ~ aggregate_call)* }
-aggregate_call = { identifier ~ "(" ~ argument_list? ~ ")" }
+aggregate_call = { identifier ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 
 // New expression: supports dotted identifiers like New System.Windows.Forms.Button()
 // Also supports generic types like New List(Of String), New Dictionary(Of String, Integer)
@@ -663,16 +706,16 @@ aggregate_call = { identifier ~ "(" ~ argument_list? ~ ")" }
 // Also supports collection initializers: New List(Of T) From { expr, ... }
 // Also supports object initializers: New Type() With { .Prop = expr, ... }
 anonymous_new_expression = { ^"New" ~ WHITESPACE* ~ with_initializer }
-new_expression = { ^"New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
+new_expression = { ^"New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
 from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
 key_initializer_modifier = { ^"Key" }
 member_initializer = { key_initializer_modifier? ~ "." ~ member_identifier ~ "=" ~ expression }
 
-call_expression = { identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
+call_expression = { identifier ~ generic_suffix? ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 generic_type_reference = { dotted_identifier ~ generic_suffix }
-member_chain_invoke = { "(" ~ argument_list? ~ ")" }
-member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
+member_chain_invoke = { "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
+member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 member_chain_xml_descendant_axis = { "..." ~ "<" ~ xml_name ~ ">" }
 member_chain_xml_child_axis = { "." ~ "<" ~ xml_name ~ ">" }
 member_chain_access = { "." ~ member_identifier }
@@ -705,7 +748,22 @@ omitted_argument = { &("," | ")") }
 first_argument = { named_argument | expression }
 trailing_argument = { named_argument | expression | omitted_argument }
 argument = { first_argument | trailing_argument }
-argument_list = { first_argument ~ ("," ~ trailing_argument)* }
+// VB.NET IMPLICIT LINE CONTINUATION: a line break is legal after `(` and after
+// each `,` in an argument list, with no trailing `_`. The grammar only knew the
+// explicit form, so `New XDocument(` / `ThreadPool.QueueUserWorkItem(` /
+// `Switch(` at end of line were parse errors.
+//
+// `nl_skip` is SILENT and spells the newline itself rather than reusing
+// `NEWLINE`, which is a normal rule: a `NEWLINE` pair appearing inside
+// `argument_list` would be handed to the walker's positional `into_inner()`
+// scan as if it were an argument.
+// ⛔ `nl_skip` must NOT bracket the whole list. `call_statement` has a
+// PAREN-LESS form (`Foo a, b`), where a trailing `nl_skip` swallows the
+// statement's own line terminator and `statement_line` then fails demanding a
+// NEWLINE — measured at 18 tests. It goes around the COMMAS here, and inside
+// the parentheses at the call sites.
+nl_skip = _{ ("\r\n" | "\n" | "\r" | " " | "\t")* }
+argument_list = { first_argument ~ (nl_skip ~ "," ~ nl_skip ~ trailing_argument)* }
 tuple_literal = { "(" ~ tuple_element ~ ("," ~ tuple_element)+ ~ ","? ~ ")" }
 tuple_element = { (identifier ~ ":=")? ~ expression }
 

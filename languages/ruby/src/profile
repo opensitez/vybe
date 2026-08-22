@@ -61,7 +61,7 @@ puts            = { emit = "common:ruby.puts",              min_args = 0, max_ar
 print           = { emit = "common:ruby.print",             min_args = 0, max_args = 255 }
 p               = { emit = "common:ruby.p",                 min_args = 0, max_args = 255 }
 pp              = { emit = "common:ruby.p",                 min_args = 0, max_args = 255 }
-gets            = { emit = "host:wasi:cli:readLine",        min_args = 0, max_args = 0 }
+gets            = { emit = "intrinsic:readline",        min_args = 0, max_args = 0 }
 warn            = { emit = "noop",                          min_args = 1, max_args = 255 }
 lambda          = { emit = "common:ruby.lambda",            min_args = 1, max_args = 4 }
 method          = { emit = "common:ruby.method",            min_args = 1, max_args = 1 }
@@ -284,17 +284,24 @@ system          = { emit = "host:node:child_process:execSync", min_args = 1, max
 raise           = { emit = "throw",                          min_args = 0, max_args = 1 }
 sprintf         = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 format          = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
-open            = { emit = "host:wasi:filesystem:open",      min_args = 1, max_args = 3 }
+# `Kernel#open` is NOT BOUND, deliberately. It named `wasi:filesystem:open` —
+# a verb no WIT declares and that nothing registers, so every call was an
+# unresolved import. There is nothing honest to point it at either: `open`
+# answers a File OBJECT with `read`/`gets`/`each_line`/`close`, and Ruby has no
+# File-object lowering here (`File.open` is currently faked by source-text
+# substitution in the walker, which is its own problem). An unknown method
+# reads as a missing feature; an unresolved import reads as a broken build,
+# and only one of those is true.
 require         = { emit = "noop",                           min_args = 1, max_args = 1 }
 require_relative = { emit = "noop",                          min_args = 1, max_args = 1 }
 caller          = { emit = "noop",                           min_args = 0, max_args = 1 }
-"File.read"     = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
-"File.write"    = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
-"File.exist?"   = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-"File.exists?"  = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-"File.delete"   = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+"File.read"     = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+"File.write"    = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+"File.exist?"   = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"File.exists?"  = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"File.delete"   = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
 "File.readlines"= { emit = "common:ruby.io_readlines",       min_args = 1, max_args = 1 }
-"File.directory?"= { emit = "host:wasi:filesystem:isDir",    min_args = 1, max_args = 1 }
+"File.directory?"= { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 "Process.pid"   = { emit = "common:ruby.process_pid",        min_args = 0, max_args = 0 }
 "Process.ppid"  = { emit = "common:ruby.process_pid",        min_args = 0, max_args = 0 }
 "Process.uid"   = { emit = "common:ruby.process_pid",        min_args = 0, max_args = 0 }
@@ -320,10 +327,10 @@ caller          = { emit = "noop",                           min_args = 0, max_a
 "Dir.pwd"       = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
 "Dir.getwd"     = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
 "Dir.home"      = { emit = "common:ruby.dir_home",           min_args = 0, max_args = 0 }
-"Dir.mkdir"     = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 1 }
-"Dir.rmdir"     = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
-"Dir.exist?"    = { emit = "host:wasi:filesystem:isDir",     min_args = 1, max_args = 1 }
-"Dir.exists?"   = { emit = "host:wasi:filesystem:isDir",     min_args = 1, max_args = 1 }
+"Dir.mkdir"     = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 1 }
+"Dir.rmdir"     = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
+"Dir.exist?"    = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
+"Dir.exists?"   = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 "Dir.entries"   = { emit = "common:ruby.dir_entries",        min_args = 1, max_args = 1 }
 "Dir.children"  = { emit = "common:ruby.dir_children",       min_args = 1, max_args = 1 }
 "Dir.glob"      = { emit = "common:ruby.dir_glob",           min_args = 1, max_args = 1 }
@@ -331,12 +338,12 @@ caller          = { emit = "noop",                           min_args = 0, max_a
 "Dir.each_child"= { emit = "common:ruby.dir_each_child",     min_args = 1, max_args = 2 }
 "Dir.foreach"   = { emit = "common:ruby.dir_foreach",        min_args = 1, max_args = 2 }
 "Dir.empty?"    = { emit = "common:ruby.dir_empty",          min_args = 1, max_args = 1 }
-"IO.read"       = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
-"IO.write"      = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
-"IO.binread"    = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
-"IO.binwrite"   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
+"IO.read"       = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+"IO.write"      = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+"IO.binread"    = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+"IO.binwrite"   = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
 "IO.readlines" = { emit = "common:ruby.io_readlines",        min_args = 1, max_args = 1 }
-"IO.copy_stream" = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
+"IO.copy_stream" = { emit = "common:filesystem.copy", min_args = 2, max_args = 2 }
 "IO.pipe"       = { emit = "common:ruby.io_pipe",            min_args = 0, max_args = 0 }
 "IO.select"     = { emit = "common:ruby.io_select",          min_args = 1, max_args = 4 }
 "IO.popen"      = { emit = "common:ruby.io_popen",           min_args = 1, max_args = 2 }
@@ -709,13 +716,17 @@ divmod          = { emit = "common:ruby.divmod",            min_args = 1, max_ar
 
 # ── File operations ──────────────────────────────────────────────────────────
 
-"File.read"     = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
-"File.write"    = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
-"File.exist?"   = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-"File.exists?"  = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-"File.delete"   = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
-"File.readlines"= { emit = "host:wasi:filesystem:readLines", min_args = 1, max_args = 1 }
-"File.directory?"= { emit = "host:wasi:filesystem:isDirectory", min_args = 1, max_args = 1 }
+"File.read"     = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
+"File.write"    = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+"File.exist?"   = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"File.exists?"  = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"File.delete"   = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
+# `common:ruby.io_readlines`, matching the row in the earlier block. This one
+# was a stale DUPLICATE still on `readLines` — a verb no WIT declares and that
+# nothing registers — so which of the two won decided whether `File.readlines`
+# worked, and the two disagreed.
+"File.readlines"= { emit = "common:ruby.io_readlines", min_args = 1, max_args = 1 }
+"File.directory?"= { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 "Symbol.all_symbols" = { emit = "common:ruby.symbols",       min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────

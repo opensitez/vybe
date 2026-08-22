@@ -292,6 +292,7 @@ pub(super) fn field(name: &str, type_hint: &str, init: Expression) -> ClassMembe
         modifiers: Modifiers::default(),
         with_events: false,
         array_bounds: None,
+        storage: None,
     }
 }
 

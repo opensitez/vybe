@@ -38,6 +38,7 @@ pub fn normalize_class(
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,
                     value_type: None,
+                    storage: None,
                 };
                 m.push_field(field_modifiers.is_static, field);
             }

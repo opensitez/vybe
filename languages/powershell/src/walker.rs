@@ -728,6 +728,7 @@ fn parse_ps_property(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMember
         modifiers,
         with_events: false,
         array_bounds: None,
+        storage: None,
     })
 }
 

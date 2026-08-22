@@ -12,7 +12,6 @@ extensions = ["vb"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
-field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 # `CInt("abc")` / `CLng("abc")` throw InvalidCastException.
 numeric_cast_invalid_error = "InvalidCastException"
 numeric_cast_invalid_message = "Conversion from string to type 'Integer' is not valid."
@@ -137,14 +136,6 @@ cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 # `Integer.TryParse(s, r)` is normalized in the walker to the out-param desugar
 # `((r = Integer.TryParse(s)) != null) OrElse ((r = 0) = Nothing)`, so the
 # compiler only ever sees the 1-arg core, which parses to int-or-null.
-"integer.tryparse" = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
-"int32.tryparse"   = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
-"integer.parse" = { emit = "common:dotnet.parse_int", min_args = 1, max_args = 1 }
-"int32.parse"   = { emit = "common:dotnet.parse_int", min_args = 1, max_args = 1 }
-"byte.parse"    = { emit = "common:dotnet.parse_byte", min_args = 1, max_args = 1 }
-"double.parse"  = { emit = "common:dotnet.parse_double", min_args = 1, max_args = 1 }
-"single.parse"  = { emit = "common:dotnet.parse_double", min_args = 1, max_args = 1 }
-"boolean.parse" = { emit = "common:dotnet.parse_bool", min_args = 1, max_args = 1 }
 cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
@@ -187,21 +178,22 @@ abs           = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 fix           = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
 int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
 sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
-round         = { emit = "common:round", min_args = 1, max_args = 2 }
+# VB `Round`/`Math.Round` is BANKER'S rounding — `Round(2.5)` is 2, `Round(3.5)`
+# is 4 — the same default as .NET, and `vybe_ast`'s `MidpointPolicy` table names
+# VB under `HalfEven` explicitly. This row said `common:round`, which dispatches
+# to `ecma:math.round`: JAVASCRIPT rounding, i.e. half-AWAY-from-zero, so
+# `Round(2.5)` answered 3. C# has had the correct row all along
+# (`languages/csharp/src/profile`), which is the whole argument for sharing one.
+#
+# One arg only, like C#'s: the two-arg `Round(x, digits)` form never reaches this
+# row — the walker intercepts `"round" if arguments.len() >= 2` first.
+round         = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
+"Math.Round"  = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sgn        = { emit = "common:dotnet.system.math.sign", min_args = 1, max_args = 1 }
 rnd        = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 1 }
 randomize  = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 0 }
-log        = { emit = "common:dotnet.system.math.log",  min_args = 1, max_args = 1 }
-exp        = { emit = "common:dotnet.system.math.exp",  min_args = 1, max_args = 1 }
-sin        = { emit = "common:dotnet.system.math.sin",  min_args = 1, max_args = 1 }
-cos        = { emit = "common:dotnet.system.math.cos",  min_args = 1, max_args = 1 }
-tan        = { emit = "common:dotnet.system.math.tan",  min_args = 1, max_args = 1 }
-atn        = { emit = "common:dotnet.system.math.atan", min_args = 1, max_args = 1 }
-atan       = { emit = "common:dotnet.system.math.atan", min_args = 1, max_args = 1 }
-pow        = { emit = "common:dotnet.system.math.pow",  min_args = 2, max_args = 2 }
 
 # ── Financial functions ─────────────────────────────────────────────────────
 
@@ -291,23 +283,28 @@ day          = { emit = "common:dotnet.datetime_day",    min_args = 1, max_args 
 hour         = { emit = "common:dotnet.datetime_hour",   min_args = 1, max_args = 1 }
 minute       = { emit = "common:dotnet.datetime_minute", min_args = 1, max_args = 1 }
 second       = { emit = "common:dotnet.datetime_second", min_args = 1, max_args = 1 }
-# DateAdd / DateSerial / TimeSerial profile entries retired — they
-# pointed at `vybe:types/dateTime*` host fns that have been retired in
-# favour of compile-time lowering through
-# `emitter::dotnet::core::datetime_adapter`. No drop-in 0-cost mapping
-# exists for the free-function VB shapes (DateAdd takes a unit string
-# like "d"/"m"/"y" and DateSerial constructs from year/month/day) —
-# bring them back as dedicated adapters when a test demands them.
-datediff     = { emit = "noop", min_args = 3, max_args = 3 }
-datepart     = { emit = "noop", min_args = 2, max_args = 2 }
+# `Microsoft.VisualBasic.DateAndTime` — the VB intrinsics, which are NOT
+# `System.DateTime` API and so were invisible to a grep of `platforms/dotnet`
+# for their names. They now lower through
+# `emitter::core::vb_dateandtime_adapter`, which is built on the System.DateTime
+# adapter and on `primitives/datetime.rs`. Previously `datediff`/`datepart`
+# emitted a literal `noop` and the VB walker's chrono fold was the only
+# implementation — it answered when both operands were literal enough to fold
+# and produced nothing otherwise.
+dateadd      = { emit = "common:dotnet.vb_dateadd",     min_args = 3, max_args = 3 }
+datediff     = { emit = "common:dotnet.vb_datediff",    min_args = 3, max_args = 3 }
+datepart     = { emit = "common:dotnet.vb_datepart",    min_args = 2, max_args = 2 }
+dateserial   = { emit = "common:dotnet.vb_dateserial",  min_args = 3, max_args = 3 }
+timeserial   = { emit = "common:dotnet.vb_timeserial",  min_args = 3, max_args = 3 }
 datevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 timevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
-# `timeserial` removed alongside `timeserial`/`dateserial` (see DateAdd
-# comment above).
 cdate        = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
-monthname    = { emit = "common:dotnet.vb_to_string",      min_args = 1, max_args = 1 }
-weekday      = { emit = "common:dotnet.datetime_day_of_week",  min_args = 1, max_args = 1 }
-weekdayname  = { emit = "common:dotnet.vb_to_string",      min_args = 1, max_args = 1 }
+monthname    = { emit = "common:dotnet.vb_monthname",   min_args = 1, max_args = 2 }
+# `Weekday` returns Integer 1–7 (Sunday = 1), NOT a `System.DayOfWeek` — which
+# is what `common:dotnet.datetime_day_of_week` builds, and what this row used
+# to point at.
+weekday      = { emit = "common:dotnet.vb_weekday",     min_args = 1, max_args = 2 }
+weekdayname  = { emit = "common:dotnet.vb_weekdayname", min_args = 1, max_args = 3 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -454,93 +451,12 @@ string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), 
 # String instance methods (use compiler_common::strings)
 toupper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
 tolower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
-"trim"        = [
-    { emit = "common:strings.trim",                 min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.string_trim_chars",     min_args = 1, max_args = 255 },
-]
-trimstart     = [
-    { emit = "common:str_trim_start",               min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.string_trim_start_chars", min_args = 1, max_args = 255 },
-]
-trimend       = [
-    { emit = "common:str_trim_end",                 min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.string_trim_end_chars", min_args = 1, max_args = 255 },
-]
-startswith    = [
-    { emit = "common:str_starts_with",             min_args = 1, max_args = 1 },
-    { emit = "common:dotnet.string_starts_with",   min_args = 2, max_args = 2 },
-]
-endswith      = [
-    { emit = "common:str_ends_with",               min_args = 1, max_args = 1 },
-    { emit = "common:dotnet.string_ends_with",     min_args = 2, max_args = 2 },
-]
-substring     = { emit = "common:dotnet.string_substring", min_args = 1, max_args = 2 }
-indexof       = { emit = "common:dotnet.string_index_of", min_args = 1, max_args = 3 }
-indexofany    = { emit = "common:dotnet.string_index_of_any", min_args = 1, max_args = 2 }
-lastindexof   = { emit = "common:dotnet.string_last_index_of", min_args = 1, max_args = 3 }
-lastindexofany = { emit = "common:dotnet.string_last_index_of_any", min_args = 1, max_args = 1 }
-contains      = [
-    { emit = "common:str_contains",                min_args = 1, max_args = 1 },
-    { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 2 },
-]
-# `x.Equals(y)` reaches here only when the RECEIVER's class did not declare its
-# own `Equals` — a user override is found first, by the ordinary member path.
-# KNOWN GAP: a PLATFORM receiver (`Encoding`, `Guid`) does not reach this table
-# at all and answers with a raw number instead of a Boolean. Setting the 1-arg
-# entry to `common:dotnet.object_equals` was measured and changed nothing, so
-# the gate is upstream of here, not in this declaration.
-equals        = [
-    { emit = "common:dyn_eq",                      min_args = 1, max_args = 1 },
-    { emit = "common:dotnet.string_equals",        min_args = 2, max_args = 2 },
-]
-compareto     = { emit = "common:dotnet.string_compare", min_args = 1, max_args = 1 }
-tostring      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
-gettype       = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
-getvalue      = { emit = "common:dotnet.array_get_checked", min_args = 1, max_args = 1 }
-setvalue      = { emit = "common:dotnet.array_set_checked", min_args = 2, max_args = 2 }
-chars         = { emit = "common:dotnet.string_char_at_checked", min_args = 1, max_args = 1 }
-padleft       = { emit = "common:dotnet.string_pad_left", min_args = 1, max_args = 2 }
-padright      = { emit = "common:dotnet.string_pad_right", min_args = 1, max_args = 2 }
-replace       = { emit = "common:dotnet.string_replace", min_args = 2, max_args = 2 }
-split         = { emit = "common:dotnet.string_split", min_args = 1, max_args = 255 }
-
-# Collection instance methods (use compiler_common — works for both list and dict)
-# Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
-add = [
-    { emit = "common:collections.push",   min_args = 1, max_args = 1 },
-    { emit = "common:dict.set_dynamic",   min_args = 2, max_args = 2 },
-]
-remove        = { emit = "common:dotnet.array_remove_value",  min_args = 1, max_args = 1 }
-removeat      = { emit = "common:dotnet.array_remove_at",     min_args = 1, max_args = 1 }
-insert        = { emit = "common:dotnet.array_insert",        min_args = 2, max_args = 2 }
-clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
-count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
-sort          = { emit = "common:dotnet.sort_in_place", min_args = 0, max_args = 0 }
-reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-toarray       = { emit = "common:collections.clone",   min_args = 0, max_args = 0 }
-containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
-
-# WinForms methods — no-ops in our renderer
-suspendlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
-resumelayout   = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 1 }
-performlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
-refresh        = { emit = "noop", min_args = 0, max_args = 0 }
-invalidate     = { emit = "noop", min_args = 0, max_args = 0 }
-update         = { emit = "noop", min_args = 0, max_args = 0 }
-begininit      = { emit = "noop", min_args = 0, max_args = 0 }
-endinit        = { emit = "noop", min_args = 0, max_args = 0 }
-dispose        = { emit = "noop", min_args = 0, max_args = 0 }
-bringtofront   = { emit = "noop", min_args = 0, max_args = 0 }
-sendtoback     = { emit = "noop", min_args = 0, max_args = 0 }
-
-# GUI methods route through the shared dotnet WinForms surface.
-show           = { emit = "common:dotnet.winforms_control_show",      min_args = 0, max_args = 0 }
-close          = { emit = "common:dotnet.winforms_control_close",     min_args = 0, max_args = 0 }
-showdialog     = { emit = "common:dotnet.winforms_form_show_dialog",  min_args = 0, max_args = 0 }
-hide           = { emit = "common:dotnet.winforms_control_hide",      min_args = 0, max_args = 0 }
-
-# Controls.Add — special: parent object passed as first arg
-"controls.add" = { emit = "common:dotnet.winforms_controls_add",     min_args = 1, max_args = 1 }
+"trim"        = { emit = "common:strings.trim",     min_args = 0, max_args = 0 }
+trimstart     = { emit = "common:str_trim_start",   min_args = 0, max_args = 0 }
+trimend       = { emit = "common:str_trim_end",     min_args = 0, max_args = 0 }
+startswith    = { emit = "common:str_starts_with",  min_args = 1, max_args = 1 }
+endswith      = { emit = "common:str_ends_with",    min_args = 1, max_args = 1 }
+contains      = { emit = "common:str_contains",     min_args = 1, max_args = 1 }
 
 # LINQ surface lives once in the shared .NET component resolver
 # (`platforms/dotnet/.../component_classes_linq.rs`, class `IEnumerable`),
@@ -570,7 +486,9 @@ Day    = "Day"
 Hour   = "Hour"
 Minute = "Minute"
 Second = "Second"
-Weekday = "DayOfWeek"
+# `Weekday` is NOT in this table: VB's `Weekday(d)` returns Integer 1–7, while
+# `d.DayOfWeek` is a `System.DayOfWeek` OBJECT. It routes through
+# `common:dotnet.vb_weekday` (Microsoft.VisualBasic.DateAndTime) instead.
 
 [array_methods]
 findindex     = "__array_findIndex"

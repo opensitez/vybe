@@ -758,6 +758,7 @@ pub fn normalize_class(
                     access: Access::from(m.visibility.clone()),
                     readonly: m.is_readonly,
                     value_type: None,
+                    storage: None,
                 };
                 out.push_field(m.is_static, field);
             }
@@ -1277,6 +1278,7 @@ mod tests {
             modifiers,
             with_events: false,
             array_bounds: None,
+            storage: None,
         }
     }
 

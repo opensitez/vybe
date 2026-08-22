@@ -99,6 +99,7 @@ pub fn normalize_class(
                     access: access_from_visibility(modifiers.visibility),
                     readonly: modifiers.is_readonly,
                     value_type: None,
+                    storage: None,
                 };
                 m.push_field(modifiers.is_shared, field);
             }
