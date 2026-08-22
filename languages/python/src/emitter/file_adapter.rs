@@ -19,7 +19,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::{ops, strings};
+use vybe_compiler::primitives::{fs_path, ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -86,7 +86,7 @@ pub fn emit_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
     chunks[current].emit_string_const("", line);
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 
@@ -95,7 +95,7 @@ pub fn emit_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_mode_has(chunks, current, mode, "r", line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_end(line);
@@ -127,7 +127,7 @@ pub fn emit_write(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if_value(line);
     field_of(chunks, current, f, "__fpath", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    call_import(chunks, current, "wasi:filesystem", "appendFile", 2, line);
+    fs_path::emit_append_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     // Keep __fdata in step so a read-after-write on the same handle is correct.
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
@@ -142,7 +142,7 @@ pub fn emit_write(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Not one of ours — the previous whole-file host write.
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -171,7 +171,7 @@ pub fn emit_read(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     set_field(chunks, current, "__fpos", line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -184,7 +184,7 @@ pub fn emit_readlines(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     field_of(chunks, current, f, "__fdata", line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
     chunks[current].emit_end(line);
     // keepends=True — CPython's readlines keeps the terminators.
     chunks[current].emit_f64_const(1.0, line);
@@ -275,7 +275,7 @@ fn emit_write_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, f, line);
     field_of(chunks, current, f, "__fpath", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    call_import(chunks, current, "wasi:filesystem", "appendFile", 2, line);
+    fs_path::emit_append_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     field_of(chunks, current, f, "__fdata", line);
@@ -327,7 +327,14 @@ fn emit_temp_path(chunks: &mut [Chunk], current: usize, base: u16, argc: u8, lin
     }
     chunks[current].emit_string_const("tmp", line);
     ops::emit_dyn_add(&mut chunks[current], line);
-    call_import(chunks, current, "wasi:random/random", "uuid", 0, line);
+    // A unique token for the temp NAME — not a canonical UUID, and nothing
+    // downstream parses it as one. `wasi:random/random.uuid` was an invented
+    // verb: `wasi:random@0.3.1` declares `get-random-bytes` and
+    // `get-random-u64`, and nothing else. 64 bits of cryptographically strong
+    // entropy is more than CPython's `tempfile`, which uses eight characters
+    // from a 62-symbol alphabet (~47 bits).
+    call_import(chunks, current, "wasi:random/random", "get-random-u64", 0, line);
+    strings::emit_to_string(&mut chunks[current], line);
     ops::emit_dyn_add(&mut chunks[current], line);
     if has(1) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
@@ -347,7 +354,7 @@ pub fn emit_mkdtemp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_temp_path(chunks, current, base, argc, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
-    call_import(chunks, current, "wasi:filesystem", "mkdir", 1, line);
+    fs_path::emit_mkdir(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
 }
@@ -363,7 +370,7 @@ pub fn emit_named_temp_file(chunks: &mut [Chunk], current: usize, argc: u8, line
     // Create it empty so `os.path.exists` is true before anything is written.
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
     chunks[current].emit_string_const("", line);
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_struct_new(0, 0, line);
@@ -398,7 +405,7 @@ pub fn emit_mkstemp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
     chunks[current].emit_string_const("", line);
-    call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_f64_const(3.0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
@@ -409,23 +416,9 @@ pub fn emit_mkstemp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_samefile(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFullPath",
-        1,
-        line,
-    );
+    vybe_compiler::primitives::paths::emit_full_path(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "pathGetFullPath",
-        1,
-        line,
-    );
+    vybe_compiler::primitives::paths::emit_full_path(&mut chunks[current], line);
     call_import(chunks, current, "wasm:js-string", "equals", 2, line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
 }

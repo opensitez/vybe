@@ -202,9 +202,9 @@ __py_raise_ZeroDivisionError = { emit = "common:python.raise.ZeroDivisionError",
 __py_exception_instance      = { emit = "common:python.exception_instance",      min_args = 2, max_args = 2 }
 __py_exception_message       = { emit = "common:python.exception_message",       min_args = 1, max_args = 1 }
 # Raw filesystem primitives for the `os` prelude (wasi first, node for gaps).
-__os_readdir__  = { emit = "host:wasi:filesystem:readDirEntries", min_args = 1, max_args = 1 }
-__os_stat_raw__ = { emit = "host:wasi:filesystem:stat",           min_args = 1, max_args = 1 }
-__os_isdir__    = { emit = "host:wasi:filesystem:isDir",          min_args = 1, max_args = 1 }
+__os_readdir__  = { emit = "common:filesystem.read_dir_entries", min_args = 1, max_args = 1 }
+__os_stat_raw__ = { emit = "common:filesystem.stat", min_args = 1, max_args = 1 }
+__os_isdir__    = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 __os_cpus__     = { emit = "host:node:os:cpus",                   min_args = 0, max_args = 0 }
 __pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
 __pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
@@ -263,7 +263,10 @@ __py_hash_update__ = { emit = "host:node:crypto:_hashUpdate", min_args = 2, max_
 __py_hash_digest__ = { emit = "host:node:crypto:_hashDigest", min_args = 2, max_args = 2 }
 __py_hmac_update__ = { emit = "host:node:crypto:_hmacUpdate", min_args = 2, max_args = 2 }
 __py_hmac_digest__ = { emit = "host:node:crypto:_hmacDigest", min_args = 2, max_args = 2 }
-__py_wasi_sha256__ = { emit = "host:wasi:crypto/hashes:sha256", min_args = 1, max_args = 1 }
+# `__py_wasi_sha256__` is DELETED: it had zero callers, and it named
+# `wasi:crypto/hashes` — an interface the wasi-crypto proposal does not
+# declare. Python's real digests go through `node:crypto` (hash_adapter.rs),
+# below.
 # ── hashlib / hmac → node:crypto streaming digests (hash_adapter.rs) ─────────
 # No prelude: the digest state lives in the host object and the adapter emits
 # the receiver-taking `_hashUpdate`/`_hashDigest`/`_hashCopy` calls directly.
@@ -293,7 +296,7 @@ __sql_begin       = { emit = "common:python.sql_begin",       min_args = 1, max_
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print           = { emit = "common:python.print",            min_args = 0, max_args = 255 }
-input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_args = 1 }
+input           = { emit = "intrinsic:readline",        min_args = 0, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
@@ -716,11 +719,21 @@ dir             = { emit = "common:python.dir",               min_args = 0, max_
 # ── urllib.parse ─────────────────────────────────────────────────────────────
 # Over `web:url` — the same WHATWG parser JS `new URL(...)` and node's `url`
 # module use. Only the field NAMES differ from CPython's; see url_adapter.rs.
-# ── socket: the wasi:sockets calls the prelude class composes ────────────────
+# ── socket: the wasi:sockets@0.3.1 calls the prelude class composes ──────────
 # Each is ONE host call with the arguments already on the stack, so none needs
-# an adapter — the `socket` class in SOCKET_PRELUDE sequences them. The WASI
-# start-*/finish-* pairs are two calls because the proposal is poll-based; a
-# Python socket call is blocking, so the class does both.
+# an adapter — the `socket` class in SOCKET_PRELUDE sequences them.
+#
+# 0.3.1 collapsed `instance-network`, `tcp`, `udp`, `tcp-create-socket` and
+# `udp-create-socket` into ONE `wasi:sockets/types`. There is no network handle
+# to pass; `bind`/`listen`/`connect` are single calls rather than start-*/
+# finish-* pairs; `accept` and `shutdown` no longer exist. `listen` answers
+# `stream<tcp-socket>`, so accepting a connection is READING an element from
+# that stream, and `receive` answers `stream<u8>` rather than bytes.
+#
+# Nothing polls. `subscribe` + `pollable.block` existed so a blocking Python
+# call would not hang the process; a synchronous `canon stream.read` suspends
+# the fiber until the element lands, which is the same wait with no interface
+# to name it.
 # ── ipaddress arithmetic (pure; see socket_adapter.rs) ───────────────────────
 _vybe_isview        = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
 _vybe_ip4_parse     = { emit = "common:python.ip4_parse",     min_args = 1, max_args = 1 }
@@ -730,24 +743,29 @@ _vybe_ip4_mask      = { emit = "common:python.ip4_mask",      min_args = 1, max_
 _vybe_ip4_count     = { emit = "common:python.ip4_count",     min_args = 1, max_args = 1 }
 _vybe_ip4_net_parts = { emit = "common:python.ip4_net_parts", min_args = 1, max_args = 1 }
 
-_wasi_network      = { emit = "host:wasi:sockets/instance-network:instance-network", min_args = 0, max_args = 0 }
-_wasi_tcp_new      = { emit = "host:wasi:sockets/tcp-create-socket:create-tcp-socket", min_args = 0, max_args = 1 }
-_wasi_udp_new      = { emit = "host:wasi:sockets/udp-create-socket:create-udp-socket", min_args = 0, max_args = 1 }
-_wasi_start_bind   = { emit = "host:wasi:sockets/tcp:start-bind",     min_args = 3, max_args = 3 }
-_wasi_finish_bind  = { emit = "host:wasi:sockets/tcp:finish-bind",    min_args = 1, max_args = 1 }
-_wasi_start_listen = { emit = "host:wasi:sockets/tcp:start-listen",   min_args = 1, max_args = 1 }
-_wasi_backlog      = { emit = "host:wasi:sockets/tcp:set-listen-backlog-size", min_args = 2, max_args = 2 }
-_wasi_start_conn   = { emit = "host:wasi:sockets/tcp:start-connect",  min_args = 3, max_args = 3 }
-_wasi_finish_conn  = { emit = "host:wasi:sockets/tcp:finish-connect", min_args = 1, max_args = 1 }
-_wasi_accept       = { emit = "host:wasi:sockets/tcp:accept",         min_args = 1, max_args = 1 }
-_wasi_local_addr   = { emit = "host:wasi:sockets/tcp:local-address",  min_args = 1, max_args = 1 }
-_wasi_remote_addr  = { emit = "host:wasi:sockets/tcp:remote-address", min_args = 1, max_args = 1 }
-_wasi_sock_shutdown = { emit = "host:wasi:sockets/tcp:shutdown",      min_args = 1, max_args = 2 }
-# NON-blocking `read`, not `blocking-read`: `accept` here is poll-shaped and
-# answers None when nothing is queued, so a blocking read has no peer to
-# wait for and would hang the process rather than fail.
-_wasi_stream_read  = { emit = "host:wasi:io/streams:read",            min_args = 2, max_args = 2 }
-_wasi_stream_write = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
+_wasi_tcp_new      = { emit = "host:wasi:sockets/types:[static]tcp-socket.create", min_args = 0, max_args = 1 }
+_wasi_udp_new      = { emit = "host:wasi:sockets/types:[static]udp-socket.create", min_args = 0, max_args = 1 }
+_wasi_bind         = { emit = "host:wasi:sockets/types:[method]tcp-socket.bind",    min_args = 2, max_args = 2 }
+_wasi_backlog      = { emit = "host:wasi:sockets/types:[method]tcp-socket.set-listen-backlog-size", min_args = 2, max_args = 2 }
+_wasi_listen       = { emit = "host:wasi:sockets/types:[method]tcp-socket.listen",  min_args = 1, max_args = 1 }
+_wasi_connect      = { emit = "host:wasi:sockets/types:[method]tcp-socket.connect", min_args = 2, max_args = 2 }
+_wasi_send         = { emit = "host:wasi:sockets/types:[method]tcp-socket.send",    min_args = 2, max_args = 2 }
+_wasi_receive      = { emit = "host:wasi:sockets/types:[method]tcp-socket.receive", min_args = 1, max_args = 1 }
+_wasi_local_addr   = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-local-address",  min_args = 1, max_args = 1 }
+_wasi_remote_addr  = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-remote-address", min_args = 1, max_args = 1 }
+_wasi_udp_bind     = { emit = "host:wasi:sockets/types:[method]udp-socket.bind",    min_args = 2, max_args = 2 }
+_wasi_udp_connect  = { emit = "host:wasi:sockets/types:[method]udp-socket.connect", min_args = 2, max_args = 2 }
+_wasi_dgram_send   = { emit = "host:wasi:sockets/types:[method]udp-socket.send",    min_args = 2, max_args = 3 }
+_wasi_dgram_recv   = { emit = "host:wasi:sockets/types:[method]udp-socket.receive", min_args = 1, max_args = 1 }
+# The Component Model stream ops that replaced `wasi:io`, which 0.3.1 deleted.
+# A stream is a TYPE now, so these are `canon stream.{read,write}` — built-ins
+# the compiler emits, not host imports. `read_bytes` is bounded on purpose:
+# `receive`'s stream stays OPEN so "nothing sent yet" is distinguishable from
+# "peer gone", and a drain of an open socket would answer the whole
+# conversation once, at disconnect, instead of what `recv` asked for.
+_stream_read_bytes = { emit = "common:stream.read_bytes",  min_args = 2, max_args = 2 }
+_stream_from_bytes = { emit = "common:stream.from_bytes",  min_args = 1, max_args = 1 }
+_stream_read_handle = { emit = "common:stream.read_handle", min_args = 1, max_args = 1 }
 
 # ── socket (module-level, no socket object) ──────────────────────────────────
 # `inet_*` are pure conversions; `getservbyname` is /etc/services data (no WASI
@@ -784,6 +802,11 @@ quote           = { emit = "common:python.url_quote",          min_args = 1, max
 quote_plus      = { emit = "common:python.url_quote_plus",     min_args = 1, max_args = 4 }
 unquote         = { emit = "common:python.url_unquote",        min_args = 1, max_args = 3 }
 unquote_plus    = { emit = "common:python.url_unquote_plus",   min_args = 1, max_args = 3 }
+# `configparser` parses INI through the shared `config` primitive, the way
+# `csv` above goes through `common:csv.*`. The second argument is key CASE:
+# CPython's `optionxform` lowercases option names by default (measured —
+# `MixedKey` reads back as `mixedkey`), php's `parse_ini_*` does not.
+__py_config_parse   = { emit = "common:config.parse",         min_args = 2, max_args = 2 }
 __py_csv_parse_line = { emit = "common:csv.parse_line",        min_args = 3, max_args = 3 }
 __py_csv_format_row = { emit = "common:csv.format_row",        min_args = 3, max_args = 3 }
 
@@ -818,11 +841,11 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 # shutil — the wasi shim already does the heavy lifting: `mkdir` is
 # create_dir_all, `remove` is remove_dir_all for directories, `copy` is a file
 # copy. Only copytree/which need real logic.
-"shutil.copy"       = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
-"shutil.copyfile"   = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
-"shutil.copy2"      = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
-"shutil.rmtree"     = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 3 }
-"shutil.move"       = { emit = "host:wasi:filesystem:rename",         min_args = 2, max_args = 3 }
+"shutil.copy"       = { emit = "common:filesystem.copy", min_args = 2, max_args = 3 }
+"shutil.copyfile"   = { emit = "common:filesystem.copy", min_args = 2, max_args = 3 }
+"shutil.copy2"      = { emit = "common:filesystem.copy", min_args = 2, max_args = 3 }
+"shutil.rmtree"     = { emit = "common:filesystem.remove_all", min_args = 1, max_args = 3 }
+"shutil.move"       = { emit = "common:filesystem.rename", min_args = 2, max_args = 3 }
 "shutil.copytree"   = { emit = "common:python.shutil_copytree",       min_args = 2, max_args = 8 }
 "shutil.which"      = { emit = "common:python.shutil_which",          min_args = 1, max_args = 3 }
 "tempfile.TemporaryDirectory" = { emit = "common:python.tmp_mkdtemp", min_args = 0, max_args = 3 }
@@ -842,27 +865,27 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "os.strerror"       = { emit = "common:python.os_strerror",           min_args = 1, max_args = 1 }
 "os.getppid"        = { emit = "host:node:process:ppid",              min_args = 0, max_args = 0 }
 # `replace` is rename with silent overwrite — the wasi shim already overwrites.
-"os.replace"        = { emit = "host:wasi:filesystem:rename",         min_args = 2, max_args = 2 }
-"os.rmdir"          = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 1 }
-"os.removedirs"     = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 1 }
+"os.replace"        = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
+"os.rmdir"          = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
+"os.removedirs"     = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
 "os.truncate"       = { emit = "host:node:fs:truncateSync",           min_args = 2, max_args = 2 }
 "os.isatty"         = { emit = "host:node:tty:isatty",                min_args = 1, max_args = 1 }
 # NOTE the namespace is `wasi:random/random`, not `wasi:random`.
 "os.urandom"        = { emit = "host:wasi:random/random:get-random-bytes", min_args = 1, max_args = 1 }
 "os.device_encoding" = { emit = "common:python.os_device_encoding",   min_args = 1, max_args = 1 }
 "os.get_terminal_size" = { emit = "common:python.os_term_size",       min_args = 0, max_args = 1 }
-"os.listdir"        = { emit = "host:wasi:filesystem:listDir",        min_args = 0, max_args = 1 }
-"os.mkdir"          = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
-"os.makedirs"       = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
-"os.remove"         = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
-"os.unlink"         = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
-"os.rename"         = { emit = "host:wasi:filesystem:rename",          min_args = 2, max_args = 2 }
+"os.listdir"        = { emit = "common:filesystem.list_dir",          min_args = 0, max_args = 1 }
+"os.mkdir"          = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 2 }
+"os.makedirs"       = { emit = "common:filesystem.mkdir_all", min_args = 1, max_args = 2 }
+"os.remove"         = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
+"os.unlink"         = { emit = "common:filesystem.unlink", min_args = 1, max_args = 1 }
+"os.rename"         = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
 # FS predicates stay host-backed; the pure-string POSIX helpers are emitter
 # adapters (common:python.ospath_*), emitted at the call site (no prelude).
-"os.path.exists"    = { emit = "host:wasi:filesystem:exists",          min_args = 1, max_args = 1 }
-"os.path.lexists"   = { emit = "host:wasi:filesystem:exists",          min_args = 1, max_args = 1 }
-"os.path.isfile"    = { emit = "host:wasi:filesystem:isFile",          min_args = 1, max_args = 1 }
-"os.path.isdir"     = { emit = "host:wasi:filesystem:isDir",           min_args = 1, max_args = 1 }
+"os.path.exists"    = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"os.path.lexists"   = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+"os.path.isfile"    = { emit = "common:filesystem.is_file", min_args = 1, max_args = 1 }
+"os.path.isdir"     = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 "os.path.join"        = { emit = "common:python.ospath_join",         min_args = 1, max_args = 255 }
 "os.path.split"       = { emit = "common:python.ospath_split",        min_args = 1, max_args = 1 }
 "os.path.splitext"    = { emit = "common:python.ospath_splitext",     min_args = 1, max_args = 1 }
@@ -1210,6 +1233,179 @@ __name__ = "__main__"
 # through the common resolver's package-root step — the same data the
 # hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
 
+# ── Tree mounts (namespaceplan.md §"Profile mounts (ambient defaults)") ──
+#
+# `languages/python/src/emitter/tree_register.rs` owns ONE tree root,
+# `python.*`, the way kotlin owns `kotlin.*` and platforms/jvm owns
+# `jvm.java.*`. These mounts are what make the SOURCE spelling resolve:
+# `os.path.join` walks `python.os.path.join` through the COMMON resolver.
+#
+# They replace 29 BARE global roots the registrar used to claim — `str`,
+# `float`, `array`, `math`, `os`, `time` and the rest went into the one
+# tree every language shares, so a root was python's by whoever
+# registered first. The leaves are unchanged; only the mount point is.
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "array"
+path = "python.array"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "base64"
+path = "python.base64"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "binascii"
+path = "python.binascii"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "bisect"
+path = "python.bisect"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "calendar"
+path = "python.calendar"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "cmath"
+path = "python.cmath"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "codecs"
+path = "python.codecs"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "collections"
+path = "python.collections"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "datetime"
+path = "python.datetime"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "functools"
+path = "python.functools"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "hashlib"
+path = "python.hashlib"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "heapq"
+path = "python.heapq"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "hmac"
+path = "python.hmac"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "itertools"
+path = "python.itertools"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "json"
+path = "python.json"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "logging"
+path = "python.logging"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "math"
+path = "python.math"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "operator"
+path = "python.operator"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "os"
+path = "python.os"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "random"
+path = "python.random"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "re"
+path = "python.re"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "shutil"
+path = "python.shutil"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "socket"
+path = "python.socket"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "statistics"
+path = "python.statistics"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "struct"
+path = "python.struct"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "sys"
+path = "python.sys"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "tempfile"
+path = "python.tempfile"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "time"
+path = "python.time"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "unicodedata"
+path = "python.unicodedata"
+
+# `str.maketrans` and `float.inf`/`float.nan` are module surface too — the
+# TYPE name is the module here, which is why they read oddly as mounts.
+[[esm_default]]
+kind = "tree-mount"
+prefix = "str"
+path = "python.str"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "float"
+path = "python.float"
+
+# The package root itself, so a fully-qualified `python.os.stat` also walks.
+[[esm_default]]
+kind = "tree-ambient"
+path = "python"
 [[esm_default]]
 kind = "package-root"
 prefix = "vybe"
@@ -1292,7 +1488,7 @@ module = "ecma:math"
 [[esm_default]]
 kind = "namespace"
 alias = "time"
-module = "wasi:clocks/wall-clock"
+module = "wasi:clocks/system-clock"
 
 # Return types of string-producing builtins, so the type-directed `+` path
 # treats `'lit' + str(self.attr)` as string concatenation (not numeric add).

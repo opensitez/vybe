@@ -391,9 +391,6 @@ fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
 pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
     let chunk = &mut chunks[current];
-    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
-    let rd_slot = chunk.alloc_scratch(1);
-    let wr_slot = chunk.alloc_scratch(1);
     let result_slot = chunk.alloc_scratch(1);
 
     if argc == 0 {
@@ -430,14 +427,12 @@ pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
         chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     }
 
-    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
-        chunk,
-        write_idx,
-        rd_slot,
-        wr_slot,
-        line,
-        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
-    );
+    // The shared write, not a local copy of it. `emit_write_stdout_slot` IS
+    // the `write_idx`/`rd_slot`/`wr_slot` trio this used to re-plumb by hand,
+    // so the canon `stream.new`/`stream.write`/`drop` sequence lives in ONE
+    // place. Python's own print semantics — `sep`, `end`, `repr` — stay right
+    // here above it, which is the only part that is Python's business.
+    vybe_compiler::primitives::io::emit_write_stdout_slot(chunk, result_slot, line);
 }
 
 /// Python `+` operator: array→concat, else→dynamic add.

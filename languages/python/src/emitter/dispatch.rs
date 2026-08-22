@@ -337,7 +337,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_dir", line)
         }
         "python.os_is_symlink" => {
-            crate::emitter::os_adapter::emit_entry_false(chunks, current, line)
+            crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_link", line)
         }
         "python.os_inode" => crate::emitter::os_adapter::emit_entry_zero(chunks, current, line),
         "python.iter_array" => {

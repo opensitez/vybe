@@ -543,7 +543,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 missing_delete: SetMissingDelete::ThrowKeyError,
                 algebra_arity: SetAlgebraArity::Variadic,
                 predicate_bool_object: true,
+                // Unchanged: Python keeps its current membership behaviour;
+                // migrating it to hash-based identity is its owner's call.
+                membership: SetMembership::SameValueZero,
             }),
+            // `del x` and `x = None` drop a reference and run `__del__`. The
+            // POLICY is stated here once; the shared compiler lowers both
+            // statements against `ProtocolSlot::Destructor`, which
+            // `normalize_class.rs` already fills from the canonical table. The
+            // walker used to synthesise a `typeof x.__del__ == "function"`
+            // probe into the tree at every drop site instead — a second
+            // mechanism for a slot that was already bound.
+            name_drop: Some(NameDrop::Finalise),
             ..Default::default()
         },
     })
@@ -1057,6 +1068,7 @@ class VybeSocketImpl:
         self._closed = False
         self._rx = rx
         self._tx = tx
+        self._listener = None
         if res is not None:
             self._res = res
         elif kind == 2:
@@ -1094,11 +1106,13 @@ class VybeSocketImpl:
             host = ".".join(pieces)
         return (host, int(record["port"]))
     def bind(self, address):
-        _wasi_start_bind(self._res, _wasi_network(), self._addr_text(address))
-        _wasi_finish_bind(self._res)
+        if self.sock_kind == 2:
+            _wasi_udp_bind(self._res, self._addr_text(address))
+        else:
+            _wasi_bind(self._res, self._addr_text(address))
     def listen(self, backlog=5):
         _wasi_backlog(self._res, backlog)
-        _wasi_start_listen(self._res)
+        self._listener = _wasi_listen(self._res)
     def getsockname(self):
         return self._addr_tuple(_wasi_local_addr(self._res))
     def getpeername(self):
@@ -1106,31 +1120,38 @@ class VybeSocketImpl:
     def fileno(self):
         return 0
     def accept(self):
-        result = _wasi_accept(self._res)
-        if result is None:
+        if self._listener is None:
+            self.listen(5)
+        res = _stream_read_handle(self._listener)
+        if res is None:
             return (None, ("0.0.0.0", 0))
-        conn = VybeSocketImpl(self.family, self.sock_kind, 0, result[0], result[1], result[2])
+        conn = VybeSocketImpl(self.family, self.sock_kind, 0, res)
         return (conn, conn.getpeername())
     def connect(self, address):
-        _wasi_start_conn(self._res, _wasi_network(), self._addr_text(address))
-        streams = _wasi_finish_conn(self._res)
-        if streams is not None:
-            self._rx = streams[0]
-            self._tx = streams[1]
+        if self.sock_kind == 2:
+            _wasi_udp_connect(self._res, self._addr_text(address))
+        else:
+            _wasi_connect(self._res, self._addr_text(address))
     def send(self, data):
-        _wasi_stream_write(self._tx, data)
+        _wasi_send(self._res, _stream_from_bytes(data))
         return len(data)
     def sendall(self, data):
-        _wasi_stream_write(self._tx, data)
+        _wasi_send(self._res, _stream_from_bytes(data))
         return None
     def recv(self, bufsize=1024):
-        return _wasi_stream_read(self._rx, bufsize)
+        if self._rx is None:
+            pair = _wasi_receive(self._res)
+            if pair is None:
+                return b""
+            self._rx = pair[0]
+        return _stream_read_bytes(self._rx, bufsize)
     def shutdown(self, how=2):
-        _wasi_sock_shutdown(self._res, how)
+        self._rx = None
     def close(self):
         if not self._closed:
             self._closed = True
-            _wasi_sock_shutdown(self._res, 2)
+            self._rx = None
+            self._listener = None
     def dup(self):
         return VybeSocketImpl(self.family, self.sock_kind, 0, self._res, self._rx, self._tx)
     def detach(self):
@@ -2014,42 +2035,23 @@ class __FnmatchModule:
 fnmatch = __FnmatchModule()
 "#;
 
-/// `configparser` — a minimal INI parser. Data lives in nested dicts (dict
-/// attrs behave; string manipulation is on locals, dodging the self-attr string
-/// slice/concat bug).
+/// `configparser` — Python's ADAPTER over the shared `config` primitive.
+///
+/// The INI grammar itself is `crates/vybe_compiler/src/primitives/config.rs`,
+/// beside `csv`, because the format has several consumers and belongs to none
+/// of them: php's `parse_ini_file`/`parse_ini_string` bind the same primitive.
+/// What stays here is only what is Python's — the class surface, the
+/// `optionxform` lowercasing policy passed as the second argument, and the
+/// accessors' return types.
+///
+/// This used to be a 40-line scanner in this string, which is why php had no
+/// `parse_ini_*` at all: the code existed but no other language could reach it.
 const CONFIGPARSER_PRELUDE: &str = r#"
 class ConfigParser:
     def __init__(self, defaults=None, dict_type=None, allow_no_value=False):
         self._sections = {}
     def read_string(self, s, source='<string>'):
-        current = None
-        hash_c = chr(35)
-        semi_c = chr(59)
-        lbrack = chr(91)
-        lines = s.split(chr(10))
-        for line in lines:
-            t = line.strip()
-            blank = t == ''
-            comment = not blank and (t[0] == hash_c or t[0] == semi_c)
-            header = not blank and not comment and t[0] == lbrack
-            if header:
-                name = t[1:len(t) - 1]
-                secs = self._sections
-                secs[name] = {}
-                self._sections = secs
-                current = name
-            elif not blank and not comment and current is not None:
-                idx = t.find('=')
-                if idx < 0:
-                    idx = t.find(':')
-                if idx >= 0:
-                    key = t[:idx].strip()
-                    val = t[idx + 1:].strip()
-                    secs = self._sections
-                    inner = secs[current]
-                    inner[key] = val
-                    secs[current] = inner
-                    self._sections = secs
+        self._sections = __py_config_parse(s, True)
     def read_dict(self, d):
         for name in d:
             target = {}
@@ -7696,6 +7698,7 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                         modifiers: mods,
                         with_events: false,
                         array_bounds: None,
+                        storage: None,
                     });
                 }
             }
@@ -7712,6 +7715,7 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                             modifiers: mods,
                             with_events: false,
                             array_bounds: None,
+                            storage: None,
                         });
                     }
                 }
@@ -10119,71 +10123,16 @@ fn walk_del(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
             })));
         }
     }
-    // `del x` on a bare name runs the finaliser first.
-    //
-    // Deliberately only bare names: `del obj.attr` and `del obj[k]` remove a
-    // MEMBER, they do not drop the object, so no finaliser runs.
-    if let [target] = exprs.as_slice() {
-        if matches!(target.kind, ExprKind::Ident(_)) {
-            return Ok(StmtKind::Block(vec![
-                python_finalise_stmt(target),
-                Statement::new(StmtKind::Delete(exprs)),
-            ]));
-        }
-    }
-
+    // `del x` on a bare name drops a reference and may finalise. The walker
+    // states no more than that it is a Delete: the policy is
+    // `Directives::name_drop`, declared once for the module, and the shared
+    // compiler lowers it against `ProtocolSlot::Destructor`. Deliberately no
+    // special case for the MEMBER forms either — `del obj.attr` and
+    // `del obj[k]` remove a member rather than dropping the object, and the
+    // shared lowering makes that distinction from the target's own shape.
     Ok(StmtKind::Delete(exprs))
 }
 
-/// `if typeof x.__del__ == "function": x.__del__()` — run `x`'s finaliser if it
-/// has one, immediately before the name stops referring to the object.
-///
-/// The test is a RUNTIME one, not a static "what class does `x` hold?" lookup,
-/// because Python is duck-typed: the name may have been rebound, and `__del__`
-/// may be inherited or attached at runtime. It also means this needs no
-/// variable→class tracking in the walker.
-///
-/// **Known imprecision, stated rather than hidden.** CPython finalises when the
-/// last REFERENCE goes away; this finalises when the NAME does. With an alias
-/// live (`y = x; del x`) CPython runs nothing and this runs `__del__` early.
-/// Getting that exact needs refcounting in the VM. The same trade was already
-/// made for PHP's `unset`, and running the finaliser in the common single-
-/// reference case is closer to Python than never running it at all.
-fn python_finalise_stmt(target: &Expression) -> Statement {
-    let type_of = |expr: Expression| Expression::new(ExprKind::TypeOf(Box::new(expr)));
-    let is = |expr: Expression, op: BinOp, s: &str| {
-        Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(expr),
-            right: Box::new(Expression::string(s)),
-        })
-    };
-    let del_member = Expression::new(ExprKind::Member {
-        object: Box::new(target.clone()),
-        field: "__del__".into(),
-        null_safe: false,
-    });
-    // `typeof x != "undefined"` FIRST, and `and` short-circuits, so the member
-    // read never happens for a name that does not exist yet. `TypeOf` is the
-    // only expression that tolerates an unbound name — reading one any other
-    // way faults, which is exactly what `x = None` as an INITIALISER does.
-    let cond = Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(is(type_of(target.clone()), BinOp::NotEq, "undefined")),
-        right: Box::new(is(type_of(del_member.clone()), BinOp::Eq, "function")),
-    });
-    let call_finaliser = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(del_member),
-        args: Vec::new(),
-        optional: false,
-    })));
-    Statement::new(StmtKind::If {
-        cond,
-        then_body: vec![call_finaliser],
-        elifs: Vec::new(),
-        else_body: None,
-    })
-}
 
 fn walk_assert(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut exprs: Vec<Expression> = pair
@@ -10984,16 +10933,11 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 },
                 _ => false,
             };
-            if !property_target {
-                return Ok(StmtKind::Expr(call_ident(
-                    "__py_attr_write",
-                    vec![
-                        desugar_member_reads(__w, (**object).clone()),
-                        Expression::string(field),
-                        value,
-                    ],
-                )));
-            }
+            // A plain attribute WRITE stays an `ExprKind::Member` assignment on
+            // the shared class path. It used to become `__py_attr_write` into
+            // an instance dict — the write half of the parallel attribute
+            // system the read half above no longer uses.
+            let _ = property_target;
         }
         if all_exprs.len() == 1
             && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
@@ -11015,49 +10959,15 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 if let ExprKind::Tuple(elems) = &t.kind {
                     let patterns = elems.iter().map(expr_to_array_pattern_elem).collect();
                     Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))
-                } else if let Some((var, field)) = instance_dict_index_target(&t) {
-                    python_instance_index(&var, &field)
-                } else if let ExprKind::Member { object, field, .. } = &t.kind {
-                    if let ExprKind::Ident(var) = &object.kind
-                        && instance_class(__w, var).as_deref().is_some_and(|class_name| {
-                            class_has_data_attr(__w, class_name, field)
-                                && !class_has_property(__w, class_name, field)
-                        })
-                    {
-                        python_instance_index(var, field)
-                    } else {
-                        t
-                    }
                 } else {
                     t
                 }
             })
             .collect();
-        // `x = None` is Python's other idiom for dropping a reference. Run the
-        // finaliser on what `x` held, then rebind.
-        //
-        // Scoped to the `None` literal ON PURPOSE. Finalising on every rebind
-        // would fire on ordinary reassignment in loops and accumulators, where
-        // the old value is usually still referenced elsewhere — more often
-        // wrong than right, and a guarded read on every assignment besides.
-        //
-        // Safe when `x` does not exist yet (the overwhelmingly common
-        // `x = None` INITIALISER) because the guard leads with
-        // `typeof x != "undefined"` and `and` short-circuits.
-        if targets.len() == 1
-            && matches!(targets[0].kind, ExprKind::Ident(_))
-            && matches!(value.kind, ExprKind::Lit(Literal::Null))
-        {
-            let finalise = python_finalise_stmt(&targets[0]);
-            return Ok(StmtKind::Block(vec![
-                finalise,
-                Statement::new(StmtKind::Assign {
-                    targets,
-                    value,
-                    by_ref: false,
-                }),
-            ]));
-        }
+        // `x = None` is Python's other idiom for dropping a reference, and it
+        // is now the ORDINARY assignment node. The finalise-on-drop policy is
+        // `Directives::name_drop`; the shared compiler recognises the shape and
+        // resolves `ProtocolSlot::Destructor`. Nothing to special-case here.
         if targets.len() == 1
             && let Some(lowered_target) = lower_defaultdict_index_target(__w, &targets[0])
         {
@@ -17161,6 +17071,7 @@ fn python_instance_index(var: &str, attr: &str) -> Expression {
     })
 }
 
+
 fn is_userdict_instance(__w: &mut PyWalker, var: &str) -> bool {
     if is_userdict_var(__w, var) {
         return true;
@@ -19697,10 +19608,25 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     _ => {}
                 }
             }
+            // A Python instance attribute goes through the SHARED class path
+            // (`primitives/classes.rs`) as an ordinary `ExprKind::Member`, the
+            // same node php/java/C#/JS use. It used to desugar to an instance
+            // dict subscript backed by `__py_attr_read`/`__py_attr_write` — a
+            // parallel attribute system beside the shared one, and the reason
+            // a field read wore a SUBSCRIPT's node shape and could be claimed
+            // by `ProtocolSlot::GetItem` (every `self.attr` inside a class
+            // defining `__getitem__` became `self.__getitem__("attr")`).
             if let ExprKind::Ident(var) = &object.kind
-                && instance_has_attr(__w, var, &field)
+                && let Some(class_name) = instance_class(__w, var)
+                && class_has_data_attr(__w, &class_name, &field)
+                && !instance_has_attr(__w, var, &field)
+                && !in_assignment_target(__w)
             {
-                return python_instance_index(var, &field);
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&class_name)),
+                    field,
+                    null_safe,
+                });
             }
             match field.as_str() {
                 "real" | "numerator" => return object,
@@ -19725,18 +19651,6 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 && field == "maps"
             {
                 return call_ident("__py_chainmap_maps", vec![Expression::ident(var)]);
-            }
-            if let ExprKind::Ident(var) = &object.kind
-                && let Some(class_name) = instance_class(__w, var)
-                && class_has_data_attr(__w, &class_name, &field)
-                && !instance_has_attr(__w, var, &field)
-                && !in_assignment_target(__w)
-            {
-                return Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident(&class_name)),
-                    field,
-                    null_safe,
-                });
             }
             // `types.ModuleType.__name__` — static metadata of the mounted
             // types surface.

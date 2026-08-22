@@ -199,21 +199,16 @@ pub fn emit_gethostbyname(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_else(line);
     {
         let list = chunks[current].alloc_scratch(1);
-        call_import(
-            chunks,
-            current,
-            "wasi:sockets/instance-network",
-            "instance-network",
-            0,
-            line,
-        );
+        // 0.3.1: `resolve-addresses: async func(name: string)`. The `network`
+        // handle 0.2 took as its first argument is gone with the
+        // `instance-network` interface, so the name is the only argument.
         lget(chunks, current, host, line);
         call_import(
             chunks,
             current,
             "wasi:sockets/ip-name-lookup",
             "resolve-addresses",
-            2,
+            1,
             line,
         );
         lset(chunks, current, list, line);

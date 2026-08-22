@@ -57,8 +57,6 @@ fn insert_path(root: &mut Subtree, path: &[&str], leaf: NamespaceNode) {
 pub fn register_namespace_tree() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        register_collections();
-        register_calendar();
         register_from_profile();
     });
 }
@@ -70,6 +68,10 @@ fn register_from_profile() {
     };
 
     let mut roots: BTreeMap<String, Subtree> = BTreeMap::new();
+    // Hand-written surfaces are MODULES like any other, so they join the same
+    // map rather than claiming roots of their own.
+    roots.insert("collections".to_string(), collections_subtree());
+    roots.insert("calendar".to_string(), calendar_subtree());
     let mut add = |key: &str, leaf: NamespaceNode| {
         let segments: Vec<&str> = key.split('.').collect();
         // A bare builtin (`len`, `print`) is not module surface.
@@ -124,18 +126,21 @@ fn register_from_profile() {
         insert_path(root, &[name], NamespaceNode::Alias(target));
     }
 
-    // Register each module as its own root (`math.pi`, `os.stat`) AND under a
-    // `python.*` package root, so ANY language can walk `python.math.pi` the
-    // same way it can walk `php.str_replace`. Same data, two mount points.
+    // ONE root, the way `platforms/jvm` owns `jvm.java.*`, kotlin owns
+    // `kotlin.*` and dotnet owns `dotnet.*` (namespaceplan.md §"Profile mounts").
+    //
+    // This used to ALSO register each module as a bare global root — "same
+    // data, two mount points" — which put `str`, `float`, `array`, `math`,
+    // `os`, `time` and 25 more into the one global tree that every language
+    // shares. The source-level names are not lost: the profile mounts them
+    // with `[[esm_default]] kind = "tree-mount"`, so `os.path.join` resolves
+    // through the COMMON resolver against `python.os.path.join` instead of a
+    // root only python could have registered.
     let mut python_root = Subtree::new();
-    for (root, tree) in &roots {
-        python_root.insert(root.clone(), NamespaceNode::Namespace(tree.clone()));
+    for (root, tree) in roots {
+        python_root.insert(root, NamespaceNode::Namespace(tree));
     }
     namespaces::register_namespace_tree("python", NamespaceNode::Namespace(python_root));
-
-    for (root, tree) in roots {
-        namespaces::register_namespace_tree(&root, NamespaceNode::Namespace(tree));
-    }
 }
 
 /// `collections` constructors. Hand-written because these are not profile
@@ -144,7 +149,7 @@ fn register_from_profile() {
 ///
 /// Instance methods (`rotate`, `move_to_end`, `most_common`, …) are NEVER
 /// resolved through the tree — member dispatch is receiver-based.
-fn register_collections() {
+fn collections_subtree() -> Subtree {
     let mut root = Subtree::new();
     root.insert(
         "deque".to_string(),
@@ -162,7 +167,7 @@ fn register_collections() {
         "defaultdict".to_string(),
         NamespaceNode::CommonEmit("python.defaultdict_new".to_string()),
     );
-    namespaces::register_namespace_tree("collections", NamespaceNode::Namespace(root));
+    root
 }
 
 fn calendar_type(name: &str, ctor: &str, formatmonth: Option<&str>) -> NamespaceNode {
@@ -212,7 +217,7 @@ fn calendar_type(name: &str, ctor: &str, formatmonth: Option<&str>) -> Namespace
     }
 }
 
-fn register_calendar() {
+fn calendar_subtree() -> Subtree {
     let mut root = Subtree::new();
     root.insert(
         "Calendar".to_string(),
@@ -234,5 +239,5 @@ fn register_calendar() {
             Some("python.calendar_html_formatmonth"),
         ),
     );
-    namespaces::register_namespace_tree("calendar", NamespaceNode::Namespace(root));
+    root
 }

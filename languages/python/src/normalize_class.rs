@@ -61,6 +61,7 @@ pub fn normalize_class(
             access: Access::Public,
             readonly: false,
             value_type: None,
+            storage: None,
         },
     );
 
@@ -83,6 +84,7 @@ pub fn normalize_class(
                     access: Access::Public, // Python is convention-based
                     readonly: false,
                     value_type: None,
+                    storage: None,
                 };
                 // A Python class attribute is readable through instances
                 // (`a.kind` falls back to `type(a).kind`), so the class body's
@@ -409,6 +411,7 @@ mod tests {
             modifiers: mods,
             with_events: false,
             array_bounds: None,
+            storage: None,
         };
         let nc = normalize_class(
             dummy_span(),

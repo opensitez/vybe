@@ -20,7 +20,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::{collections, ops, strings};
+use vybe_compiler::primitives::{collections, fs_path, ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -111,7 +111,7 @@ pub fn emit_stat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let raw = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    call_import(chunks, current, "wasi:filesystem", "stat", 1, line);
+    fs_path::emit_stat(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raw, line);
     emit_stat_result_from(chunks, current, raw, line);
 }
@@ -121,7 +121,7 @@ pub fn emit_entry_stat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let base = stash_args(chunks, current, argc, line);
     let raw = chunks[current].alloc_scratch(1);
     field_of(chunks, current, base, "path", line);
-    call_import(chunks, current, "wasi:filesystem", "stat", 1, line);
+    fs_path::emit_stat(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raw, line);
     emit_stat_result_from(chunks, current, raw, line);
 }
@@ -133,6 +133,61 @@ fn emit_join(chunks: &mut [Chunk], current: usize, dir: u16, name_expr_slot: u16
     ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_expr_slot, line);
     ops::emit_dyn_add(&mut chunks[current], line);
+}
+
+/// Is this `directory-entry`'s `%type` the given `descriptor-type` case?
+/// Stack: `[]` → `[bool]`.
+///
+/// `read-directory` answers the WIT record `{ %type, name }`, where `%type` is
+/// a `descriptor-type` case NAME. The verb this replaced answered an invented
+/// `{ name, isFile, isDir }`, so the booleans were the host's opinion; now they
+/// are Python's, derived here. Same shape `fs_path::emit_stat` uses for
+/// `descriptor-stat.type`, deliberately — two spellings of "is this a
+/// directory" would eventually disagree.
+///
+/// ⚠Compares the entry's OWN type: a link to a directory is `symbolic-link`,
+/// not `directory`. That is the right primitive but the wrong answer for
+/// `DirEntry.is_dir()`, which follows — see [`emit_entry_kind_flag`].
+fn emit_entry_type_is(chunks: &mut [Chunk], current: usize, raw: u16, want: &str, line: u32) {
+    field_of(chunks, current, raw, "type", line);
+    chunks[current].emit_string_const(want, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+}
+
+/// `DirEntry.is_file()` / `is_dir()`, which FOLLOW symlinks by default.
+/// Stack: `[]` → `[bool]`.
+///
+/// `read-directory` reports each entry's own type without following, so a link
+/// to a file reads `symbolic-link` and a naive `type == "regular-file"` answers
+/// `False` where CPython answers `True`. Only the link case needs the extra
+/// question, so only the link case asks it: `fs_path::emit_is_file` stats the
+/// joined path, and that path follows — verified against CPython, where
+/// `os.path.isfile` on a link to a file is `True` in both.
+///
+/// The pair `(is_symlink, is_file)` is therefore `(True, True)` for a link to a
+/// file, exactly as CPython reports it. Reading `is_file` as "is not a link" is
+/// the mistake this shape exists to prevent.
+fn emit_entry_kind_flag(
+    chunks: &mut [Chunk],
+    current: usize,
+    raw: u16,
+    dir: u16,
+    nm: u16,
+    want: &str,
+    line: u32,
+) {
+    emit_entry_type_is(chunks, current, raw, "symbolic-link", line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_join(chunks, current, dir, nm, line);
+    if want == "directory" {
+        fs_path::emit_is_dir(&mut chunks[current], line);
+    } else {
+        fs_path::emit_is_file(&mut chunks[current], line);
+    }
+    chunks[current].emit_else(line);
+    emit_entry_type_is(chunks, current, raw, want, line);
+    chunks[current].emit_end(line);
 }
 
 /// `os.scandir([path])` → array of DirEntry objects. Python's scandir returns a
@@ -149,14 +204,7 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     let raws = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dir, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "readDirEntries",
-        1,
-        line,
-    );
+    fs_path::emit_read_directory_entries(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
 
     let out = chunks[current].alloc_scratch(1);
@@ -195,11 +243,19 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_join(chunks, current, dir, nm, line);
     set_field(chunks, current, "path", line);
     chunks[current].emit_dup(line);
-    field_of(chunks, current, raw, "isFile", line);
+    emit_entry_kind_flag(chunks, current, raw, dir, nm, "regular-file", line);
     set_field(chunks, current, "__is_file", line);
     chunks[current].emit_dup(line);
-    field_of(chunks, current, raw, "isDir", line);
+    emit_entry_kind_flag(chunks, current, raw, dir, nm, "directory", line);
     set_field(chunks, current, "__is_dir", line);
+    // `DirEntry.is_symlink()` answered a hardcoded False, because the invented
+    // verb's `{ name, isFile, isDir }` had nowhere to say otherwise. The WIT
+    // record does: `symbolic-link` is a `descriptor-type` case. And this one
+    // needs no caveat — CPython's `is_symlink()` does not follow either, since
+    // following a link to ask whether it is a link answers about the target.
+    chunks[current].emit_dup(line);
+    emit_entry_type_is(chunks, current, raw, "symbolic-link", line);
+    set_field(chunks, current, "__is_link", line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -259,14 +315,7 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "readDirEntries",
-        1,
-        line,
-    );
+    fs_path::emit_read_directory_entries(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
     chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dirs, line);
@@ -292,7 +341,11 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     field_of(chunks, current, raw, "name", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nm, line);
 
-    field_of(chunks, current, raw, "isDir", line);
+    // The NON-following test, deliberately, unlike `scandir`'s: this decides
+    // what `walk` RECURSES into, and `os.walk` defaults to `followlinks=False`.
+    // Following here would descend through a link to a parent directory and
+    // loop forever.
+    emit_entry_type_is(chunks, current, raw, "directory", line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dirs, line);
@@ -513,18 +566,13 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, d_dir, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, d_dir, line);
-    call_import(chunks, current, "wasi:filesystem", "mkdir", 1, line);
+    // `copytree` builds the destination TREE, so this is the recursive form.
+    // `create-directory-at` is one level only — WASI has no `mkdir -p`.
+    fs_path::emit_mkdir_all(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, s_dir, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "readDirEntries",
-        1,
-        line,
-    );
+    fs_path::emit_read_directory_entries(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
@@ -546,7 +594,7 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     field_of(chunks, current, raw, "name", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nm, line);
 
-    field_of(chunks, current, raw, "isDir", line);
+    emit_entry_type_is(chunks, current, raw, "directory", line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, work, line);
@@ -558,7 +606,7 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_else(line);
     emit_join(chunks, current, s_dir, nm, line);
     emit_join(chunks, current, d_dir, nm, line);
-    call_import(chunks, current, "wasi:filesystem", "copy", 2, line);
+    fs_path::emit_copy(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 
@@ -644,7 +692,7 @@ pub fn emit_which(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cand, line);
-    call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
+    fs_path::emit_exists(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cand, line);

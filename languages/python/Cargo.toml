@@ -13,7 +13,6 @@ vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
-vybe_platform_vybe = { workspace = true, features = ["gui"] }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 
@@ -22,6 +21,3 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 
-[[test]]
-name = "python"
-path = "tests/python/main.rs"
