@@ -54,16 +54,65 @@
 //! pixmap.save_png("out.png").unwrap();
 //! ```
 
+pub mod effects;
+pub mod filters;
 mod recording;
 mod tinyskia;
 mod types;
 
+pub use effects::{apply_filter_list, apply_filter_op, blur_pixmap, shadow_layer};
+pub use filters::{CssFilters, FilterOp, parse_css_filter};
+
 pub use recording::{DrawCmd, RecordingCanvas};
-pub use tinyskia::TinySkiaCanvas;
+pub use tinyskia::{CanvasState, TinySkiaCanvas};
+/// The drawing state HTML §4.12.5.1.2 defines — every attribute a page can set
+/// and read back, in one place.
+///
+/// Exposed because BOTH `Canvas` implementations hold one, which is what lets
+/// the attribute getters below be written once as defaults instead of twice as
+/// overrides that could disagree.
+pub use tinyskia::PaintState as DrawingState;
+
+/// Parse a CSS `<color>` the way this engine parses one.
+///
+/// The entry point for anything outside the module that has canvas colour TEXT
+/// and needs a colour — a gradient stop, most of all, since `addColorStop`
+/// takes a CSS string. Routed here rather than parsed by the caller so there is
+/// one colour grammar per engine and not one per call site.
+pub fn parse_color_css(css: &str) -> Option<Color> {
+    tinyskia::parse_canvas_color(css)
+}
 pub use types::{
-    Color, ColorStop, FillRule, Font, FontStyle, FontWeight, Gradient, GradientKind, Image,
-    LineCap, LineJoin, Paint, Pattern, Repetition, Shadow, TextAlign, TextBaseline,
+    Color, ColorStop, CompositeOp, ContextAttributes, Direction, FillRule, Font, FontKerning,
+    FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient, GradientKind, Image, ImageData,
+    LineCap, LineJoin, Matrix, Paint, Path2D, PathOp, Pattern, Repetition, Shadow,
+    SmoothingQuality, TextAlign, TextBaseline, TextMetrics, TextRendering,
 };
+
+/// Apply `setLineDash`'s own rules to a dash list.
+///
+/// Two of them, both from HTML §4.12.5, and both observable through
+/// `getLineDash`:
+///
+/// 1. A list containing a negative or non-finite value is **rejected whole** —
+///   the call does nothing and the previous dash pattern stays in force. That
+///   is why this answers `None` rather than filtering the bad entries out:
+///   dropping one entry silently re-pairs every dash with the wrong gap.
+/// 2. An **odd-length** list is concatenated with itself, because a dash
+///   pattern is read in on/off pairs and an odd list has no last gap.
+///   `setLineDash([5])` therefore reads back as `[5, 5]`.
+///
+/// An empty list is valid and means a solid line.
+pub fn normalize_dash(intervals: &[f32]) -> Option<Vec<f32>> {
+    if intervals.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return None;
+    }
+    let mut dash = intervals.to_vec();
+    if dash.len() % 2 == 1 {
+        dash.extend_from_within(..);
+    }
+    Some(dash)
+}
 
 /// Canvas draw-routing tracing: `0` unread, `1` off, `2` on.
 ///
@@ -166,6 +215,51 @@ pub trait Canvas {
     /// `strokeStyle` — the stroke half of [`Canvas::set_fill_paint`].
     fn set_stroke_paint(&mut self, paint: &Paint) {
         self.set_stroke_color(paint.as_flat_color());
+    }
+
+    /// `createLinearGradient(x0, y0, x1, y1)`.
+    ///
+    /// The four factories below are **context methods in the IDL**, not
+    /// constructors — `new CanvasGradient()` does not exist, and a page can
+    /// only obtain one from the context. They are provided here because the
+    /// work is entirely in the value type; what the context contributes is
+    /// being the only door to it.
+    fn create_linear_gradient(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> Gradient {
+        Gradient::linear(x0, y0, x1, y1)
+    }
+
+    /// `createRadialGradient(x0, y0, r0, x1, y1, r1)` — the cone between two
+    /// circles, which is why it takes two centres and not one.
+    fn create_radial_gradient(
+        &self,
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    ) -> Gradient {
+        Gradient::radial(x0, y0, r0, x1, y1, r1)
+    }
+
+    /// `createConicGradient(startAngle, x, y)`. Note the spec's argument order:
+    /// the ANGLE comes first, ahead of the centre.
+    fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> Gradient {
+        Gradient::conic(start_angle, x, y)
+    }
+
+    /// `createPattern(image, repetition)`.
+    ///
+    /// `None` for a repetition keyword that is not one of the four the spec
+    /// lists — which the spec makes a `SyntaxError` rather than a silent
+    /// fallback to `repeat`, because the difference between tiling and not
+    /// tiling is the whole of what the argument says.
+    fn create_pattern(&self, image: &Image, repetition: &str) -> Option<Pattern> {
+        let repetition = Repetition::parse(repetition)?;
+        Some(Pattern {
+            image: image.clone(),
+            repetition,
+        })
     }
 
     /// `shadowColor` / `shadowBlur` / `shadowOffsetX` / `shadowOffsetY`.
@@ -334,6 +428,23 @@ pub trait Canvas {
     /// allowed to overlap, which is what the spec requires and what stops a
     /// large radius from turning the shape inside out.
     fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32) {
+        self.round_rect_radii(x, y, w, h, [radius; 4]);
+    }
+
+    /// `roundRect(x, y, w, h, radii)` — the general form, with a radius per
+    /// corner in the spec's order: **top-left, top-right, bottom-right,
+    /// bottom-left**.
+    ///
+    /// The one-radius [`Canvas::round_rect`] is this with the same value four
+    /// times. Four is the general case rather than a convenience: a tab, a
+    /// grouped button, a speech bubble all round some corners and not others,
+    /// and none of them are expressible with a single radius.
+    ///
+    /// When adjacent radii would overlap along an edge, ALL FOUR are scaled by
+    /// the same factor — the spec's rule, and the reason this cannot clamp each
+    /// corner independently: clamping separately would change the shape's
+    /// proportions, while scaling together preserves them.
+    fn round_rect_radii(&mut self, x: f32, y: f32, w: f32, h: f32, radii: [f32; 4]) {
         if w == 0.0 || h == 0.0 {
             return;
         }
@@ -341,16 +452,33 @@ pub trait Canvas {
         // other way; normalising keeps the corner maths in one direction.
         let (x, w) = if w < 0.0 { (x + w, -w) } else { (x, w) };
         let (y, h) = if h < 0.0 { (y + h, -h) } else { (y, h) };
-        let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
-        self.move_to(x + r, y);
-        self.line_to(x + w - r, y);
-        self.arc_to(x + w, y, x + w, y + r, r);
-        self.line_to(x + w, y + h - r);
-        self.arc_to(x + w, y + h, x + w - r, y + h, r);
-        self.line_to(x + r, y + h);
-        self.arc_to(x, y + h, x, y + h - r, r);
-        self.line_to(x, y + r);
-        self.arc_to(x, y, x + r, y, r);
+        let [mut tl, mut tr, mut br, mut bl] = radii.map(|r| r.max(0.0));
+        // Each edge can hold the two radii that meet on it. The tightest of the
+        // four ratios is the factor every radius shrinks by.
+        let scale = [
+            w / (tl + tr),
+            w / (bl + br),
+            h / (tl + bl),
+            h / (tr + br),
+        ]
+        .into_iter()
+        .filter(|s| s.is_finite())
+        .fold(1.0f32, f32::min);
+        if scale < 1.0 {
+            tl *= scale;
+            tr *= scale;
+            br *= scale;
+            bl *= scale;
+        }
+        self.move_to(x + tl, y);
+        self.line_to(x + w - tr, y);
+        self.arc_to(x + w, y, x + w, y + tr, tr);
+        self.line_to(x + w, y + h - br);
+        self.arc_to(x + w, y + h, x + w - br, y + h, br);
+        self.line_to(x + bl, y + h);
+        self.arc_to(x, y + h, x, y + h - bl, bl);
+        self.line_to(x, y + tl);
+        self.arc_to(x, y, x + tl, y, tl);
         self.close_path();
     }
 
@@ -492,4 +620,627 @@ pub trait Canvas {
 
     /// Reset the current transform to the identity.
     fn reset_transform(&mut self);
+
+    /// `getTransform()` — the current transformation matrix.
+    ///
+    /// The read half of `setTransform`, and the only way a caller can compose
+    /// with a transform it did not set. Defaulted to the identity for a canvas
+    /// that does not track one; an impl with a matrix returns it.
+    fn get_transform(&self) -> Matrix {
+        Matrix::IDENTITY
+    }
+
+    /// `setTransform(a, b, c, d, e, f)` — REPLACE the current matrix.
+    ///
+    /// Provided, because it is exactly `resetTransform` followed by
+    /// `transform` — replacing versus composing is the whole difference
+    /// between the two, and stating it here means no impl can get it backwards.
+    fn set_transform(&mut self, m: Matrix) {
+        self.reset_transform();
+        self.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+    }
+
+    // ─── Context state ──────────────────────────────────────────────────
+
+    /// `reset()` — return the context to its default state.
+    ///
+    /// Three things, per HTML §4.12.5: the drawing state stack is emptied, the
+    /// state is reset to defaults, and **the bitmap is cleared to transparent
+    /// black**. The last one is the part that is easy to leave out and the
+    /// reason `reset()` is not just a loop of setters.
+    fn reset(&mut self);
+
+    /// `isContextLost()` — whether the backing bitmap has been lost.
+    ///
+    /// A software canvas cannot lose its context: the pixels are ordinary
+    /// memory, with no GPU device to be reset out from under them. `false` is
+    /// the true answer here rather than a stub, and an impl that acquires a
+    /// device is the one that should override it.
+    fn is_context_lost(&self) -> bool {
+        false
+    }
+
+    /// `getContextAttributes()` — the settings this context was created with.
+    fn context_attributes(&self) -> ContextAttributes {
+        ContextAttributes::default()
+    }
+
+    /// `globalCompositeOperation` — how new drawing combines with existing
+    /// pixels.
+    ///
+    /// Defaulted to a no-op, which leaves `source-over` in force. That is a
+    /// visible degradation rather than a silent one: the shape still paints,
+    /// it simply paints over instead of (say) knocking out.
+    fn set_global_composite_operation(&mut self, _op: CompositeOp) {}
+
+    /// `imageSmoothingQuality`. Only consulted when smoothing is enabled.
+    fn set_image_smoothing_quality(&mut self, _quality: SmoothingQuality) {}
+
+    /// `filter` — a CSS filter function list, or `"none"`.
+    ///
+    /// Carried as the source string: the value is a CSS `<filter-value-list>`,
+    /// the engine already has a parser for it, and re-spelling it as an enum
+    /// here would be a second grammar to keep in step with the first.
+    fn set_filter(&mut self, _filter: &str) {}
+
+    /// `getLineDash()` — the dash pattern currently in effect.
+    ///
+    /// Empty means a solid line. The spec returns the list as set, except that
+    /// an odd-length list is doubled — `setLineDash([5])` reads back `[5, 5]` —
+    /// so this is not simply the argument handed back.
+    fn get_line_dash(&self) -> Vec<f32> {
+        Vec::new()
+    }
+
+    // ─── CanvasTextDrawingStyles ────────────────────────────────────────
+
+    /// `direction` — which way the text runs, and therefore what `textAlign`'s
+    /// `start` and `end` resolve to.
+    fn set_direction(&mut self, _direction: Direction) {}
+
+    /// `lang` — the language the text is in, which shapes it: the same
+    /// codepoints take different glyphs in Chinese and Japanese.
+    fn set_lang(&mut self, _lang: &str) {}
+
+    /// `letterSpacing` — extra space between characters, as a CSS length.
+    fn set_letter_spacing(&mut self, _spacing: &str) {}
+
+    /// `wordSpacing` — extra space at each word separator, as a CSS length.
+    fn set_word_spacing(&mut self, _spacing: &str) {}
+
+    /// `fontKerning`.
+    fn set_font_kerning(&mut self, _kerning: FontKerning) {}
+
+    /// `fontStretch`.
+    fn set_font_stretch(&mut self, _stretch: FontStretch) {}
+
+    /// `fontVariantCaps`.
+    fn set_font_variant_caps(&mut self, _caps: FontVariantCaps) {}
+
+    /// `textRendering`.
+    fn set_text_rendering(&mut self, _rendering: TextRendering) {}
+
+    // ─── Text measurement ───────────────────────────────────────────────
+
+    /// `measureText(text)` — the full [`TextMetrics`], not just an advance.
+    ///
+    /// `&mut self` because shaping needs the font system, which the impl holds
+    /// mutably; measuring does not change what is painted.
+    ///
+    /// Defaulted to all-zero metrics for a canvas with no text engine. Zero is
+    /// the honest answer where nothing can be measured — every other number
+    /// would be an invented one that a caller would lay out against.
+    fn measure_text(&mut self, _text: &str) -> TextMetrics {
+        TextMetrics::default()
+    }
+
+    /// `fillText(text, x, y, maxWidth)` — the four-argument form.
+    ///
+    /// **Provided**, because the spec defines a constraint rather than a new
+    /// drawing operation: text wider than `max_width` must be made to fit by
+    /// EITHER a more condensed face or a smaller font, whichever the user agent
+    /// can do. Scaling about the anchor is the second of those — a backend that
+    /// shapes at the transformed size (`TinySkiaCanvas` does) draws the run
+    /// proportionally smaller, not horizontally squashed. Both satisfy the
+    /// spec; this says which one happens rather than claiming the other.
+    ///
+    /// The anchor is `(x, y)`, and scaling about it is correct under every
+    /// `textAlign`: the alignment offset is applied by `fill_text` relative to
+    /// the origin it is passed, which is the anchor after the translate — so
+    /// centred text stays centred on `x` and right-aligned text stays flush to
+    /// it.
+    ///
+    /// A text run that already fits is drawn untouched, so this costs one
+    /// measurement and nothing else in the common case.
+    fn fill_text_constrained(&mut self, text: &str, x: f32, y: f32, max_width: f32) {
+        match self.condense_factor(text, max_width) {
+            None => self.fill_text(text, x, y),
+            Some(factor) => {
+                self.save();
+                self.translate(x, y);
+                self.scale(factor, 1.0);
+                self.fill_text(text, 0.0, 0.0);
+                self.restore();
+            }
+        }
+    }
+
+    /// `strokeText(text, x, y, maxWidth)` — the stroke half of
+    /// [`Canvas::fill_text_constrained`].
+    fn stroke_text_constrained(&mut self, text: &str, x: f32, y: f32, max_width: f32) {
+        match self.condense_factor(text, max_width) {
+            None => self.stroke_text(text, x, y),
+            Some(factor) => {
+                self.save();
+                self.translate(x, y);
+                self.scale(factor, 1.0);
+                self.stroke_text(text, 0.0, 0.0);
+                self.restore();
+            }
+        }
+    }
+
+    /// How much to squeeze `text` to fit `max_width`, or `None` when it already
+    /// fits and must be drawn untouched.
+    ///
+    /// Shared by the two constrained text methods so the rule lives once. A
+    /// non-positive `max_width` is the spec's "do nothing" case and reports as
+    /// already fitting; a canvas that cannot measure reports width `0`, which
+    /// also fits, so no text engine means no accidental squeeze.
+    fn condense_factor(&mut self, text: &str, max_width: f32) -> Option<f32> {
+        if max_width <= 0.0 {
+            return None;
+        }
+        let width = self.measure_text(text).width;
+        if width <= max_width || width <= 0.0 {
+            return None;
+        }
+        Some(max_width / width)
+    }
+
+    // ─── Path2D ─────────────────────────────────────────────────────────
+
+    /// Append a [`Path2D`] to the current path.
+    ///
+    /// **Provided**, and it is the whole of `Path2D` support: a recorded path
+    /// is a list of the same calls the trait already takes, so replaying it is
+    /// the definition. Every `fill(path)` / `stroke(path)` / `clip(path)`
+    /// overload below is this plus the operation it names.
+    ///
+    /// No `begin_path` — this APPENDS, so a caller can compose a recorded path
+    /// with one it is building by hand.
+    fn append_path(&mut self, path: &Path2D) {
+        for op in &path.ops {
+            match *op {
+                PathOp::ClosePath => self.close_path(),
+                PathOp::MoveTo(x, y) => self.move_to(x, y),
+                PathOp::LineTo(x, y) => self.line_to(x, y),
+                PathOp::QuadraticCurveTo { cx, cy, x, y } => self.quadratic_curve_to(cx, cy, x, y),
+                PathOp::BezierCurveTo {
+                    cx1,
+                    cy1,
+                    cx2,
+                    cy2,
+                    x,
+                    y,
+                } => self.bezier_curve_to(cx1, cy1, cx2, cy2, x, y),
+                PathOp::ArcTo {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    radius,
+                } => self.arc_to(x1, y1, x2, y2, radius),
+                PathOp::Rect { x, y, w, h } => self.rect(x, y, w, h),
+                PathOp::RoundRect { x, y, w, h, radii } => self.round_rect_radii(x, y, w, h, radii),
+                PathOp::Arc {
+                    x,
+                    y,
+                    r,
+                    start,
+                    end,
+                    ccw,
+                } => self.arc(x, y, r, start, end, ccw),
+                PathOp::Ellipse {
+                    x,
+                    y,
+                    rx,
+                    ry,
+                    rotation,
+                    start,
+                    end,
+                    ccw,
+                } => self.ellipse_arc(x, y, rx, ry, rotation, start, end, ccw),
+            }
+        }
+    }
+
+    /// `fill(path, fillRule)`.
+    ///
+    /// The recorded path replaces the current one for the duration, which is
+    /// what the overload means: filling a `Path2D` must not disturb whatever
+    /// the context was building. `begin_path` first, so nothing already in the
+    /// current path is filled along with it.
+    fn fill_path(&mut self, path: &Path2D, rule: FillRule) {
+        self.begin_path();
+        self.append_path(path);
+        self.fill_with_rule(rule);
+    }
+
+    /// `stroke(path)`.
+    fn stroke_path(&mut self, path: &Path2D) {
+        self.begin_path();
+        self.append_path(path);
+        self.stroke();
+    }
+
+    /// `clip(path, fillRule)`.
+    fn clip_path(&mut self, path: &Path2D, rule: FillRule) {
+        self.begin_path();
+        self.append_path(path);
+        self.clip_with_rule(rule);
+    }
+
+    // ─── Hit testing ────────────────────────────────────────────────────
+
+    /// `isPointInPath(x, y, fillRule)` — is `(x, y)` inside the current path?
+    ///
+    /// The point is in the canvas's own coordinate space, NOT the transformed
+    /// space: the spec transforms it by the inverse of the current matrix
+    /// before testing, so a hit test keeps working after the caller has scaled
+    /// or rotated.
+    ///
+    /// Defaulted to `false` for a canvas that keeps no geometry — the same
+    /// answer it would give for a point outside, which is the safe direction:
+    /// a UI built on it responds to nothing rather than to everything.
+    fn is_point_in_path(&self, _x: f32, _y: f32, _rule: FillRule) -> bool {
+        false
+    }
+
+    /// `isPointInStroke(x, y)` — is `(x, y)` on the STROKE of the current path?
+    ///
+    /// A different question from [`Canvas::is_point_in_path`] and not derivable
+    /// from it: an unclosed path has a stroke and no interior, and a thick
+    /// stroke on a closed path extends outside the fill.
+    fn is_point_in_stroke(&self, _x: f32, _y: f32) -> bool {
+        false
+    }
+
+    /// `isPointInPath(path, x, y, fillRule)` — the `Path2D` overload.
+    fn is_point_in_path2d(&self, _path: &Path2D, _x: f32, _y: f32, _rule: FillRule) -> bool {
+        false
+    }
+
+    /// `isPointInStroke(path, x, y)` — the `Path2D` overload.
+    fn is_point_in_stroke2d(&self, _path: &Path2D, _x: f32, _y: f32) -> bool {
+        false
+    }
+
+    /// `drawFocusIfNeeded(element)` — draw a focus ring around the current path
+    /// when the element the canvas is standing in for has focus.
+    ///
+    /// The element is the CALLER's to resolve: a canvas has no DOM, and the
+    /// question it can answer is "draw the ring or not". Whoever holds the
+    /// element passes the answer in.
+    ///
+    /// Defaulted to a no-op, which is also what a browser does when the element
+    /// is not focused — the degradation is that a focused control does not show
+    /// its ring, not that something wrong is drawn.
+    fn draw_focus_if_needed(&mut self, _focused: bool) {}
+
+    // ─── Pixel access ───────────────────────────────────────────────────
+
+    /// `HTMLCanvasElement.toBlob(callback, type, quality)` — the canvas as an
+    /// encoded image file.
+    ///
+    /// On the canvas rather than the element because the element has no pixels;
+    /// it delegates here, the same way `getContext` does. Synchronous for the
+    /// same reason [`Canvas::get_image_data`] is: the callback in the IDL is
+    /// about not blocking the event loop, which is the caller's concern and not
+    /// the rasteriser's.
+    ///
+    /// `mime` is `image/png` or `image/jpeg`; anything else answers `None`
+    /// rather than quietly returning a PNG under the wrong name — a caller that
+    /// asked for WebP and got PNG bytes labelled WebP has a corrupt file and no
+    /// way to know. `quality` is only read for JPEG, per spec.
+    ///
+    /// `None` from a canvas with no bitmap, which is a recording.
+    fn to_blob(&self, _mime: &str, _quality: Option<f32>) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// `HTMLCanvasElement.toDataURL(type, quality)`.
+    ///
+    /// **Provided**, because it is [`Canvas::to_blob`] plus base64 and a
+    /// prefix — the spec defines it as exactly that, so a backend that can
+    /// encode gets this for free and cannot implement the two inconsistently.
+    ///
+    /// The spec's fallback for a canvas with no pixels is the string
+    /// `"data:,"`, which is a valid empty data URL. That is returned rather
+    /// than `None` so the attribute always answers something a page can put in
+    /// an `src`, which is what makes it safe to call unconditionally.
+    fn to_data_url(&self, mime: &str, quality: Option<f32>) -> String {
+        match self.to_blob(mime, quality) {
+            Some(bytes) => {
+                use base64::Engine as _;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                format!("data:{mime};base64,{encoded}")
+            }
+            None => "data:,".to_string(),
+        }
+    }
+
+    /// `createImageData(sw, sh)` — a transparent-black buffer of that size.
+    ///
+    /// Provided: the spec allocates rather than reading the canvas, so this
+    /// needs nothing from the backend.
+    fn create_image_data(&self, width: u32, height: u32) -> ImageData {
+        ImageData::new(width, height)
+    }
+
+    /// `getImageData(sx, sy, sw, sh)` — read pixels back out of the bitmap.
+    ///
+    /// **The only operation here that a backend can genuinely fail to answer.**
+    /// A recording canvas has no pixels — it has the calls that would have made
+    /// them — so it returns `None` rather than a plausible block of zeroes that
+    /// a caller would treat as a blank canvas.
+    ///
+    /// Like `putImageData`, this ignores the transform, the clip and
+    /// `globalAlpha`: it reads the bitmap, not the drawing.
+    fn get_image_data(&self, _sx: i32, _sy: i32, _sw: u32, _sh: u32) -> Option<ImageData> {
+        None
+    }
+
+    /// `putImageData(imagedata, dx, dy)` in the spec's own type.
+    ///
+    /// [`Canvas::put_image_data`] takes an [`Image`], which is what the drawing
+    /// side of the toolkit passes. This is the `ImageData` spelling, and the
+    /// conversion is the alpha: `ImageData` is straight RGBA, so it goes to
+    /// `Image::from_rgba` and nowhere else.
+    fn put_image_data_spec(&mut self, data: &ImageData, dx: f32, dy: f32) {
+        let img = Image::from_rgba(data.width, data.height, data.data.clone());
+        self.put_image_data(&img, dx, dy);
+    }
+
+    /// `putImageData(imagedata, dx, dy, dirtyX, dirtyY, dirtyWidth,
+    /// dirtyHeight)` — write only part of the buffer.
+    ///
+    /// Provided by cropping to the dirty rectangle and writing that. The dirty
+    /// rectangle is in the IMAGE's coordinates and is clipped to it; an empty
+    /// one writes nothing, per spec.
+    #[allow(clippy::too_many_arguments)]
+    fn put_image_data_dirty(
+        &mut self,
+        data: &ImageData,
+        dx: f32,
+        dy: f32,
+        dirty_x: i32,
+        dirty_y: i32,
+        dirty_width: i32,
+        dirty_height: i32,
+    ) {
+        // **A negative extent is legal and means the rectangle runs the other
+        // way** — the spec normalises it before doing anything else, and these
+        // are `long` in the IDL for exactly that reason. Taking them unsigned
+        // made `dirtyWidth: -10` unrepresentable; leaving them signed and NOT
+        // normalising would make `x1 < x0` and write nothing at all, silently.
+        let (dirty_x, dirty_width) = if dirty_width < 0 {
+            (dirty_x + dirty_width, -dirty_width)
+        } else {
+            (dirty_x, dirty_width)
+        };
+        let (dirty_y, dirty_height) = if dirty_height < 0 {
+            (dirty_y + dirty_height, -dirty_height)
+        } else {
+            (dirty_y, dirty_height)
+        };
+        // Clip the dirty rect to the buffer. A negative origin moves the
+        // destination by the same amount, because the spec writes the
+        // INTERSECTION at its position in the source.
+        let x0 = dirty_x.max(0);
+        let y0 = dirty_y.max(0);
+        let x1 = (dirty_x + dirty_width).min(data.width as i32);
+        let y1 = (dirty_y + dirty_height).min(data.height as i32);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        let mut cropped = Vec::with_capacity((w * h * 4) as usize);
+        for row in y0..y1 {
+            let start = ((row * data.width as i32 + x0) * 4) as usize;
+            let end = start + (w * 4) as usize;
+            cropped.extend_from_slice(&data.data[start..end]);
+        }
+        let Some(sub) = ImageData::from_rgba(w, h, cropped) else {
+            return;
+        };
+        self.put_image_data_spec(&sub, dx + x0 as f32, dy + y0 as f32);
+    }
+
+    // ─── Reading the drawing state back ─────────────────────────────────
+    //
+    // **Every attribute in §4.12.5 is readable, not only writable.** A page
+    // does `const prev = ctx.fillStyle` before changing it, checks
+    // `ctx.textAlign`, or serialises `ctx.font` — and until these existed this
+    // trait had 27 setters and no way to ask any of them a question.
+    //
+    // Written once, as defaults over `drawing_state`, rather than twice as
+    // overrides. Both implementations keep the same `DrawingState`, so the
+    // recording and the rasteriser cannot drift into disagreeing about what an
+    // attribute currently is or what its initial value was.
+
+    // ─── CSS values, as the page wrote them ─────────────────────────────
+    //
+    // `fillStyle`, `strokeStyle`, `font` and `shadowColor` are CSS values in
+    // the IDL, and a page assigns them as text. These take that text and let
+    // the ENGINE parse it — with the same parser the engine's stylesheets go
+    // through, so `"rebeccapurple"`, `"color-mix(...)"` and every other form
+    // the engine understands work here for free and cannot drift.
+    //
+    // The typed setters above stay: .NET's `System.Drawing` holds a `Color`
+    // and a `Font`, not a string, and making it serialize one just so this
+    // layer could parse it back would be a round trip that can only lose.
+
+    /// `fillStyle = "<color>"`. A value the engine cannot parse is IGNORED —
+    /// §4.12.5 says an unparseable assignment leaves the attribute unchanged
+    /// rather than resetting it to a default.
+    fn set_fill_style_css(&mut self, css: &str);
+
+    /// `strokeStyle = "<color>"`. Same rule.
+    fn set_stroke_style_css(&mut self, css: &str);
+
+    /// `font = "<font shorthand>"`. An unparseable value is ignored.
+    fn set_font_css(&mut self, css: &str);
+
+    /// `shadowColor = "<color>"`. Same rule.
+    fn set_shadow_color_css(&mut self, css: &str);
+
+    /// The drawing state this canvas is holding — HTML §4.12.5.1.2.
+    ///
+    /// The one method an implementation has to write; every getter below reads
+    /// through it.
+    fn drawing_state(&self) -> &DrawingState;
+
+    /// `font`, serialized — §4.12.5.
+    ///
+    /// The SERIALIZED form, not the text the page wrote: `ctx.font = "48px
+    /// serif"` reads back `"48px serif"`, but so does a font set through the
+    /// typed `set_font`, which never had a string. Keeping the author's text
+    /// instead would make those two disagree for the same font.
+    fn current_font_css(&self) -> String {
+        self.drawing_state().font.to_css()
+    }
+
+    /// The font itself, for a caller that wants the parts rather than a string.
+    fn current_font(&self) -> Font {
+        self.drawing_state().font.clone()
+    }
+
+    /// `fillStyle`, serialized.
+    ///
+    /// A colour serializes per §4.12.5: lowercase `#rrggbb` when fully opaque,
+    /// `rgba(r, g, b, a)` when not. A GRADIENT or PATTERN serializes to nothing
+    /// here on purpose — the IDL says the attribute returns the object itself,
+    /// and the page is already holding it; an engine has no way to hand back a
+    /// JavaScript object and inventing a string for one would be worse than
+    /// empty.
+    fn fill_style_css(&self) -> String {
+        self.drawing_state().fill.to_css()
+    }
+
+    /// `strokeStyle`, serialized. Same rules as `fillStyle`.
+    fn stroke_style_css(&self) -> String {
+        self.drawing_state().stroke.to_css()
+    }
+
+    /// `filter` — the CSS `<filter-value-list>` as written, or `"none"`.
+    fn filter_css(&self) -> String {
+        let f = &self.drawing_state().filter;
+        if f.trim().is_empty() {
+            "none".to_string()
+        } else {
+            f.clone()
+        }
+    }
+
+    /// `shadowColor`, serialized.
+    fn shadow_color_css(&self) -> String {
+        self.drawing_state().shadow.color.to_css()
+    }
+
+    fn shadow_blur(&self) -> f32 {
+        self.drawing_state().shadow.blur
+    }
+
+    fn shadow_offset_x(&self) -> f32 {
+        self.drawing_state().shadow.offset_x
+    }
+
+    fn shadow_offset_y(&self) -> f32 {
+        self.drawing_state().shadow.offset_y
+    }
+
+    /// `letterSpacing` — a CSS length, and it reads back as one.
+    ///
+    /// Returned as written rather than re-serialized from a number, because
+    /// the IDL keeps the string: `"1em"` reads back `"1em"`, not the pixels it
+    /// resolves to against whatever the font size happened to be.
+    fn letter_spacing_css(&self) -> String {
+        self.drawing_state().letter_spacing.clone()
+    }
+
+    /// `wordSpacing` — as above.
+    fn word_spacing_css(&self) -> String {
+        self.drawing_state().word_spacing.clone()
+    }
+
+    fn line_width(&self) -> f32 {
+        self.drawing_state().line_width
+    }
+
+    fn line_cap(&self) -> LineCap {
+        self.drawing_state().line_cap
+    }
+
+    fn line_join(&self) -> LineJoin {
+        self.drawing_state().line_join
+    }
+
+    fn miter_limit(&self) -> f32 {
+        self.drawing_state().miter_limit
+    }
+
+    fn line_dash_offset(&self) -> f32 {
+        self.drawing_state().dash_offset
+    }
+
+    fn global_alpha(&self) -> f32 {
+        self.drawing_state().global_alpha
+    }
+
+    fn image_smoothing(&self) -> bool {
+        self.drawing_state().image_smoothing
+    }
+
+    fn image_smoothing_quality(&self) -> SmoothingQuality {
+        self.drawing_state().smoothing_quality
+    }
+
+    fn global_composite_operation(&self) -> CompositeOp {
+        self.drawing_state().composite
+    }
+
+    fn text_align(&self) -> TextAlign {
+        self.drawing_state().text_align
+    }
+
+    fn text_baseline(&self) -> TextBaseline {
+        self.drawing_state().text_baseline
+    }
+
+    fn direction(&self) -> Direction {
+        self.drawing_state().direction
+    }
+
+    fn font_kerning(&self) -> FontKerning {
+        self.drawing_state().font_kerning
+    }
+
+    fn font_stretch(&self) -> FontStretch {
+        self.drawing_state().font_stretch
+    }
+
+    fn font_variant_caps(&self) -> FontVariantCaps {
+        self.drawing_state().font_variant_caps
+    }
+
+    fn text_rendering(&self) -> TextRendering {
+        self.drawing_state().text_rendering
+    }
+
+    /// `lang` — the empty string means `"inherit"`, which is the IDL default.
+    fn lang(&self) -> String {
+        self.drawing_state().lang.clone()
+    }
+
 }

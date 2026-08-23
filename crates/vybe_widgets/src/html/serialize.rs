@@ -88,12 +88,19 @@ impl Document {
     }
 
     /// `element.outerHTML` — the element itself and its subtree.
+    ///
+    /// **No added whitespace.** The HTML fragment serialization algorithm
+    /// writes tags and content and nothing else, and the difference is not
+    /// cosmetic: `outerHTML` is a round trip, and re-parsing indentation turns
+    /// it into TEXT NODES the original tree never had. `to_html` is the
+    /// pretty one because it is a document dump for a reader, not markup
+    /// anyone parses back.
     pub fn outer_html(&mut self, node: NodeId) -> String {
         if node == DOCUMENT {
             return self.to_html();
         }
         let mut out = String::new();
-        self.write_node(&mut out, node, 0);
+        self.write_node_compact(&mut out, node);
         out
     }
 
@@ -107,12 +114,32 @@ impl Document {
             return escape_text(&self.text_content(node));
         }
         let mut out = String::new();
-        for (i, child) in children.into_iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            self.write_node(&mut out, child, 0);
+        for child in children {
+            // No separator: see `outer_html`. A newline here is markup the
+            // tree does not contain.
+            self.write_node_compact(&mut out, child);
         }
+        out
+    }
+
+    /// [`write_node`](Self::write_node) with indentation and line breaks
+    /// suppressed — the fragment serialization the DOM getters owe.
+    fn write_node_compact(&mut self, out: &mut String, node: NodeId) {
+        self.write_node_indented(out, node, 0, false);
+    }
+
+    /// One node's subtree, laid out for a READER.
+    ///
+    /// The same thing [`to_html`](Self::to_html) does for the whole document,
+    /// and deliberately NOT what [`outer_html`](Self::outer_html) does: an
+    /// inspector wants the indentation, and a DOM getter must not invent it.
+    /// The debugger's node dump is the caller.
+    pub fn outer_html_pretty(&mut self, node: NodeId) -> String {
+        if node == DOCUMENT {
+            return self.to_html();
+        }
+        let mut out = String::new();
+        self.write_node(&mut out, node, 0);
         out
     }
 
@@ -130,7 +157,20 @@ impl Document {
     }
 
     fn write_node(&mut self, out: &mut String, node: NodeId, depth: usize) {
-        let indent = "  ".repeat(depth);
+        self.write_node_indented(out, node, depth, true);
+    }
+
+    /// The one serialiser. `pretty` decides whether it lays the tree out for a
+    /// reader or writes the fragment markup the DOM getters owe — see
+    /// [`outer_html`](Self::outer_html).
+    fn write_node_indented(
+        &mut self,
+        out: &mut String,
+        node: NodeId,
+        depth: usize,
+        pretty: bool,
+    ) {
+        let indent = if pretty { "  ".repeat(depth) } else { String::new() };
         let Some(dom_node) = self.node(node) else {
             return;
         };
@@ -174,7 +214,7 @@ impl Document {
                 // takes `&mut self` and the borrow of `dom_node` cannot
                 // outlive it.
                 for child in self.child_nodes_in_order(node) {
-                    self.write_node(out, child, depth);
+                    self.write_node_indented(out, child, depth, pretty);
                 }
                 return;
             }
@@ -246,11 +286,32 @@ impl Document {
             let _ = write!(out, "{}</{tag}>", escape_text(&text));
             return;
         }
+        // **An element whose only child is text stays on ONE line.**
+        //
+        // Indentation would put whitespace INSIDE the element, and whitespace
+        // in HTML is content: `<button>\n  OK\n</button>` is a different button
+        // from `<button>OK</button>`, and a dump that cannot be read back is
+        // not a dump of this tree. Browsers' inspectors make the same
+        // exception, for the same reason.
+        //
+        // This used to fall out of the `children.is_empty()` branch above,
+        // because a caption was a STRING on the element rather than a node.
+        // Now that `textContent` inserts a real Text node — as DOM §4.4 says it
+        // must — the caption is a child and the rule has to be stated.
+        let inline_text = children.len() == 1 && self.is_text_node(children[0]);
         for child in children {
-            out.push('\n');
-            self.write_node(out, child, depth + 1);
+            if pretty && !inline_text {
+                out.push('\n');
+            }
+            // `pretty` off for the inline case: a text node writes its own
+            // indent prefix, so suppressing only the newline would leave the
+            // spaces behind — `<button>      OK</button>`.
+            self.write_node_indented(out, child, depth + 1, pretty && !inline_text);
         }
-        let _ = write!(out, "\n{indent}</{tag}>");
+        if pretty && !inline_text {
+            let _ = write!(out, "\n{indent}");
+        }
+        let _ = write!(out, "</{tag}>");
     }
 }
 

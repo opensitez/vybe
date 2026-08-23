@@ -46,10 +46,16 @@ use crate::engine::{
     WebEngine, WindowOp, WindowValue,
 };
 
-/// The width a document is laid out against before anyone resizes it.
+/// The viewport a document is laid out against before anyone resizes it.
 /// `WindowOp::ResizeTo` is what changes it afterwards.
-const DEFAULT_VIEWPORT_W: f32 = 1024.0;
-const DEFAULT_VIEWPORT_H: f32 = 768.0;
+///
+/// The size `vybe_widgets` gives a form it was told nothing about
+/// (`dom.rs:735`). A default is a user-agent choice and either number would be
+/// defensible on its own — but two engines that answer differently make every
+/// program that declares no size render at two sizes, which turns a swap into a
+/// diff nobody can read.
+const DEFAULT_VIEWPORT_W: f32 = 800.0;
+const DEFAULT_VIEWPORT_H: f32 = 600.0;
 
 /// One document plus the queue its events land in.
 struct Entry {
@@ -94,8 +100,58 @@ fn with_entry<T>(id: DocumentId, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
 
 /// Seam node → htmlbox node. `DOCUMENT` (0) is the document itself, which in
 /// htmlbox is the root box; 0 in the arena means "no node".
+///
+/// For ADDRESSING a node this is right — htmlbox has no separate document node,
+/// so the document's stand-in is `<html>`. For INSERTING one it is not: see
+/// [`insertion_parent`].
 fn to_hb(doc: &Document, node: NodeId) -> u32 {
     if node == DOCUMENT { doc.root.node_id } else { node as u32 }
+}
+
+/// The node a DOCUMENT-addressed CONTENT operation means: the **body**.
+///
+/// Style is the case that matters. A .NET form IS the document, so `Form.Width`
+/// and `Form.BackColor` lower to `setStyleProperty` on it — and a page's own box
+/// and background are the BODY's, not the document's. Sent to `<html>` they
+/// styled a box the renderer takes its canvas colour and its page size from
+/// somewhere else entirely, so a form came out white and 1024x768 whatever it
+/// asked for. `vybe_widgets` keeps these as the document's own declarations and
+/// applies them to the form, which is the same box by another name.
+///
+/// Falls back to the root when there is no body — an XML document has none, and
+/// answering `0` there would mean "no node" and drop the write silently.
+fn content_node(doc: &Document, node: NodeId) -> u32 {
+    if node != DOCUMENT {
+        return node as u32;
+    }
+    doc.body().unwrap_or_else(|| to_hb(doc, DOCUMENT))
+}
+
+/// Where a node addressed to the DOCUMENT actually goes: the **body**.
+///
+/// The same rule `vybe_widgets::dom::Document::content_parent` states, because
+/// it is the DOM's rule rather than either engine's: a Document takes exactly
+/// one element child, so `document.appendChild(<p>)` is a
+/// `HierarchyRequestError` in a browser. A caller that says "the document"
+/// means the body. `<html>`/`<head>`/`<body>` ARE the document's structure, so
+/// a caller that spells one out is obeyed where it put it.
+///
+/// Without this htmlbox hung every control off `<html>`, a sibling of `<head>`
+/// and `<body>` rather than a child of either. The tree laid out — that is what
+/// the timings reported — and painted nothing a page would recognise as
+/// content, because none of it was in the body.
+fn insertion_parent(doc: &Document, parent: NodeId, child: NodeId) -> u32 {
+    if parent != DOCUMENT {
+        return parent as u32;
+    }
+    let structural = matches!(
+        doc.local_name(child as u32).as_str(),
+        "html" | "head" | "body"
+    );
+    match (structural, doc.body()) {
+        (false, Some(body)) => body,
+        _ => to_hb(doc, parent),
+    }
 }
 
 /// htmlbox node → seam node. The root box answers as `DOCUMENT` so that
@@ -128,8 +184,29 @@ impl WebEngine for HtmlBox {
         // `<head>`/`<body>` skeleton, and `<title>` is where `DomOp::Title`
         // reads from.
         let escaped = rhtmledit::html::serializer::escape_html(title);
+        // **The app shell, said in CSS.** A document opened by a program is a
+        // window's worth of page, not a scrolling article, and the two rules
+        // below are what every app stylesheet on the web opens with.
+        //
+        // `height: 100%` because a percentage height resolves against the
+        // parent's, and a page's root boxes are auto by default: a Flutter
+        // `Scaffold` is `height: 100%`, so with nothing above it every
+        // `Expanded` row underneath resolved to zero and the whole app
+        // collapsed to a line of text. `vybe_widgets` says the same thing by
+        // making its root boxes fill the viewport (`fit_body_to_viewport`),
+        // which is the same fact in the toolkit's vocabulary.
+        //
+        // `margin: 0` because the UA's `body { margin: 8px }` is for prose. A
+        // form that asks for exactly the window's width overflows it by those
+        // 16px and gets a scrollbar it never asked for.
+        //
+        // An AUTHOR sheet, so a page that wants the margin back can simply set
+        // it — this is the shell's own styling, not a change to what htmlbox
+        // believes about HTML.
         let html = format!(
-            "<html><head><title>{escaped}</title></head><body></body></html>"
+            "<html><head><title>{escaped}</title>\
+             <style>html, body {{ height: 100%; margin: 0; }}</style>\
+             </head><body></body></html>"
         );
         let doc = rhtmledit::load_html(&html, DEFAULT_VIEWPORT_W);
 
@@ -260,27 +337,38 @@ impl WebEngine for HtmlBox {
 
                 // ── Tree ──
                 DomOp::AppendChild { parent, child } => {
-                    let p = to_hb(doc, parent);
+                    let p = insertion_parent(doc, parent, child);
                     doc.append_child(p, child as u32);
                     DomValue::Bool(true)
                 }
+                // htmlbox unlinks a child from whatever parent it is ACTUALLY
+                // under, so there is no parent to redirect here — which is what
+                // keeps the redirect on the way in from leaving a node linked
+                // into the body and unlinked from the document.
                 DomOp::RemoveChild { child, .. } => {
                     doc.remove_child(child as u32);
                     DomValue::Bool(true)
                 }
                 DomOp::InsertBefore { parent, child, reference } => {
-                    let p = to_hb(doc, parent);
+                    let p = insertion_parent(doc, parent, child);
                     doc.insert_before(p, child as u32, reference as u32);
                     DomValue::Bool(true)
                 }
                 DomOp::ReplaceChild { parent, new_child, old_child } => {
-                    let p = to_hb(doc, parent);
+                    let p = insertion_parent(doc, parent, new_child);
                     DomValue::Bool(doc.replace_child(p, new_child as u32, old_child as u32))
                 }
                 DomOp::CloneNode { node, deep } => {
                     let clone = doc.clone_node(to_hb(doc, node), deep);
                     if clone == 0 { DomValue::Null } else { DomValue::Node(clone as NodeId) }
                 }
+                // The document is not its own element. htmlbox has no node for
+                // it, so `to_hb` answers `<html>` — right for reaching into the
+                // tree, wrong for the two questions that ask what the node IS.
+                // DOM §4.4: `9` and `#document`, which is what `vybe_widgets`
+                // answers, and the seam is one API or it is not one.
+                DomOp::NodeType(DOCUMENT) => DomValue::Number(9.0),
+                DomOp::NodeName(DOCUMENT) => DomValue::Text("#document".to_string()),
                 DomOp::NodeType(n) => {
                     DomValue::Number(f64::from(doc.node_type(to_hb(doc, n))))
                 }
@@ -315,6 +403,23 @@ impl WebEngine for HtmlBox {
                 // markup setters — see `apply`.
                 DomOp::ImportNode { .. } => DomValue::Null,
                 DomOp::TextContent(n) => DomValue::Text(doc.text_content(to_hb(doc, n))),
+                // **A document's text is its TITLE, and writing it must not
+                // touch the tree.** `textContent` replaces all of a node's
+                // children with one text node — right for an element, and for
+                // the document it means `<head>` and `<body>` are DELETED.
+                //
+                // That is what emptied every .NET form under this engine: a
+                // form's caption is `Form.Text`, the form IS the document, so
+                // `Form.Text = "…"` wiped the body and every control appended
+                // afterwards hung off a bodyless `<html>` and rendered nothing.
+                // DOM §4.4 says `Document.textContent` is null and setting it
+                // does nothing; `vybe_widgets` answers the title, and one seam
+                // cannot have two answers.
+                DomOp::TextContent(DOCUMENT) => DomValue::Text(doc.title()),
+                DomOp::SetTextContent(DOCUMENT, t) => {
+                    doc.set_title(&t);
+                    DomValue::None
+                }
                 DomOp::SetTextContent(n, t) => {
                     doc.set_text_content(to_hb(doc, n), &t);
                     DomValue::None
@@ -339,20 +444,22 @@ impl WebEngine for HtmlBox {
                     DomValue::None
                 }
                 DomOp::SetStyleProperty(n, p, v) => {
-                    doc.set_style_property(to_hb(doc, n), &p, &v);
+                    doc.set_style_property(content_node(doc, n), &p, &v);
                     DomValue::None
                 }
                 // The DECLARED value — what was authored, un-resolved. htmlbox
                 // already answered this way, which is why it disagreed with the
                 // old `vybe_widgets` for `left`/`top`/`width`/`height`.
                 DomOp::GetStyleProperty(n, p) => {
-                    DomValue::Text(doc.get_style_property(to_hb(doc, n), &p).unwrap_or_default())
+                    DomValue::Text(
+                        doc.get_style_property(content_node(doc, n), &p).unwrap_or_default(),
+                    )
                 }
                 // The RESOLVED value. Geometry comes off the laid-out rect;
                 // everything else falls back to the declared value, matching
                 // the floor `vybe_widgets` sets.
                 DomOp::ComputedStyleProperty(n, p) => {
-                    let node = to_hb(doc, n);
+                    let node = content_node(doc, n);
                     DomValue::Text(doc.computed_style_property(node, &p))
                 }
 
@@ -409,6 +516,30 @@ impl WebEngine for HtmlBox {
                 }
 
                 // ── Events ──
+                // htmlbox hit-tests, dispatches the DOM event and — for a click
+                // on a control — calls `on_form_event`, which is the callback
+                // this file installed at `new_document`. So the input arrives
+                // here and comes back out of `DrainEvents` with no further
+                // wiring: the bridge was already built, nothing was crossing it.
+                DomOp::DispatchPointer {
+                    kind,
+                    client_x,
+                    client_y,
+                    button,
+                } => {
+                    use rhtmledit::dom::HtmlEventType;
+                    let etype = match kind.as_str() {
+                        "mousedown" => HtmlEventType::MouseDown,
+                        "mouseup" => HtmlEventType::MouseUp,
+                        _ => HtmlEventType::MouseMove,
+                    };
+                    // `MouseEvent.button` is signed and `process_mouse_event`
+                    // takes the same three values unsigned; anything else is
+                    // not a button htmlbox knows and is treated as the primary
+                    // one, which is what it does with an unrecognised device.
+                    let button = u8::try_from(button).unwrap_or(0);
+                    DomValue::Bool(doc.process_mouse_event(etype, (client_x, client_y), button))
+                }
                 DomOp::DrainEvents => {
                     let drained: Vec<(NodeId, String)> = match entry.events.lock() {
                         Ok(mut q) => q.drain(..).collect(),
@@ -430,6 +561,17 @@ impl WebEngine for HtmlBox {
                     DomValue::Bool(doc.dialog_open(to_hb(doc, node)))
                 }
 
+                DomOp::BoundingClientRect(node) => {
+                    match doc.get_bounding_client_rect(to_hb(doc, node)) {
+                        Some(rect) => DomValue::Rect {
+                            x: rect.x as f64,
+                            y: rect.y as f64,
+                            width: rect.w as f64,
+                            height: rect.h as f64,
+                        },
+                        None => DomValue::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                    }
+                }
                 DomOp::CanvasSize(node) => match doc.get_bounding_client_rect(to_hb(doc, node)) {
                     Some(r) => DomValue::Pair(f64::from(r.w), f64::from(r.h)),
                     None => DomValue::None,
@@ -474,8 +616,29 @@ impl WebEngine for HtmlBox {
                 }
                 WindowValue::None
             }
-            WindowOp::InnerSize(_) => {
-                WindowValue::Pair(DEFAULT_VIEWPORT_W as f64, DEFAULT_VIEWPORT_H as f64)
+            // **The page's own box, when it declares one.** A .NET form sizes
+            // itself by writing `width`/`height` on the document, which is the
+            // body — so a form that asked for 800x600 got a 1024x768 window and
+            // a screenshot padded with 224 columns of nothing.
+            //
+            // A page that declares no size keeps the default: that is a window
+            // the user agent chose, and it is what an ordinary HTML page gets.
+            WindowOp::InnerSize(w) => {
+                let declared = with_document(w, |doc| {
+                    let body = content_node(doc, DOCUMENT);
+                    let axis = |property: &str| {
+                        doc.get_style_property(body, property)
+                            .and_then(|value| value.trim().strip_suffix("px")?.parse::<f32>().ok())
+                            .filter(|px| *px >= 1.0)
+                    };
+                    (axis("width"), axis("height"))
+                });
+                match declared {
+                    Some((Some(width), Some(height))) => {
+                        WindowValue::Pair(width as f64, height as f64)
+                    }
+                    _ => WindowValue::Pair(DEFAULT_VIEWPORT_W as f64, DEFAULT_VIEWPORT_H as f64),
+                }
             }
             // Geometry, chrome and the message boxes are host concerns, not
             // DOM — identical under either engine, so they delegate.

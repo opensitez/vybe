@@ -298,6 +298,39 @@ pub enum DomOp {
     /// IS belongs to the engine; there is no second colour dialog here.
     ShowPicker(NodeId),
 
+    /// `element.getBoundingClientRect()` — CSSOM-View §4.
+    ///
+    /// The laid-out border box in client coordinates. Both engines have had
+    /// this internally from the start and nothing above the seam could ask for
+    /// it, so anything that needed to know where an element IS — a capture
+    /// cropping to one control, a test clicking one, a page positioning a
+    /// tooltip — had to reach past the engine to find out.
+    BoundingClientRect(NodeId),
+
+    /// Deliver raw pointer input to this document: the engine hit-tests it and
+    /// turns it into DOM events, which [`DrainEvents`](DomOp::DrainEvents) then
+    /// hands back.
+    ///
+    /// **The user agent's own job, which this build splits in two.** In a
+    /// browser the engine owns the window and never has to be told where the
+    /// mouse went. Here the host owns it, so the input has to cross the seam —
+    /// and it crosses as W3C fields (`MouseEvent.clientX/clientY/button`, and
+    /// the `type`), not as a winit event or a toolkit struct, so neither engine
+    /// has to know what kind of window the host opened.
+    ///
+    /// Without it the host hit-tested `vybe_widgets`' own form directly, which
+    /// is the toolkit whether or not the toolkit is the live engine: under
+    /// another engine every click landed in an empty tree and nothing at all
+    /// happened. Answers whether the frame needs repainting.
+    DispatchPointer {
+        /// `mousedown`, `mouseup` or `mousemove`.
+        kind: String,
+        client_x: f32,
+        client_y: f32,
+        /// `MouseEvent.button`: 0 left, 1 middle, 2 right.
+        button: i32,
+    },
+
     /// Drain what the user did, as DOM events (`click`, `input`, `change`).
     /// The surface turns each into an `Event` object and calls the listeners
     /// registered on that node.
@@ -322,6 +355,15 @@ pub enum DomValue {
     Events(Vec<(NodeId, String)>),
     /// Two numbers that are one fact — a size, today.
     Pair(f64, f64),
+    /// A laid-out box — `DOMRect`'s four numbers, which are one fact for the
+    /// same reason a size is: a caller that asks twice can read a rect that
+    /// never existed, because layout may have run in between.
+    Rect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
     /// A list of strings — attribute names, today.
     Texts(Vec<String>),
 }

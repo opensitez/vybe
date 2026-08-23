@@ -271,6 +271,23 @@ pub struct DomNode {
     /// write (`record_style`), the UA layer at creation, and a move in the tree
     /// (`append_child`), since what an element inherits depends on where it is.
     pub computed: crate::css::CssProperties,
+    /// HTML §4.10.5.5 — the **dirty value flag**.
+    ///
+    /// A control has TWO values and this is what keeps them apart: the `value`
+    /// content attribute is the DEFAULT (`input.defaultValue`), and the
+    /// element's value is what it currently holds. They start equal, and the
+    /// first time script or a user sets the value the flag is raised — from
+    /// then on `setAttribute("value", …)` changes the default and leaves the
+    /// current value alone.
+    ///
+    /// Without it there is one store, so `getAttribute("value")` answered what
+    /// the user had TYPED. HTML says a form reset restores the attribute's
+    /// value, which is impossible when typing has already overwritten it.
+    pub dirty_value: bool,
+    /// HTML §4.10.5.3 — the **dirty checkedness flag**, the same split for
+    /// `checked`: the content attribute is `defaultChecked`, and checkedness is
+    /// whether the box is ticked NOW. Ticking a box must not change the markup.
+    pub dirty_checked: bool,
 }
 
 /// One author rule: what it selects, what it declares, and how it sorts.
@@ -1413,8 +1430,37 @@ impl Document {
     /// inside it. That second hop is an implementation detail of how a canvas
     /// is stored, and the IDL has no name for it — `getContext` goes straight
     /// from the element to the context.
-    pub fn get_context_2d(&mut self, node: NodeId) -> Option<&mut crate::canvas::RecordingCanvas> {
-        Some(self.canvas_mut(node)?.canvas_mut())
+    pub fn get_context_2d(&mut self, node: NodeId) -> bool {
+        self.canvas_mut(node).is_some()
+    }
+
+    /// Draw on the canvas `node` through the WHATWG 2D context.
+    ///
+    /// A closure rather than a returned handle because the context borrows the
+    /// element's bitmap and the shared font system for the duration of the
+    /// call, and neither can outlive it. `None` when the node is not a
+    /// `<canvas>` — the same answer `getContext` gives for an element that has
+    /// no 2D context.
+    pub fn with_canvas_2d<R>(
+        &mut self,
+        node: NodeId,
+        f: impl FnOnce(&mut dyn crate::canvas::Canvas) -> R,
+    ) -> Option<R> {
+        Some(self.canvas_mut(node)?.with_canvas(f))
+    }
+
+    /// The canvas's bitmap, for anything that reads pixels back.
+    ///
+    /// `getImageData` and `toDataURL` are the spec's two, and a debugger asking
+    /// "did anything land, and where" is the third — all of them are questions
+    /// about the surface, which is why they take a borrow of it rather than a
+    /// drawing context. `None` when the node is not a `<canvas>`.
+    pub fn with_canvas_bitmap<R>(
+        &mut self,
+        node: NodeId,
+        f: impl FnOnce(&tiny_skia::Pixmap) -> R,
+    ) -> Option<R> {
+        Some(f(self.canvas_mut(node)?.bitmap()))
     }
 
     /// `context.measureText(text).width` — the one canvas call that ASKS.
@@ -1427,32 +1473,29 @@ impl Document {
     ///
     /// Shaping is done with the SAME attributes `fillText` will draw with —
     /// measuring in the regular face and drawing in bold is how text overruns
-    /// the box it was sized for.
+    /// the box it was sized for. That is now true by construction rather than
+    /// by agreement: this asks the CONTEXT, so the measurement and the drawing
+    /// go through one shaping path and cannot drift. It used to rebuild a
+    /// `FontSpec` from the context's font and shape that separately, which is
+    /// two paths that had to be kept saying the same thing — and which could
+    /// not see `letterSpacing`, `wordSpacing`, `direction` or `fontStretch`
+    /// at all.
     pub fn measure_text(&mut self, node: NodeId, text: &str) -> Option<f32> {
-        let font = self.get_context_2d(node)?.current_font();
-        let spec = crate::ide_text::FontSpec {
-            family: font.family.clone(),
-            size: font.size,
-            weight: match font.weight {
-                crate::canvas::FontWeight::Bold => 700,
-                crate::canvas::FontWeight::Normal => 400,
-            },
-            italic: matches!(font.style, crate::canvas::FontStyle::Italic),
-            underline: false,
-            line_through: false,
-            line_height: None,
-            // Canvas text has no CSS box, so no `letter-spacing` reaches it —
-            // `ctx.letterSpacing` is a separate canvas attribute this does not
-            // implement yet.
-            letter_spacing: 0.0,
-        };
-        // Scale 1.0: the canvas coordinate system is CSS pixels, and the
-        // device scale is applied when the recording is replayed onto a
-        // pixmap. Measuring at the device scale would answer in the wrong
-        // unit on any display that is not 1x.
-        Some(crate::ide_text::with_font_system(|fonts| {
-            crate::ide_text::measure_text_spec(fonts, text, &spec, 1.0)
-        }))
+        self.with_canvas_2d(node, |ctx| ctx.measure_text(text).width)
+    }
+
+    /// `context.measureText(text)` — the spec's full `TextMetrics`.
+    ///
+    /// Twelve members, not one. `measure_text` above answers `width` because
+    /// that is all the `web:canvas` seam can carry back today; this is the
+    /// engine's real answer, and what the seam should reach once it can return
+    /// an object.
+    pub fn measure_text_metrics(
+        &mut self,
+        node: NodeId,
+        text: &str,
+    ) -> Option<crate::canvas::TextMetrics> {
+        self.with_canvas_2d(node, |ctx| ctx.measure_text(text))
     }
 
     /// Resolve a control NAME the way a host bridge is handed one.
@@ -2391,8 +2434,36 @@ impl Document {
             return;
         }
         match name.as_str() {
-            "value" => self.set_value(node, value),
-            "checked" => self.set_checked(node, !value.eq_ignore_ascii_case("false")),
+            // **A content attribute is the DEFAULT, not the live state**
+            // (HTML §4.10.5.5). `value` here is `defaultValue` and `checked` is
+            // `defaultChecked`; they seed the control and then stop tracking it
+            // once the value or the checkedness is dirty. Writing straight
+            // through to the control — which is what these arms used to do —
+            // made the markup and the state one store, so a form RESET had
+            // nothing to restore to.
+            //
+            // The attribute itself is written by the tail of this function, as
+            // every other attribute is.
+            "value" => {
+                if !self.nodes.get(&node).map(|n| n.dirty_value).unwrap_or(false) {
+                    self.set_value(node, value);
+                    // `set_value` is the IDL setter and raises the flag; this
+                    // write came from the ATTRIBUTE, so it does not.
+                    if let Some(n) = self.nodes.get_mut(&node) {
+                        n.dirty_value = false;
+                    }
+                }
+            }
+            "checked" => {
+                if !self.nodes.get(&node).map(|n| n.dirty_checked).unwrap_or(false) {
+                    // Presence is truth for a boolean content attribute:
+                    // `checked=""` and `checked="checked"` both tick it.
+                    self.set_checked(node, !value.eq_ignore_ascii_case("false"));
+                    if let Some(n) = self.nodes.get_mut(&node) {
+                        n.dirty_checked = false;
+                    }
+                }
+            }
             // **`type` REALIZES the control**, it does not describe one.
             //
             // See [`Document::realize_control`] for why there was nothing here
@@ -2471,8 +2542,22 @@ impl Document {
                             w.set_rect(rect);
                         }
                     }
-                    if let Some(canvas) = self.canvas_mut(node) {
-                        canvas.canvas_mut().clear();
+                    // §4.12.5: `width`/`height` size the BITMAP, and assigning
+                    // either reinitialises it to transparent black and resets
+                    // the drawing state — even to the value already there,
+                    // which is why `canvas.width = canvas.width` clears.
+                    // Resizing IS the reset, so there is no separate clear.
+                    if let Some(px) = self.px(node, &name, value) {
+                        if let Some(canvas) = self.canvas_mut(node) {
+                            let (w, h) = canvas.bitmap_size();
+                            if name == "width" {
+                                canvas.set_bitmap_size(px.max(1.0) as u32, h);
+                            } else {
+                                canvas.set_bitmap_size(w, px.max(1.0) as u32);
+                            }
+                        }
+                    } else if let Some(canvas) = self.canvas_mut(node) {
+                        canvas.clear();
                     }
                 } else {
                     // A presentational hint is a declaration in the AUTHOR
@@ -2582,10 +2667,13 @@ impl Document {
         let name = self.fold_name(name);
         // Live properties answer from the control, not from what was written.
         match name.as_str() {
-            "value" => return Some(self.value(node)),
-            "checked" => {
-                return self.checked(node).then(|| "".to_string());
-            }
+            // ⛔ NOT the live state. `getAttribute` reads the MARKUP, and the
+            // markup holds the default — a user typing into a field or ticking
+            // a box does not rewrite the document. These two arms answered the
+            // control instead, so `getAttribute("checked")` changed under the
+            // pointer and `getAttribute("value")` returned what had been typed.
+            // Both fall through to the attribute store below now, like every
+            // other attribute.
             // The other half of the write above: the attribute IS the
             // serialised declaration store, so an element nobody styled has no
             // `style` attribute rather than an empty one.
@@ -2684,7 +2772,31 @@ impl Document {
             "hidden" => {
                 self.command(node, &WidgetCommand::SetVisible(true));
             }
-            "checked" => self.set_checked(node, false),
+            // Symmetric with the setter: removing the attribute clears the
+            // DEFAULT, and only reaches checkedness while the control has no
+            // dirty checkedness — "when the `checked` content attribute is
+            // removed, if the control does not have dirty checkedness, the user
+            // agent must set the checkedness of the element to false"
+            // (HTML §4.10.5.3). Calling the IDL setter unconditionally would
+            // untick a box the program had ticked, just by tidying markup.
+            "checked" => {
+                if !self.nodes.get(&node).map(|n| n.dirty_checked).unwrap_or(false) {
+                    self.set_checked(node, false);
+                    if let Some(n) = self.nodes.get_mut(&node) {
+                        n.dirty_checked = false;
+                    }
+                }
+            }
+            // Same rule for `value`, whose removal makes the element's value
+            // the empty string while it is not dirty.
+            "value" => {
+                if !self.nodes.get(&node).map(|n| n.dirty_value).unwrap_or(false) {
+                    self.set_value(node, "");
+                    if let Some(n) = self.nodes.get_mut(&node) {
+                        n.dirty_value = false;
+                    }
+                }
+            }
             // Removing `type` is not "no type": HTML §4.10.5.1.2 gives the
             // attribute a MISSING VALUE DEFAULT of `text`, so the element goes
             // back to being a text field and the control has to follow.
@@ -6286,7 +6398,20 @@ impl Document {
     /// `input.value` / `select.value` / `textarea.value`. Which command that
     /// is depends on the control, which is exactly what HTML says: `value`
     /// means different things to a text field, a range and a select.
+    /// `input.value = v` — the IDL property.
+    ///
+    /// Raises the dirty value flag (HTML §4.10.5.5) for the controls that HAVE
+    /// one: a text field's value and its `value` ATTRIBUTE part company the
+    /// moment either script or a user writes it. A checkbox is deliberately
+    /// not among them — its `value` IDL member REFLECTS the content attribute
+    /// (§4.10.5.1.15), so the two must stay in step, which is why the arm
+    /// below writes the attribute rather than the control.
     pub fn set_value(&mut self, node: NodeId, value: &str) {
+        if !matches!(self.value_kind(node), ValueKind::Checked) {
+            if let Some(n) = self.nodes.get_mut(&node) {
+                n.dirty_value = true;
+            }
+        }
         // ⛔ `select.value = v` selects the option WHOSE VALUE IS `v`
         // (HTML §4.10.7). It is not an index — `selectedIndex` is the separate
         // IDL member for that, and `gui.rs` already routes `SelectedIndex`
@@ -6322,8 +6447,30 @@ impl Document {
             // Handled above; `value_kind` is re-matched here only for
             // exhaustiveness.
             ValueKind::Index => return,
+            // ⛔ **A checkbox's `value` is NOT its state.** HTML §4.10.5.1.15:
+            // `value` is the string the form SUBMITS when the box is ticked;
+            // `checked` is whether it is ticked. This arm used to coerce —
+            // anything but `"false"`/`""` ticked the box — which made
+            // `value = "true"` look like it worked and covered for every
+            // emitter that reached for the wrong member. Flutter's
+            // `Checkbox(value:)` did exactly that, and rendered an EMPTY box
+            // under an engine that means what HTML says.
+            //
+            // It also disagreed with this file's own getter, which already
+            // answers `"on"` and says in as many words that `value` is the
+            // submission value. Setter and getter now store and read the same
+            // place: the content attribute, which is where HTML keeps it.
             ValueKind::Checked => {
-                WidgetCommand::SetChecked(!value.eq_ignore_ascii_case("false") && !value.is_empty())
+                // The node's own store, NOT `set_attribute` — that one routes
+                // `value` straight back here (`"value" => self.set_value(..)`),
+                // so calling it would recurse until the stack ran out. The
+                // routing exists because widgets keeps live state on the
+                // CONTROL; a checkbox's submission value is not control state,
+                // so it belongs where every other plain attribute lives.
+                if let Some(n) = self.nodes.get_mut(&node) {
+                    n.set_attribute(None, "value", value);
+                }
+                return;
             }
         };
         self.command(node, &cmd);
@@ -6343,6 +6490,22 @@ impl Document {
                 // is the empty string then.
                 Err(_) => String::new(),
             };
+        }
+        // A checkbox or radio answers its `value` ATTRIBUTE, defaulting to
+        // `"on"` when it has none (HTML §4.10.5.1.15). The `"on"` was already
+        // here as a constant; what was missing is that an assigned value has to
+        // come back — the setter now stores one, so ignoring it would make
+        // `input.value = "x"; input.value` answer `"on"`.
+        if matches!(self.value_kind(node), ValueKind::Checked) {
+            // Read the raw attribute for the same reason the setter writes it:
+            // `get_attribute("value")` answers `self.value(node)`, which is
+            // this function.
+            return self
+                .nodes
+                .get(&node)
+                .and_then(|n| n.attribute("value"))
+                .map(str::to_string)
+                .unwrap_or_else(|| "on".to_string());
         }
         match self.command(node, &WidgetCommand::GetValue) {
             CommandValue::Text(s) => s,
@@ -6364,7 +6527,16 @@ impl Document {
     }
 
     /// `input.checked` — a boolean, read from the control.
+    /// `input.checked = b` — the IDL property, which is CHECKEDNESS and not
+    /// the `checked` content attribute.
+    ///
+    /// Setting it raises the dirty checkedness flag (HTML §4.10.5.3), so a
+    /// later `setAttribute("checked", …)` changes `defaultChecked` and leaves
+    /// the box where the program put it.
     pub fn set_checked(&mut self, node: NodeId, checked: bool) {
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.dirty_checked = true;
+        }
         self.command(node, &WidgetCommand::SetChecked(checked));
     }
 
@@ -6394,20 +6566,34 @@ impl Document {
         // Leaf controls keep it too. A `<button>`'s content model is phrasing
         // in HTML, but the widget here is a leaf that draws one string — a
         // stated limitation of the widget set, not a claim about the tree.
-        if self.holds_inline_content(node) && !self.is_bordered(node) {
-            let children = self.child_nodes(node);
-            for child in children {
-                self.remove_child(node, child);
-            }
-            if !text.is_empty() {
-                let data = self.create_text_node(text);
-                self.append_child(node, data);
-            } else {
+        // **The tree gets the node whatever the box is.** This used to build a
+        // text node for a box that draws runs and, for everything else, write
+        // the string straight to the widget — so a `<label>`'s caption was in
+        // `textContent` and in the widget and NOWHERE IN THE TREE. `childNodes`
+        // answered empty for an element that visibly had text, and the other
+        // engine answered one Text node for the same program: the seam is one
+        // API or it is not one.
+        //
+        // Nothing is lost by going through the tree, because `insert_before`
+        // already sends a text node appended to a leaf to `apply_text` — that
+        // is what makes `button.appendChild(createTextNode("7"))` and
+        // `button.textContent = "7"` the same operation, as the spec defines
+        // them to be. This just stops the second one taking a shortcut past it.
+        let children = self.child_nodes(node);
+        for child in children {
+            self.remove_child(node, child);
+        }
+        if text.is_empty() {
+            // The spec's null case: children removed, NO node inserted. The
+            // widget still has to be told, since no insertion will now do it.
+            self.apply_text(node, text);
+            if self.holds_inline_content(node) {
                 self.rebuild_inline_content(node);
             }
             return;
         }
-        self.apply_text(node, text);
+        let data = self.create_text_node(text);
+        self.append_child(node, data);
     }
 
     /// Give a control the text it draws.
@@ -8854,15 +9040,15 @@ mod tests {
         assert!(small > 0.0, "a non-empty string has width, got {small}");
         assert_eq!(doc.measure_text(canvas, ""), Some(0.0));
 
-        doc.canvas_mut(canvas)
-            .expect("the element owns a surface")
-            .canvas_mut()
-            .set_font(&Font {
+        doc.with_canvas_2d(canvas, |c| {
+            c.set_font(&Font {
                 family: "sans-serif".to_string(),
                 size: 48.0,
                 weight: FontWeight::Normal,
                 style: FontStyle::Normal,
-            });
+            })
+        })
+        .expect("the element owns a surface");
         let large = doc.measure_text(canvas, "Hello").expect("still a canvas");
         assert!(
             large > small * 2.0,
@@ -8871,17 +9057,17 @@ mod tests {
 
         // `save`/`restore` are paint state, and so is the font — a backwards
         // scan for the last `setFont` would return one that has been popped.
-        doc.canvas_mut(canvas).unwrap().canvas_mut().save();
-        doc.canvas_mut(canvas)
-            .expect("the element owns a surface")
-            .canvas_mut()
-            .set_font(&Font {
+        doc.with_canvas_2d(canvas, |c| {
+            c.save();
+            c.set_font(&Font {
                 family: "sans-serif".to_string(),
                 size: 8.0,
                 weight: FontWeight::Normal,
                 style: FontStyle::Normal,
             });
-        doc.canvas_mut(canvas).unwrap().canvas_mut().restore();
+            c.restore();
+        })
+        .expect("the element owns a surface");
         let restored = doc.measure_text(canvas, "Hello").expect("still a canvas");
         assert_eq!(
             restored, large,
@@ -10734,16 +10920,16 @@ mod tests {
         doc.set_attribute(canvas, "width", "200");
 
         use crate::canvas::Canvas as _;
-        let surface = doc.canvas_mut(canvas).expect("a canvas widget");
-        surface.canvas_mut().fill_rect(0.0, 0.0, 10.0, 10.0);
-        assert!(!doc.canvas_mut(canvas).expect("still there").canvas_mut().is_empty());
+        doc.with_canvas_2d(canvas, |c| c.fill_rect(0.0, 0.0, 10.0, 10.0))
+            .expect("a canvas widget");
+        assert!(
+            !doc.canvas_mut(canvas).expect("still there").is_blank(),
+            "the fill should have inked the bitmap"
+        );
 
         doc.set_attribute(canvas, "width", "200");
         assert!(
-            doc.canvas_mut(canvas)
-                .expect("still there")
-                .canvas_mut()
-                .is_empty(),
+            doc.canvas_mut(canvas).expect("still there").is_blank(),
             "setting the same width still clears the bitmap"
         );
     }
@@ -12300,6 +12486,27 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_node_survives_and_can_be_inserted_elsewhere() {
+        // `removeChild` DETACHES; it does not destroy (DOM §4.2.3). Removing
+        // then appending elsewhere is how every "move this node" is written.
+        let mut doc = Document::new("t");
+        let from = element(&mut doc, "div", "from");
+        let to = element(&mut doc, "div", "to");
+        doc.append_child(DOCUMENT, from);
+        doc.append_child(DOCUMENT, to);
+        let moved = element(&mut doc, "p", "moved");
+        doc.append_child(from, moved);
+
+        assert!(doc.remove_child(from, moved));
+        assert!(doc.child_nodes(from).is_empty(), "it left its old parent");
+        assert_eq!(doc.node_name(moved), "p", "…and is still a <p>");
+
+        doc.append_child(to, moved);
+        let tags: Vec<String> = doc.child_nodes(to).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["p"]);
+    }
+
+    #[test]
     fn appending_a_fragment_moves_its_children_and_not_itself() {
         let mut doc = Document::new("t");
         let d = element(&mut doc, "div", "d");
@@ -12454,7 +12661,7 @@ mod tests {
         // The naive implementation — insert each before the CURRENT first child
         // — yields b, a, i. The nodes must arrive in the order they were given.
         let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
-        assert_eq!(tags, vec!["div", "b", "i"]);
+        assert_eq!(tags, vec!["a", "b", "i"]);
     }
 
     #[test]

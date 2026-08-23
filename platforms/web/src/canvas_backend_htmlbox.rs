@@ -1,24 +1,17 @@
-//! The painter behind `web:canvas`, resolving through the DOCUMENT.
+//! The painter behind `web:canvas` when htmlbox is the engine.
 //!
-//! `getContext(element, "2d")` binds a context to a NODE (HTML §4.12.5), and
-//! this is the half that turns that node into pixels: `Document::with_canvas_2d`
-//! lends out the `<canvas>` element's own bitmap. Node → surface is what a
-//! browser does internally, below the seam, so an engine swap replaces this
-//! file and nothing above it.
+//! The same file as `canvas_backend_widgets`, pointed at the other engine, and
+//! that is the whole point of the seam: `getContext(element, "2d")` binds a
+//! context to a NODE (HTML §4.12.5), each engine turns its own nodes into its
+//! own pixels, and nothing above this layer learns which one is installed.
 //!
-//! **Why it exists.** The only backend before this one resolved through
-//! `GuiState` — it walked `GuiState.form.controls` for a widget whose NAME
-//! matched. A canvas made by `createElement` lives in the document's form,
-//! which is a different instance, so every lookup missed and fell through to
-//! `GuiState.overlay_canvases`, a side map keyed by string. That map is
-//! composited by `gui_capture` and by nothing else: `Form::render_overlays` has
-//! no other caller, so a `--capture` showed the drawing while a real window
-//! showed an empty `<canvas>`. A screenshot that proves nothing about the
-//! window is the worst shape a bug can take, and it is what a second tree buys.
-//!
-//! The target string stays a string on purpose: a backend is below the seam and
-//! may key its surfaces however it likes. What had to be spec-shaped is the
-//! guest-facing call, and that is `canvas.rs`'s business.
+//! **What this forwards to is a real bitmap.** htmlbox's `<canvas>` keeps its
+//! pixels on the element and draws into them immediately, so an op that arrives
+//! here has been painted by the time the call returns. That is what lets the
+//! asking half of the API mean anything: `measureText` reads the font actually
+//! in effect on that element's context, and the queries the seam has yet to
+//! carry — `getImageData`, `isPointInPath`, `toDataURL` — have real pixels
+//! waiting behind them rather than a list of commands nobody has replayed.
 
 use std::sync::Arc;
 
@@ -26,19 +19,16 @@ use crate::canvas_backend::{
     self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef,
     PathOp2D, PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
 };
-// The canvas WIDGET is not named here: `with_canvas_2d` lends the drawing
-// context directly, so this file never sees the element's rendering object.
-// `Canvas` — the drawing trait — arrives as `&mut dyn` through that closure.
-use vybe_widgets::canvas::{
-    Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, FontKerning,
-    FontStretch, FontStyle, FontVariantCaps, FontWeight, Font, Gradient as CanvasGradient,
-    Image, ImageData, LineCap, LineJoin, Paint as CanvasPaint, Pattern as CanvasPattern,
-    Path2D as CanvasPath, PathOp as EnginePathOp, Repetition, Shadow, SmoothingQuality,
-    TextRendering,
+use rhtmledit::canvas::{
+    Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
+    FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient as CanvasGradient, Image,
+    ImageData, LineCap, LineJoin, Paint as CanvasPaint, Pattern as CanvasPattern, Repetition,
+    Path2D as CanvasPath, PathOp as EnginePathOp, Shadow, SmoothingQuality, TextAlign,
+    TextBaseline, TextRendering,
 };
-use vybe_widgets::dom::{self, NodeId};
+use rhtmledit::types::Document;
 
-struct DocumentBackend;
+struct HtmlBoxBackend;
 
 fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color { r, g, b, a }
@@ -46,47 +36,46 @@ fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
 
 /// The node a target names.
 ///
-/// Two forms, in the order a caller means them:
+/// Two forms, in the order a caller means them — the same two
+/// `canvas_backend_widgets` resolves, because they are the seam's forms and not
+/// an engine's:
 ///
 /// 1. `n<id>` — what an element-bound context carries. `getContext` derives it
 ///    from the node it was given, so this is the direct case and no search
-///    happens at all.
+///    happens.
 /// 2. A control NAME — .NET `CreateGraphics` and Flutter's canvas bridge still
-///    pass one, and `Document::element_by_control_name` resolves it the way a
-///    caller means it (the `name` attribute, then `id`, then the internal
-///    widget name). MIGRATION ONLY: a caller that made the element already
-///    holds the handle.
-fn node_of(document: &dom::Document, target: &str) -> Option<NodeId> {
+///    pass one. MIGRATION ONLY: resolved against `id`, then the `name`
+///    attribute, which is what those callers set.
+fn node_of(document: &Document, target: &str) -> Option<u32> {
     if let Some(rest) = target.strip_prefix('n') {
-        if let Ok(id) = rest.parse::<NodeId>() {
+        if let Ok(id) = rest.parse::<u32>() {
             return Some(id);
         }
     }
-    document.element_by_control_name(target)
+    document
+        .get_element_by_id(target)
+        .or_else(|| document.query_selector(&format!("[name=\"{target}\"]")))
 }
 
 /// Borrow the 2D context `target` names, in the ambient document.
-///
-/// A closure rather than a returned handle because the context borrows the
-/// element's bitmap and the shared font system for the duration of the call,
-/// and neither can outlive it.
-fn with_canvas<T>(
-    target: &str,
-    f: impl FnOnce(&mut dyn vybe_widgets::canvas::Canvas) -> T,
-) -> Option<T> {
-    dom::with_document(crate::html::active_document(), |document| {
+fn with_canvas<T>(target: &str, f: impl FnOnce(&mut dyn rhtmledit::canvas::Canvas) -> T) -> Option<T> {
+    crate::engine_htmlbox::with_document(crate::html::active_document(), |document| {
         let node = node_of(document, target)?;
         document.with_canvas_2d(node, f)
     })
     .flatten()
 }
 
-impl CanvasBackend for DocumentBackend {
-    /// `getContext`'s side effect. A `<canvas>` element already owns its
-    /// bitmap — the element IS the storage — so there is nothing to create;
-    /// touching it here only proves the node resolves.
+impl CanvasBackend for HtmlBoxBackend {
+    /// `getContext`'s side effect. The `<canvas>` element owns its bitmap, so
+    /// this allocates it if the element has never had one — an element from
+    /// `createElement` has not been through the parser.
     fn ensure(&self, target: &str) {
-        let _ = with_canvas(target, |_| ());
+        crate::engine_htmlbox::with_document(crate::html::active_document(), |document| {
+            if let Some(node) = node_of(document, target) {
+                document.get_context_2d(node);
+            }
+        });
     }
 
     /// Answer a question about the surface `target` names.
@@ -192,7 +181,7 @@ impl CanvasBackend for DocumentBackend {
 
     /// Back to a transparent bitmap and a default drawing state — HTML
     /// §4.12.5's `reset()`, which is what "drop everything drawn here" means
-    /// for a canvas that paints immediately rather than recording.
+    /// for a canvas that paints immediately.
     fn clear_all(&self, target: &str) {
         let _ = with_canvas(target, |c| c.reset());
     }
@@ -248,6 +237,11 @@ impl CanvasBackend for DocumentBackend {
                 Op2D::BezierCurveTo(a, b, cc, d, e, f) => c.bezier_curve_to(a, b, cc, d, e, f),
                 Op2D::QuadraticCurveTo(a, b, cc, d) => c.quadratic_curve_to(a, b, cc, d),
                 Op2D::Rect(x, y, w, h) => c.rect(x, y, w, h),
+                // The seam's `Ellipse` carries four arguments where the IDL has
+                // eight: rotation, the two angles and the direction are not on
+                // it. The engine implements the full one (`ellipse_arc`); this
+                // arm reaches the truncated version because that is all the op
+                // says.
                 Op2D::Ellipse(x, y, rx, ry) => c.ellipse(x, y, rx, ry),
                 // `setTransform` is `ResetTransform` then `Transform`, emitted
                 // as two ops — composing and replacing are different verbs.
@@ -259,12 +253,12 @@ impl CanvasBackend for DocumentBackend {
                 // what a browser does with a bad assignment to either of these
                 // — it is not an error and it is not a reset.
                 Op2D::SetTextAlign(k) => {
-                    if let Some(a) = vybe_widgets::canvas::TextAlign::parse(&k) {
+                    if let Some(a) = TextAlign::parse(&k) {
                         c.set_text_align(a);
                     }
                 }
                 Op2D::SetTextBaseline(k) => {
-                    if let Some(b) = vybe_widgets::canvas::TextBaseline::parse(&k) {
+                    if let Some(b) = TextBaseline::parse(&k) {
                         c.set_text_baseline(b);
                     }
                 }
@@ -463,9 +457,9 @@ impl CanvasBackend for DocumentBackend {
     }
 }
 
-/// Install the document as the surface `web:canvas` paints into.
+/// Install htmlbox as the surface `web:canvas` paints into.
 pub fn install() {
-    canvas_backend::set_backend(Arc::new(DocumentBackend));
+    canvas_backend::set_backend(Arc::new(HtmlBoxBackend));
 }
 
 /// The shadow currently in effect, rebuilt from the four attributes.
@@ -473,7 +467,7 @@ pub fn install() {
 /// The seam sets shadow components one at a time because the IDL has four
 /// separate attributes; the engine holds them as one value. Without this,
 /// assigning `shadowBlur` would silently reset `shadowColor` to its default.
-fn current_shadow(c: &mut dyn vybe_widgets::canvas::Canvas) -> Shadow {
+fn current_shadow(c: &mut dyn rhtmledit::canvas::Canvas) -> Shadow {
     Shadow {
         color: parse_serialized_color(&c.shadow_color_css()),
         blur: c.shadow_blur(),
@@ -545,8 +539,8 @@ fn pattern(def: PatternDef) -> CanvasPattern {
 }
 
 /// A CSS `<color>` for a gradient stop, through the engine's parser.
-fn parse_stop_color(css: &str) -> Option<vybe_widgets::canvas::Color> {
-    vybe_widgets::canvas::parse_color_css(css)
+fn parse_stop_color(css: &str) -> Option<rhtmledit::canvas::Color> {
+    rhtmledit::canvas::parse_color_css(css)
 }
 
 /// The seam's path definition, in the engine's terms.

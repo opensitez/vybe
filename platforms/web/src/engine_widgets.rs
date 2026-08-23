@@ -88,6 +88,18 @@ impl WebEngine for Widgets {
             // simplification `setAttribute("width")` already makes when it
             // writes one by setting the other. A canvas displayed at a
             // different size than its buffer would need them apart.
+            DomOp::BoundingClientRect(node) => match doc.get_bounding_client_rect(node) {
+                Some(rect) => DomValue::Rect {
+                    x: rect.x as f64,
+                    y: rect.y as f64,
+                    width: rect.w as f64,
+                    height: rect.h as f64,
+                },
+                // An element that was never laid out has no box. CSSOM-View
+                // gives one an all-zero rect rather than nothing, which is what
+                // lets a caller do arithmetic on it unconditionally.
+                None => DomValue::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            },
             DomOp::CanvasSize(node) => match doc.get_bounding_client_rect(node) {
                 Some(rect) => DomValue::Pair(rect.w as f64, rect.h as f64),
                 None => DomValue::None,
@@ -291,6 +303,36 @@ impl WebEngine for Widgets {
                 DomValue::None
             }
 
+            // The hit test the window shell used to run itself, by borrowing
+            // this document directly. Same call, reached the way every other
+            // engine operation is.
+            DomOp::DispatchPointer {
+                kind,
+                client_x,
+                client_y,
+                button,
+            } => {
+                use vybe_widgets::PanelWidget;
+                use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
+                let which = match button {
+                    1 => MouseButton::Middle,
+                    2 => MouseButton::Right,
+                    _ => MouseButton::Left,
+                };
+                let kind = match kind.as_str() {
+                    "mousedown" => MouseEventKind::Press(which),
+                    "mouseup" => MouseEventKind::Release(which),
+                    _ => MouseEventKind::Move,
+                };
+                DomValue::Bool(doc.form_mut().handle_mouse(&MouseEvent {
+                    x: client_x,
+                    y: client_y,
+                    kind,
+                    cmd: false,
+                    shift: false,
+                    alt: false,
+                }))
+            }
             DomOp::DrainEvents => DomValue::Events(
                 doc.drain_events()
                     .into_iter()

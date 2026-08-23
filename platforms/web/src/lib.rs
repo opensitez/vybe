@@ -45,6 +45,8 @@ pub mod animation;
 pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod canvas;
 pub mod canvas_backend;
+#[cfg(feature = "engine-htmlbox")]
+pub mod canvas_backend_htmlbox;
 #[cfg(feature = "gui")]
 pub mod canvas_backend_widgets;
 pub mod console;
@@ -52,6 +54,8 @@ pub mod crypto;
 pub mod dom_parser;
 pub mod encoding;
 pub mod engine;
+/// Which engine is live, chosen at run time. See `engine_select`.
+pub mod engine_select;
 #[cfg(feature = "gui")]
 pub mod engine_widgets;
 /// The other engine behind the same trait. Additive to `engine_widgets`: both
@@ -59,17 +63,25 @@ pub mod engine_widgets;
 #[cfg(feature = "engine-htmlbox")]
 pub mod engine_htmlbox;
 
-/// The browser this build talks to.
+/// Getting a frame out of whichever engine is live. A STOPGAP — see the
+/// module docs for the shape that survives an out-of-process browser.
+#[cfg(feature = "gui")]
+pub mod present;
+
+/// The browser NAMED by this build, for the paths that need a concrete type.
 ///
-/// **The swap, in one line.** `platforms/web` is native code that owns the
-/// relationship with a browser; it registers the `web:*` host functions and
-/// passes the calls on. Which browser it passes them to is a build-time choice,
-/// and this is where that choice is written down.
+/// `platforms/web` is native code that owns the relationship with a browser; it
+/// registers the `web:*` host functions and passes the calls on. Which browser
+/// receives them is chosen at run time by `engine_select` — this alias is only
+/// for the handful of calls that cannot go through the data enum, and it
+/// resolves to htmlbox whenever htmlbox is compiled in.
 ///
 /// Most operations go through `engine::apply` because they are DATA — a node
-/// id, a name, a string. A few cannot: registering an event listener hands over
-/// a CLOSURE, and no data enum can carry one. Those call the browser directly,
-/// through this alias, exactly the way an htmlbox example subscribes.
+/// id, a name, a string, and which engine receives them is a RUNTIME choice
+/// (`engine_select`). A few cannot: registering an event listener hands over a
+/// CLOSURE, and no data enum can carry one. Those call the browser directly,
+/// through this alias — and an alias is a type, so it is the one part of the
+/// swap that stays build-time. See `with_browser` for what that costs.
 #[cfg(feature = "engine-htmlbox")]
 pub type Browser = rhtmledit::types::Document;
 #[cfg(all(feature = "gui", not(feature = "engine-htmlbox")))]
@@ -225,10 +237,25 @@ fn _both_browsers_are_whatwg(browser: &mut Browser) {
     browser.remove_attribute_ns(node, "urn:x", "a");
 }
 
-/// Borrow this build's browser document.
+/// Borrow a browser document as a CONCRETE type.
 ///
-/// The one place the engine is named for the direct-call path, mirroring what
-/// `register()` does for `install()`.
+/// The direct-call path, for the few things `DomOp` cannot carry — registering
+/// an event listener hands over a closure, and no data enum holds one.
+///
+/// **It serves one engine, and which one is fixed at build time.** That is not
+/// an oversight: the closure takes `&mut Browser`, a concrete type, so this
+/// cannot dispatch between two different engines at run time the way
+/// `engine::apply` can. `Browser` names htmlbox whenever htmlbox is compiled
+/// in, so on a build with both engines this reaches htmlbox — regardless of
+/// which one `engine_select` made live.
+///
+/// So it answers `None` when the live engine is not the one it names, rather
+/// than borrowing the wrong document. Silently operating on the other engine's
+/// tree is exactly the failure the canvas seam had: every call succeeds and
+/// nothing lands where the caller can see it.
+///
+/// Anything that can be expressed as data should go through `engine::apply`
+/// instead, which follows the runtime choice.
 #[cfg(feature = "gui")]
 pub fn with_browser<T>(
     document: engine::DocumentId,
@@ -236,10 +263,16 @@ pub fn with_browser<T>(
 ) -> Option<T> {
     #[cfg(feature = "engine-htmlbox")]
     {
+        if engine_select::live() != Some(engine_select::Engine::HtmlBox) {
+            return None;
+        }
         engine_htmlbox::with_document(document, f)
     }
     #[cfg(not(feature = "engine-htmlbox"))]
     {
+        if engine_select::live() != Some(engine_select::Engine::Widgets) {
+            return None;
+        }
         engine_widgets::with_document(document, f)
     }
 }
@@ -257,22 +290,15 @@ pub mod window;
 use vybe_runtime::VM;
 
 pub fn register(vm: &mut VM) {
-    // Install the engine the `web:*` surface talks to — windows, documents,
-    // input. `vybe_widgets` is that engine today; a build without the `gui`
-    // feature simply has none, the way a canvas with no painter draws nothing.
-    #[cfg(feature = "gui")]
-    engine_widgets::install();
-    // With `engine-htmlbox` on, htmlbox takes the slot instead. Installed
-    // AFTER, because `set_engine` replaces whatever is there — the ordering is
-    // the whole switch. Both are still linked; only one is live.
-    #[cfg(feature = "engine-htmlbox")]
-    engine_htmlbox::install();
-    // The painter for `web:canvas`, resolving through that same document.
-    // Installed HERE rather than by the vybe platform, which used to resolve
-    // through `GuiState` — a second widget tree that a `createElement` canvas
-    // is not in.
-    #[cfg(feature = "gui")]
-    canvas_backend_widgets::install();
+    // Install the engine the `web:*` surface talks to, and the canvas painter
+    // that goes with it. WHICH one is a runtime choice — `VYBE_ENGINE`, or
+    // `engine_select::choose` before this runs — because `set_engine` and
+    // `set_backend` are runtime slots and always were.
+    //
+    // This used to be two pairs of `#[cfg]` blocks installing in a fixed order,
+    // so the last one compiled in always won and swapping engines meant a
+    // rebuild. The ordering was doing the work of a switch.
+    engine_select::install();
 
     #[cfg(feature = "gui")]
     file_system_access::register(vm);

@@ -1911,8 +1911,15 @@ pub fn import_node(
     if fragment == 0 {
         return 0;
     }
-    let imported = match children_of(document, fragment).first() {
-        Some(first) => *first,
+    // The first ELEMENT, not the first node. Markup that begins with
+    // whitespace parses to a leading text node, and returning that would hand
+    // back a text node where the caller asked for the element it imported.
+    let imported = match children_of(document, fragment)
+        .into_iter()
+        .find(|child| matches!(crate::engine::apply(document, DomOp::NodeType(*child)),
+                               DomValue::Number(kind) if kind == 1.0))
+    {
+        Some(element) => element,
         None => return 0,
     };
     if !deep {
@@ -2289,8 +2296,23 @@ fn finalize_node_tree(
         // Replace children Array contents in place.
         if let Some(Value::Object(children_arr)) = n.properties.get("children") {
             let children_arr = children_arr.clone();
-            if let ObjectKind::Array(ref mut items) = children_arr.lock().unwrap().kind {
+            let len = element_children.len();
+            let mut guard = children_arr.lock().unwrap();
+            let replaced = if let ObjectKind::Array(ref mut items) = guard.kind {
                 *items = element_children;
+                true
+            } else {
+                false
+            };
+            // Maintain `HTMLCollection.length` exactly as
+            // `refresh_node_relationships` maintains `NodeList.length`: this
+            // list was built by `make_array(vec![])` and is filled in place,
+            // so the cached `length` property stays 0 unless it is written.
+            // Readers split on which they consult — `ecma:array.length` reads
+            // the backing vector (right), the array-like iteration fallback
+            // reads this property (was stale ⇒ spread drained NOTHING).
+            if replaced {
+                guard.properties.insert("length".into(), Value::I32(len as i32));
             }
         } else {
             n.properties
@@ -3408,8 +3430,20 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
         if is_elem_or_doc {
             if let Some(Value::Object(children_arr)) = p.properties.get("children") {
                 let children_arr = children_arr.clone();
-                if let ObjectKind::Array(ref mut a_items) = children_arr.lock().unwrap().kind {
+                let len = element_children.len();
+                let mut guard = children_arr.lock().unwrap();
+                let replaced = if let ObjectKind::Array(ref mut a_items) = guard.kind {
                     *a_items = element_children;
+                    true
+                } else {
+                    false
+                };
+                // `HTMLCollection.length`, the mirror of the `NodeList.length`
+                // write above. Every live mutator (appendChild / removeChild /
+                // insertBefore / fragment move) reaches `children` through
+                // here, so this one write covers all of them.
+                if replaced {
+                    guard.properties.insert("length".into(), Value::I32(len as i32));
                 }
             } else {
                 p.properties
