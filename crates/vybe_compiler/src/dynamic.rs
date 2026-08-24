@@ -381,7 +381,7 @@ pub fn debug_eval_expression(
     expr: &str,
     locals: &[(String, Value)],
     language: Language,
-    _caps: Capabilities,
+    caps: Capabilities,
 ) -> Result<Value, String> {
     let expr = expr.trim().trim_end_matches(';');
     if expr.is_empty() {
@@ -446,7 +446,7 @@ pub fn debug_eval_expression(
     //    to link. The fresh GuiState this creates is immediately shadowed by the
     //    live closures in `overlay_host_fns_from`.
     let mut eval_vm = VM::new();
-    crate::primitives::platforms::register_platforms_all(&mut eval_vm);
+    crate::primitives::platforms::register_platforms(&mut eval_vm, &caps);
     ensure_php_runtime_registered(&mut eval_vm);
     ensure_js_runtime_registered(&mut eval_vm);
     // Share the LIVE program's host-function closures (matched by name), so host
@@ -472,7 +472,7 @@ pub fn debug_eval_expression(
         .map_err(|e| format!("eval compile error: {e}"))?;
     let dynamic = into_dynamic_compilation(compiled);
     {
-        let mut service = RuntimeCompilerService::with_capabilities(&mut eval_vm, _caps);
+        let mut service = RuntimeCompilerService::with_capabilities(&mut eval_vm, caps);
         service
             .run_compiled(dynamic)
             .map_err(|e| format!("eval error: {e}"))?;
@@ -1207,7 +1207,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        crate::primitives::platforms::register_platforms_all(&mut eval_vm);
+        crate::primitives::platforms::register_platforms(&mut eval_vm, &self.caps);
 
         // Direct eval shares the caller's (global) scope: copy scalar /
         // object globals in. Function values are excluded — their
@@ -1396,7 +1396,7 @@ impl JsDynamicRuntime {
         }
 
         let mut eval_vm = VM::new();
-        crate::primitives::platforms::register_platforms_all(&mut eval_vm);
+        crate::primitives::platforms::register_platforms(&mut eval_vm, &self.caps);
 
         // Python's explicit namespace dict: `eval(code, globals[, locals])` /
         // `exec(code, ns)`. The walker forwards it as `attrs.namespace` (a
@@ -1545,7 +1545,7 @@ impl JsDynamicRuntime {
         let function_global_name = symbol.to_lowercase();
 
         let mut function_vm = VM::new();
-        crate::primitives::platforms::register_platforms_all(&mut function_vm);
+        crate::primitives::platforms::register_platforms(&mut function_vm, &self.caps);
         let _ = crate::adapters::register_all(&mut function_vm);
         sync_dynamic_function_globals(vm, &mut function_vm);
 
