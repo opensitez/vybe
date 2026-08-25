@@ -60,7 +60,7 @@ fn from_fields(f: UiEventFields) -> UiEvent {
     }
 }
 
-/// Visible to `engine_htmlbox`, which delegates the operations htmlbox has no
+/// Visible to `engine_webcore`, which delegates the operations webcore has no
 /// counterpart for — the scheduler, window geometry and pointer state are host
 /// bookkeeping, not DOM. Delegating rather than re-forwarding keeps one copy of
 /// those arms.

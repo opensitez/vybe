@@ -9,7 +9,7 @@
 //! either engine and there is no second copy to drift:
 //!
 //!     cargo test -p vybe_platform_web --features gui             # vybe_widgets
-//!     cargo test -p vybe_platform_web --features engine-htmlbox  # htmlbox
+//!     cargo test -p vybe_platform_web --features engine-webcore  # webcore
 
 use vybe_platform_web::canvas_backend::{
     Op2D, Query2D, Query2DValue, StringAttribute, apply as paint, backend, query,
@@ -36,12 +36,12 @@ fn node(v: DomValue) -> u64 {
 /// traits, and a build that swapped only the first would deliver every paint op
 /// to a document that does not contain the node it names.
 fn install() {
-    #[cfg(feature = "engine-htmlbox")]
+    #[cfg(feature = "engine-webcore")]
     {
-        vybe_platform_web::engine_htmlbox::install();
-        vybe_platform_web::canvas_backend_htmlbox::install();
+        vybe_platform_web::engine_webcore::install();
+        vybe_platform_web::canvas_backend_webcore::install();
     }
-    #[cfg(not(feature = "engine-htmlbox"))]
+    #[cfg(not(feature = "engine-webcore"))]
     {
         vybe_platform_web::engine_widgets::install();
         vybe_platform_web::canvas_backend_widgets::install();

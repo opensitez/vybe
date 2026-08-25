@@ -1,11 +1,11 @@
-//! The painter behind `web:canvas` when htmlbox is the engine.
+//! The painter behind `web:canvas` when webcore is the engine.
 //!
 //! The same file as `canvas_backend_widgets`, pointed at the other engine, and
 //! that is the whole point of the seam: `getContext(element, "2d")` binds a
 //! context to a NODE (HTML §4.12.5), each engine turns its own nodes into its
 //! own pixels, and nothing above this layer learns which one is installed.
 //!
-//! **What this forwards to is a real bitmap.** htmlbox's `<canvas>` keeps its
+//! **What this forwards to is a real bitmap.** webcore's `<canvas>` keeps its
 //! pixels on the element and draws into them immediately, so an op that arrives
 //! here has been painted by the time the call returns. That is what lets the
 //! asking half of the API mean anything: `measureText` reads the font actually
@@ -19,16 +19,16 @@ use crate::canvas_backend::{
     self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef,
     PathOp2D, PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
 };
-use rhtmledit::canvas::{
+use webcore::canvas::{
     Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
     FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient as CanvasGradient, Image,
     ImageData, LineCap, LineJoin, Paint as CanvasPaint, Pattern as CanvasPattern, Repetition,
     Path2D as CanvasPath, PathOp as EnginePathOp, Shadow, SmoothingQuality, TextAlign,
     TextBaseline, TextRendering,
 };
-use rhtmledit::types::Document;
+use webcore::types::Document;
 
-struct HtmlBoxBackend;
+struct WebCoreBackend;
 
 fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color { r, g, b, a }
@@ -58,20 +58,20 @@ fn node_of(document: &Document, target: &str) -> Option<u32> {
 }
 
 /// Borrow the 2D context `target` names, in the ambient document.
-fn with_canvas<T>(target: &str, f: impl FnOnce(&mut dyn rhtmledit::canvas::Canvas) -> T) -> Option<T> {
-    crate::engine_htmlbox::with_document(crate::html::active_document(), |document| {
+fn with_canvas<T>(target: &str, f: impl FnOnce(&mut dyn webcore::canvas::Canvas) -> T) -> Option<T> {
+    crate::engine_webcore::with_document(crate::html::active_document(), |document| {
         let node = node_of(document, target)?;
         document.with_canvas_2d(node, f)
     })
     .flatten()
 }
 
-impl CanvasBackend for HtmlBoxBackend {
+impl CanvasBackend for WebCoreBackend {
     /// `getContext`'s side effect. The `<canvas>` element owns its bitmap, so
     /// this allocates it if the element has never had one — an element from
     /// `createElement` has not been through the parser.
     fn ensure(&self, target: &str) {
-        crate::engine_htmlbox::with_document(crate::html::active_document(), |document| {
+        crate::engine_webcore::with_document(crate::html::active_document(), |document| {
             if let Some(node) = node_of(document, target) {
                 document.get_context_2d(node);
             }
@@ -457,9 +457,9 @@ impl CanvasBackend for HtmlBoxBackend {
     }
 }
 
-/// Install htmlbox as the surface `web:canvas` paints into.
+/// Install webcore as the surface `web:canvas` paints into.
 pub fn install() {
-    canvas_backend::set_backend(Arc::new(HtmlBoxBackend));
+    canvas_backend::set_backend(Arc::new(WebCoreBackend));
 }
 
 /// The shadow currently in effect, rebuilt from the four attributes.
@@ -467,7 +467,7 @@ pub fn install() {
 /// The seam sets shadow components one at a time because the IDL has four
 /// separate attributes; the engine holds them as one value. Without this,
 /// assigning `shadowBlur` would silently reset `shadowColor` to its default.
-fn current_shadow(c: &mut dyn rhtmledit::canvas::Canvas) -> Shadow {
+fn current_shadow(c: &mut dyn webcore::canvas::Canvas) -> Shadow {
     Shadow {
         color: parse_serialized_color(&c.shadow_color_css()),
         blur: c.shadow_blur(),
@@ -539,8 +539,8 @@ fn pattern(def: PatternDef) -> CanvasPattern {
 }
 
 /// A CSS `<color>` for a gradient stop, through the engine's parser.
-fn parse_stop_color(css: &str) -> Option<rhtmledit::canvas::Color> {
-    rhtmledit::canvas::parse_color_css(css)
+fn parse_stop_color(css: &str) -> Option<webcore::canvas::Color> {
+    webcore::canvas::parse_color_css(css)
 }
 
 /// The seam's path definition, in the engine's terms.

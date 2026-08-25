@@ -6,7 +6,7 @@
 //! binary with another engine's `install()` would be racing.
 //!
 //!     cargo test -p vybe_platform_web --features gui            --test present_seam
-//!     cargo test -p vybe_platform_web --features engine-htmlbox --test present_seam
+//!     cargo test -p vybe_platform_web --features engine-webcore --test present_seam
 
 use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply, new_document};
 use vybe_platform_web::engine_select::{self, Engine};
@@ -14,9 +14,9 @@ use vybe_platform_web::engine_select::{self, Engine};
 fn setup() -> u64 {
     // Through `engine_select`, not the engine's own `install()`: `present`
     // asks which engine is LIVE, and only this sets that.
-    #[cfg(feature = "engine-htmlbox")]
-    engine_select::choose(Engine::HtmlBox);
-    #[cfg(not(feature = "engine-htmlbox"))]
+    #[cfg(feature = "engine-webcore")]
+    engine_select::choose(Engine::WebCore);
+    #[cfg(not(feature = "engine-webcore"))]
     engine_select::choose(Engine::Widgets);
     engine_select::install();
     new_document("test")

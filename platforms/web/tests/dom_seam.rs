@@ -38,11 +38,11 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
 /// second copy to drift:
 ///
 ///     cargo test -p vybe_platform_web --features gui             # vybe_widgets
-///     cargo test -p vybe_platform_web --features engine-htmlbox  # htmlbox
+///     cargo test -p vybe_platform_web --features engine-webcore  # webcore
 fn install() {
-    #[cfg(feature = "engine-htmlbox")]
-    vybe_platform_web::engine_htmlbox::install();
-    #[cfg(not(feature = "engine-htmlbox"))]
+    #[cfg(feature = "engine-webcore")]
+    vybe_platform_web::engine_webcore::install();
+    #[cfg(not(feature = "engine-webcore"))]
     vybe_platform_web::engine_widgets::install();
 }
 
@@ -192,7 +192,7 @@ fn style_uses_css_units() {
     // This asserted `"16px"` until the resolved read got its own op. The engine
     // was answering `left`/`top`/`width`/`height` out of the laid-out rect —
     // `getComputedStyle`'s job — so a stylesheet round-trip through
-    // `getPropertyValue` silently rewrote authored units. htmlbox always
+    // `getPropertyValue` silently rewrote authored units. webcore always
     // answered the declared value, which is how the divergence surfaced.
     assert_eq!(
         text(apply(doc, DomOp::GetStyleProperty(b, "top".into()))),
@@ -228,7 +228,7 @@ fn two_documents_are_two_trees() {
 /// Click the middle of a node, as the window shell does.
 ///
 /// **No longer engine-specific.** This was two functions behind a `#[cfg]` —
-/// one poking `vybe_widgets`' form, one calling htmlbox's `process_mouse_event`
+/// one poking `vybe_widgets`' form, one calling webcore's `process_mouse_event`
 /// — because delivering OS input was the one thing the seam had no verb for.
 /// The host had the same hole and filled it the same way, by reaching past the
 /// engine into the toolkit, so a click under any other engine went nowhere.
@@ -793,7 +793,7 @@ fn a_child_of_the_document_lands_in_the_body() {
     // document" means the body, and every frontend here says exactly that:
     // `web:html.appendChild(DOCUMENT, control)` is how a form is built.
     //
-    // htmlbox spelled `DOCUMENT` as `<html>` and hung the whole form beside
+    // webcore spelled `DOCUMENT` as `<html>` and hung the whole form beside
     // `<head>` and `<body>` instead of inside one. Nothing errored, layout ran
     // and reported its timings, and the window painted an empty page.
     let doc = setup();
@@ -848,7 +848,7 @@ fn the_documents_own_structure_is_obeyed_where_it_is_put() {
 #[test]
 fn the_document_is_not_an_element() {
     // DOM §4.4. `DOCUMENT` is the document node, whatever the engine below
-    // uses to stand in for it — htmlbox has no node for it at all and answers
+    // uses to stand in for it — webcore has no node for it at all and answers
     // with `<html>`, which is right for reaching into the tree and wrong for
     // the two questions that ask what the node IS.
     let doc = setup();
@@ -863,7 +863,7 @@ fn the_document_is_not_an_element() {
 fn the_documents_text_is_its_title_and_writing_it_keeps_the_tree() {
     // `textContent` replaces every child with one text node. Applied to the
     // DOCUMENT that means `<head>` and `<body>` are DELETED — which is what
-    // htmlbox did, because it spells the document as `<html>` and applied the
+    // webcore did, because it spells the document as `<html>` and applied the
     // element rule. A .NET form's caption is `Form.Text` and the form IS the
     // document, so the first line a program ran emptied its own page and every
     // control appended afterwards hung off a bodyless root.

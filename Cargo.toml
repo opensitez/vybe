@@ -35,7 +35,6 @@ members = [
     "platforms/web",
     "platforms/wasi",
     "platforms/node",
-    "platforms/vybe",
     "ecma/testecma",
     "crates/testrunner",
 ]
@@ -47,6 +46,7 @@ authors = ["Opensitez Vybe Team"]
 license = "GPLv3"
 
 [workspace.dependencies]
+native-tls = "0.2"
 # Parser dependencies
 pest = "2.7"
 pest_derive = "2.7"
@@ -148,12 +148,13 @@ vybe_platform_ecma = { path = "platforms/ecma" }
 vybe_platform_web = { path = "platforms/web" }
 vybe_platform_wasi = { path = "platforms/wasi" }
 vybe_platform_node = { path = "platforms/node" }
-vybe_platform_vybe = { path = "platforms/vybe" }
 vybe_platform_libc = { path = "platforms/libc" }
 vybe_platform_dotnet = { path = "platforms/dotnet" }
 vybe_platform_flutter = { path = "platforms/flutter" }
 vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
 vybe_widgets = { path = "crates/vybe_widgets" }
+# The HTML/CSS engine behind `web:*` when the `engine-webcore` feature is on.
+webcore = "0.2.0"
 vybe_compiler = { path = "crates/vybe_compiler" }
 vybex = { path = "crates/vybex" }

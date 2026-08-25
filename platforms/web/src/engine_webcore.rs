@@ -1,4 +1,4 @@
-//! htmlbox as the engine behind `web:*`.
+//! webcore as the engine behind `web:*`.
 //!
 //! The sibling of `engine_widgets.rs`, against the same trait. `engine.rs`
 //! names neither engine, so which one is live is decided by which `install()`
@@ -8,10 +8,10 @@
 //!
 //! `DocumentId` is ONE namespace shared by `document()` and `window()`:
 //! `WindowOp::Open`, `Document`, `DefaultView` and `AdoptTopLevel` all mint or
-//! return one. If `vybe_widgets` answered those while htmlbox answered
+//! return one. If `vybe_widgets` answered those while webcore answered
 //! `document()`, the ids handed back would point into the widget document
 //! table and every following `apply()` would miss — two document tables over
-//! one id space. So htmlbox owns the whole browsing context: all of `DomOp`
+//! one id space. So webcore owns the whole browsing context: all of `DomOp`
 //! and the id-minting `WindowOp`s.
 //!
 //! `EventOp` is NOT among them, which looks wrong until you follow the two
@@ -27,19 +27,19 @@
 //!
 //! TWO IMPEDANCE MISMATCHES, HANDLED HERE RATHER THAN IN EITHER ENGINE
 //!
-//! 1. The seam's `DOCUMENT` is node `0`. In htmlbox's arena, slot 0 is the
+//! 1. The seam's `DOCUMENT` is node `0`. In webcore's arena, slot 0 is the
 //!    SENTINEL meaning "no node" — `dom_append_child(0, child)` returns early.
 //!    Left alone, appending to the document would silently do nothing. `to_hb`
 //!    and `from_hb` below translate between the two spellings.
 //!
-//! 2. htmlbox dispatches events to callbacks synchronously; the seam pulls
-//!    them with `DrainEvents`. A queue fed by htmlbox's global form-event
+//! 2. webcore dispatches events to callbacks synchronously; the seam pulls
+//!    them with `DrainEvents`. A queue fed by webcore's global form-event
 //!    callback bridges the two, so neither engine changes shape.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rhtmledit::types::{Document, FormEvent, FormEventKind};
+use webcore::types::{Document, FormEvent, FormEventKind};
 
 use crate::engine::{
     DOCUMENT, DocumentId, DomOp, DomValue, EventOp, EventValue, NodeId, ScheduleOp, ScheduleValue,
@@ -72,7 +72,7 @@ struct Docs {
     entries: HashMap<DocumentId, Mutex<Entry>>,
 }
 
-/// `Document` is `Send` (htmlbox declares it for its parallel cascade) but not
+/// `Document` is `Send` (webcore declares it for its parallel cascade) but not
 /// `Sync` — a `Mutex` around it is both, which is what the trait requires.
 /// Same shape `vybe_widgets::dom` uses for its own document table.
 fn docs() -> &'static Mutex<Docs> {
@@ -98,10 +98,10 @@ fn with_entry<T>(id: DocumentId, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
 
 // ── Node id translation ─────────────────────────────────────────────────────
 
-/// Seam node → htmlbox node. `DOCUMENT` (0) is the document itself, which in
-/// htmlbox is the root box; 0 in the arena means "no node".
+/// Seam node → webcore node. `DOCUMENT` (0) is the document itself, which in
+/// webcore is the root box; 0 in the arena means "no node".
 ///
-/// For ADDRESSING a node this is right — htmlbox has no separate document node,
+/// For ADDRESSING a node this is right — webcore has no separate document node,
 /// so the document's stand-in is `<html>`. For INSERTING one it is not: see
 /// [`insertion_parent`].
 fn to_hb(doc: &Document, node: NodeId) -> u32 {
@@ -136,7 +136,7 @@ fn content_node(doc: &Document, node: NodeId) -> u32 {
 /// means the body. `<html>`/`<head>`/`<body>` ARE the document's structure, so
 /// a caller that spells one out is obeyed where it put it.
 ///
-/// Without this htmlbox hung every control off `<html>`, a sibling of `<head>`
+/// Without this webcore hung every control off `<html>`, a sibling of `<head>`
 /// and `<body>` rather than a child of either. The tree laid out — that is what
 /// the timings reported — and painted nothing a page would recognise as
 /// content, because none of it was in the body.
@@ -154,13 +154,13 @@ fn insertion_parent(doc: &Document, parent: NodeId, child: NodeId) -> u32 {
     }
 }
 
-/// htmlbox node → seam node. The root box answers as `DOCUMENT` so that
+/// webcore node → seam node. The root box answers as `DOCUMENT` so that
 /// walking up from `<body>` lands on the document, as the DOM says it should.
 fn from_hb(doc: &Document, id: u32) -> NodeId {
     if id == doc.root.node_id || id == 0 { DOCUMENT } else { id as NodeId }
 }
 
-/// The DOM event name for a form interaction. htmlbox reports what HAPPENED;
+/// The DOM event name for a form interaction. webcore reports what HAPPENED;
 /// the seam is keyed by the name a listener was registered under.
 fn event_names(kind: &FormEventKind) -> Vec<&'static str> {
     match kind {
@@ -176,14 +176,14 @@ fn event_names(kind: &FormEventKind) -> Vec<&'static str> {
     }
 }
 
-struct HtmlBox;
+struct WebCore;
 
-impl WebEngine for HtmlBox {
+impl WebEngine for WebCore {
     fn new_document(&self, title: &str) -> DocumentId {
         // Parsed rather than `Document::new()`: the seam expects a real
         // `<head>`/`<body>` skeleton, and `<title>` is where `DomOp::Title`
         // reads from.
-        let escaped = rhtmledit::html::serializer::escape_html(title);
+        let escaped = webcore::html::serializer::escape_html(title);
         // **The app shell, said in CSS.** A document opened by a program is a
         // window's worth of page, not a scrolling article, and the two rules
         // below are what every app stylesheet on the web opens with.
@@ -201,21 +201,21 @@ impl WebEngine for HtmlBox {
         // 16px and gets a scrollbar it never asked for.
         //
         // An AUTHOR sheet, so a page that wants the margin back can simply set
-        // it — this is the shell's own styling, not a change to what htmlbox
+        // it — this is the shell's own styling, not a change to what webcore
         // believes about HTML.
         let html = format!(
             "<html><head><title>{escaped}</title>\
              <style>html, body {{ height: 100%; margin: 0; }}</style>\
              </head><body></body></html>"
         );
-        let doc = rhtmledit::load_html(&html, DEFAULT_VIEWPORT_W);
+        let doc = webcore::load_html(&html, DEFAULT_VIEWPORT_W);
 
         let events: Arc<Mutex<VecDeque<(NodeId, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
 
         let mut entry = Entry { doc, events: Arc::clone(&events) };
 
-        // The bridge: htmlbox calls this synchronously as interactions happen,
+        // The bridge: webcore calls this synchronously as interactions happen,
         // and `DrainEvents` pulls whatever accumulated since the last drain.
         let sink = Arc::clone(&events);
         let root_id = entry.doc.root.node_id;
@@ -254,7 +254,7 @@ impl WebEngine for HtmlBox {
         // both engines rather than duplicated inside either.
         let id = self.new_document(title);
         with_document(id, |doc| {
-            doc.kind = rhtmledit::types::DocumentKind::Xml;
+            doc.kind = webcore::types::DocumentKind::Xml;
         });
         id
     }
@@ -341,7 +341,7 @@ impl WebEngine for HtmlBox {
                     doc.append_child(p, child as u32);
                     DomValue::Bool(true)
                 }
-                // htmlbox unlinks a child from whatever parent it is ACTUALLY
+                // webcore unlinks a child from whatever parent it is ACTUALLY
                 // under, so there is no parent to redirect here — which is what
                 // keeps the redirect on the way in from leaving a node linked
                 // into the body and unlinked from the document.
@@ -362,7 +362,7 @@ impl WebEngine for HtmlBox {
                     let clone = doc.clone_node(to_hb(doc, node), deep);
                     if clone == 0 { DomValue::Null } else { DomValue::Node(clone as NodeId) }
                 }
-                // The document is not its own element. htmlbox has no node for
+                // The document is not its own element. webcore has no node for
                 // it, so `to_hb` answers `<html>` — right for reaching into the
                 // tree, wrong for the two questions that ask what the node IS.
                 // DOM §4.4: `9` and `#document`, which is what `vybe_widgets`
@@ -447,7 +447,7 @@ impl WebEngine for HtmlBox {
                     doc.set_style_property(content_node(doc, n), &p, &v);
                     DomValue::None
                 }
-                // The DECLARED value — what was authored, un-resolved. htmlbox
+                // The DECLARED value — what was authored, un-resolved. webcore
                 // already answered this way, which is why it disagreed with the
                 // old `vybe_widgets` for `left`/`top`/`width`/`height`.
                 DomOp::GetStyleProperty(n, p) => {
@@ -465,7 +465,7 @@ impl WebEngine for HtmlBox {
 
                 // ── Form controls ──
                 //
-                // `checked` and `value` are CONTENT ATTRIBUTES in htmlbox, which
+                // `checked` and `value` are CONTENT ATTRIBUTES in webcore, which
                 // is the HTML model, so these are attribute reads rather than a
                 // parallel control-state store. Interaction writes them on the
                 // render tree and `sync_form_state_to_arena` reconciles, so a
@@ -516,7 +516,7 @@ impl WebEngine for HtmlBox {
                 }
 
                 // ── Events ──
-                // htmlbox hit-tests, dispatches the DOM event and — for a click
+                // webcore hit-tests, dispatches the DOM event and — for a click
                 // on a control — calls `on_form_event`, which is the callback
                 // this file installed at `new_document`. So the input arrives
                 // here and comes back out of `DrainEvents` with no further
@@ -527,7 +527,7 @@ impl WebEngine for HtmlBox {
                     client_y,
                     button,
                 } => {
-                    use rhtmledit::dom::HtmlEventType;
+                    use webcore::dom::HtmlEventType;
                     let etype = match kind.as_str() {
                         "mousedown" => HtmlEventType::MouseDown,
                         "mouseup" => HtmlEventType::MouseUp,
@@ -535,7 +535,7 @@ impl WebEngine for HtmlBox {
                     };
                     // `MouseEvent.button` is signed and `process_mouse_event`
                     // takes the same three values unsigned; anything else is
-                    // not a button htmlbox knows and is treated as the primary
+                    // not a button webcore knows and is treated as the primary
                     // one, which is what it does with an unrecognised device.
                     let button = u8::try_from(button).unwrap_or(0);
                     DomValue::Bool(doc.process_mouse_event(etype, (client_x, client_y), button))
@@ -583,7 +583,7 @@ impl WebEngine for HtmlBox {
                 //
                 //   select/option — `SelectedIndex`, `SetSelectedIndex`,
                 //     `ItemText`, `SetItemText`, `AddItem`, `RemoveItem`,
-                //     `ClearItems`. htmlbox has `widgets/select.rs` with
+                //     `ClearItems`. webcore has `widgets/select.rs` with
                 //     `select_index`/`selected_text`, but no DOM spelling over
                 //     `<option>` children yet.
                 //   `ShowPicker` — needs the UA's own file/colour chooser.
@@ -601,7 +601,7 @@ impl WebEngine for HtmlBox {
             // The id-minting ops stay HERE so there is one document table.
             WindowOp::Open { target, .. } => WindowValue::Window(self.new_document(&target)),
             // A window and its document are the same handle under this engine:
-            // htmlbox has no separate window object, and a `Document` IS the
+            // webcore has no separate window object, and a `Document` IS the
             // browsing context a tab renders (which is what `browser.rs` does
             // with one `Document` per tab).
             WindowOp::Document(w) => WindowValue::Document(w),
@@ -661,7 +661,7 @@ impl WebEngine for HtmlBox {
     }
 }
 
-/// Install htmlbox as the web engine.
+/// Install webcore as the web engine.
 pub fn install() {
-    crate::engine::set_engine(Arc::new(HtmlBox));
+    crate::engine::set_engine(Arc::new(WebCore));
 }

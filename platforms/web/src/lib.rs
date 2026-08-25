@@ -45,8 +45,8 @@ pub mod animation;
 pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod canvas;
 pub mod canvas_backend;
-#[cfg(feature = "engine-htmlbox")]
-pub mod canvas_backend_htmlbox;
+#[cfg(feature = "engine-webcore")]
+pub mod canvas_backend_webcore;
 #[cfg(feature = "gui")]
 pub mod canvas_backend_widgets;
 pub mod console;
@@ -60,8 +60,8 @@ pub mod engine_select;
 pub mod engine_widgets;
 /// The other engine behind the same trait. Additive to `engine_widgets`: both
 /// are compiled in, and `install()` decides which one is live.
-#[cfg(feature = "engine-htmlbox")]
-pub mod engine_htmlbox;
+#[cfg(feature = "engine-webcore")]
+pub mod engine_webcore;
 
 /// Getting a frame out of whichever engine is live. A STOPGAP — see the
 /// module docs for the shape that survives an out-of-process browser.
@@ -74,7 +74,7 @@ pub mod present;
 /// registers the `web:*` host functions and passes the calls on. Which browser
 /// receives them is chosen at run time by `engine_select` — this alias is only
 /// for the handful of calls that cannot go through the data enum, and it
-/// resolves to htmlbox whenever htmlbox is compiled in.
+/// resolves to webcore whenever webcore is compiled in.
 ///
 /// Most operations go through `engine::apply` because they are DATA — a node
 /// id, a name, a string, and which engine receives them is a RUNTIME choice
@@ -82,9 +82,9 @@ pub mod present;
 /// CLOSURE, and no data enum can carry one. Those call the browser directly,
 /// through this alias — and an alias is a type, so it is the one part of the
 /// swap that stays build-time. See `with_browser` for what that costs.
-#[cfg(feature = "engine-htmlbox")]
-pub type Browser = rhtmledit::types::Document;
-#[cfg(all(feature = "gui", not(feature = "engine-htmlbox")))]
+#[cfg(feature = "engine-webcore")]
+pub type Browser = webcore::types::Document;
+#[cfg(all(feature = "gui", not(feature = "engine-webcore")))]
 pub type Browser = vybe_widgets::dom::Document;
 
 /// Proof, at COMPILE TIME, that both browsers offer the same WHATWG surface.
@@ -245,8 +245,8 @@ fn _both_browsers_are_whatwg(browser: &mut Browser) {
 /// **It serves one engine, and which one is fixed at build time.** That is not
 /// an oversight: the closure takes `&mut Browser`, a concrete type, so this
 /// cannot dispatch between two different engines at run time the way
-/// `engine::apply` can. `Browser` names htmlbox whenever htmlbox is compiled
-/// in, so on a build with both engines this reaches htmlbox — regardless of
+/// `engine::apply` can. `Browser` names webcore whenever webcore is compiled
+/// in, so on a build with both engines this reaches webcore — regardless of
 /// which one `engine_select` made live.
 ///
 /// So it answers `None` when the live engine is not the one it names, rather
@@ -261,14 +261,14 @@ pub fn with_browser<T>(
     document: engine::DocumentId,
     f: impl FnOnce(&mut Browser) -> T,
 ) -> Option<T> {
-    #[cfg(feature = "engine-htmlbox")]
+    #[cfg(feature = "engine-webcore")]
     {
-        if engine_select::live() != Some(engine_select::Engine::HtmlBox) {
+        if engine_select::live() != Some(engine_select::Engine::WebCore) {
             return None;
         }
-        engine_htmlbox::with_document(document, f)
+        engine_webcore::with_document(document, f)
     }
-    #[cfg(not(feature = "engine-htmlbox"))]
+    #[cfg(not(feature = "engine-webcore"))]
     {
         if engine_select::live() != Some(engine_select::Engine::Widgets) {
             return None;

@@ -19,15 +19,15 @@ use std::sync::RwLock;
 pub enum Engine {
     /// `vybe_widgets` — the toolkit's own layout and painting.
     Widgets,
-    /// `htmlbox` (`rhtmledit`) — the HTML/CSS engine.
-    HtmlBox,
+    /// `webcore` (`webcore`) — the HTML/CSS engine.
+    WebCore,
 }
 
 impl Engine {
     pub fn as_str(&self) -> &'static str {
         match self {
             Engine::Widgets => "widgets",
-            Engine::HtmlBox => "htmlbox",
+            Engine::WebCore => "webcore",
         }
     }
 
@@ -35,7 +35,7 @@ impl Engine {
     pub fn parse(name: &str) -> Option<Engine> {
         match name.trim().to_ascii_lowercase().as_str() {
             "widgets" | "vybe_widgets" => Some(Engine::Widgets),
-            "htmlbox" | "rhtmledit" => Some(Engine::HtmlBox),
+            "webcore" | "webcore" => Some(Engine::WebCore),
             _ => None,
         }
     }
@@ -49,14 +49,14 @@ impl Engine {
     pub fn is_available(&self) -> bool {
         match self {
             Engine::Widgets => cfg!(feature = "gui"),
-            Engine::HtmlBox => cfg!(feature = "engine-htmlbox"),
+            Engine::WebCore => cfg!(feature = "engine-webcore"),
         }
     }
 }
 
 /// Every engine this build can install.
 pub fn available() -> Vec<Engine> {
-    [Engine::Widgets, Engine::HtmlBox]
+    [Engine::Widgets, Engine::WebCore]
         .into_iter()
         .filter(Engine::is_available)
         .collect()
@@ -126,7 +126,7 @@ fn requested() -> Engine {
 /// why an engine without its matching painter is worse than no swap at all.
 ///
 /// Answers what it actually installed, which is not always what was asked for:
-/// a build without `engine-htmlbox` has no htmlbox to install.
+/// a build without `engine-webcore` has no webcore to install.
 pub fn install() -> Option<Engine> {
     let want = requested();
     let engine = if want.is_available() {
@@ -137,7 +137,7 @@ pub fn install() -> Option<Engine> {
         let have = available();
         eprintln!(
             "vybe: engine `{}` is not in this build (have: {}); using `{}`. \
-             Rebuild with `--features vybe_platform_web/engine-htmlbox` for htmlbox.",
+             Rebuild with `--features vybe_platform_web/engine-webcore` for webcore.",
             want.as_str(),
             if have.is_empty() {
                 "none".to_string()
@@ -160,11 +160,11 @@ pub fn install() -> Option<Engine> {
                 crate::canvas_backend_widgets::install();
             }
         }
-        Engine::HtmlBox => {
-            #[cfg(feature = "engine-htmlbox")]
+        Engine::WebCore => {
+            #[cfg(feature = "engine-webcore")]
             {
-                crate::engine_htmlbox::install();
-                crate::canvas_backend_htmlbox::install();
+                crate::engine_webcore::install();
+                crate::canvas_backend_webcore::install();
             }
         }
     }
@@ -178,10 +178,10 @@ mod tests {
 
     #[test]
     fn an_engine_name_round_trips() {
-        for e in [Engine::Widgets, Engine::HtmlBox] {
+        for e in [Engine::Widgets, Engine::WebCore] {
             assert_eq!(Engine::parse(e.as_str()), Some(e));
         }
-        assert_eq!(Engine::parse("  HtmlBox "), Some(Engine::HtmlBox));
+        assert_eq!(Engine::parse("  WebCore "), Some(Engine::WebCore));
         assert_eq!(Engine::parse("chrome"), None, "an engine we do not have");
     }
 
@@ -191,8 +191,8 @@ mod tests {
         // engine this build did not compile.
         let have = available();
         assert_eq!(
-            have.contains(&Engine::HtmlBox),
-            cfg!(feature = "engine-htmlbox")
+            have.contains(&Engine::WebCore),
+            cfg!(feature = "engine-webcore")
         );
         assert_eq!(have.contains(&Engine::Widgets), cfg!(feature = "gui"));
     }

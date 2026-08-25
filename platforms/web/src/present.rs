@@ -14,13 +14,13 @@
 //! screen showing this document", with the engine painting it and the host never
 //! holding a buffer at all — plus an encode-to-bytes op for the headless case,
 //! which is what `Page.captureScreenshot` returns. Both engines here can already
-//! own a window (`vybe_widgets::app_window`, `rhtmledit::main`), so that move is
+//! own a window (`vybe_widgets::app_window`, `webcore::main`), so that move is
 //! available; it relocates windowing out of `vybex`, which is why it is not this
 //! change.
 //!
 //! What this DOES fix is `vybex` reaching around the intermediary. It called
 //! `vybe_widgets::dom::with_document` directly, so the engine could swap and the
-//! renderer could not: the form went to htmlbox and the window painted the
+//! renderer could not: the form went to webcore and the window painted the
 //! toolkit's empty tree. Everything above still asks `platforms/web`, which is
 //! the arrangement that stays true when the answer moves.
 
@@ -69,8 +69,8 @@ pub fn render(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool {
     match engine_select::live() {
         #[cfg(feature = "gui")]
         Some(Engine::Widgets) => render_widgets(document, pixmap, scale),
-        #[cfg(feature = "engine-htmlbox")]
-        Some(Engine::HtmlBox) => render_htmlbox(document, pixmap, scale),
+        #[cfg(feature = "engine-webcore")]
+        Some(Engine::WebCore) => render_webcore(document, pixmap, scale),
         _ => false,
     }
 }
@@ -103,21 +103,21 @@ fn render_widgets(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool
     })
 }
 
-#[cfg(feature = "engine-htmlbox")]
-fn render_htmlbox(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool {
-    // htmlbox's `Renderer` is STATEFUL across frames — it carries the
+#[cfg(feature = "engine-webcore")]
+fn render_webcore(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool {
+    // webcore's `Renderer` is STATEFUL across frames — it carries the
     // compositor layer tree, the tile cache and the display list. Rebuilding it
     // per frame would not be a slow correct renderer, it would be one that
     // never gets to use any of that, so it is kept for the life of the thread.
     thread_local! {
-        static RENDERER: std::cell::RefCell<rhtmledit::renderer::Renderer> =
-            std::cell::RefCell::new(rhtmledit::renderer::Renderer::new());
+        static RENDERER: std::cell::RefCell<webcore::renderer::Renderer> =
+            std::cell::RefCell::new(webcore::renderer::Renderer::new());
     }
     RENDERER.with(|renderer| {
         let mut renderer = renderer.borrow_mut();
-        crate::engine_htmlbox::with_document(document, |doc| {
-            // **Layout, THEN paint** — the order htmlbox's own window runs
-            // (`rhtmledit::main`), and through the renderer's engine so its
+        crate::engine_webcore::with_document(document, |doc| {
+            // **Layout, THEN paint** — the order webcore's own window runs
+            // (`webcore::main`), and through the renderer's engine so its
             // caches see the same generation the paint reads. Painting without
             // it draws a tree that has no geometry: every box at the origin
             // with zero size, which comes out as a blank frame with no error.
@@ -135,7 +135,7 @@ fn render_htmlbox(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool
             // and it broke the page on interaction: clicking blanked the app
             // bar, the status text and the button. A click changes state
             // through paths that do not raise those flags — `handle_form_click`
-            // is a free function over `&mut HtmlBox` with no document to mark —
+            // is a free function over `&mut WebCore` with no document to mark —
             // so the frame after a click painted a tree that had never been
             // laid out at the current viewport.
             //
