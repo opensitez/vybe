@@ -145,6 +145,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.utf8_encode" => {
             crate::emitter::io_adapter::emit_utf8_encode(chunks, current, argc, line)
         }
+        "dart.ascii_encode" => {
+            crate::emitter::io_adapter::emit_ascii_encode(chunks, current, argc, line)
+        }
+        "dart.ascii_decode" => {
+            crate::emitter::io_adapter::emit_ascii_decode(chunks, current, argc, line)
+        }
         "dart.latin1_encode" => {
             crate::emitter::io_adapter::emit_latin1_encode(chunks, current, argc, line)
         }
@@ -631,11 +637,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dart.json_encode" => {
+            crate::emitter::json_adapter::emit_dart_json_encode(chunks, current, argc, line)
+        }
+        "dart.json_decode" => {
+            crate::emitter::json_adapter::emit_dart_json_decode(chunks, current, argc, line)
+        }
+        "dart.isolate_spawn_uri" => {
+            crate::emitter::string_adapter::emit_dart_isolate_spawn_uri_throw(chunks, current, line)
+        }
         "dart.future_call0" => {
             crate::emitter::string_adapter::emit_dart_future_call0(chunks, current, line)
         }
         "dart.future_delayed" => {
-            crate::emitter::string_adapter::emit_dart_future_delayed(chunks, current, line)
+            crate::emitter::string_adapter::emit_dart_future_delayed(chunks, current, argc, line)
         }
         "dart.contains" => {
             crate::emitter::string_adapter::emit_dart_contains(chunks, current, line)

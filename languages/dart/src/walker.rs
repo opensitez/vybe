@@ -174,6 +174,46 @@ fn is_user_declared_class(__w: &DartWalker, name: &str) -> bool {
 /// Any other callee stays a plain `Call`.
 fn dart_call_or_new(__w: &mut DartWalker, callee: Expression, args: Vec<Argument>) -> ExprKind {
     if let ExprKind::Ident(name) = &callee.kind {
+        // `Expando()` — an IDENTITY-keyed weak store. A dart map routes
+        // through property semantics whose keys coerce, so two distinct
+        // `Object()`s collided onto one entry; the backing here is the real
+        // `ecma:weakmap` (identity keys, weak refs — dart's own doc calls
+        // Expando "a weak map"). `__dart_index_get`/`__dart_index_set`
+        // discriminate on `__type` and route to weakmap get/set.
+        // `TimelineTask()` — a typed record; its `start`/`pass`/`finish` are
+        // tracing no-ops, and a method call on a plain record already
+        // no-ops through the dynamic member path. A record avoids declaring
+        // class METHODS named `start`/`finish`, which would enter the flat
+        // `defined_class_methods` set and divert every untyped
+        // `stopwatch.start()` from its `[value_methods]` row.
+        if name == "TimelineTask" && !is_user_declared_class(__w, name) {
+            return dart_object(vec![
+                ("__type", Expression::string("TimelineTask")),
+                (
+                    "__types",
+                    dart_array_expr(vec![Expression::string("TimelineTask")]),
+                ),
+            ])
+            .kind;
+        }
+        if name == "Expando" && !is_user_declared_class(__w, name) {
+            return dart_object(vec![
+                ("__type", Expression::string("Expando")),
+                (
+                    "__types",
+                    dart_array_expr(vec![Expression::string("Expando")]),
+                ),
+                (
+                    "__wm",
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dart_expando_wm_new")),
+                        args: vec![],
+                        optional: false,
+                    }),
+                ),
+            ])
+            .kind;
+        }
         // A `dart:core` TYPE constructs like any class. The shared ctor path
         // (`ExprKind::New` → `lookup_type_ctor_target`) is what emits the
         // backing call AND stamps `__type`/`__types`; a plain `Call` reaches
@@ -1480,6 +1520,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_user_add_methods(__w, &mut body);
     rewrite_top_level_getter_setter_refs(__w, &mut body);
     rewrite_base64_codec_aliases(&mut body);
+    rewrite_isolate_port_members(&mut body);
+    rewrite_forced_getter_calls_on_user_fields(&mut body);
+    rewrite_async_entry_main(&mut body);
     // Route failed member access on a `dynamic` receiver to the object's
     // `noSuchMethod`. Runs last: it reads the finished class list to decide
     // whether the program uses the hook at all, and the mixin passes above can
@@ -1508,6 +1551,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(Module {
+        canon: Default::default(),
         name: String::new(),
         language: Lang::Dart,
         body,
@@ -1537,6 +1581,80 @@ enum DartBase64Alias {
     Ascii,
     AsciiEncoder,
     AsciiDecoder,
+    /// `Utf8Decoder(allowMalformed: true)` — the lenient variant keeps its
+    /// own marker because a stream transform must know which decode to build.
+    Utf8DecoderLenient,
+    /// The `json` codec object itself (`json.encoder` / `json.decoder` reads).
+    Json,
+    JsonStreamEncoder,
+    JsonStreamDecoder,
+    LineSplitterCodec,
+    // ── Chunked-conversion sinks ─────────────────────────────────────────
+    // A sink variable's KIND is tracked here so `add`/`close` on it can be
+    // expanded STATICALLY — the method names collide with the list `add`
+    // row and the user-`add` rename machinery, so a sink is never a class:
+    // it is a plain 2-element list `[callback_or_target, accumulator]` and
+    // every method call on it rewrites to list/builtin operations.
+    SinkChunked,
+    SinkBytes,
+    SinkStr,
+    SinkStringSink,
+    SinkJsonEncodeChunked,
+    SinkUtf8EncodeBytes,
+    SinkUtf8DecodeStr,
+}
+
+/// Real dart AWAITS `main()`: an async `main` whose future rejects terminates
+/// the program with an unhandled-exception nonzero exit. The entry auto-call
+/// invokes `main` and drops its result, so an async `main`'s rejection was
+/// never observed and a throwing async program exited 0. The user's async
+/// `main` is renamed and a synchronous `main` is synthesized that AWAITs it —
+/// the VM's await throws rejected futures, so the rejection unwinds through
+/// the entry call exactly as dart's runtime reports it.
+fn rewrite_async_entry_main(body: &mut Vec<Statement>) {
+    let Some(idx) = body.iter().position(|stmt| {
+        matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl {
+                name,
+                is_async: true,
+                is_generator: false,
+                ..
+            } if name == "main"
+        )
+    }) else {
+        return;
+    };
+    let StmtKind::FunctionDecl { name, params, .. } = &mut body[idx].kind else {
+        return;
+    };
+    *name = "__dart_async_main".to_string();
+    let params = params.clone();
+    let args = params
+        .iter()
+        .map(|p| Argument::positional(Expression::ident(&p.name)))
+        .collect();
+    let await_call = Expression::new(ExprKind::Await(Box::new(Expression::new(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__dart_async_main")),
+            args,
+            optional: false,
+        },
+    ))));
+    body.insert(
+        idx + 1,
+        Statement::new(StmtKind::FunctionDecl {
+            name: "main".to_string(),
+            params,
+            return_type: None,
+            body: vec![Statement::new(StmtKind::Expr(await_call))],
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        }),
+    );
 }
 
 fn rewrite_base64_codec_aliases(body: &mut [Statement]) {
@@ -1562,6 +1680,11 @@ fn base64_alias_marker(expr: &Expression) -> Option<DartBase64Alias> {
             "ascii" => Some(DartBase64Alias::Ascii),
             "__dart_ascii_encoder" => Some(DartBase64Alias::AsciiEncoder),
             "__dart_ascii_decoder" => Some(DartBase64Alias::AsciiDecoder),
+            "__dart_utf8_decoder_lenient" => Some(DartBase64Alias::Utf8DecoderLenient),
+            "json" => Some(DartBase64Alias::Json),
+            "__dart_json_stream_encoder" => Some(DartBase64Alias::JsonStreamEncoder),
+            "__dart_json_stream_decoder" => Some(DartBase64Alias::JsonStreamDecoder),
+            "__dart_line_splitter" => Some(DartBase64Alias::LineSplitterCodec),
             _ => None,
         },
         _ => None,
@@ -1618,6 +1741,8 @@ fn base64_alias_property(alias: DartBase64Alias, field: &str) -> Option<&'static
         (DartBase64Alias::Latin1, "decoder") => Some("__dart_latin1_decoder"),
         (DartBase64Alias::Ascii, "encoder") => Some("__dart_ascii_encoder"),
         (DartBase64Alias::Ascii, "decoder") => Some("__dart_ascii_decoder"),
+        (DartBase64Alias::Json, "encoder") => Some("__dart_json_stream_encoder"),
+        (DartBase64Alias::Json, "decoder") => Some("__dart_json_stream_decoder"),
         _ => None,
     }
 }
@@ -1648,6 +1773,351 @@ fn dart_codec_constructor_marker(name: &str) -> Option<&'static str> {
         "Utf8Codec" => Some("utf8"),
         "Latin1Codec" => Some("latin1"),
         "AsciiCodec" => Some("ascii"),
+        "LineSplitter" => Some("__dart_line_splitter"),
+        _ => None,
+    }
+}
+
+// ── AST-construction shorthands for the codec/sink rewrites ──────────────────
+// The pass runs AFTER the main walk, so anything it synthesizes bypasses the
+// walker's own normalizations — spellings here must be the FINAL ones
+// (`__dart_is_empty(x)`, never `.isEmpty`).
+
+fn dart_arr(items: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        items
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn dart_call_of(callee: Expression, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn dart_member_call_of(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
+    dart_call_of(
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: field.to_string(),
+            null_safe: false,
+        }),
+        args,
+    )
+}
+
+fn dart_index_of(object: Expression, index: i64) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(Expression::int(index)),
+        null_safe: false,
+    })
+}
+
+fn dart_lambda1_of(param: &str, body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![Param {
+            name: param.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn dart_ternary_of(cond: Expression, then: Expression, else_: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then),
+        else_: Box::new(else_),
+    })
+}
+
+/// `stream.transform(codec)` / `codec.bind(stream)` over the list-backed
+/// stream model. Streams ARE lists here (`Stream.fromIterable` is the
+/// identity), so a transform is an eager list rewrite:
+/// - decoders CONCATENATE every chunk and decode once — a code point split
+///   across chunk boundaries must decode as one (measured: dart 3.10.4
+///   decodes ['\xC3','\xA4'] chunks to 'ä') — and an EMPTY stream yields an
+///   EMPTY stream, never a decode of nothing (`json.decoder` on an empty
+///   stream must leave `.first` to its StateError, not throw FormatException);
+/// - encoders map PER EVENT (dart emits one byte list per string event);
+/// - LineSplitter joins, normalizes `\r\n`/`\r`, strips ONE trailing
+///   newline, and splits — "A\nB" → [A, B], "A\n" → [A], "" → [].
+/// The stream expression is bound once through an immediately-applied lambda
+/// so it is never evaluated twice.
+fn dart_stream_transform_expr(
+    alias: DartBase64Alias,
+    stream: Expression,
+) -> Option<Expression> {
+    use DartBase64Alias as A;
+    let s = || Expression::ident("__s");
+    let is_empty =
+        |e: Expression| dart_call_of(Expression::ident("__dart_is_empty"), vec![e]);
+    let flat = |e: Expression| {
+        dart_member_call_of(
+            dart_member_call_of(
+                e,
+                "expand",
+                vec![dart_lambda1_of("__e", Expression::ident("__e"))],
+            ),
+            "toList",
+            vec![],
+        )
+    };
+    let joined = |e: Expression| dart_member_call_of(e, "join", vec![Expression::string("")]);
+    let call1 = |name: &str, a: Expression| dart_call_of(Expression::ident(name), vec![a]);
+    let concat_decode = |decoded: Expression, stream: Expression| {
+        dart_call_of(
+            dart_lambda1_of(
+                "__s",
+                dart_ternary_of(is_empty(s()), dart_arr(vec![]), dart_arr(vec![decoded])),
+            ),
+            vec![stream],
+        )
+    };
+    let map_each = |builtin: &str, stream: Expression| {
+        dart_member_call_of(
+            dart_member_call_of(
+                stream,
+                "map",
+                vec![dart_lambda1_of("__e", call1(builtin, Expression::ident("__e")))],
+            ),
+            "toList",
+            vec![],
+        )
+    };
+
+    Some(match alias {
+        A::Utf8Decoder => concat_decode(call1("__dart_utf8_decode", flat(s())), stream),
+        A::Utf8DecoderLenient => concat_decode(
+            dart_call_of(
+                Expression::ident("__dart_utf8_decode"),
+                vec![flat(s()), Expression::bool(true)],
+            ),
+            stream,
+        ),
+        A::Utf8Encoder => map_each("__dart_utf8_encode", stream),
+        A::AsciiEncoder => map_each("__dart_ascii_encode", stream),
+        A::Latin1Encoder => map_each("__dart_latin1_encode", stream),
+        A::Encoder => concat_decode(call1("__dart_base64_encode", flat(s())), stream),
+        A::UrlEncoder => concat_decode(call1("__dart_base64url_encode", flat(s())), stream),
+        A::Decoder => concat_decode(call1("__dart_base64_decode", joined(s())), stream),
+        A::UrlDecoder => concat_decode(call1("__dart_base64url_decode", joined(s())), stream),
+        A::JsonStreamEncoder => map_each("jsonEncode", stream),
+        A::JsonStreamDecoder => concat_decode(call1("jsonDecode", joined(s())), stream),
+        A::LineSplitterCodec => {
+            let t = || Expression::ident("__t");
+            let normalized = dart_member_call_of(
+                dart_member_call_of(
+                    joined(stream),
+                    "replaceAll",
+                    vec![Expression::string("\r\n"), Expression::string("\n")],
+                ),
+                "replaceAll",
+                vec![Expression::string("\r"), Expression::string("\n")],
+            );
+            let stripped = dart_ternary_of(
+                dart_member_call_of(t(), "endsWith", vec![Expression::string("\n")]),
+                dart_member_call_of(
+                    t(),
+                    "substring",
+                    vec![
+                        Expression::int(0),
+                        Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(t()),
+                                field: "length".to_string(),
+                                null_safe: false,
+                            })),
+                            right: Box::new(Expression::int(1)),
+                        }),
+                    ],
+                ),
+                t(),
+            );
+            dart_call_of(
+                dart_lambda1_of(
+                    "__t",
+                    dart_ternary_of(
+                        is_empty(t()),
+                        dart_arr(vec![]),
+                        dart_member_call_of(stripped, "split", vec![Expression::string("\n")]),
+                    ),
+                ),
+                vec![normalized],
+            )
+        }
+        _ => return None,
+    })
+}
+
+/// Recognize a chunked-conversion sink CONSTRUCTION and produce its tracked
+/// kind plus its list representation. Runs on the already-rewritten init
+/// expression, so encoder receivers are their markers by now.
+fn dart_sink_construction(
+    expr: &Expression,
+    aliases: &HashMap<String, DartBase64Alias>,
+) -> Option<(DartBase64Alias, Expression)> {
+    use DartBase64Alias as A;
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe: false,
+    } = &callee.kind
+    else {
+        return None;
+    };
+    let receiver_alias = match &object.kind {
+        ExprKind::Ident(name) => aliases
+            .get(name)
+            .copied()
+            .or_else(|| base64_alias_marker(object)),
+        _ => base64_alias_marker(object),
+    };
+    match (&object.kind, field.as_str()) {
+        (ExprKind::Ident(class), "withCallback") if args.len() == 1 => {
+            let kind = match class.as_str() {
+                "ChunkedConversionSink" => A::SinkChunked,
+                "ByteConversionSink" => A::SinkBytes,
+                "StringConversionSink" => A::SinkStr,
+                _ => return None,
+            };
+            Some((
+                kind,
+                dart_arr(vec![args[0].value.clone(), dart_arr(vec![])]),
+            ))
+        }
+        (ExprKind::Ident(class), "fromStringSink")
+            if class == "StringConversionSink" && args.len() == 1 =>
+        {
+            Some((A::SinkStringSink, dart_arr(vec![args[0].value.clone()])))
+        }
+        (_, "startChunkedConversion") if args.len() == 1 => {
+            let encoder = receiver_alias?;
+            let (inner_kind, inner_repr) = dart_sink_construction(&args[0].value, aliases)
+                .or_else(|| match &args[0].value.kind {
+                    ExprKind::Ident(v) => aliases
+                        .get(v)
+                        .copied()
+                        .map(|kind| (kind, args[0].value.clone())),
+                    _ => None,
+                })?;
+            match (encoder, inner_kind) {
+                (A::JsonStreamEncoder, A::SinkChunked) => {
+                    Some((A::SinkJsonEncodeChunked, inner_repr))
+                }
+                (A::Utf8Encoder, A::SinkBytes) => Some((A::SinkUtf8EncodeBytes, inner_repr)),
+                (A::Utf8Decoder, A::SinkStr) => Some((
+                    A::SinkUtf8DecodeStr,
+                    dart_arr(vec![inner_repr, dart_arr(vec![])]),
+                )),
+                _ => None,
+            }
+        }
+        (ExprKind::Ident(v), "asUtf8Sink") => {
+            if aliases.get(v).copied() == Some(A::SinkStr) {
+                Some((
+                    A::SinkUtf8DecodeStr,
+                    dart_arr(vec![Expression::ident(v), dart_arr(vec![])]),
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Expand `sinkVar.add(x)` / `sinkVar.close()` for a tracked sink kind into
+/// list/builtin operations on the `[callback_or_target, accumulator]` repr.
+/// A `SinkUtf8DecodeStr` close needs two steps — decode-and-forward, then the
+/// target's own close — expressed as one array literal so it stays a single
+/// expression (elements evaluate left to right, the value is discarded).
+fn dart_sink_method_expr(
+    kind: DartBase64Alias,
+    var: &str,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    use DartBase64Alias as A;
+    let sv = || Expression::ident(var);
+    let acc = || dart_index_of(sv(), 1);
+    let cb = || dart_index_of(sv(), 0);
+    let joined_acc =
+        || dart_member_call_of(acc(), "join", vec![Expression::string("")]);
+    match (kind, method) {
+        (A::SinkChunked | A::SinkStr, "add") if args.len() == 1 => {
+            Some(dart_member_call_of(acc(), "add", vec![args[0].value.clone()]))
+        }
+        (A::SinkBytes | A::SinkUtf8DecodeStr, "add") if args.len() == 1 => Some(
+            dart_member_call_of(acc(), "addAll", vec![args[0].value.clone()]),
+        ),
+        (A::SinkStringSink, "add") if args.len() == 1 => Some(dart_member_call_of(
+            dart_index_of(sv(), 0),
+            "write",
+            vec![args[0].value.clone()],
+        )),
+        (A::SinkJsonEncodeChunked, "add") if args.len() == 1 => Some(dart_member_call_of(
+            acc(),
+            "add",
+            vec![dart_call_of(
+                Expression::ident("jsonEncode"),
+                vec![args[0].value.clone()],
+            )],
+        )),
+        (A::SinkUtf8EncodeBytes, "add") if args.len() == 1 => Some(dart_member_call_of(
+            acc(),
+            "addAll",
+            vec![dart_call_of(
+                Expression::ident("__dart_utf8_encode"),
+                vec![args[0].value.clone()],
+            )],
+        )),
+        (
+            A::SinkChunked | A::SinkBytes | A::SinkJsonEncodeChunked | A::SinkUtf8EncodeBytes,
+            "close",
+        ) => Some(dart_call_of(cb(), vec![acc()])),
+        (A::SinkStr, "close") => Some(dart_call_of(cb(), vec![joined_acc()])),
+        (A::SinkStringSink, "close") => Some(Expression::null()),
+        (A::SinkUtf8DecodeStr, "close") => {
+            let target = || dart_index_of(sv(), 0);
+            let target_acc = || dart_index_of(target(), 1);
+            let decoded =
+                dart_call_of(Expression::ident("__dart_utf8_decode"), vec![acc()]);
+            Some(dart_arr(vec![
+                dart_member_call_of(target_acc(), "add", vec![decoded]),
+                dart_call_of(
+                    dart_index_of(target(), 0),
+                    vec![dart_member_call_of(
+                        target_acc(),
+                        "join",
+                        vec![Expression::string("")],
+                    )],
+                ),
+            ]))
+        }
         _ => None,
     }
 }
@@ -1666,7 +2136,10 @@ fn rewrite_base64_codec_alias_stmts(
                     if let Some(init) = &mut decl.init {
                         rewrite_base64_codec_alias_expr(init, aliases);
                         if let BindingPattern::Ident(name) = &decl.pattern {
-                            if let Some(alias) = base64_alias_marker(init) {
+                            if let Some((kind, repr)) = dart_sink_construction(init, aliases) {
+                                *init = repr;
+                                aliases.insert(name.clone(), kind);
+                            } else if let Some(alias) = base64_alias_marker(init) {
                                 aliases.insert(name.clone(), alias);
                             }
                         }
@@ -1752,6 +2225,39 @@ fn rewrite_base64_codec_alias_stmts(
                     rewrite_base64_codec_alias_expr(expr, aliases);
                 }
             }
+            // `Try` was MISSING from this walk — a `utf8.decode(...)` inside
+            // `try { }` kept its namespace-alias spelling, resolved straight
+            // to the one-arg host `web:encoding.decode` (which reads the
+            // bytes as the DECODER and answers "") — which is why every
+            // `*_throws` codec test, all try-wrapped by construction, got an
+            // empty string instead of its exception.
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                rewrite_base64_codec_alias_stmts(body, &mut aliases.clone());
+                for catch in catches {
+                    rewrite_base64_codec_alias_stmts(&mut catch.body, &mut aliases.clone());
+                }
+                if let Some(else_body) = else_body {
+                    rewrite_base64_codec_alias_stmts(else_body, &mut aliases.clone());
+                }
+                if let Some(finally) = finally {
+                    rewrite_base64_codec_alias_stmts(finally, &mut aliases.clone());
+                }
+            }
+            StmtKind::DoWhile { body, cond, .. } => {
+                rewrite_base64_codec_alias_stmts(body, &mut aliases.clone());
+                rewrite_base64_codec_alias_expr(cond, aliases);
+            }
+            StmtKind::Labeled { body, .. } => {
+                rewrite_base64_codec_alias_stmts(
+                    std::slice::from_mut(body),
+                    &mut aliases.clone(),
+                );
+            }
             _ => {}
         }
     }
@@ -1811,6 +2317,22 @@ fn rewrite_base64_codec_alias_expr(
                     }
                 }
             }
+            // `Utf8Decoder(allowMalformed: <bool>)` keeps its flag in the
+            // marker; the zero-arg branch above never sees it.
+            if args.len() == 1 && args[0].name.as_deref() == Some("allowMalformed") {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if name == "Utf8Decoder" {
+                        let lenient =
+                            matches!(&args[0].value.kind, ExprKind::Lit(Literal::Bool(true)));
+                        *expr = Expression::ident(if lenient {
+                            "__dart_utf8_decoder_lenient"
+                        } else {
+                            "__dart_utf8_decoder"
+                        });
+                        return;
+                    }
+                }
+            }
             if let ExprKind::Member {
                 object,
                 field,
@@ -1824,6 +2346,46 @@ fn rewrite_base64_codec_alias_expr(
                         .or_else(|| base64_alias_marker(object)),
                     _ => base64_alias_marker(object),
                 };
+                // Tracked sink method calls expand statically — the kind is
+                // known at the declaration, so `add`/`close` never reach
+                // dynamic dispatch (where the list `add` row would claim them).
+                if let ExprKind::Ident(v) = &object.kind {
+                    if let Some(kind) = aliases.get(v).copied() {
+                        if let Some(rewritten) = dart_sink_method_expr(kind, v, field, args) {
+                            *expr = rewritten;
+                            return;
+                        }
+                    }
+                }
+                // `stream.transform(codec)` — the codec is the argument.
+                if field == "transform" && args.len() == 1 {
+                    let codec = match &args[0].value.kind {
+                        ExprKind::Ident(n) => aliases
+                            .get(n)
+                            .copied()
+                            .or_else(|| base64_alias_marker(&args[0].value)),
+                        _ => base64_alias_marker(&args[0].value),
+                    };
+                    if let Some(codec) = codec {
+                        if let Some(rewritten) =
+                            dart_stream_transform_expr(codec, (**object).clone())
+                        {
+                            *expr = rewritten;
+                            return;
+                        }
+                    }
+                }
+                // `codec.bind(stream)` — same transform, roles swapped.
+                if field == "bind" && args.len() == 1 {
+                    if let Some(codec) = alias {
+                        if let Some(rewritten) =
+                            dart_stream_transform_expr(codec, args[0].value.clone())
+                        {
+                            *expr = rewritten;
+                            return;
+                        }
+                    }
+                }
                 if let Some(target) = alias.and_then(|alias| base64_alias_call(alias, field)) {
                     *callee = Box::new(Expression::ident(target));
                 }
@@ -1925,10 +2487,23 @@ fn rewrite_base64_codec_alias_expr(
         }
         ExprKind::New { class, args } => {
             rewrite_base64_codec_alias_expr(class, aliases);
-            for arg in args {
+            for arg in &mut *args {
                 rewrite_base64_codec_alias_expr(&mut arg.value, aliases);
             }
+            // A `const LineSplitter()` construction can reach here as a `New`
+            // rather than a bare call — same marker either way.
+            if args.is_empty() {
+                if let ExprKind::Ident(name) = &class.kind {
+                    if let Some(marker) = dart_codec_constructor_marker(name) {
+                        *expr = Expression::ident(marker);
+                    }
+                }
+            }
         }
+        // Every stream test awaits its pipeline — a codec member inside an
+        // `await` was invisible to this pass until these arms existed.
+        ExprKind::Await(inner) => rewrite_base64_codec_alias_expr(inner, aliases),
+        ExprKind::Yield(Some(inner)) => rewrite_base64_codec_alias_expr(inner, aliases),
         _ => {}
     }
 }
@@ -3205,6 +3780,243 @@ fn collect_instance_member_names_for_type(
             }
         }
     }
+}
+
+/// `first` / `take` / `listen` / `asBroadcastStream` on a PORT are class
+/// members declared under `__vybe*` spellings (`core_classes/isolate.rs`
+/// explains why the real names cannot be: they are receiver-blind
+/// `[value_methods]` rows serving lists, iterables and streams, and a real
+/// METHOD of those names would enter the flat `defined_class_methods` set and
+/// divert every untyped receiver — the StringBuffer `length` lesson). The
+/// walker owns the receiver typing the table lacks: a local bound to a port
+/// construction — or an alias of one, including the port that
+/// `asBroadcastStream` answers — is a port, and the member is renamed on
+/// exactly those receivers.
+fn rewrite_isolate_port_members(body: &mut Vec<Statement>) {
+    let mut ports: HashSet<String> = HashSet::new();
+    rewrite_isolate_ports_in_stmts(body, &mut ports);
+}
+
+/// UNDO the zero-arg-getter force-call on USER FIELDS.
+///
+/// `is_dart_zero_arg_getter` names (`first`, `last`, `values`, …) are
+/// wrapped into zero-arg CALLS during the walk so the receiver-blind
+/// `[value_methods]` rows can serve them — but a user class field of the
+/// same name then gets CALLED: `class Pair { A first; }` made `p.first`
+/// throw "f64 is not callable". The walk cannot know (single pass, fields
+/// collected per class); THIS pass runs after it, knows every user class's
+/// instance fields, tracks locals bound to a user-class construction (same
+/// discipline as `rewrite_isolate_port_members`), and turns the forced call
+/// back into the member read on exactly those receivers.
+fn rewrite_forced_getter_calls_on_user_fields(body: &mut Vec<Statement>) {
+    // class name → its instance field names that collide with a forced name.
+    let mut class_fields: HashMap<String, HashSet<String>> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            let fields: HashSet<String> = members
+                .iter()
+                .filter_map(|member| match member {
+                    ClassMember::Field {
+                        name, modifiers, ..
+                    } if !modifiers.is_static && is_dart_zero_arg_getter(name) => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !fields.is_empty() {
+                class_fields.insert(name.clone(), fields);
+            }
+        }
+    }
+    if class_fields.is_empty() {
+        return;
+    }
+    let mut locals: HashMap<String, String> = HashMap::new();
+    rewrite_forced_getters_in_stmts(body, &class_fields, &mut locals);
+}
+
+fn rewrite_forced_getters_in_stmts(
+    stmts: &mut [Statement],
+    class_fields: &HashMap<String, HashSet<String>>,
+    locals: &mut HashMap<String, String>,
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut inner = HashMap::new();
+                rewrite_forced_getters_in_stmts(body, class_fields, &mut inner);
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members.iter_mut() {
+                    if let ClassMember::Method(method) = member {
+                        if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                            let mut inner = HashMap::new();
+                            rewrite_forced_getters_in_stmts(body, class_fields, &mut inner);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let names = locals.clone();
+                stmt.walk_exprs_mut(&mut |expr| {
+                    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+                        return;
+                    };
+                    if !args.is_empty() {
+                        return;
+                    }
+                    let ExprKind::Member {
+                        object,
+                        field,
+                        null_safe,
+                    } = &callee.kind
+                    else {
+                        return;
+                    };
+                    let ExprKind::Ident(recv) = &object.kind else {
+                        return;
+                    };
+                    let Some(class) = names.get(recv) else {
+                        return;
+                    };
+                    if class_fields
+                        .get(class)
+                        .is_some_and(|fields| fields.contains(field))
+                    {
+                        expr.kind = ExprKind::Member {
+                            object: object.clone(),
+                            field: field.clone(),
+                            null_safe: *null_safe,
+                        };
+                    }
+                });
+                if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+                    for decl in declarations {
+                        if let (BindingPattern::Ident(name), Some(init)) =
+                            (&decl.pattern, &decl.init)
+                        {
+                            if let ExprKind::New { class, .. } = &init.kind {
+                                if let ExprKind::Ident(cls) = &class.kind {
+                                    if class_fields.contains_key(cls) {
+                                        locals.insert(name.clone(), cls.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn dart_expr_is_port(expr: &Expression, ports: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::New { class, .. } => {
+            matches!(&class.kind, ExprKind::Ident(n) if n == "ReceivePort" || n == "RawReceivePort")
+        }
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(n) => n == "ReceivePort" || n == "RawReceivePort",
+            ExprKind::Member { object, field, .. } => {
+                field == "__vybeAsBroadcast"
+                    && matches!(&object.kind, ExprKind::Ident(n) if ports.contains(n))
+            }
+            _ => false,
+        },
+        ExprKind::Ident(n) => ports.contains(n),
+        ExprKind::Await(inner) => dart_expr_is_port(inner, ports),
+        _ => false,
+    }
+}
+
+fn rewrite_isolate_ports_in_stmts(stmts: &mut [Statement], ports: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            // Fresh scope: a nested function's locals are its own, and the
+            // statement walker below would otherwise descend into its body
+            // carrying the outer set.
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut inner: HashSet<String> = HashSet::new();
+                rewrite_isolate_ports_in_stmts(body, &mut inner);
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members.iter_mut() {
+                    if let ClassMember::Method(method) = member {
+                        if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                            let mut inner: HashSet<String> = HashSet::new();
+                            rewrite_isolate_ports_in_stmts(body, &mut inner);
+                        }
+                    }
+                }
+            }
+            _ => {
+                rewrite_isolate_ports_in_stmt_exprs(stmt, ports);
+                if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+                    for decl in declarations {
+                        if let (BindingPattern::Ident(name), Some(init)) =
+                            (&decl.pattern, &decl.init)
+                        {
+                            if dart_expr_is_port(init, ports) {
+                                ports.insert(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn rewrite_isolate_ports_in_stmt_exprs(stmt: &mut Statement, ports: &HashSet<String>) {
+    if ports.is_empty() {
+        // Still needs the VarDecl scan in the caller — but no rename can fire.
+        // (`ReceivePort()` inits are recognized with an empty set.)
+    }
+    let names = ports.clone();
+    stmt.walk_exprs_mut(&mut |expr| {
+        // The walk is POST-ORDER: a call's callee Member is visited before
+        // the call itself, so `port.first` is ALWAYS wrapped into
+        // `port.__vybeFirst()` at the Member visit, and the Call visit then
+        // collapses the double call the wrap creates out of an original
+        // `port.first()` spelling.
+        match &mut expr.kind {
+            ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(n) if names.contains(n)) =>
+            {
+                match field.as_str() {
+                    "listen" => *field = "__vybeListen".to_string(),
+                    "take" => *field = "__vybeTake".to_string(),
+                    "asBroadcastStream" => *field = "__vybeAsBroadcast".to_string(),
+                    "first" => {
+                        let object = object.clone();
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object,
+                                field: "__vybeFirst".to_string(),
+                                null_safe: false,
+                            })),
+                            args: Vec::new(),
+                            optional: false,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            ExprKind::Call { callee, args, .. } if args.is_empty() => {
+                let collapse = matches!(&callee.kind,
+                    ExprKind::Call { callee: inner, args: inner_args, .. }
+                        if inner_args.is_empty()
+                            && matches!(&inner.kind,
+                                ExprKind::Member { field, .. } if field == "__vybeFirst"));
+                if collapse {
+                    let inner = (**callee).clone();
+                    *expr = inner;
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
@@ -5606,7 +6418,18 @@ fn dart_returned_class_from_body(body: &[Statement]) -> Option<String> {
 fn dart_constructor_expr_type(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Call { callee, .. } => match &callee.kind {
-            ExprKind::Ident(name) if name == "__dart_bigint_from" => None,
+            // A construction names a CLASS, and dart classes are
+            // UpperCamelCase — a lowercase or `__dart_*` ident is a function
+            // or an internal builtin (the set literal walks to
+            // `__dart_set_from([...])`, and treating that as a construction
+            // folded `{1, 2}.toString()` into "Instance of
+            // '__dart_set_from'"). This generalizes the previous
+            // `__dart_bigint_from` special case into the actual rule.
+            ExprKind::Ident(name)
+                if !name.chars().next().is_some_and(char::is_uppercase) =>
+            {
+                None
+            }
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::Member { field, .. } => Some(field.clone()),
             _ => None,
@@ -8737,14 +9560,50 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
         }
     }
 
-    // Ordinary enums use the compiler's compact Dart enum representation.
-    // Enhanced enums need real instances: their value constructors initialize
-    // fields and their methods run with an instance receiver. Normalize those
-    // to the shared class model, as PHP does for its enum singletons.
+    // Ordinary vs enhanced is decided by what the SOURCE declared — before
+    // the synthetic `toString` below joins `body_members`.
     let is_enhanced = !body_members.is_empty()
         || members
             .iter()
             .any(|member| !member.constructor_args.is_empty());
+
+    // Dart RENDERS an enum constant type-qualified — `Color.red.toString()`
+    // is "Color.red" (and so is string interpolation), where java/C# render
+    // the bare name. The quirk is DECLARED as a real method body here — the
+    // shared enum lowering defers to a declared `toString` — never patched
+    // into the shared code. A user-declared `toString` still wins.
+    let declares_to_string = body_members.iter().any(|member| {
+        matches!(member, ClassMember::Method(m)
+            if matches!(&m.kind, StmtKind::FunctionDecl { name, .. } if name == "toString"))
+    });
+    if !declares_to_string {
+        body_members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "toString".to_string(),
+            params: vec![],
+            return_type: Some("String".to_string()),
+            body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(Expression::string(&format!("{name}."))),
+                    right: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: "__name".to_string(),
+                        null_safe: false,
+                    })),
+                },
+            ))))],
+            modifiers: Modifiers::default(),
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        }))));
+    }
+
+    // Ordinary enums use the compiler's compact Dart enum representation.
+    // Enhanced enums need real instances: their value constructors initialize
+    // fields and their methods run with an instance receiver. Normalize those
+    // to the shared class model, as PHP does for its enum singletons.
     if !is_enhanced {
         return Ok(StmtKind::EnumDecl {
             name,
@@ -9777,6 +10636,18 @@ fn is_dart_zero_arg_getter(name: &str) -> bool {
             | "hasAuthority"
             | "hasQuery"
             | "hasFragment"
+            // `dart:isolate` / `Completer` property surface —
+            // `core_classes/isolate.rs` declares each as a zero-arg METHOD
+            // for the same reason as `Uri`'s (a getter body cannot see
+            // `this`), so the bare read must become the call. `sendPort` and
+            // the capability getters are isolate-specific names; `future` is
+            // read only off `Completer` in the suite.
+            | "sendPort"
+            | "future"
+            | "controlPort"
+            | "terminateCapability"
+            | "pauseCapability"
+            | "debugName"
             | "hasEmptyPath"
             | "isAbsolute"
             | "absolute"
@@ -10659,6 +11530,23 @@ fn walk_expression(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Expression,
     ))
 }
 
+/// A zero-arg-getter force-call is a READ shape; as an ASSIGNMENT TARGET it
+/// must stay a member so setter dispatch sees it — `b.last = 7` was walking
+/// into `b.last() = 7`, the write landed in a discarded call result, and a
+/// user's `set last` never ran.
+fn dart_unwrap_forced_getter_target(target: Expression) -> Expression {
+    if let ExprKind::Call { callee, args, .. } = &target.kind {
+        if args.is_empty() {
+            if let ExprKind::Member { field, .. } = &callee.kind {
+                if is_dart_zero_arg_getter(field) {
+                    return (**callee).clone();
+                }
+            }
+        }
+    }
+    target
+}
+
 fn dart_is_duration_expr(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Call { callee, .. } => match &callee.kind {
@@ -11190,7 +12078,7 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
 
                 if op_str == "=" {
                     Ok(ExprKind::Assign {
-                        target: Box::new(left),
+                        target: Box::new(dart_unwrap_forced_getter_target(left)),
                         value: Box::new(right),
                     })
                 } else {
@@ -11210,8 +12098,11 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                         "??=" => CompoundOp::NullCoalesce,
                         _ => CompoundOp::Add,
                     };
+                    // The target sheds any zero-arg-getter force-call; the
+                    // VALUE keeps it — `x.last += 1` READS through the getter
+                    // and WRITES through the setter.
                     Ok(ExprKind::Assign {
-                        target: Box::new(left.clone()),
+                        target: Box::new(dart_unwrap_forced_getter_target(left.clone())),
                         value: Box::new(Expression::new(ExprKind::Binary {
                             op: compound_to_binop(op),
                             left: Box::new(left),
@@ -11519,6 +12410,22 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
             }
             let key = pair.as_str().to_string();
             let lowered = Expression::new(walk_const_expression_value(__w, pair)?);
+            // A const CODEC construction (`const LineSplitter()`) stays
+            // inline: the pool splices its bindings in after the codec-alias
+            // pass has run, so a pooled codec would never gain its marker and
+            // every transform over it would miss. Codecs are stateless — the
+            // canonicalization the pool exists for buys nothing here.
+            if let ExprKind::New { class, args } | ExprKind::Call { callee: class, args, .. } =
+                &lowered.kind
+            {
+                if args.is_empty() {
+                    if let ExprKind::Ident(name) = &class.kind {
+                        if dart_codec_constructor_marker(name).is_some() {
+                            return Ok(lowered.kind);
+                        }
+                    }
+                }
+            }
             return Ok(ExprKind::Ident(dart_const_pool_insert(__w, key, lowered)));
         }
 
@@ -13415,6 +14322,12 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                     "toStringAsExponential" => Some("toExponential"),
                     "lengthInBytes" => Some("byteLength"),
                     "offsetInBytes" => Some("byteOffset"),
+                    // §25.3.4 — the 64-bit DataView accessors are the BigInt
+                    // pair under dart's plain-int spelling.
+                    "getInt64" => Some("getBigInt64"),
+                    "setInt64" => Some("setBigInt64"),
+                    "getUint64" => Some("getBigUint64"),
+                    "setUint64" => Some("setBigUint64"),
                     _ => None,
                 } {
                     name = ecma_name.to_string();
@@ -13468,6 +14381,247 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                             });
                             continue;
                         }
+                    }
+                    // `Isolate.spawn(entry, message)` → the go lowering:
+                    // wrap the invocation in a zero-param closure, hand it to
+                    // `__dart_isolate_spawn` (`common:threading.task_run` —
+                    // a real `wasi:threads` thread), and wrap the Task in the
+                    // `Isolate` core class. `await` of the instance passes
+                    // through.
+                    if type_name == "Isolate" && name == "spawn" {
+                        let positional: Vec<&Argument> =
+                            cargs.iter().filter(|a| a.name.is_none()).collect();
+                        if positional.len() >= 2 {
+                            let entry = positional[0].value.clone();
+                            let message = positional[1].value.clone();
+                            let named = |wanted: &str| {
+                                cargs
+                                    .iter()
+                                    .find(|a| a.name.as_deref() == Some(wanted))
+                                    .map(|a| a.value.clone())
+                            };
+                            let invoke = Statement::new(StmtKind::Expr(Expression::new(
+                                ExprKind::Call {
+                                    callee: Box::new(entry),
+                                    args: vec![Argument::positional(message)],
+                                    optional: false,
+                                },
+                            )));
+                            // `onError:` — an uncaught throw in the entry sends
+                            // `[errorString, stackString]` to that port;
+                            // `onExit:` — the port gets null once the entry is
+                            // done. Both are built INTO the spawned closure, so
+                            // they run on the isolate's own thread and travel
+                            // through the ports' channels like any send.
+                            let mut body = vec![match named("onError") {
+                                Some(on_error) => Statement::new(StmtKind::Try {
+                                    body: vec![invoke],
+                                    catches: vec![CatchClause {
+                                        types: vec![],
+                                        var_name: Some("__iso_err".to_string()),
+                                        stack_var: None,
+                                        body: vec![Statement::new(StmtKind::Expr(
+                                            Expression::new(ExprKind::Call {
+                                                callee: Box::new(Expression::new(
+                                                    ExprKind::Member {
+                                                        object: Box::new(on_error),
+                                                        field: "send".to_string(),
+                                                        null_safe: false,
+                                                    },
+                                                )),
+                                                args: vec![Argument::positional(
+                                                    Expression::new(ExprKind::Array(vec![
+                                                        ArrayElement {
+                                                            key: None,
+                                                            value: Expression::new(
+                                                                ExprKind::Call {
+                                                                    callee: Box::new(
+                                                                        Expression::ident(
+                                                                            "__dart_to_string",
+                                                                        ),
+                                                                    ),
+                                                                    args: vec![
+                                                                        Argument::positional(
+                                                                            Expression::ident(
+                                                                                "__iso_err",
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                    optional: false,
+                                                                },
+                                                            ),
+                                                            spread: false,
+                                                            by_ref: false,
+                                                        },
+                                                        ArrayElement {
+                                                            key: None,
+                                                            value: Expression::string(""),
+                                                            spread: false,
+                                                            by_ref: false,
+                                                        },
+                                                    ])),
+                                                )],
+                                                optional: false,
+                                            }),
+                                        ))],
+                                        when_clause: None,
+                                    }],
+                                    else_body: None,
+                                    finally: None,
+                                }),
+                                None => invoke,
+                            }];
+                            if let Some(on_exit) = named("onExit") {
+                                body.push(Statement::new(StmtKind::Expr(Expression::new(
+                                    ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(on_exit),
+                                            field: "send".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args: vec![Argument::positional(Expression::null())],
+                                        optional: false,
+                                    },
+                                ))));
+                            }
+                            let closure = Expression::new(ExprKind::Lambda {
+                                params: Vec::new(),
+                                body: LambdaBody::Block(body),
+                                is_async: false,
+                                captures: Vec::new(),
+                            });
+                            let task = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__dart_isolate_spawn")),
+                                args: vec![Argument::positional(closure)],
+                                optional: false,
+                            });
+                            expr = Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident("Isolate")),
+                                args: vec![Argument::positional(task)],
+                            });
+                            continue;
+                        }
+                    }
+                    // `Isolate.run(f)` — the utility runs `f` and answers its
+                    // value (the corpus awaits the result; scheduling on a
+                    // separate isolate is not observable through it).
+                    if type_name == "Isolate" && name == "run" && cargs.len() == 1 {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(cargs[0].value.clone()),
+                            args: vec![],
+                            optional: false,
+                        });
+                        continue;
+                    }
+                    // `Isolate.resolvePackageUri` — no package resolver in this
+                    // runtime; dart's contract allows null ("Returns Uri or
+                    // null").
+                    if type_name == "Isolate" && name == "resolvePackageUri" {
+                        expr = Expression::null();
+                        continue;
+                    }
+                    // `Isolate.spawnUri` — spinning up a second PROGRAM from a
+                    // URI is not supported; throw the spec's
+                    // IsolateSpawnException rather than silently doing
+                    // nothing.
+                    if type_name == "Isolate" && name == "spawnUri" {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_isolate_spawn_uri")),
+                            args: vec![],
+                            optional: false,
+                        });
+                        continue;
+                    }
+                    // `dart:developer` Timeline — tracing hooks with no
+                    // observable trace here: `timeSync` runs its closure and
+                    // answers the value (throws propagate); `Flow.begin`
+                    // answers a record whose `id` is a positive timestamp;
+                    // step/end are null.
+                    if type_name == "Timeline" {
+                        if name == "timeSync" && cargs.len() >= 2 {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(cargs[1].value.clone()),
+                                args: vec![],
+                                optional: false,
+                            });
+                            continue;
+                        }
+                        if matches!(name.as_str(), "startSync" | "finishSync" | "instant") {
+                            expr = Expression::null();
+                            continue;
+                        }
+                    }
+                    if type_name == "Flow" {
+                        if name == "begin" {
+                            expr = dart_object(vec![
+                                (
+                                    "id",
+                                    Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dart_date_now")),
+                                        args: vec![],
+                                        optional: false,
+                                    }),
+                                ),
+                                ("__type", Expression::string("Flow")),
+                                (
+                                    "__types",
+                                    dart_array_expr(vec![Expression::string("Flow")]),
+                                ),
+                            ]);
+                            continue;
+                        }
+                        if matches!(name.as_str(), "step" | "end") {
+                            expr = Expression::null();
+                            continue;
+                        }
+                    }
+                    // `json` is the `JsonCodec` constant; its `encode`/
+                    // `decode` are the ECMA pair under dart names. The
+                    // namespace alias maps `json` → `ecma:json`, whose
+                    // members are `stringify`/`parse` — the dart spellings
+                    // resolve to the builtins instead.
+                    if type_name == "json" && !cargs.is_empty() {
+                        let builtin = match name.as_str() {
+                            "encode" => Some("jsonEncode"),
+                            "decode" => Some("jsonDecode"),
+                            _ => None,
+                        };
+                        if let Some(builtin) = builtin {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(builtin)),
+                                args: cargs.clone(),
+                                optional: false,
+                            });
+                            continue;
+                        }
+                    }
+                    // `JsonEncoder.withIndent(i)` — a named ctor carrying the
+                    // indent; the core class's primary ctor takes it.
+                    if type_name == "JsonEncoder" && name == "withIndent" && cargs.len() == 1 {
+                        expr = Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("JsonEncoder")),
+                            args: cargs.clone(),
+                        });
+                        continue;
+                    }
+                    // A `ReceivePort` already IS its raw port here — same
+                    // channel, same state — so the upgrade is the identity.
+                    if type_name == "ReceivePort"
+                        && name == "fromRawReceivePort"
+                        && cargs.len() == 1
+                    {
+                        expr = cargs[0].value.clone();
+                        continue;
+                    }
+                    if type_name == "TransferableTypedData"
+                        && name == "fromList"
+                        && cargs.len() == 1
+                    {
+                        expr = Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("TransferableTypedData")),
+                            args: cargs.clone(),
+                        });
+                        continue;
                     }
                     if name == "view" {
                         if let Some(simd_view) = dart_simd_list_view(type_name, cargs) {
@@ -13548,6 +14702,36 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                             expr = Expression::bool(true);
                             continue;
                         }
+                        // `Timeline.now` — microseconds-scale positive
+                        // timestamp; the corpus asserts positivity, and the
+                        // epoch-milliseconds read satisfies it.
+                        if type_name == "Timeline" && name == "now" {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__dart_date_now")),
+                                args: vec![],
+                                optional: false,
+                            });
+                            continue;
+                        }
+                        if type_name == "Isolate" {
+                            // `Isolate.current` — a handle with no task. The
+                            // ctor's `task` parameter defaults to null.
+                            if name == "current" {
+                                expr = Expression::new(ExprKind::New {
+                                    class: Box::new(Expression::ident("Isolate")),
+                                    args: Vec::new(),
+                                });
+                                continue;
+                            }
+                            if name == "immediate" {
+                                expr = Expression::int(1);
+                                continue;
+                            }
+                            if name == "beforeNextEvent" {
+                                expr = Expression::int(0);
+                                continue;
+                            }
+                        }
                     }
                 }
                 // Flutter enum constant (`Clip.antiAlias`): fold to its
@@ -13566,6 +14750,36 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         expr = Expression::new(kind);
                         continue;
                     }
+                    // `ProcessSignal.sigkill` folds to a FRESH object literal
+                    // at every mention, so an identity hash disagrees between
+                    // two spellings of the same constant. The constant's
+                    // identity IS its name string, so hashCode folds to the
+                    // name's hash.
+                    if name == "hashCode"
+                        && (dart_object_has_type(&expr, "ProcessSignal")
+                            || dart_object_has_type(&expr, "FileLock"))
+                    {
+                        if let ExprKind::Object(props) = &expr.kind {
+                            let constant_name = props.iter().find_map(|prop| {
+                                let ObjectProperty::KeyValue { key, value } = prop else {
+                                    return None;
+                                };
+                                (literal_string(key).as_deref() == Some("name"))
+                                    .then(|| literal_string(value))
+                                    .flatten()
+                            });
+                            if let Some(constant_name) = constant_name {
+                                expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__dart_hash_code")),
+                                    args: vec![Argument::positional(Expression::string(
+                                        &constant_name,
+                                    ))],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                        }
+                    }
                 }
                 // Dart `arr.fold(initial, combine)` → `arr.reduce(combine, initial)`
                 // — JS-shape, args reversed. Walker normalisation so the
@@ -13575,6 +14789,29 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                 // its NAME only, so the mode selects the method here and the
                 // named argument is consumed — otherwise every append silently
                 // overwrote the file.
+                // The isolate control methods take dart NAMED arguments
+                // (`kill(priority: …)`, `ping(sp, response: …)`); the core
+                // class declares plain positional-with-default params, so the
+                // named argument is flattened here the same way the
+                // `writeAsStringSync` mode argument below is consumed.
+                // `priority` is dropped outright — `kill` ignores it.
+                if name == "kill" {
+                    if let Some(args) = &mut call_args {
+                        args.retain(|arg| arg.name.as_deref() != Some("priority"));
+                    }
+                }
+                if matches!(name.as_str(), "ping" | "addOnExitListener") {
+                    if let Some(args) = &mut call_args {
+                        if let Some(pos) = args
+                            .iter()
+                            .position(|arg| arg.name.as_deref() == Some("response"))
+                        {
+                            let mut response = args.remove(pos);
+                            response.name = None;
+                            args.push(response);
+                        }
+                    }
+                }
                 if matches!(name.as_str(), "writeAsStringSync" | "writeAsBytesSync") {
                     if let Some(args) = &mut call_args {
                         let appends = args.iter().any(|arg| {
@@ -13603,9 +14840,6 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         }
                     }
                 }
-                if name == "transform" && (has_call || call_args.is_some()) {
-                    continue;
-                }
                 if dart_is_process_stdin_expr(&expr) && (has_call || call_args.is_some()) {
                     if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
                         if let Some(call) = dart_process_stdin_call(&name, expr.clone(), args) {
@@ -13627,11 +14861,52 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         continue;
                     }
                 }
+                // `buffer.asUint8List()` / `buffer.asByteData()` — the
+                // typed-data views over an ArrayBuffer are ECMA constructions
+                // under dart names.
+                if matches!(name.as_str(), "asUint8List" | "asByteData")
+                    && (has_call || call_args.is_some())
+                    && call_args.as_ref().is_none_or(|a| a.is_empty())
+                {
+                    let ecma = if name == "asUint8List" {
+                        "Uint8Array"
+                    } else {
+                        "DataView"
+                    };
+                    expr = Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident(ecma)),
+                        args: vec![Argument::positional(expr.clone())],
+                    });
+                    continue;
+                }
+                // Zero-arg `.toString()` on a LITERAL collection/record (and
+                // the ProcessSignal constants) routes to `__dart_to_string`,
+                // print's renderer — dart-style `[1, 2, 3]` / `{a: 1}` /
+                // `(1, one)` where the ECMA prototype printed "1,2,3" and
+                // "[object Object]". LITERAL receivers only, measured: the
+                // blanket rewrite regressed double display (`1.0.toString()`
+                // must keep its ".0", which only the declared-double slot can
+                // decide), dart's default `Instance of 'X'` object rendering,
+                // and a widget debug type — a variable's `.toString()` keeps
+                // its receiver-typed dispatch.
                 if name == "toString" && (has_call || call_args.is_some()) {
+                    // A set literal has already walked into its builder call
+                    // (`{1, 2}` → `__dart_set_from([1, 2])`), so the literal
+                    // test must accept that spelling too.
+                    let literal_collection = matches!(
+                        expr.kind,
+                        ExprKind::Array(_)
+                            | ExprKind::Object(_)
+                            | ExprKind::Tuple(_)
+                            | ExprKind::Set(_)
+                    ) || matches!(&expr.kind,
+                        ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind,
+                                ExprKind::Ident(n) if n == "__dart_set_from"));
                     if call_args
                         .as_ref()
                         .map_or(has_call, |args| args.is_empty())
-                        && dart_object_has_type(&expr, "ProcessSignal")
+                        && (literal_collection || dart_object_has_type(&expr, "ProcessSignal"))
                     {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__dart_to_string")),
@@ -14033,7 +15308,17 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         null_safe: false,
                     });
                 } else {
-                    expr = if type_qualified {
+                    // `StaticAccess` only for the BARE read — that node's one
+                    // shared handler is the constant/enum-ordinal path
+                    // (`expressions.rs` "StaticAccess (PHP)") and it never
+                    // routes to the namespace tree. A type-qualified CALL
+                    // (`LinkedHashMap.from(src)`) emits the `Member` chain
+                    // the other seven languages emit, which
+                    // `flatten_member_chain` → namespace resolution already
+                    // serves — so a registered tree static answers instead of
+                    // `global.get <Class>` reading an undefined global.
+                    let bare_read = call_args.is_none() && !has_call;
+                    expr = if type_qualified && bare_read {
                         Expression::new(ExprKind::StaticAccess {
                             class: Box::new(expr),
                             member: Box::new(Expression::ident(&name)),

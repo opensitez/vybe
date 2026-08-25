@@ -102,7 +102,15 @@ fn adapter_ctor_node(ctor: AdapterCtor) -> NamespaceNode {
 }
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
-/// namespaces as needed. Keys are lowercase-canonical.
+/// namespaces as needed.
+///
+/// Keys keep the case the source wrote. ⛔ Dart declares
+/// `case_sensitive = true`, so folding its type names here was wrong on its own
+/// terms — `StringBuffer` is not `stringbuffer` in Dart. It only worked because
+/// every tree lookup lowercased its query too, which is the shortcut
+/// `documentation/casesensitivityplan.md` exists to undo. Lookups now match
+/// EXACT first and fold only on a miss, so the real spelling is what resolves,
+/// and a case-insensitive language reaching the same node still finds it.
 fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
     let mut segments: Vec<&str> = path.split('.').collect();
     let leaf = segments.pop().expect("non-empty path");
@@ -121,7 +129,9 @@ fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
 
 /// `"ecma:math"` → `"ecma.math"`, `"wasi:cli/terminal"` → `"wasi.cli.terminal"`.
 fn module_tree_path(module: &str) -> String {
-    module.replace([':', '/'], ".").to_lowercase()
+    // No fold: host module paths are already lowercase, and folding here would
+    // silently rewrite a cased one.
+    module.replace([':', '/'], ".")
 }
 
 /// `dart:core` TYPES, declared in the namespace tree.
@@ -176,8 +186,8 @@ fn core_properties(name: &str) -> Subtree {
             // `length == 0`. Declaring the leaf is what lets the member READ
             // reach that consumer without the walker forging a call — the
             // forged call is what produced `bool is not callable (type: true)`.
-            ("isempty", "dart.is_empty"),
-            ("isnotempty", "dart.is_not_empty"),
+            ("isEmpty", "dart.is_empty"),
+            ("isNotEmpty", "dart.is_not_empty"),
         ],
         _ => &[],
     };
@@ -214,16 +224,19 @@ fn core_types() -> Subtree {
     for (name, _) in crate::core_classes::CORE_CLASSES {
         let member_returns = match *name {
             "StringBuffer" => [
-                ("tostring", "String"),
+                // Dart's own spelling — these are the keys the tree is asked
+                // for, and Dart does not fold.
+                ("toString", "String"),
                 ("length", "int"),
-                ("isempty", "bool"),
-                ("isnotempty", "bool"),
+                ("isEmpty", "bool"),
+                ("isNotEmpty", "bool"),
             ]
             .as_slice(),
             _ => &[],
         };
         core.insert(
-            name.to_lowercase(),
+            // The DECLARED spelling — `StringBuffer`, not `stringbuffer`.
+            name.to_string(),
             NamespaceNode::Type {
                 ctor: None,
                 ctor_call: None,
@@ -255,7 +268,7 @@ fn core_types() -> Subtree {
 fn library_of(owner: &str) -> &'static str {
     match owner {
         "Future" | "Stream" | "Promise" => "async",
-        "Queue" => "collection",
+        "Queue" | "LinkedHashMap" | "LinkedHashSet" => "collection",
         "Platform" => "io",
         _ => "core",
     }
@@ -271,7 +284,8 @@ fn insert_static(libraries: &mut Subtree, owner: &str, member: &str, node: Names
         return;
     };
     let entry = types
-        .entry(owner.to_lowercase())
+        // The DECLARED spelling of the owning type.
+        .entry(owner.to_string())
         .or_insert_with(|| NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
@@ -282,7 +296,7 @@ fn insert_static(libraries: &mut Subtree, owner: &str, member: &str, node: Names
     let NamespaceNode::Type { statics, .. } = entry else {
         return;
     };
-    statics.entry(member.to_lowercase()).or_insert(node);
+    statics.entry(member.to_string()).or_insert(node);
 }
 
 fn insert_adapter_type(libraries: &mut Subtree, adapter: AdapterType) {
@@ -293,7 +307,7 @@ fn insert_adapter_type(libraries: &mut Subtree, adapter: AdapterType) {
         return;
     };
     let entry = types
-        .entry(adapter.name.to_lowercase())
+        .entry(adapter.name.to_string())
         .or_insert_with(|| NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
@@ -319,7 +333,10 @@ pub fn register_namespace_tree() {
         };
         let mut root = Subtree::new();
         for (name, def) in &profile.builtins {
-            let key = name.to_lowercase();
+            // The builtin's own spelling — `double.parse`, not `double.parse`
+            // folded. Dart is case-sensitive; the tree now keeps the case and
+            // folds only at lookup, and only for a caller that asked to.
+            let key = name.to_string();
             match &def.emit {
                 BuiltinEmit::Common(op) => {
                     if let Some(path) = op.strip_prefix("dart.") {
@@ -336,7 +353,7 @@ pub fn register_namespace_tree() {
             if let EsmDefault::Namespace { alias, module } = default {
                 insert_path(
                     &mut root,
-                    &alias.to_lowercase(),
+                    alias,
                     NamespaceNode::Alias(module_tree_path(module)),
                 );
             }

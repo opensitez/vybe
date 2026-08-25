@@ -216,11 +216,32 @@ fn emit_dart_emptiness(chunks: &mut [Chunk], current: usize, line: u32, negate: 
         vybe_ast::ProtocolSlot::IsEmpty,
         line,
         |chunks, current, line| {
+            // A user `bool get isEmpty` is found the way `.length` finds its
+            // getter: the `__get_isEmpty` accessor resolves through the
+            // receiver's vtable, while the prototype-stamped slot key does
+            // not — instance reads never walk `__proto__` for plain keys, so
+            // the slot probe above misses every user class and this fallback
+            // must ask the getter itself before counting.
+            let getter_slot = reserve_slot(&mut chunks[current]);
+            emit_get_field_or_null_to_slot(
+                &mut chunks[current],
+                receiver_slot,
+                "__get_isEmpty",
+                getter_slot,
+                line,
+            );
+            chunks[current].emit_op_u16(Op::LOCAL_GET, getter_slot, line);
+            chunks[current].emit_op(Op::REF_IS_NULL, line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
+            chunks[current].emit_if_value(line);
+            emit_call_ref_on_receiver(chunks, current, receiver_slot, getter_slot, line);
+            chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
             emit_dart_length(chunks, current, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
             vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+            chunks[current].emit_end(line);
         },
     );
     if negate {
@@ -668,6 +689,59 @@ fn emit_dart_format_exception_throw(chunks: &mut [Chunk], current: usize, line: 
         exc_slot,
         "FormatException",
         line,
+    );
+    vybe_compiler::primitives::reflection::emit_instanceof_chain(
+        chunks,
+        current,
+        exc_slot,
+        "Exception",
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc_slot, line);
+    errors::emit_throw(&mut chunks[current], line);
+}
+
+/// `Isolate.spawnUri(...)` — spinning a second PROGRAM from a URI is
+/// unsupported; the spec's failure shape is `IsolateSpawnException`, thrown
+/// with the same construction discipline as `FormatException` above so a
+/// typed `on IsolateSpawnException` catch matches.
+pub fn emit_dart_isolate_spawn_uri_throw(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_dart_named_exception_throw(
+        chunks,
+        current,
+        "IsolateSpawnException",
+        "Isolate.spawnUri is not supported",
+        line,
+    );
+}
+
+/// Throw a NAMED dart exception with the FormatException construction
+/// discipline: `__exception_type`/`name` fields, runtime-type stamp, and the
+/// instanceof chain through both the named class and `Exception` — which is
+/// what a typed `on <Name>` catch matches on.
+pub(crate) fn emit_dart_named_exception_throw(
+    chunks: &mut [Chunk],
+    current: usize,
+    exc_name: &str,
+    message: &str,
+    line: u32,
+) {
+    chunks[current].emit_struct_new(0, 0, line);
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_string_const(message, line);
+    errors::emit_exception_new_finalize(&mut chunks[current], exc_name, line);
+    stamp_runtime_type(
+        &mut chunks[current],
+        exc_name,
+        reflection::ReflectKind::Exception,
+        line,
+    );
+    emit_string_field(&mut chunks[current], "__exception_type", exc_name, line);
+    emit_string_field(&mut chunks[current], "name", exc_name, line);
+    let exc_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
+    vybe_compiler::primitives::reflection::emit_instanceof_chain(
+        chunks, current, exc_slot, exc_name, line,
     );
     vybe_compiler::primitives::reflection::emit_instanceof_chain(
         chunks,
@@ -1731,12 +1805,61 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:number", "Number", 1, line);
     host::emit(&mut chunks[current], "ecma:array", "get", 2, line);
     chunks[current].emit_else(line);
+    // `Expando` — identity-keyed weak store: `bag[obj]` reads the backing
+    // `ecma:weakmap`, and a null key THROWS (dart contract; the property
+    // path would have coerced the key and collided distinct objects).
+    emit_expando_receiver_test(chunks, current, receiver_slot, line);
+    chunks[current].emit_if(line);
+    emit_expando_null_key_throw(chunks, current, index_slot, line);
+    emit_expando_wm_to_stack(chunks, current, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    host::emit(&mut chunks[current], "ecma:weakmap", "get", 2, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     emit_undefined_to_null(&mut chunks[current], line);
+}
+
+/// `[cond]` — is the receiver an `Expando` record (`__type == "Expando"`)?
+fn emit_expando_receiver_test(
+    chunks: &mut [Chunk],
+    current: usize,
+    receiver_slot: u16,
+    line: u32,
+) {
+    let type_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        receiver_slot,
+        "__type",
+        type_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, type_slot, line);
+    chunks[current].emit_string_const("Expando", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+}
+
+/// Push the Expando's backing weakmap. Stack: `[]` → `[weakmap]`.
+fn emit_expando_wm_to_stack(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
+    let key = string_key(&mut chunks[current], "__wm");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+}
+
+/// A null Expando key throws (dart: `Expando` rejects null keys).
+fn emit_expando_null_key_throw(chunks: &mut [Chunk], current: usize, key_slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Expando keys must not be null", line);
+    errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
 }
 
 /// Dart `print(value)` — calls value.toString() before logging, per
@@ -2029,6 +2152,14 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(chunk, "ecma:array", "isArray", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
+    // `[].first` throws in dart — StateError, rendered "Bad state: No
+    // element" — it never answers null.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_dart_named_exception_throw(chunks, current, "StateError", "No element", line);
+    chunks[current].emit_end(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
@@ -2278,9 +2409,18 @@ pub fn emit_dart_future_call0(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:promise", "resolve", 1, line);
 }
 
-/// Dart `Future.delayed(duration, fn)`; duration scheduling is outside this
-/// test-level lowering, but the result is still a real resolved Promise.
-pub fn emit_dart_future_delayed(chunks: &mut [Chunk], current: usize, line: u32) {
+/// Dart `Future.delayed(duration[, fn])`; duration scheduling is outside this
+/// test-level lowering, but the result is still a real resolved Promise. The
+/// callback is OPTIONAL in the dart signature — a bare `Future.delayed(d)`
+/// awaits the delay and resolves with null.
+pub fn emit_dart_future_delayed(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        // [duration] → resolved null promise.
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        host::emit(&mut chunks[current], "ecma:promise", "resolve", 1, line);
+        return;
+    }
     let callback_slot = reserve_slot(&mut chunks[current]);
     let duration_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, callback_slot, line);
@@ -2775,11 +2915,42 @@ pub fn emit_dart_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     emit_throw_if_frozen(chunks, current, receiver_slot, line);
+    // `Expando` — identity-keyed: `bag[obj] = v` writes the backing
+    // `ecma:weakmap`; a null key THROWS. The property path coerces keys, so
+    // two distinct `Object()`s collided onto one entry.
+    emit_expando_receiver_test(chunks, current, receiver_slot, line);
+    chunks[current].emit_if(line);
+    emit_expando_null_key_throw(chunks, current, key_slot, line);
+    emit_expando_wm_to_stack(chunks, current, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "ecma:weakmap", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+    // A NEW map key joins the insertion-order record — `m[300] = 'c'` is how
+    // `<int, String>{}` gets filled, and without this the `keys` read fell
+    // back to JS property order, which sorts integer-like keys ascending
+    // (dart iterates insertion order). Arrays skip the bookkeeping.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_dart_map_record_new_key(chunks, current, receiver_slot, key_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
 }
 

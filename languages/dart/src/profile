@@ -78,6 +78,14 @@ callable_objects = true
 
 # `identical(a, b)` is Dart's reference equality, materialized as Dart bool.
 identical           = { emit = "common:dart.identical",          min_args = 2, max_args = 2 }
+# `Isolate.spawn`'s engine — the same row go spells `__go_spawn`: the wrapped
+# entry closure runs on a `wasi:threads.thread-spawn` thread and answers a
+# Task handle, which the walker hands to the `Isolate` core class's ctor.
+__dart_isolate_spawn = { emit = "common:threading.task_run",     min_args = 1, max_args = 1 }
+# `Isolate.spawnUri` throws `IsolateSpawnException` — running a second
+# program from a URI is unsupported, and the spec failure shape beats a
+# silent no-op.
+__dart_isolate_spawn_uri = { emit = "common:dart.isolate_spawn_uri", min_args = 0, max_args = 0 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -92,7 +100,10 @@ RegExp              = { emit = "common:dart.regexp_new",         min_args = 1, m
 Map                 = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
 SplayTreeMap        = { emit = "common:dart.sorted_map_new",     min_args = 0, max_args = 0 }
 Queue               = { emit = "common:dart.stream_empty",       min_args = 0, max_args = 0 }
-Expando             = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+# `Expando` is NOT a map row: the walker builds `{__type: "Expando", __wm}`
+# over the identity-keyed `ecma:weakmap` (a dart map's property keys COERCE,
+# so two distinct Objects collided onto one entry).
+__dart_expando_wm_new = { emit = "host:ecma:weakmap:new",        min_args = 0, max_args = 0 }
 MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, max_args = 2 }
 "Map.from"          = { emit = "common:dart.map_from",           min_args = 1, max_args = 1 }
 "Map.of"            = { emit = "common:dart.map_from",           min_args = 1, max_args = 1 }
@@ -102,6 +113,15 @@ MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, m
 "Map.fromIterables" = { emit = "common:dart.map_from_iterables", min_args = 2, max_args = 2 }
 "Map.identity"      = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
 "Set.from"          = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+# `LinkedHashMap`/`LinkedHashSet` ARE the default Map/Set: the shared map and
+# set are insertion-ordered (JS-map semantics), which is exactly the linked
+# variants' contract, so the linked spellings alias the plain rows.
+LinkedHashMap       = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+"LinkedHashMap.from" = { emit = "common:dart.map_from",          min_args = 1, max_args = 1 }
+"LinkedHashMap.of"  = { emit = "common:dart.map_from",           min_args = 1, max_args = 1 }
+LinkedHashSet       = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
+"LinkedHashSet.from" = { emit = "common:dart.set_from",          min_args = 1, max_args = 1 }
+"LinkedHashSet.of"  = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
 "Set.of"            = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
 "Set.unmodifiable"  = { emit = "common:dart.set_unmodifiable",   min_args = 1, max_args = 1 }
 "Set.identity"      = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
@@ -165,7 +185,7 @@ __dart_date_weekday = { emit = "common:dart.date_weekday",       min_args = 1, m
 "Future.error"      = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
 "Future.sync"       = { emit = "common:dart.future_call0",        min_args = 1, max_args = 1 }
 "Future.microtask"  = { emit = "common:dart.future_call0",        min_args = 1, max_args = 1 }
-"Future.delayed"    = { emit = "common:dart.future_delayed",      min_args = 2, max_args = 2 }
+"Future.delayed"    = { emit = "common:dart.future_delayed",      min_args = 1, max_args = 2 }
 "Stream.fromIterable" = { emit = "common:dart.identity",         min_args = 1, max_args = 1 }
 "Stream.value"      = { emit = "common:dart.stream_value",        min_args = 1, max_args = 1 }
 "Stream.empty"      = { emit = "common:dart.stream_empty",        min_args = 0, max_args = 0 }
@@ -258,7 +278,7 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 "math.sqrt"         = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
 "math.min"          = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
 "math.max"          = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
-"math.pow"          = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+"math.pow"          = { emit = "opcode:pow",             min_args = 2, max_args = 2 }
 "math.sin"          = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
 "math.cos"          = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
 "math.tan"          = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
@@ -276,8 +296,13 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 
 # ── JSON (dart:convert) ─────────────────────────────────────────────────────
 
-jsonEncode          = { emit = "host:ecma:json:stringify",        min_args = 1, max_args = 1 }
-jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, max_args = 1 }
+# jsonEncode/jsonDecode: dart semantics over the shared JSON machinery
+# (emitter/json_adapter.rs) — typed throws, map-order keys, cycle detection.
+jsonEncode          = { emit = "common:dart.json_encode",         min_args = 1, max_args = 2 }
+jsonDecode          = { emit = "common:dart.json_decode",         min_args = 1, max_args = 2 }
+# `JsonEncoder.withIndent(i).convert(v)` — ECMA stringify's third argument IS
+# the indent (§25.5.2); the core class `JsonEncoder` calls this three-arg row.
+__dart_json_stringify3 = { emit = "host:ecma:json:stringify",     min_args = 3, max_args = 3 }
 base64Encode        = { emit = "common:dart.base64_encode",       min_args = 1, max_args = 1 }
 base64Decode        = { emit = "common:dart.base64_decode",       min_args = 1, max_args = 1 }
 base64UrlEncode     = { emit = "common:dart.base64url_encode",    min_args = 1, max_args = 1 }
@@ -329,10 +354,10 @@ __dart_process_stdin_close = { emit = "common:dart.io_process_stdin_close", min_
 __dart_process_stdin_add_error = { emit = "common:dart.io_process_stdin_add_error", min_args = 2, max_args = 2 }
 __dart_utf8_encode = { emit = "common:dart.utf8_encode", min_args = 1, max_args = 1 }
 __dart_latin1_encode = { emit = "common:dart.latin1_encode", min_args = 1, max_args = 1 }
-__dart_ascii_encode = { emit = "common:dart.latin1_encode", min_args = 1, max_args = 1 }
+__dart_ascii_encode = { emit = "common:dart.ascii_encode", min_args = 1, max_args = 1 }
 __dart_utf8_decode = { emit = "common:dart.utf8_decode", min_args = 1, max_args = 2 }
 __dart_latin1_decode = { emit = "common:dart.latin1_decode", min_args = 1, max_args = 2 }
-__dart_ascii_decode = { emit = "common:dart.latin1_decode", min_args = 1, max_args = 2 }
+__dart_ascii_decode = { emit = "common:dart.ascii_decode", min_args = 1, max_args = 2 }
 __dart_io_absolute_handle = { emit = "common:dart.io_absolute_handle", min_args = 1, max_args = 1 }
 __dart_io_parent_handle = { emit = "common:dart.io_parent_handle", min_args = 1, max_args = 1 }
 __dart_io_uri_string = { emit = "common:dart.io_uri_string", min_args = 1, max_args = 1 }
@@ -657,6 +682,30 @@ kind = "namespace"
 alias = "Math"
 module = "ecma:math"
 
+# Ambient library roots — `dart:core` is the language's implicit import, and
+# the tree mounts the other libraries under `dart.<library>` (tree_register).
+# A type-qualified static (`LinkedHashMap.from`) resolves through these roots
+# via the common resolver's ambient-chain walk — the TREE, not a walker
+# allowlist. Follow-up: mount `collection`/`async`/`io` per `import 'dart:x'`
+# statement instead of ambiently; every corpus program imports what it uses,
+# and the mounted dart libraries have no cross-library name collisions, so
+# ambient-mounting all four resolves identically today.
+[[esm_default]]
+kind = "tree_ambient"
+path = "dart.core"
+
+[[esm_default]]
+kind = "tree_ambient"
+path = "dart.collection"
+
+[[esm_default]]
+kind = "tree_ambient"
+path = "dart.async"
+
+[[esm_default]]
+kind = "tree_ambient"
+path = "dart.io"
+
 [[esm_default]]
 kind = "namespace"
 alias = "json"
@@ -706,10 +755,6 @@ module = "ecma:regexp"
 # instead of per-language duplication.
 # Future / Stream / Process namespace aliases retired:
 #   Future → JSPI promise (Op::PROMISE_*); no namespace object needed.
-#   Stream → `wasi:io/streams` proposal; constructed via stream adapters.
-#   Process → `node:child_process` (`spawnSync` / `execSync`); the
-#     dotnet wrapper Component Model handles `Process.Start` for typed
-#     receivers and lowers through `process_adapter`.
 
 # Dart Isolate spawning compiles to Op::THREAD_SPAWN (WASM threads
 # proposal) — no namespace object needed.

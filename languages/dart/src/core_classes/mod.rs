@@ -39,6 +39,8 @@ mod builders;
 mod datetime;
 mod duration;
 mod exceptions;
+mod isolate;
+mod json;
 mod string_buffer;
 mod uri;
 
@@ -67,6 +69,17 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("RangeError", exceptions::range_error),
     ("UnimplementedError", exceptions::unimplemented_error),
     ("Uri", uri::uri),
+    // `dart:isolate` — order matters: `SendPort` before the ports that
+    // construct one; `Capability` before `Isolate`, whose getters mint them.
+    ("Capability", isolate::capability),
+    ("SendPort", isolate::send_port),
+    ("ReceivePort", isolate::receive_port),
+    ("RawReceivePort", isolate::raw_receive_port),
+    ("Isolate", isolate::isolate),
+    ("TransferableTypedData", isolate::transferable_typed_data),
+    ("Completer", isolate::completer),
+    ("JsonDecoder", json::json_decoder),
+    ("JsonEncoder", json::json_encoder),
 ];
 
 /// True when `name` is one of the classes above.
@@ -111,6 +124,22 @@ pub fn declarations_for(source: &str, is_user_declared: impl Fn(&str) -> bool) -
     // over exactly like an ancestor is.
     if needed.contains(&"DateTime") && !needed.contains(&"Duration") {
         needed.push("Duration");
+    }
+    // The isolate classes construct each other: a port's ctor builds its
+    // `SendPort`; `Isolate`'s getters mint `SendPort`s and `Capability`s. A
+    // program naming only the outer class still needs the inner ones
+    // compiled — same closure rule as DateTime → Duration.
+    for (outer, inner) in [
+        ("ReceivePort", "SendPort"),
+        ("RawReceivePort", "SendPort"),
+        ("Isolate", "SendPort"),
+        ("Isolate", "Capability"),
+        // A second materialize throws ArgumentError.
+        ("TransferableTypedData", "ArgumentError"),
+    ] {
+        if needed.contains(&outer) && !needed.contains(&inner) {
+            needed.push(inner);
+        }
     }
     let mut i = 0;
     while i < needed.len() {

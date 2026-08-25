@@ -2,18 +2,19 @@
 //!
 //! A `File`/`Directory`/`Link` is lowered by the walker to a record
 //! `{ path, __dart_io: "file" }`, so every method here starts by reading
-//! `path` off the receiver and then calls an EXISTING `wasi:filesystem`
-//! host function. No host fn is added: `fs.rs` already registers
-//! `readFile`, `readFileBytes`, `writeFile`, `appendFile`, `exists`,
-//! `isFile`, `isDir`, `remove`, `listDir`, `mkdir`, `fileSize`, `rename`
-//! and `copy`, which is the whole synchronous surface these methods need.
+//! `path` off the receiver and then runs a `primitives::fs_path` verb —
+//! the shared lowerings composed from real `wasi:filesystem@0.3.1` names
+//! (`open-at`/`stat-at`/`read-via-stream`…). No host fn is added: the
+//! whole synchronous surface these methods need (`readFile`,
+//! `readFileBytes`, `writeFile`, `appendFile`, `exists`, `isFile`,
+//! `isDir`, `fileSize`, `rename`, `copy`) exists as `fs_path::emit_*`.
 //!
 //! Value-method argc INCLUDES the receiver, and arguments sit ABOVE it on
 //! the stack — so an N-argument method pops N values, then the receiver.
 
 use std::sync::Arc;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
-use vybe_compiler::primitives::{collections, errors, globals, loops, ops, strings};
+use vybe_compiler::primitives::{collections, errors, fs_path, globals, loops, ops, strings};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -59,9 +60,21 @@ fn take_receiver_path(
     (path_slot, arg_slots)
 }
 
-fn call_fs(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
-    let idx = chunks[current].add_import("wasi:filesystem", name);
-    chunks[current].emit_call(idx, argc, line);
+fn call_fs(chunks: &mut [Chunk], current: usize, name: &str, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    match name {
+        "exists" => fs_path::emit_exists(chunk, line),
+        "isFile" => fs_path::emit_is_file(chunk, line),
+        "isDir" => fs_path::emit_is_dir(chunk, line),
+        "readFile" => fs_path::emit_read_file(chunk, line),
+        "readFileBytes" => fs_path::emit_read_file_bytes(chunk, line),
+        "fileSize" => fs_path::emit_file_size(chunk, line),
+        "writeFile" => fs_path::emit_write_file(chunk, line),
+        "appendFile" => fs_path::emit_append_file(chunk, line),
+        "rename" => fs_path::emit_rename(chunk, line),
+        "copy" => fs_path::emit_copy(chunk, line),
+        other => unreachable!("dart io_adapter has no fs_path lowering for {other}"),
+    }
 }
 
 fn call_node_fs(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
@@ -1692,6 +1705,18 @@ pub fn emit_utf8_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 }
 
 pub fn emit_latin1_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_subset_encode(chunks, current, argc, 255, line)
+}
+
+/// `ascii.encode` — the 7-bit subset.
+pub fn emit_ascii_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_subset_encode(chunks, current, argc, 127, line)
+}
+
+/// `latin1`/`ascii` encode with dart's validation: a code unit above `max`
+/// throws a typed ArgumentError ("Invalid argument (string): Contains
+/// invalid characters" — dart 3.10.4, measured).
+fn emit_subset_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, max: i32, line: u32) {
     let mut arg_slots = Vec::new();
     for _ in 0..argc {
         let s = slot(&mut chunks[current]);
@@ -1725,13 +1750,27 @@ pub fn emit_latin1_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_op(Op::I32_LT_S, line);
     loops::emit_loop_cond(chunks, current, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    let cu_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     host::emit(&mut chunks[current], "wasm:js-string", "charCodeAt", 2, line);
-    chunks[current].emit_i32_const(255, line);
-    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cu_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cu_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_f64_const(max as f64, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    crate::emitter::string_adapter::emit_dart_named_exception_throw(
+        chunks,
+        current,
+        "ArgumentError",
+        "Invalid argument (string): Contains invalid characters",
+        line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cu_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1743,6 +1782,11 @@ pub fn emit_latin1_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
+/// `utf8.decode(bytes[, allowMalformed])` — dart is STRICT by default:
+/// malformed, truncated, overlong or surrogate input throws a typed
+/// `FormatException`, which is the WHATWG decoder's `fatal: true` mode with
+/// the host's throw re-shaped to dart's exception. `allowMalformed: true`
+/// keeps the spec's U+FFFD replacement (the non-fatal default).
 pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let mut arg_slots = Vec::new();
     for _ in 0..argc {
@@ -1751,13 +1795,7 @@ pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         arg_slots.push(s);
     }
     arg_slots.reverse();
-    chunks[current].emit_string_const("utf-8", line);
-    chunks[current].emit_struct_new(0, 0, line);
-    let ignore_bom_key = string_key(&mut chunks[current], "ignoreBOM");
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, ignore_bom_key, line);
-    host::emit(&mut chunks[current], "web:encoding", "decoderNew", 2, line);
+    let bytes_slot = slot(&mut chunks[current]);
     if let Some(input) = arg_slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *input, line);
     } else {
@@ -1765,10 +1803,94 @@ pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         host::emit(&mut chunks[current], "ecma:array", "new", 1, line);
     }
     host::emit(&mut chunks[current], "ecma:uint8array", "from", 1, line);
-    host::emit(&mut chunks[current], "web:encoding", "decode", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+
+    let decode_with = |chunks: &mut Vec<Chunk>, fatal: bool, line: u32| {
+        chunks[current].emit_string_const("utf-8", line);
+        chunks[current].emit_struct_new(0, 0, line);
+        // Constructed EXACTLY as a JS object literal compiles (measured in
+        // the `td.js` dump): the `__keys` array + `trackKey` bookkeeping and
+        // the BOXED Bool values. The bare struct.new + raw-bool shape this
+        // replaces was never readable by the host's `option_bool` — the
+        // decoder's `ignoreBOM` had silently never worked.
+        let keys_key = string_key(&mut chunks[current], "__keys");
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_i32_const(0, line);
+        host::emit(&mut chunks[current], "vybe:js-array", "newWithLength", 1, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
+        // No `ignoreBOM`: WHATWG's flag means KEEP the BOM when true, and
+        // dart's utf8.decode STRIPS it (measured against dart 3.10.4) — the
+        // spec default is already dart's behavior.
+        for (name, wanted) in [("fatal", fatal)] {
+            if !wanted {
+                continue;
+            }
+            let key = string_key(&mut chunks[current], name);
+            core_wasm::dup(&mut chunks[current], line);
+            chunks[current].emit_string_const(name, line);
+            host::emit(&mut chunks[current], "ecma:object", "trackKey", 2, line);
+            chunks[current].emit_op(Op::DROP, line);
+            core_wasm::dup(&mut chunks[current], line);
+            chunks[current].emit_i32_const(1, line);
+            host::emit(&mut chunks[current], "wasm:js-boolean", "fromI32", 1, line);
+            chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+        }
+        host::emit(&mut chunks[current], "web:encoding", "decoderNew", 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+        host::emit(&mut chunks[current], "web:encoding", "decode", 2, line);
+    };
+
+    // allowMalformed present and truthy → lenient; else strict.
+    let allow_slot = slot(&mut chunks[current]);
+    if let Some(allow) = arg_slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *allow, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, allow_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, allow_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    decode_with(chunks, false, line);
+    chunks[current].emit_else(line);
+    {
+        let result_slot = slot(&mut chunks[current]);
+        chunks[current].emit_block(line); // normal-path exit target
+        errors::emit_try_start(&mut chunks[current], line);
+        decode_with(chunks, true, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+        errors::emit_try_end(&mut chunks[current], line);
+        chunks[current].emit_br(1, line); // past the catch arm
+        errors::emit_handler_block_end(&mut chunks[current], line);
+        // TOS = the host's untyped error — re-shaped to dart's typed
+        // FormatException so `on FormatException` matches.
+        chunks[current].emit_op(Op::DROP, line);
+        crate::emitter::string_adapter::emit_dart_named_exception_throw(
+            chunks,
+            current,
+            "FormatException",
+            "Unexpected extension byte",
+            line,
+        );
+        chunks[current].emit_end(line); // outer block
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    }
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_latin1_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_subset_decode(chunks, current, argc, 255, line)
+}
+
+/// `ascii.decode` — the 7-bit subset of the same machinery.
+pub fn emit_ascii_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_subset_decode(chunks, current, argc, 127, line)
+}
+
+/// `latin1`/`ascii` decode with dart's validation: a byte above `max`
+/// THROWS a typed FormatException unless `allowInvalid:` is truthy, in
+/// which case it decodes as U+FFFD (dart 3.10.4, measured).
+fn emit_subset_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, max: i32, line: u32) {
     let mut arg_slots = Vec::new();
     for _ in 0..argc {
         let s = slot(&mut chunks[current]);
@@ -1776,6 +1898,14 @@ pub fn emit_latin1_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         arg_slots.push(s);
     }
     arg_slots.reverse();
+    let allow_slot = slot(&mut chunks[current]);
+    if let Some(allow) = arg_slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *allow, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, allow_slot, line);
     let input_slot = slot(&mut chunks[current]);
     if let Some(input) = arg_slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *input, line);
@@ -1803,10 +1933,34 @@ pub fn emit_latin1_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_op(Op::I32_LT_S, line);
     loops::emit_loop_cond(chunks, current, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    let v_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     collections::emit_get(chunks, current, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v_slot, line);
+    // Out of the subset's range → U+FFFD under allowInvalid, typed throw
+    // otherwise.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v_slot, line);
+    chunks[current].emit_f64_const(max as f64, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, allow_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_f64_const(0xFFFD as f64, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v_slot, line);
+    chunks[current].emit_else(line);
+    crate::emitter::string_adapter::emit_dart_named_exception_throw(
+        chunks,
+        current,
+        "FormatException",
+        "Invalid value in input",
+        line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v_slot, line);
     host::emit(&mut chunks[current], "ecma:string", "fromCharCode", 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
