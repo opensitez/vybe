@@ -1843,13 +1843,84 @@ fn register_access(vm: &mut VM) {
                                 o.properties
                                     .insert(ACCESSOR_SETTER_ACTIVE_MARK.into(), Value::Bool(true));
                             }
-                            match setter_arity {
-                                Some(1) => {
-                                    ctx.invoke(&setter_val, &[val]);
-                                }
-                                _ => {
-                                    ctx.invoke(&setter_val, &[Value::Object(obj.clone()), val]);
-                                }
+                            // ECMA-262 §10.1.5 step 6.b: the setter is called
+                            // with `this = receiver`. WHICH convention it wants
+                            // is now DECLARED, not inferred: `classes.rs`
+                            // stamps its `__set_x(self, v)` accessors with the
+                            // receiver-first call tag, and anything that does
+                            // not declare it — a `defineProperty` `set(v)` —
+                            // takes its receiver from the call.
+                            //
+                            // This used to guess from `setter_arity`, and the
+                            // two shapes are indistinguishable that way: an
+                            // arity-1 setter that wants a receiver and one that
+                            // does not are the same signature. The guess handed
+                            // `set(v)` no receiver at all, so `this.x = v` wrote
+                            // into nowhere and the assignment READ BACK
+                            // CORRECTLY off the plain property — which is why
+                            // `element.textContent = x` rendered nothing.
+                            // §10.1.5 step 6.b is unconditional: the setter is
+                            // called with `this = Receiver`. So BOTH branches
+                            // bind it; they differ only in whether the callee's
+                            // own signature ALSO takes the receiver as an
+                            // argument, which is an internal compilation
+                            // detail the standard knows nothing about.
+                            //
+                            // `classes.rs` compiles `__set_x(self, v)` and a JS
+                            // `defineProperty` setter is `set(v)`. Same wasm
+                            // signature class, opposite conventions — which is
+                            // why this used to GUESS from arity and hand the
+                            // ambient form no receiver at all, so `this.x = v`
+                            // wrote nowhere and read back off the plain
+                            // property.
+                            let receiver = Value::Object(obj.clone());
+                            // Does the callee's own signature take the receiver
+                            // as a parameter? A declared call tag answers it
+                            // outright; otherwise the arity does, and it is
+                            // reliable for the shape because the compiler emits
+                            // exactly two: `(self, v)` and `(v)`.
+                            //
+                            // What the arity CANNOT tell you — and what this
+                            // used to get wrong — is that a `(v)` setter still
+                            // needs `this`. Both branches bind it now, because
+                            // §10.1.5 step 6.b is unconditional; only the
+                            // argument list differs.
+                            let receiver_first = ctx.func_handles_call_tag(
+                                &setter_val,
+                                vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG,
+                            ) || setter_arity.is_none_or(|a| a >= 2);
+                            if receiver_first {
+                                // The receiver is an ARGUMENT here, so the
+                                // callee already has it and the ambient binding
+                                // is not merely redundant — rebinding the global
+                                // around the call disturbs an enclosing method's
+                                // own `this` in languages that read it there,
+                                // which turned a PHP `$this->n++` inside a
+                                // method into NaN.
+                                ctx.invoke(&setter_val, &[receiver, val]);
+                            } else {
+                                // Bind `this` around the SAME invoke path the
+                                // arity branch used. `invoke_with_explicit_this`
+                                // additionally re-resolves the callee (proxy
+                                // apply trap, bound-args unwrapping), and for a
+                                // closure-wrapped object-literal accessor that
+                                // resolution lands somewhere the setter body is
+                                // never reached — the assignment silently did
+                                // nothing. Binding the receiver is the part
+                                // §10.1.5 step 6.b requires; re-resolving the
+                                // callee is not.
+                                // §20.2.3.3's own [[Call]] path: it binds
+                                // `this` AND resolves a bound function or proxy
+                                // apply trap, both of which a `defineProperty`
+                                // setter can be. `set_js_this` + a bare invoke
+                                // binds the receiver but skips that resolution,
+                                // and the setter then never runs.
+                                crate::function::invoke_with_explicit_this(
+                                    ctx,
+                                    &setter_val,
+                                    receiver,
+                                    &[val],
+                                );
                             }
                             obj.lock()
                                 .unwrap()

@@ -51,7 +51,10 @@ pub fn register(vm: &mut VM) {
             let bound_this = args.get(1).cloned().unwrap_or(Value::Undefined);
             let target_proto = args.get(2).cloned().unwrap_or(Value::Undefined);
 
-            invoke_bound_target(ctx, &target, bound_this, target_proto, &args[3..])
+            // The trailing arguments are a REST parameter — empty when the
+            // caller passes fewer. `&args[3..]` panicked instead, and a host
+            // panic takes down the whole worker, not just the call.
+            invoke_bound_target(ctx, &target, bound_this, target_proto, args.get(3..).unwrap_or(&[]))
         }),
     );
 
@@ -218,7 +221,12 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-            invoke_with_explicit_this(ctx, &target, this_arg, &args[2..])
+            // §20.2.3.3 `Function.prototype.call ( thisArg, ...args )` — `args`
+            // is a REST parameter, so omitting it means EMPTY, not a panic.
+            // `Function.prototype.call.call("x")` passes one argument and
+            // `&args[2..]` panicked the worker; the two arguments above were
+            // already guarded and this one was not.
+            invoke_with_explicit_this(ctx, &target, this_arg, args.get(2..).unwrap_or(&[]))
         }),
     );
 

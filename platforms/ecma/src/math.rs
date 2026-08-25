@@ -136,7 +136,29 @@ pub fn register(vm: &mut VM) {
     binary(
         vm,
         "pow",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).powf(f(a, 1)))),
+        Box::new(|_ctx, a| {
+            let (base, exponent) = (f(a, 0), f(a, 1));
+            // §6.1.6.1.3 `Number::exponentiate`, steps 1, 10.b and 11.b. Rust's
+            // `powf` is IEEE 754-2019, which the standard's own note calls out
+            // as differing here:
+            //
+            //   The result of base ** exponent when base is 1 or -1 and
+            //   exponent is +∞ or -∞, or when base is 1 and exponent is NaN,
+            //   differs from IEEE 754-2019. […] The historical ECMAScript
+            //   behaviour is preserved for compatibility reasons.
+            //
+            // This host IS the ECMA platform, so it answers ECMA. A language
+            // that wants the IEEE reading declares `PowSemantics::Ieee` and
+            // gets `primitives::math::emit_pow_ieee`, which folds these two
+            // cases back to 1.
+            //
+            // Step 1 precedes step 2, so `NaN ** 0` is still 1 — `0` is not
+            // NaN and never reaches the first guard.
+            if exponent.is_nan() || (base.abs() == 1.0 && exponent.is_infinite()) {
+                return Value::F64(f64::NAN);
+            }
+            Value::F64(base.powf(exponent))
+        }),
     );
     math_fn(
         vm,

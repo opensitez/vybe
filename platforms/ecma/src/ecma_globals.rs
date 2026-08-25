@@ -27,31 +27,26 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     if path.is_empty() {
         return Value::Null;
     }
+    // JS is CASE-SENSITIVE: `Math` is not `math`, `JSON` is not `json`. The
+    // tree keeps the declared spelling and nothing else — a lowercase twin was
+    // registered for every namespace here, which made `math.floor(…)` resolve
+    // in a language where it must not, and made the entry that a
+    // case-insensitive caller folds to ambiguous once the tree stopped
+    // pre-lowercasing its lookups.
     let root_orig = path[0].to_string();
-    let root_lc = root_orig.to_lowercase();
-    let root = if let Some(existing) = vm
-        .global(&root_orig)
-        .or_else(|| vm.global(&root_lc))
-    {
+    let root = if let Some(existing) = vm.global(&root_orig) {
         existing.clone()
     } else {
         let obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
         vm.set_global_owned(root_orig.clone(), obj.clone());
-        if root_lc != root_orig {
-            vm.set_global_owned(root_lc, obj.clone());
-        }
         obj
     };
     let mut current = root;
     for &segment in &path[1..] {
         let orig = segment.to_string();
-        let key_lc = orig.to_lowercase();
         let next = if let Value::Object(ref obj) = current {
             let lock = obj.lock().unwrap();
-            lock.properties
-                .get(&orig)
-                .or_else(|| lock.properties.get(&key_lc))
-                .cloned()
+            lock.properties.get(&orig).cloned()
         } else {
             None
         };
@@ -62,9 +57,6 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
             if let Value::Object(ref obj) = current {
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(orig.clone(), new_obj.clone());
-                if key_lc != orig {
-                    o.properties.insert(key_lc, new_obj.clone());
-                }
             }
             current = new_obj;
         }
@@ -89,23 +81,23 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
 /// mount plumbing leaking out of a `for...in`: `new Date(0)` enumerated 72
 /// keys where the standard requires none.
 ///
-/// The lowercase alias is marked too. It is not a spec property at all — it
-/// exists so case-insensitive languages can resolve `getfullyear` — so it must
-/// never be enumerable in ANY language.
+/// ONE key: the spelling the standard declares.
+///
+/// A lowercase twin used to be inserted beside every member so a
+/// case-insensitive language could resolve `getfullyear`. That belongs to the
+/// LOOKUP, not to the tree — the resolver folds on a miss — and storing both
+/// made two entries where the standard has one: they show up in
+/// `getOwnPropertyNames`-adjacent machinery, they double every namespace, and
+/// once the tree stopped pre-lowercasing its lookups they became exactly the
+/// case-differing sibling pair that makes a fold AMBIGUOUS, so a
+/// case-insensitive caller asking for either could get neither.
 fn set_prop(ns: &Value, name: &str, value: Value) {
     if let Value::Object(obj) = ns {
-        let lc = name.to_lowercase();
         {
             let mut o = obj.lock().unwrap();
-            o.properties.insert(name.to_string(), value.clone());
-            if lc != name {
-                o.properties.insert(lc.clone(), value);
-            }
+            o.properties.insert(name.to_string(), value);
         }
         crate::object::track_nonenum(obj, name);
-        if lc != name {
-            crate::object::track_nonenum(obj, &lc);
-        }
     }
 }
 
@@ -212,11 +204,9 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:object", name, idx),
         );
         if let Value::Object(proto) = &object_proto {
+            // One spelling — the one the standard declares. There is no
+            // lowercase twin to mark non-enumerable any more.
             crate::object::track_nonenum(proto, name);
-            let lower = name.to_lowercase();
-            if lower != *name {
-                crate::object::track_nonenum(proto, &lower);
-            }
         }
     }
     set_ctor_prototype(&object, object_proto.clone());
@@ -247,8 +237,10 @@ pub fn register(vm: &mut VM) {
         }
     }
     set_prop(&object, "groupBy", Value::Bool(true));
+    // `Object`, not `object` — the last two hand-written lowercase twins.
+    // Every other alias in this file went with the fold; these were spelled out
+    // literally and so survived the sweep.
     vm.set_global_owned("Object".to_string(), object.clone());
-    vm.set_global_owned("object".to_string(), object.clone());
 
     let number = host_fn_ref(vm, "ecma:number", "Number");
     set_prop(&number, "name", Value::String(Arc::from("Number")));
@@ -458,11 +450,9 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:array", name, idx),
         );
         if let Value::Object(proto) = &array_proto {
+            // One spelling — the one the standard declares. There is no
+            // lowercase twin to mark non-enumerable any more.
             crate::object::track_nonenum(proto, name);
-            let lower = name.to_lowercase();
-            if lower != *name {
-                crate::object::track_nonenum(proto, &lower);
-            }
         }
     }
     if let Some(idx) = vm
@@ -485,7 +475,6 @@ pub fn register(vm: &mut VM) {
         set_prop(&array, name, host_fn_ref(vm, "ecma:array", name));
     }
     vm.set_global_owned("Array".to_string(), array.clone());
-    vm.set_global_owned("array".to_string(), array.clone());
 
     for (global_name, module, methods) in [
         (
@@ -584,8 +573,10 @@ pub fn register(vm: &mut VM) {
                 }
             }
             set_ctor_prototype(&ctor, proto);
-            vm.set_global_owned(global_name.to_string(), ctor.clone());
-            vm.set_global_owned(global_name.to_ascii_lowercase().to_string(), ctor);
+            // `Array`, not `array`. A lowercase constructor alias makes
+            // `new array()` resolve in a case-sensitive language, and gives a
+            // case-insensitive one two candidates to fold between.
+            vm.set_global_owned(global_name.to_string(), ctor);
         }
     }
 
@@ -880,8 +871,10 @@ pub fn register(vm: &mut VM) {
                 crate::object::track_nonenum(p, "constructor");
             }
             set_ctor_prototype(&ctor, proto);
-            vm.set_global_owned(global_name.to_string(), ctor.clone());
-            vm.set_global_owned(global_name.to_ascii_lowercase().to_string(), ctor);
+            // `Array`, not `array`. A lowercase constructor alias makes
+            // `new array()` resolve in a case-sensitive language, and gives a
+            // case-insensitive one two candidates to fold between.
+            vm.set_global_owned(global_name.to_string(), ctor);
         }
     }
 
