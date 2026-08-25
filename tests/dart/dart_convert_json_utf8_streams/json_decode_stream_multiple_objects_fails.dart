@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream.fromIterable(['{"a":1}{"b":2}']);
   try {
     await stream.transform(json.decoder).toList();

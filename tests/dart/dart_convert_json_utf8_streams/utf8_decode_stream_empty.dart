@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream<List<int>>.empty();
   final out = await stream.transform(utf8.decoder).join();
   __p(out.isEmpty);

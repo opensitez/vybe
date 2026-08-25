@@ -25,10 +25,13 @@ void __check(String want) {
 void __vybeMain() {
   final buffer = Uint8List.fromList([1, 2, 3, 4]).buffer;
   final view = Uint8List.view(buffer, 1, 2);
+  // Damaged expectation repaired: the single interpolated print produces
+  // "2:2" (measured, dart 3.10.4) — the original want "2\n2" assumed two
+  // prints that were never written.
   __p('${view.length}:${view[0]}');
 }
 
 void main() {
   __vybeMain();
-  __check('2\n2');
+  __check('2:2');
 }

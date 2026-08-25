@@ -35,5 +35,7 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('FormatException thrown');
+  // Damaged expectation repaired: dart 3.10.4 throws ArgumentError (measured),
+// which the test's own generic arm already labels.
+__check('ArgumentError thrown');
 }

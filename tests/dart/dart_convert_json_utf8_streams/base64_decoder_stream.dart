@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream.fromIterable(['AQID']);
   final out = await stream.transform(base64.decoder).toList();
   __p('${out[0][0]}:${out[0][1]}');

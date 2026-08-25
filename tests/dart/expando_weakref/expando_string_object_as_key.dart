@@ -23,11 +23,19 @@ void __check(String want) {
 void __vybeMain() {
   final bag = Expando<int>();
   var s = 'key';
-  bag[s] = 7;
-  __p(bag[s]);
+  // Damaged test repaired: an Expando key CANNOT be a string — dart 3.10.4
+  // throws "Invalid argument (object): Cannot be a string, number, boolean,
+  // record, null, Pointer, Struct or Union" (measured). The original
+  // expectation '7' never held under real dart.
+  try {
+    bag[s] = 7;
+    __p(bag[s]);
+  } catch (e) {
+    __p('threw');
+  }
 }
 
 void main() {
   __vybeMain();
-  __check('7');
+  __check('threw');
 }

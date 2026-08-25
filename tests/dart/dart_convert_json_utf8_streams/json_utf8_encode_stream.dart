@@ -22,14 +22,19 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
-  final stream = Stream.fromIterable([{'a': 1}, {'b': 2}]);
+Future<void> __vybeMain() async {
+  // Damaged test repaired: the inferred Stream<Map<String, int>> cannot take
+  // json.encoder (a StreamTransformer<Object?, String>) under dart 3.10.4 —
+  // StreamTransformer is invariant — so the stream must be typed Object?.
+  // Also measured: json.encoder as a transformer encodes only ONE top-level
+  // value and splits it into several string chunks (6 for this map), so the
+  // assertion reassembles the bytes instead of counting events.
+  final Stream<Object?> stream = Stream.fromIterable([{'a': 1}]);
   final out = await stream.transform(json.encoder).transform(utf8.encoder).toList();
-  // out is List<List<int>>
-  __p(out.length);
+  __p(utf8.decode(out.expand((e) => e).toList()));
 }
 
 Future<void> main() async {
   await __vybeMain();
-  __check('2');
+  __check('{"a":1}');
 }

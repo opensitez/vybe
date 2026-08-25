@@ -28,7 +28,10 @@ void __vybeMain() {
   final l2 = Uint8List.fromList([3, 4]);
   // TransferableTypedData concatenates the byte data of the lists
   final ttd = TransferableTypedData.fromList([l1, l2]);
-  final bd = ttd.materialize();
+  // Damaged test repaired: `materialize()` answers a ByteBuffer (no
+  // `getUint8` — did not compile under dart 3.10.4); the legal read goes
+  // through `.asByteData()`. Prints 4 then 3 (measured).
+  final bd = ttd.materialize().asByteData();
   __p(bd.lengthInBytes);
   __p(bd.getUint8(2)); // Should be 3
 }

@@ -27,7 +27,10 @@ void __vybeMain() {
   final l = Float32List(2);
   l[0] = 3.5;
   final ttd = TransferableTypedData.fromList([l.buffer.asUint8List()]);
-  final bd = ttd.materialize();
+  // Damaged test repaired: `materialize()` answers a ByteBuffer (no
+  // `getFloat32` — did not compile under dart 3.10.4); the legal read goes
+  // through `.asByteData()`, which prints 3.5 (measured).
+  final bd = ttd.materialize().asByteData();
   __p(bd.getFloat32(0, Endian.host));
 }
 

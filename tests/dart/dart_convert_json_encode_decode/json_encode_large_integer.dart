@@ -26,7 +26,10 @@ void __vybeMain() {
   // Dart ints are 64-bit, JS JSON limits safely to 53-bit. 
   // Dart's jsonEncode on native supports full 64-bit int serialization
   final map = {'big': 9007199254740992}; // 2^53
-  print(jsonEncode(map));
+  // Damaged test repaired: the output went to `print` while `__check`
+  // compares `__buf` — under dart 3.10.4 the value printed correctly and the
+  // check still failed on an empty buffer (measured).
+  __p(jsonEncode(map));
 }
 
 void main() {

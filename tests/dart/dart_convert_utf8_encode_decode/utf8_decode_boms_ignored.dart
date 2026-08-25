@@ -23,12 +23,11 @@ void __check(String want) {
 }
 
 void __vybeMain() {
-  // UTF-8 BOM is 0xEF, 0xBB, 0xBF
-  // Wait, Dart's standard utf8.decode does not strip BOM by default.
-  // You need utf8.decoder to strip it or handle it manually?
-  // Let's just decode and check the first character.
+  // Damaged test repaired: dart 3.10.4 STRIPS a leading UTF-8 BOM in
+  // `utf8.decode` (measured — the first code unit is 65, not 0xFEFF); the
+  // original expectation asserted the opposite and failed under real dart.
   final str = utf8.decode([0xEF, 0xBB, 0xBF, 65]);
-  __p(str.codeUnitAt(0) == 0xFEFF); // The BOM character itself
+  __p(str.codeUnitAt(0) == 65 && str.length == 1);
 }
 
 void main() {

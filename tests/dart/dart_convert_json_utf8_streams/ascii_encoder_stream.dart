@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream.fromIterable(['A', 'B']);
   final out = await stream.transform(ascii.encoder).toList();
   __p('${out[0][0]}:${out[1][0]}');

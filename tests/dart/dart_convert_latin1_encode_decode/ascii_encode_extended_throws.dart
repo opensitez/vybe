@@ -23,15 +23,17 @@ void __check(String want) {
 }
 
 void __vybeMain() {
-  // 'ä' is 228, out of ASCII range (0-127)
+  // Damaged test repaired: dart 3.10.4 throws ArgumentError here ("Invalid
+  // argument (string): Contains invalid characters"), not FormatException —
+  // the original typed catch never matched (measured).
   try {
     ascii.encode('ä');
-  } on FormatException {
-    __p('FormatException thrown');
+  } on ArgumentError {
+    __p('ArgumentError thrown');
   }
 }
 
 void main() {
   __vybeMain();
-  __check('FormatException thrown');
+  __check('ArgumentError thrown');
 }

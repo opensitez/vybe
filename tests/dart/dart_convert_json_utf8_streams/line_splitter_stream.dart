@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream.fromIterable(['line1\nli', 'ne2\r\nline3']);
   final lines = await stream.transform(const LineSplitter()).toList();
   __p(lines.length);

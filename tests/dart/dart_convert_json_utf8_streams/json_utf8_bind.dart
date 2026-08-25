@@ -22,10 +22,12 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final stream = Stream.fromIterable([ [123, 34, 97, 34, 58, 49, 125] ]); // {"a":1}
+  // Damaged test repaired: json.decoder yields Object? under dart 3.10.4, so
+  // indexing the first event needs a Map cast.
   final decoded = await utf8.decoder.bind(stream).transform(json.decoder).first;
-  __p(decoded['a']);
+  __p((decoded as Map)['a']);
 }
 
 Future<void> main() async {

@@ -28,7 +28,7 @@ void __vybeMain() {
   // Actually, Dart's standard utf8 encoder converts invalid surrogates to U+FFFD.
   final str = String.fromCharCodes([0xD83D]);
   final bytes = utf8.encode(str);
-  print(bytes.length == 3); // U+FFFD is 3 bytes in UTF-8
+  __p(bytes.length == 3); // U+FFFD is 3 bytes in UTF-8 (repaired: print bypassed __buf, measured)
 }
 
 void main() {

@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   // 'ä' is 0xC3, 0xA4
   final stream = Stream.fromIterable([ [0xC3], [0xA4] ]);
   final out = await stream.transform(utf8.decoder).join();

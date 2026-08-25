@@ -22,7 +22,7 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
+Future<void> __vybeMain() async {
   final decoder = Utf8Decoder(allowMalformed: true);
   final stream = Stream.fromIterable([[0xFF]]); // Invalid UTF-8
   final out = await stream.transform(decoder).join();

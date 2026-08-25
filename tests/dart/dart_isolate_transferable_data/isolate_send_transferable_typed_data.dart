@@ -28,12 +28,17 @@ void isolateMain(SendPort port) {
   final ttd = TransferableTypedData.fromList([list]);
   port.send(ttd);
 }
-void __vybeMain() async {
+// `await` of a `void` expression is a compile error under dart 3.10.4, so the
+// async scaffold must answer a Future for `main` to await (measured).
+Future<void> __vybeMain() async {
   final receivePort = ReceivePort();
   await Isolate.spawn(isolateMain, receivePort.sendPort);
   
   final msg = await receivePort.first;
-  final bd = (msg as TransferableTypedData).materialize();
+  // Damaged test repaired: `materialize()` answers a ByteBuffer (no
+  // `getUint8` — did not compile under dart 3.10.4); the legal read goes
+  // through `.asByteData()`.
+  final bd = (msg as TransferableTypedData).materialize().asByteData();
   __p(bd.getUint8(0));
 }
 

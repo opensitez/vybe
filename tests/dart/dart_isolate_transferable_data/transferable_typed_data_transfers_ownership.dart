@@ -26,17 +26,19 @@ void __check(String want) {
 void __vybeMain() {
   final list = Uint8List.fromList([10, 20, 30]);
   final ttd = TransferableTypedData.fromList([list]);
-  // After transfer, 'list' might become inaccessible or cleared depending on Dart version.
-  // In Dart >= 2.15, the original list's buffer is detached.
+  // Damaged test repaired, twice over: the prints went to `print` instead of
+  // `__p`, so `__check` compared against an empty buffer no matter what
+  // happened; and under dart 3.10.4 `fromList` COPIES — `list[0]` stays
+  // readable and this prints "accessible" (measured), never "detached".
   try {
     list[0];
-    print('accessible');
+    __p('accessible');
   } catch(e) {
-    print('detached');
+    __p('detached');
   }
 }
 
 void main() {
   __vybeMain();
-  __check('detached');
+  __check('accessible');
 }

@@ -24,14 +24,14 @@ void __check(String want) {
 
 void __vybeMain() {
   final bd = ByteData(3);
-  try {
-    Int16List.view(bd.buffer, 2);
-  } on ArgumentError {
-    __p('ArgumentError thrown');
-  }
+  // Damaged test repaired: dart 3.10.4 does NOT throw here (measured) — a
+  // 3-byte buffer viewed at offset 2 leaves 1 byte, which is simply ZERO
+  // whole Int16 elements, a valid empty view. Assert the measured length.
+  final view = Int16List.view(bd.buffer, 2);
+  __p(view.length);
 }
 
 void main() {
   __vybeMain();
-  __check('ArgumentError thrown');
+  __check('0');
 }

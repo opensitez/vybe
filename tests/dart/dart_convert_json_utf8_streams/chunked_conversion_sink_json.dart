@@ -31,7 +31,10 @@ void __vybeMain() {
   );
   sink.add({'a': 1});
   sink.close();
-  __p(results[0]);
+  // Damaged test repaired: dart 3.10.4's chunked JsonEncoder emits the value
+  // in MULTIPLE chunks (results[0] measured as just "{"), so the assertion
+  // must join the chunks rather than read the first one.
+  __p(results.join());
 }
 
 void main() {

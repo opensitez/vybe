@@ -22,10 +22,14 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() async {
-  final stream = Stream.fromIterable([utf8.encode('{"a":1}')]);
+Future<void> __vybeMain() async {
+  // Damaged test repaired: the inferred Stream<Uint8List> cannot take
+  // utf8.decoder (a StreamTransformer<List<int>, String>) under dart 3.10.4 —
+  // StreamTransformer is invariant — and indexing the decoded Object? needs
+  // a Map cast.
+  final Stream<List<int>> stream = Stream.fromIterable([utf8.encode('{"a":1}')]);
   final out = await stream.transform(utf8.decoder).transform(json.decoder).toList();
-  __p(out[0]['a']);
+  __p((out[0] as Map)['a']);
 }
 
 Future<void> main() async {

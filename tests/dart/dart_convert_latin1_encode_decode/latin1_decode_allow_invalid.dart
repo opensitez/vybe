@@ -32,7 +32,8 @@ void __vybeMain() {
   try {
     latin1.decode([256], allowInvalid: false);
   } on FormatException {
-    print('FormatException thrown');
+    // Repaired: this print bypassed __buf (measured under dart 3.10.4).
+    __p('FormatException thrown');
   }
 }
 

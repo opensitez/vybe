@@ -26,11 +26,15 @@ void __check(String want) {
 void __vybeMain() {
   final list = Uint8List.fromList([10, 20, 30]);
   final ttd = TransferableTypedData.fromList([list]);
-  final materialized = ttd.materialize();
+  // Damaged test repaired: `materialize()` answers a ByteBuffer, which has no
+  // `getUint8` — the original spelling did not compile under dart 3.10.4.
+  // The legal read goes through `.asByteData()`, and the single interpolated
+  // print produces "3:20" (measured), not the "3\n20" the check wanted.
+  final materialized = ttd.materialize().asByteData();
   __p('${materialized.lengthInBytes}:${materialized.getUint8(1)}');
 }
 
 void main() {
   __vybeMain();
-  __check('3\n20');
+  __check('3:20');
 }

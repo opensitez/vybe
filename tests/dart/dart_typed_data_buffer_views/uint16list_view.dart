@@ -27,10 +27,13 @@ void __vybeMain() {
   bd.setUint16(0, 500, Endian.host);
   bd.setUint16(2, 1000, Endian.host);
   final view = Uint16List.view(bd.buffer);
+  // Damaged expectation repaired: the single interpolated print produces
+  // "2:500:1000" (measured, dart 3.10.4) — the original want assumed three
+  // prints that were never written.
   __p('${view.length}:${view[0]}:${view[1]}');
 }
 
 void main() {
   __vybeMain();
-  __check('2\n500\n1000');
+  __check('2:500:1000');
 }

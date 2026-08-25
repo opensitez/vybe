@@ -26,14 +26,19 @@ void __check(String want) {
 void __vybeMain() {
   final list = Uint8List.fromList([5, 6, 7]);
   final ttd = TransferableTypedData.fromList([list]);
+  // Damaged test repaired: materialize MOVES the bytes out, so a SECOND
+  // materialize throws ArgumentError under dart 3.10.4 (measured) — the
+  // original expectation that both calls answer equal lengths never held.
   final m1 = ttd.materialize();
-  final m2 = ttd.materialize();
-  // Multiple materialize calls usually return the exact same ByteData instance or a new one pointing to same memory.
-  // But actually the memory is moved back to the current isolate context.
-  __p(m1.lengthInBytes == m2.lengthInBytes);
+  try {
+    final m2 = ttd.materialize();
+    __p(m1.lengthInBytes == m2.lengthInBytes);
+  } catch (e) {
+    __p('second materialize throws');
+  }
 }
 
 void main() {
   __vybeMain();
-  __check('true');
+  __check('second materialize throws');
 }
