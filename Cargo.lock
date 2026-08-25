@@ -778,7 +778,7 @@ dependencies = [
  "uuid",
  "vybe_compiler",
  "vybe_platform_dotnet",
- "vybe_widgets",
+ "widgets",
  "winit",
 ]
 
@@ -5939,7 +5939,7 @@ dependencies = [
  "vybe_platform_dotnet",
  "vybe_platform_wasm",
  "vybe_runtime",
- "vybe_widgets",
+ "widgets",
 ]
 
 [[package]]
@@ -6111,7 +6111,7 @@ dependencies = [
  "vybe_language_js",
  "vybe_platform_dotnet",
  "vybe_runtime",
- "vybe_widgets",
+ "widgets",
 ]
 
 [[package]]
@@ -6268,8 +6268,8 @@ dependencies = [
  "url",
  "vybe_platform_ecma",
  "vybe_runtime",
- "vybe_widgets",
  "webcore",
+ "widgets",
 ]
 
 [[package]]
@@ -6281,24 +6281,6 @@ dependencies = [
  "serde",
  "toml",
  "vybe_ast",
-]
-
-[[package]]
-name = "vybe_widgets"
-version = "0.6.0"
-dependencies = [
- "arboard",
- "base64 0.21.7",
- "cosmic-text",
- "image",
- "rfd",
- "ropey",
- "serde",
- "serde_json",
- "softbuffer",
- "swash",
- "tiny-skia 0.12.0",
- "winit",
 ]
 
 [[package]]
@@ -6346,7 +6328,7 @@ dependencies = [
  "vybe_platform_wasm",
  "vybe_platform_web",
  "vybe_runtime",
- "vybe_widgets",
+ "widgets",
 ]
 
 [[package]]
@@ -6679,6 +6661,26 @@ dependencies = [
  "objc2-system-configuration",
  "wasite",
  "web-sys",
+]
+
+[[package]]
+name = "widgets"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50b0198f134d7969beaad8f5cae7296e61d7edd1892560b6cdd1da0ccfff2d6e"
+dependencies = [
+ "arboard",
+ "base64 0.21.7",
+ "cosmic-text",
+ "image",
+ "rfd",
+ "ropey",
+ "serde",
+ "serde_json",
+ "softbuffer",
+ "swash",
+ "tiny-skia 0.12.0",
+ "winit",
 ]
 
 [[package]]
