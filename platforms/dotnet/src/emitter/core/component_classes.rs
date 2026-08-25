@@ -47,9 +47,11 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.push(component_classes_linq::enumerable_static_export());
         exports.extend(component_classes_span::exports());
         exports.extend(component_classes_system::exports());
+        exports.push(component_classes_system::biginteger_export());
         exports.extend(component_classes_system_values::exports());
         exports.extend(component_classes_system_version::exports());
         exports.extend(component_classes_threading::exports());
+        exports.extend(component_classes_threading::globalization_exports());
         exports.extend(component_classes_text::exports());
         exports.extend(component_classes_data_drawing::exports());
         exports.extend(component_classes_diagnostics_process::exports());

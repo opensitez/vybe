@@ -291,60 +291,55 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
     struct_set_named_field(chunk, "Seconds", line);
 
-    // Milliseconds component — the remainder after whole seconds. Was simply
-    // never set: `FromSeconds(1.5).Milliseconds` read a missing field.
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
-    push_const(chunk, Value::F64(1000.0), line);
-    chunk.emit_op(Op::F64_MUL, line);
-    chunk.emit_op(Op::F64_SUB, line);
-    struct_set_named_field(chunk, "Milliseconds", line);
+    // ⛔ `rem_slot` is ALREADY the remainder after whole seconds. The
+    // component loop above is the only writer of `Milliseconds`; a second one
+    // that subtracts the seconds again is wrong, and wrong only in the
+    // PascalCase key, so a case-insensitive frontend cannot see it.
 }
 
 /// Build a TimeSpan from a count of `unit_ms` units. Stack: `[n]` →
 /// `[ts]`. Internally: `total_ms = n * unit_ms`, then build the
 /// record. Generic over unit so all `From*` methods share one body.
-fn emit_timespan_from_unit(chunks: &mut [Chunk], current: usize, unit_ms: f64, line: u32) {
+fn emit_timespan_from_unit(chunks: &mut Vec<Chunk>, current: usize, unit_ms: f64, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(unit_ms), line);
     chunk.emit_op(Op::F64_MUL, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
 /// `TimeSpan.FromDays(n)` — `n * 86_400_000` ms.
-pub fn emit_timespan_from_days(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_days(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_timespan_from_unit(chunks, current, 86_400_000.0, line);
 }
 
 /// `TimeSpan.FromHours(n)` — `n * 3_600_000` ms.
-pub fn emit_timespan_from_hours(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_hours(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_timespan_from_unit(chunks, current, 3_600_000.0, line);
 }
 
 /// `TimeSpan.FromMinutes(n)` — `n * 60_000` ms.
-pub fn emit_timespan_from_minutes(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_minutes(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_timespan_from_unit(chunks, current, 60_000.0, line);
 }
 
 /// `TimeSpan.FromSeconds(n)` — `n * 1000` ms.
-pub fn emit_timespan_from_seconds(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_seconds(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_timespan_from_unit(chunks, current, 1000.0, line);
 }
 
 /// `TimeSpan.FromMilliseconds(n)` — pass-through.
-pub fn emit_timespan_from_milliseconds(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_milliseconds(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_timespan_from_unit(chunks, current, 1.0, line);
 }
 
 /// `TimeSpan.Zero` — 0-duration TimeSpan. Stack: `[]` → `[ts]`.
-pub fn emit_timespan_zero(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_zero(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
-pub fn emit_timespan_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = chunk.alloc_scratch(5);
@@ -377,7 +372,7 @@ pub fn emit_timespan_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
@@ -398,7 +393,7 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
     chunk.emit_end(line);
 }
 
-pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_timespan_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     // .NET overloads by arity: (ticks) | (h,m,s) | (d,h,m,s) | (d,h,m,s,ms).
     // Everything reduces to total milliseconds; one builder serves all four.
     // The old body matched ONLY arity 3 and silently fell back to Zero for
@@ -409,7 +404,7 @@ pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             // Ticks: 100ns units, 10_000 per millisecond.
             push_const(chunk, Value::F64(10_000.0), line);
             chunk.emit_op(Op::F64_DIV, line);
-            emit_build_timespan_from_total_ms(chunk, line);
+            emit_build_timespan(chunks, current, line);
         }
         3 | 4 | 5 => {
             // Pop into slots right-to-left, then Horner up from the largest
@@ -451,18 +446,18 @@ pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
                 arg(chunk);
                 chunk.emit_op(Op::F64_ADD, line);
             }
-            emit_build_timespan_from_total_ms(chunk, line);
+            emit_build_timespan(chunks, current, line);
         }
         _ => emit_timespan_zero(chunks, current, line),
     }
 }
 
 /// `TimeSpan.FromTicks(n)` — 100ns units.
-pub fn emit_timespan_from_ticks(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_from_ticks(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(10_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
 /// `Int64::MAX` ticks in milliseconds — the magnitude of
@@ -471,16 +466,16 @@ pub fn emit_timespan_from_ticks(chunks: &mut [Chunk], current: usize, line: u32)
 /// bound in ticks, not a full-precision ms value.
 const MAX_VALUE_MS: f64 = 9.223372036854776e18 / 10_000.0;
 
-pub fn emit_timespan_max_value(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_max_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(MAX_VALUE_MS), line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
-pub fn emit_timespan_min_value(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_min_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(-MAX_VALUE_MS), line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
 /// `ts.ToString()` — .NET's constant format: `[-][d.]hh:mm:ss[.fffffff]`.
@@ -605,26 +600,26 @@ pub fn emit_timespan_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_compare_numeric_slots(chunk, left_ms_slot, right_ms_slot, line);
 }
 
-pub fn emit_timespan_negate(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_negate(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_total_ms_from_obj(chunk, obj_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
     chunk.emit_op(Op::F64_MUL, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
-pub fn emit_timespan_duration(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_duration(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_total_ms_from_obj(chunk, obj_slot, line);
     math::emit_abs(chunk, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
-pub fn emit_timespan_add(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let right_slot = chunk.alloc_scratch(2);
     let left_slot = right_slot + 1;
@@ -633,10 +628,10 @@ pub fn emit_timespan_add(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_total_ms_from_obj(chunk, left_slot, line);
     emit_total_ms_from_obj(chunk, right_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
-    emit_build_timespan_from_total_ms(chunk, line);
+    emit_build_timespan(chunks, current, line);
 }
 
-pub fn emit_timespan_sub(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timespan_sub(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let right_slot = chunk.alloc_scratch(2);
     let left_slot = right_slot + 1;
@@ -645,5 +640,226 @@ pub fn emit_timespan_sub(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_total_ms_from_obj(chunk, left_slot, line);
     emit_total_ms_from_obj(chunk, right_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
+    emit_build_timespan(chunks, current, line);
+}
+
+// ── Operator PROTOCOL SLOTS ──────────────────────────────────────────────────
+//
+// `ts + ts`, `ts - ts`, `ts * n`, `ts / n`, `ts / ts` and `-ts` are real .NET
+// operators, and until now only ONE of them ever ran: the shared
+// `try_compile_dotnet_datetime_timespan_binary_operator` catches `+`/`-` when
+// BOTH operands' static types are known, so `a + b` on two typed locals worked
+// while `a + TimeSpan.FromHours(2)` — the very same addition, with a CALL on
+// the right — fell through to numeric addition and trapped in
+// `wasm:js-number.toF64`. `*`, `/` and unary `-` had no arm at all.
+//
+// Answering it on the VALUE instead removes the question. `emit_rich_binop`
+// (`primitives/operators.rs`) looks the ProtocolSlot up on the LEFT operand at
+// run time and falls back to the primitive op when it is absent, so binding
+// these makes every spelling reach the same body regardless of what the
+// compiler could infer — which is what "a class should be ASKED, not matched
+// by spelling" means for a value type.
+
+fn create_function_chunk(name: &str, arity: u8) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.arity = arity;
+    c
+}
+
+/// The slots an arithmetic result must carry so the NEXT operator on it also
+/// finds a body — `(a + b) + c`.
+const TIMESPAN_OPERATOR_SLOTS: &[vybe_ast::ProtocolSlot] = &[
+    vybe_ast::ProtocolSlot::Add,
+    vybe_ast::ProtocolSlot::Sub,
+    vybe_ast::ProtocolSlot::Mul,
+    vybe_ast::ProtocolSlot::Div,
+    vybe_ast::ProtocolSlot::Neg,
+];
+
+/// Copy the operator slots from `src_local` onto the object in `dst_local`.
+///
+/// ⛔ This is what keeps the binding non-recursive. A result built INSIDE an
+/// operator body cannot bind fresh method chunks — that would need a new chunk
+/// per operator per result, forever — so it inherits the receiver's, which are
+/// the same functions.
+fn emit_inherit_operator_slots(chunk: &mut Chunk, src_local: u16, dst_local: u16, line: u32) {
+    for slot in TIMESPAN_OPERATOR_SLOTS {
+        let key = vybe_ast::protocol_slot_key(*slot);
+        let key_idx = string_key(chunk, &key);
+        chunk.emit_op_u16(Op::LOCAL_GET, dst_local, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, src_local, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+        struct_set_field(chunk, key_idx, line);
+    }
+}
+
+/// Build a TimeSpan from total milliseconds on the stack INSIDE an operator
+/// body, and give it the receiver's operator slots.
+/// Stack: `[total_ms]` → `[ts]`.
+fn emit_operator_result(chunk: &mut Chunk, receiver_local: u16, line: u32) {
     emit_build_timespan_from_total_ms(chunk, line);
+    let result_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    emit_inherit_operator_slots(chunk, receiver_local, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `a + b` / `a - b` on two TimeSpans.
+fn push_timespan_addsub_chunk(chunks: &mut Vec<Chunk>, add: bool, line: u32) -> usize {
+    let mut method = create_function_chunk(
+        if add { "__timespan_add" } else { "__timespan_sub" },
+        2,
+    );
+    method.local_count = 2;
+    emit_total_ms_from_obj(&mut method, 0, line);
+    emit_total_ms_from_obj(&mut method, 1, line);
+    method.emit_op(if add { Op::F64_ADD } else { Op::F64_SUB }, line);
+    emit_operator_result(&mut method, 0, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// `a * n` — .NET's `TimeSpan * Double`. The right operand is a NUMBER; there
+/// is no TimeSpan × TimeSpan.
+fn push_timespan_mul_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = create_function_chunk("__timespan_mul", 2);
+    method.local_count = 2;
+    emit_total_ms_from_obj(&mut method, 0, line);
+    method.emit_op_u16(Op::LOCAL_GET, 1, line);
+    method.emit_op(Op::F64_MUL, line);
+    emit_operator_result(&mut method, 0, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// `a / b` — BOTH .NET overloads. `TimeSpan / Double` is a TimeSpan;
+/// `TimeSpan / TimeSpan` is a `Double` ratio, so the divisor's kind decides
+/// the RESULT TYPE and the branch is unavoidable.
+fn push_timespan_div_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = create_function_chunk("__timespan_div", 2);
+    method.local_count = 2;
+    let result_slot = method.alloc_scratch(1);
+
+    let typeof_fn = method.add_import("ecma:value", "typeof");
+    method.emit_op_u16(Op::LOCAL_GET, 1, line);
+    method.emit_call(typeof_fn, 1, line);
+    method.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut method, line);
+    method.emit_if(line);
+    // TimeSpan / TimeSpan → the ratio, a plain number.
+    emit_total_ms_from_obj(&mut method, 0, line);
+    emit_total_ms_from_obj(&mut method, 1, line);
+    method.emit_op(Op::F64_DIV, line);
+    method.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    method.emit_else(line);
+    emit_total_ms_from_obj(&mut method, 0, line);
+    method.emit_op_u16(Op::LOCAL_GET, 1, line);
+    method.emit_op(Op::F64_DIV, line);
+    emit_operator_result(&mut method, 0, line);
+    method.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    method.emit_end(line);
+
+    method.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// `-a` — .NET `TimeSpan.Negate`.
+fn push_timespan_neg_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = create_function_chunk("__timespan_neg", 1);
+    method.local_count = 1;
+    push_const(&mut method, Value::F64(0.0), line);
+    emit_total_ms_from_obj(&mut method, 0, line);
+    method.emit_op(Op::F64_SUB, line);
+    emit_operator_result(&mut method, 0, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// The chunk index of the operator body named `name`, creating it on first
+/// use.
+///
+/// ⛔ ONE set of bodies per module, not one per construction site. These are
+/// bound by EVERY `TimeSpan.From*` / `New TimeSpan` / `Zero` / `Parse` in the
+/// program; minting five fresh chunks each time made the whole VB suite six
+/// times slower to compile before this lookup went in. The chunks are pure
+/// functions of their arguments, so sharing them is free.
+fn timespan_operator_chunk(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    build: fn(&mut Vec<Chunk>, u32) -> usize,
+    line: u32,
+) -> usize {
+    if let Some(idx) = chunks.iter().position(|c| c.name == name) {
+        return idx;
+    }
+    build(chunks, line)
+}
+
+/// Bind `Add`/`Sub`/`Mul`/`Div`/`Neg` on the TimeSpan in `obj_slot`.
+pub(crate) fn bind_timespan_operator_roles(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    obj_slot: u16,
+    line: u32,
+) {
+    let bindings = [
+        (
+            vybe_ast::ProtocolSlot::Add,
+            timespan_operator_chunk(
+                chunks,
+                "__timespan_add",
+                |c, l| push_timespan_addsub_chunk(c, true, l),
+                line,
+            ),
+        ),
+        (
+            vybe_ast::ProtocolSlot::Sub,
+            timespan_operator_chunk(
+                chunks,
+                "__timespan_sub",
+                |c, l| push_timespan_addsub_chunk(c, false, l),
+                line,
+            ),
+        ),
+        (
+            vybe_ast::ProtocolSlot::Mul,
+            timespan_operator_chunk(chunks, "__timespan_mul", push_timespan_mul_chunk, line),
+        ),
+        (
+            vybe_ast::ProtocolSlot::Div,
+            timespan_operator_chunk(chunks, "__timespan_div", push_timespan_div_chunk, line),
+        ),
+        (
+            vybe_ast::ProtocolSlot::Neg,
+            timespan_operator_chunk(chunks, "__timespan_neg", push_timespan_neg_chunk, line),
+        ),
+    ];
+    for (slot, method_idx) in bindings {
+        vybe_compiler::primitives::object::emit_bind_method(
+            &mut chunks[current],
+            obj_slot,
+            &vybe_ast::protocol_slot_key(slot),
+            method_idx,
+            line,
+        );
+    }
+}
+
+/// Build a TimeSpan record from total milliseconds AND bind its operators.
+/// Stack: `[total_ms]` → `[ts]`.
+///
+/// The entry point every caller that HAS the chunk list should use;
+/// [`emit_build_timespan_from_total_ms`] alone leaves a value that cannot
+/// answer `+`.
+pub(crate) fn emit_build_timespan(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_build_timespan_from_total_ms(&mut chunks[current], line);
+    let obj_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    bind_timespan_operator_roles(chunks, current, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }

@@ -430,6 +430,54 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetime_get_hash_code".into()),
                 )),
         ),
+        // `System.TimeZoneInfo` — the type was absent from the catalog
+        // entirely, so `TimeZoneInfo.Utc.Id` answered `undefined`. Every
+        // member is backed by `primitives/datetime.rs`'s tzdb calls; see
+        // `core::timezone_adapter`.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("TimeZoneInfo")
+                .with_method(MethodDef::static_method(
+                    "Utc",
+                    0,
+                    MethodBody::Common("dotnet.timezone_utc".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Local",
+                    0,
+                    MethodBody::Common("dotnet.timezone_local".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FindSystemTimeZoneById",
+                    1,
+                    MethodBody::Common("dotnet.timezone_find_by_id".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ConvertTime",
+                    2,
+                    MethodBody::Common("dotnet.timezone_convert_time".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ConvertTimeToUtc",
+                    1,
+                    MethodBody::Common("dotnet.timezone_convert_to_utc".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ConvertTimeFromUtc",
+                    2,
+                    MethodBody::Common("dotnet.timezone_convert_from_utc".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetUtcOffset",
+                    1,
+                    MethodBody::Common("dotnet.timezone_get_utc_offset".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsDaylightSavingTime",
+                    1,
+                    MethodBody::Common("dotnet.timezone_is_dst".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("DateTimeOffset")
@@ -487,6 +535,36 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetimeoffset_add_hours".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "AddDays",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_days".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddMinutes",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_minutes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddSeconds",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_seconds".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddMilliseconds",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_milliseconds".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddTicks",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_ticks".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_timespan".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ToUniversalTime",
                     0,
                     MethodBody::Common("dotnet.datetimeoffset_to_universal_time".into()),
@@ -531,6 +609,79 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.datetimeoffset_to_string".into()),
                 )),
+        ),
+        // `Double` / `Single` static predicates. The CONSTANTS they test against
+        // (`Double.NaN`, `Double.PositiveInfinity`) were already known in
+        // `core::types`; the predicates that read them back were registered
+        // nowhere, so `Double.IsNaN(x)` answered `null`.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Double")
+                .with_method(MethodDef::static_method(
+                    "IsNaN",
+                    1,
+                    MethodBody::Common("dotnet.double_is_nan".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsPositiveInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_positive_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsNegativeInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_negative_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsFinite",
+                    1,
+                    MethodBody::Common("dotnet.double_is_finite".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Single")
+                .with_method(MethodDef::static_method(
+                    "IsNaN",
+                    1,
+                    MethodBody::Common("dotnet.double_is_nan".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsPositiveInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_positive_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsNegativeInfinity",
+                    1,
+                    MethodBody::Common("dotnet.double_is_negative_infinity".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsFinite",
+                    1,
+                    MethodBody::Common("dotnet.double_is_finite".into()),
+                )),
+        ),
+        // `Lazy(Of T)` — the type was absent from the catalog entirely, so every
+        // member answered "undefined is not callable". `Value` and
+        // `IsValueCreated` are computed properties declared in
+        // `tree_register::shared_emit_accessors`, not methods.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Lazy")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.lazy_new"))
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.lazy_new"))
+                .with_constructor(ConstructorDef::new(2).with_common_backing("dotnet.lazy_new")),
         ),
         DotnetClassExport::new(
             "dotnet.System",
@@ -1263,6 +1414,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.string_substring".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "ToCharArray",
+                    0,
+                    MethodBody::Common("dotnet.string_to_char_array".into()),
+                ))
+                .with_method(MethodDef::new(
                     "Chars",
                     1,
                     MethodBody::Common("dotnet.string_char_at_checked".into()),
@@ -1326,6 +1482,51 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Remove",
                     2,
                     MethodBody::Common("dotnet.str_remove_range".into()),
+                ))
+                // The NO-ARGUMENT forms. Only the char-array overloads were
+                // declared, so `s.Trim()` / `s.ToUpper()` had no leaf at all
+                // and reached the tree only because a `[value_methods]` profile
+                // row answered first — three times over, once per .NET
+                // frontend. A member .NET declares is the tree's to declare.
+                .with_method(MethodDef::new(
+                    "Trim",
+                    0,
+                    MethodBody::Common("strings.trim".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimStart",
+                    0,
+                    MethodBody::Common("str_trim_start".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimEnd",
+                    0,
+                    MethodBody::Common("str_trim_end".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUpper",
+                    0,
+                    MethodBody::Common("strings.to_upper".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToLower",
+                    0,
+                    MethodBody::Common("strings.to_lower".into()),
+                ))
+                // ⛔ `ToUpper(CultureInfo)` / `ToLower(CultureInfo)` are NOT
+                // declared. Nothing in this tree does culture-aware casing —
+                // `culture_adapter` models culture NAMES and formatting, not
+                // case mapping — so a leaf here could only accept the culture
+                // and discard it, which answers invariant casing for a caller
+                // that asked for Turkish. Declaring the arity would make that
+                // silent. It stays undeclared until the mapping exists.
+                // `Contains(value)`. The declared overload took a comparison
+                // argument, so the one-argument spelling every program uses
+                // was missing.
+                .with_method(MethodDef::new(
+                    "Contains",
+                    1,
+                    MethodBody::Common("str_includes".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Trim",
@@ -1722,4 +1923,68 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
     ]);
     exports
+}
+
+/// `System.Numerics.BigInteger` — see `biginteger_adapter`.
+///
+/// ⛔ Declared where .NET puts it, `System.Numerics`, which is also the
+/// namespace `Imports System.Numerics` names. Every member is a STATIC in the
+/// tree even where .NET spells it as an instance property (`v.Sign`,
+/// `v.IsEven`): the value is a bare ECMA BigInt with no property bag to hang
+/// an accessor on, and the instance-call path passes the receiver as argument
+/// zero either way.
+pub(super) fn biginteger_export() -> DotnetClassExport {
+    // `New BigInteger(54)` — built by the same coercion `Parse` uses, so a
+    // constructed and a parsed BigInteger are the same value.
+    let mut class = ClassType::new("BigInteger")
+        .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.bigint_parse"));
+    for (name, arity, emit) in [
+        ("Abs", 1u8, "dotnet.bigint_abs"),
+        ("Negate", 1, "dotnet.bigint_negate"),
+        ("Parse", 1, "dotnet.bigint_parse"),
+        ("Pow", 2, "dotnet.bigint_pow"),
+        ("Min", 2, "dotnet.bigint_min"),
+        ("Max", 2, "dotnet.bigint_max"),
+        ("Compare", 2, "dotnet.bigint_compare"),
+        ("ModPow", 3, "dotnet.bigint_mod_pow"),
+        ("GreatestCommonDivisor", 2, "dotnet.bigint_gcd"),
+    ] {
+        class = class.with_method(MethodDef::static_method(
+            name,
+            arity,
+            MethodBody::Common(emit.into()),
+        ));
+    }
+    for (name, emit) in [
+        ("Zero", "dotnet.bigint_zero"),
+        ("One", "dotnet.bigint_one"),
+        ("MinusOne", "dotnet.bigint_minus_one"),
+    ] {
+        class = class.with_method(MethodDef::static_method(
+            name,
+            0,
+            MethodBody::Common(emit.into()),
+        ));
+    }
+    for (name, emit) in [
+        ("ToString", "dotnet.bigint_to_string"),
+        ("Sign", "dotnet.bigint_sign"),
+        ("IsZero", "dotnet.bigint_is_zero"),
+        ("IsOne", "dotnet.bigint_is_one"),
+        ("IsEven", "dotnet.bigint_is_even"),
+    ] {
+        class = class.with_method(MethodDef::new(name, 0, MethodBody::Common(emit.into())));
+    }
+    class = class
+        .with_method(MethodDef::new(
+            "CompareTo",
+            1,
+            MethodBody::Common("dotnet.bigint_compare".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Equals",
+            1,
+            MethodBody::Common("dotnet.bigint_equals".into()),
+        ));
+    DotnetClassExport::new("dotnet.System.Numerics", class)
 }

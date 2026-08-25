@@ -4,6 +4,35 @@ use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, Metho
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
+        // `KeyValuePair<TKey, TValue>` — a STRUCT, so `Equals` is by value.
+        // The constructor stamps `__value_eq` through the shared
+        // `primitives::classes` helper rather than declaring an `Equals` of its
+        // own, so it answers on the same path as every other value type.
+        // `Create` is the same body: .NET documents the factory as returning
+        // `new KeyValuePair<K,V>(key, value)`, so a second body could only
+        // drift from it.
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Generic",
+            ClassType::new("KeyValuePair")
+                .with_constructor(
+                    ConstructorDef::new(2).with_common_backing("dotnet.key_value_pair_new"),
+                )
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    2,
+                    MethodBody::Common("dotnet.key_value_pair_new".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.key_value_pair_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.key_value_pair_equals".into()),
+                )),
+        ),
         // .NET `List<T>` is shape-identical to ECMA-262 §23.1 Array.
         // The constructor materializes a real `ObjectKind::Array` via
         // `collections.new` (Op::ARRAY_NEW) and every method routes
@@ -21,7 +50,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("RemoveAt", 1, "collections.remove_at"),
                 ("Contains", 1, "collections.contains"),
                 ("Count", 0, "dotnet.observable_collection_count"),
-                ("Clear", 0, "collections.clear"),
+                ("Clear", 0, "dotnet.list_clear"),
                 ("IndexOf", 1, "collections.index_of"),
                 ("Sort", 0, "dotnet.array_sort"),
                 ("Reverse", 0, "collections.reverse"),

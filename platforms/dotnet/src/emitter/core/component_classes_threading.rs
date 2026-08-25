@@ -200,6 +200,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common("dotnet.value_task_as_task".into()),
             )),
         ),
+        // `AutoResetEvent` / `ManualResetEvent`. Both arities of `WaitOne` are
+        // declared because the dotnet INSTANCE lookup matches name AND exact
+        // arity — one row would leave the other spelling unresolved.
+        wait_handle_export("AutoResetEvent", "dotnet.auto_reset_event_new"),
+        wait_handle_export("ManualResetEvent", "dotnet.manual_reset_event_new"),
+        // The abstract base, for its statics. `WaitHandle()` is the DECLARED
+        // type of `Dim allDone As WaitHandle() = {a, b}`, so the name must
+        // resolve even though nothing constructs one.
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("WaitHandle").with_method(MethodDef::static_method(
+                "WaitAll",
+                1,
+                MethodBody::Common("dotnet.event_wait_all".into()),
+            )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Threading",
             ClassType::new("Thread")
@@ -250,6 +266,120 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 0,
                 MethodBody::Common("dotnet.timeout_infinite".into()),
             )),
+        ),
+    ]
+}
+
+/// One `WaitHandle` event class. `AutoResetEvent` and `ManualResetEvent` differ
+/// ONLY in whether a successful wait consumes the signal, and that difference
+/// is carried on the instance by the constructor — so the two classes share
+/// every method row rather than being spelled out twice and drifting.
+fn wait_handle_export(name: &'static str, ctor: &'static str) -> DotnetClassExport {
+    DotnetClassExport::new(
+        "dotnet.System.Threading",
+        ClassType::new(name)
+            .with_constructor(ConstructorDef::new(0).with_common_backing(ctor))
+            .with_constructor(ConstructorDef::new(1).with_common_backing(ctor))
+            .with_method(MethodDef::new(
+                "Set",
+                0,
+                MethodBody::Common("dotnet.event_set".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Reset",
+                0,
+                MethodBody::Common("dotnet.event_reset".into()),
+            ))
+            .with_method(MethodDef::new(
+                "WaitOne",
+                0,
+                MethodBody::Common("dotnet.event_wait_one".into()),
+            ))
+            .with_method(MethodDef::new(
+                "WaitOne",
+                1,
+                MethodBody::Common("dotnet.event_wait_one".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Close",
+                0,
+                MethodBody::Common("dotnet.noop".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Dispose",
+                0,
+                MethodBody::Common("dotnet.noop".into()),
+            )),
+    )
+}
+
+/// `System.Globalization` — `CultureInfo`, `TextInfo`.
+///
+/// ⛔ `InvariantCulture` / `CurrentCulture` are declared as STATIC methods of
+/// arity 0, which is how this tree spells a static property (`Timeout.Infinite`
+/// above does the same): "a module member read as a value invokes the leaf".
+pub(super) fn globalization_exports() -> Vec<DotnetClassExport> {
+    vec![
+        DotnetClassExport::new(
+            "dotnet.System.Globalization",
+            ClassType::new("CultureInfo")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.get_culture_info"),
+                )
+                .with_method(MethodDef::static_method(
+                    "InvariantCulture",
+                    0,
+                    MethodBody::Common("dotnet.invariant_culture".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CurrentCulture",
+                    0,
+                    MethodBody::Common("dotnet.current_culture".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetCultureInfo",
+                    1,
+                    MethodBody::Common("dotnet.get_culture_info".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Parent",
+                    0,
+                    MethodBody::Common("dotnet.culture_parent".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Clone",
+                    0,
+                    MethodBody::Common("dotnet.culture_clone".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.culture_equals".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetCultures",
+                    1,
+                    MethodBody::Common("dotnet.get_cultures".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Globalization",
+            ClassType::new("TextInfo")
+                .with_method(MethodDef::new(
+                    "ToTitleCase",
+                    1,
+                    MethodBody::Common("dotnet.text_info_to_title_case".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUpper",
+                    1,
+                    MethodBody::Common("dotnet.text_info_to_upper".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToLower",
+                    1,
+                    MethodBody::Common("dotnet.text_info_to_lower".into()),
+                )),
         ),
     ]
 }

@@ -103,14 +103,23 @@ statement = _{
     | synclock_statement
     | expression_statement
 }
-dim_new_keyword = { ^"New" }
+// Atomic, for the same word-boundary reason as `new_keyword` below:
+// `Dim x As NewThing` must not read as `Dim x As New Thing`.
+dim_new_keyword = @{ ^"New" ~ !(ASCII_ALPHANUMERIC | "_") }
 array_rank_spec = { "(" ~ (array_bounds | array_rank_commas)? ~ ")" }
 array_rank_commas = { ","+ }
 dim_declaration_part = {
     identifier ~
     array_rank_spec* ~
     (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ (from_initializer | with_initializer)?)? ~
-    ("=" ~ expression)?
+    // VB 10+ implicit line continuation: a break after `=` continues the
+    // statement, which is how a multi-line XML literal is written —
+    //     Dim userXml As XElement =
+    //         <User>…</User>
+    // ⛔ The skip is LEADING only. A TRAILING one would swallow the statement's
+    // own line terminator, which is what cost 18 tests when `nl_skip` was put
+    // around `argument_list` instead of inside its parentheses.
+    ("=" ~ nl_skip ~ expression)?
 }
 
 dim_statement = {
@@ -580,8 +589,22 @@ logical_and = { not_condition ~ (and_op ~ not_condition)* }
 not_condition = { not_op? ~ equality } // Not binds tighter than And
 equality = { comparison ~ (eq_op ~ comparison)* }
 comparison = { bit_shift ~ (comp_op ~ bit_shift | like_op ~ bit_shift)* }
-bit_shift = { additive ~ (shift_op ~ additive)* }
-additive = { multiplicative ~ (add_op ~ multiplicative)* }
+// ⛔ `&` is its OWN precedence level, LOOSER than `+`/`-`. VB's table is
+// `* /` > `\` > `Mod` > `+ -` > `&` > `<< >>` > comparisons. Sharing a level
+// with `+` made `"a" & 1 + 2` left-associate into `("a" & 1) + 2`; MEASURED
+// against `tools/vbrun`, real VB prints `a3` and we printed `a12`. Silent
+// wrong ANSWERS, not failures — and the test harness itself concatenates
+// around arithmetic on every line.
+bit_shift = { concat ~ (shift_op ~ concat)* }
+concat = { additive ~ (concat_op ~ additive)* }
+concat_op = { "&" }
+// ⛔ `\` (integer division) and `Mod` are each their OWN level, LOOSER than
+// `*` `/` and TIGHTER than `+` `-`. Sharing one level made them left-associate
+// with `*`: MEASURED against `tools/vbrun`, `6 \ 2 * 3` is `1` (we said 9) and
+// `10 Mod 4 * 2` is `2` (we said 4). Silent wrong ANSWERS, not failures.
+additive = { modulo ~ (add_op ~ modulo)* }
+modulo = { intdiv ~ (mod_op ~ intdiv)* }
+intdiv = { multiplicative ~ (intdiv_op ~ multiplicative)* }
 multiplicative = { unary ~ (mult_op ~ unary)* }
 unary = { (await_op | neg_op | pos_op)? ~ exponent }
 exponent = { postfix ~ (exp_op ~ postfix)* }
@@ -596,8 +619,12 @@ eq_op = { ^"=" | ^"<>" | ^"IsNot" | ^"Is" }
 comp_op = { ^"<=" | ^">=" | "<" | ">" }
 like_op = { ^"Like" }
 shift_op = { "<<" | ">>" }
-add_op = { "+" | "-" | "&" }
-mult_op = { "*" | "/" | "\\" | ^"Mod" }
+add_op = { "+" | "-" }
+mult_op = { "*" | "/" }
+intdiv_op = { "\\" }
+// Atomic: a non-atomic rule lets pest skip whitespace before the lookahead, so
+// the word boundary never fires and `Mod` would match inside `Mode`.
+mod_op = @{ ^"Mod" ~ !(ASCII_ALPHANUMERIC | "_") }
 exp_op = { "^" }
 not_op = @{ ^"Not" ~ !(ASCII_ALPHANUMERIC | "_") } // Atomic: No implicit whitespace before lookahead
 neg_op = { "-" }
@@ -705,8 +732,16 @@ aggregate_call = { identifier ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 // Also supports array initializers: New Task() {task1, task2}
 // Also supports collection initializers: New List(Of T) From { expr, ... }
 // Also supports object initializers: New Type() With { .Prop = expr, ... }
-anonymous_new_expression = { ^"New" ~ WHITESPACE* ~ with_initializer }
-new_expression = { ^"New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
+// ⛔ `new_keyword`, NOT a bare `^"New"`: without the word-boundary guard
+// `newX` parses as `New X`.
+//
+// The guard MUST live inside an ATOMIC rule, as `keyword` and `call_keyword`
+// already spell it — in a non-atomic rule pest inserts implicit WHITESPACE
+// between `^"New"` and the lookahead, so the lookahead would test the
+// character after the SPACE and reject the legal `New Foo()`.
+new_keyword = @{ ^"New" ~ !(ASCII_ALPHANUMERIC | "_") }
+anonymous_new_expression = { new_keyword ~ WHITESPACE* ~ with_initializer }
+new_expression = { new_keyword ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
 from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
 key_initializer_modifier = { ^"Key" }
@@ -718,8 +753,12 @@ member_chain_invoke = { "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 member_chain_xml_descendant_axis = { "..." ~ "<" ~ xml_name ~ ">" }
 member_chain_xml_child_axis = { "." ~ "<" ~ xml_name ~ ">" }
+// VB's third XML axis: `xml.@id` reads an ATTRIBUTE. The child (`.<name>`) and
+// descendant (`...<name>`) axes were both here; this one was not, so every
+// attribute read was a parse error.
+member_chain_xml_attribute_axis = { "." ~ "@" ~ xml_name }
 member_chain_access = { "." ~ member_identifier }
-member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_invoke | member_chain_call | member_chain_access }
+member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_xml_attribute_axis | member_chain_invoke | member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
 call_statement = {
     call_keyword? ~ (

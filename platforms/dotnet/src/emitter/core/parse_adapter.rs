@@ -84,12 +84,83 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
+    // ⛔ A `FormatException` OBJECT, the way `emit_parse_int` throws one — this
+    // threw a bare STRING, so `Catch ex As FormatException` never matched and
+    // the error escaped to the top level with the right message and the wrong
+    // identity.
+    chunk.emit_struct_new(0, 0, line);
+    core_wasm::dup(chunk, line);
     chunk.emit_string_const("Input string was not in a correct format.", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// `Double.TryParse(s)` / `Single.TryParse(s)` core for the walker's out-param
+/// desugar — the parsed value, or NULL when `s` is not a number.
+///
+/// ⛔ Only `Int32` had one. Every other numeric type registered `Parse` and no
+/// 1-arg `TryParse`, so `lowering::try_parse_desugar`'s core call resolved to
+/// NOTHING and `Double.TryParse(s, d)` answered `null` — not even `False` —
+/// while leaving the out-param untouched. That is the whole
+/// `vb_double_try_parse_cultures` cluster.
+///
+/// No `F64_FLOOR`, which is the only difference from [`emit_try_parse_int`].
+/// `[value] → []`, but RETURNS NULL from the enclosing emitter when `value` is
+/// null or blank. Emitted as a guard block, so the caller's happy path follows.
+///
+/// Stack on entry: `[value]`; on exit: `[]` and the guard has already left a
+/// `null` if it fired.
+fn emit_blank_input_guard(chunk: &mut Chunk, line: u32) {
+    let probe = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, probe, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, probe, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_op_u16(Op::LOCAL_GET, probe, line);
+    chunk.emit_call(to_str, 1, line);
+    let trim = chunk.add_import("ecma:string", "trim");
+    chunk.emit_call(trim, 1, line);
+    chunk.emit_string_const("", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_if(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let input = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+    // ⛔ `Number(null)` and `Number("")` are BOTH 0 in ECMA, and .NET's
+    // `TryParse` answers False for either. Without this guard
+    // `Double.TryParse(Nothing, v)` reported success.
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    emit_blank_input_guard(chunk, line);
+    let number_idx = chunk.add_import("ecma:number", "Number");
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(number_idx, 1, line);
+    let result = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_else(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
 }
 
 /// `bool.Parse(s)` — accepts `"true"` / `"false"` (case-insensitive),

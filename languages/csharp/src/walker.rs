@@ -143,6 +143,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     body.splice(0..0, synthesized);
 
     let mut module = Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::CSharp,
         body,
@@ -171,6 +172,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // passes: lifted operators consume the declared `T?` hints the walk
     // recorded and produce plain ternaries everything downstream understands.
     normalize_nullable_value_surface(&mut module);
+    normalize_csharp_span_locals(&mut module);
+    normalize_csharp_predefined_new(&mut module);
     normalize_task_surface(&mut module);
     inject_interface_defaults(__w, &mut module.body);
     lower_csharp_using_declarations(&mut module.body);
@@ -1749,6 +1752,12 @@ fn rewrite_explicit_interface_accesses_in_expr(
     conflicted: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(callee, conflicted);
+            for a in args {
+                rewrite_explicit_interface_accesses_in_expr(a, conflicted);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 rewrite_explicit_interface_accesses_in_expr(child, conflicted);
@@ -4500,6 +4509,129 @@ fn normalize_interlocked_expr(expr: &mut Expression) {
 /// synchronously) is a different OPERATION from ECMA's always-deferred
 /// `ExprKind::Await`, and the difference belongs on the node, not in a
 /// runtime-consulted property.
+/// C#'s predefined-type KEYWORDS, normalised to the CLR type they name.
+///
+/// ⛔ `object` is not a mis-cased `Object` — it is a distinct C# spelling for
+/// `System.Object`, the way `int` is for `System.Int32`. While the namespace
+/// tree folded every lookup these resolved by accident; once the fold became
+/// conditional on the language's directive, C# — which does not fold — stopped
+/// finding them, and `new object()` reached `undefined is not callable`.
+///
+/// Normalising the SPELLING here is the same move VB already makes through
+/// `canonical_type_name`, and it keeps one fact in one place: the tree declares
+/// the CLR types, and each language states how its own keywords name them.
+fn csharp_predefined_type_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "object" => "Object",
+        "string" => "String",
+        "bool" => "Boolean",
+        "char" => "Char",
+        "byte" => "Byte",
+        "sbyte" => "SByte",
+        "short" => "Int16",
+        "ushort" => "UInt16",
+        "int" => "Int32",
+        "uint" => "UInt32",
+        "long" => "Int64",
+        "ulong" => "UInt64",
+        "float" => "Single",
+        "double" => "Double",
+        "decimal" => "Decimal",
+        _ => return None,
+    })
+}
+
+/// `new object()` → `new Object()`. Only the CONSTRUCTED type is rewritten:
+/// a static call like `int.Parse` already resolves through the profile's
+/// builtin table, and rewriting it would move it off a path that works.
+/// `Span<T>` / `ReadOnlySpan<T>` / `Memory<T>` locals, by name.
+///
+/// The span extension rewrite needs to know whether a receiver is a span, and
+/// a bare identifier does not say. The DECLARATION does, so it is collected
+/// here and consulted rather than guessed.
+fn collect_csharp_span_locals(module: &Module) -> std::collections::HashSet<String> {
+    fn is_span_type(spelling: &str) -> bool {
+        let leaf = spelling.rsplit('.').next().unwrap_or(spelling);
+        let base = leaf.split('<').next().unwrap_or(leaf).trim();
+        matches!(base, "Span" | "ReadOnlySpan" | "Memory" | "ReadOnlyMemory")
+    }
+    // A span local is declared at the top level of a method body in every
+    // shape the corpus uses; a nested-block declaration would need the
+    // statement tree walked, which no shared helper exposes yet.
+    let mut names = std::collections::HashSet::new();
+    let mut stack: Vec<&Statement> = module.body.iter().collect();
+    while let Some(stmt) = stack.pop() {
+        match &stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for d in declarations {
+                    let Some(hint) = &d.type_hint else { continue };
+                    if !is_span_type(hint.spelling()) {
+                        continue;
+                    }
+                    if let BindingPattern::Ident(name) = &d.pattern {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::FunctionDecl { body, .. }
+            | StmtKind::NamespaceDecl { body, .. } => stack.extend(body.iter()),
+            _ => {}
+        }
+    }
+    names
+}
+
+/// `span.Clear()` on a DECLARED span local → `MemoryExtensions.Clear(span)`.
+///
+/// Runs before the generic member-call path so the colliding names
+/// (`Clear`, `Contains`, `IndexOf`, `Reverse`, `Fill`, …) are claimed here,
+/// where the receiver is known to be a span, instead of being claimed for
+/// every receiver in the language.
+fn normalize_csharp_span_locals(module: &mut Module) {
+    let spans = collect_csharp_span_locals(module);
+    if spans.is_empty() {
+        return;
+    }
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            let ExprKind::Call { callee, args, .. } = &expr.kind else {
+                return;
+            };
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return;
+            };
+            let ExprKind::Ident(name) = &object.kind else {
+                return;
+            };
+            if !spans.contains(name) {
+                return;
+            }
+            if let Some(rewritten) =
+                csharp_span_extension_method_call_unchecked((**object).clone(), field, args)
+            {
+                *expr = rewritten;
+            }
+        });
+    }
+}
+
+fn normalize_csharp_predefined_new(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            let ExprKind::New { class, .. } = &mut expr.kind else {
+                return;
+            };
+            let ExprKind::Ident(name) = &mut class.kind else {
+                return;
+            };
+            if let Some(clr) = csharp_predefined_type_name(name) {
+                *name = clr.to_string();
+            }
+        });
+    }
+}
+
 fn normalize_task_surface(module: &mut Module) {
     for stmt in &mut module.body {
         stmt.walk_exprs_mut(&mut normalize_task_expr);
@@ -4542,6 +4674,15 @@ fn is_task_static(callee: &Expression, name: &str) -> bool {
 fn csharp_task_valued_type(expr: &Expression) -> Option<&'static str> {
     const TASK: &str = "System.Threading.Tasks.Task";
     match &expr.kind {
+        // ⛔ The node this pass ITSELF produces. `normalize_task_surface`
+        // rewrites `Task.Run(…)` into an `AsyncOp`, and without this arm the
+        // rewritten node was no longer recognised as task-valued — the very
+        // hole this function exists to close, left open for its own output.
+        //
+        // The question "is this still a task?" belongs to the NODE, so it is
+        // answered by `AsyncOp::yields_async_value` rather than by a list
+        // repeated per frontend (VB asks the same one).
+        ExprKind::Async(op) => op.yields_async_value().then_some(TASK),
         ExprKind::Call { callee, .. } => {
             let statics = [
                 "Run",
@@ -7034,6 +7175,12 @@ fn rewrite_using_imports_in_expr(
     static_paths: &UsingStaticScope,
 ) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            rewrite_using_imports_in_expr(callee, aliases, static_paths);
+            for a in args {
+                rewrite_using_imports_in_expr(a, aliases, static_paths);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 rewrite_using_imports_in_expr(child, aliases, static_paths);
@@ -7722,6 +7869,12 @@ fn rewrite_extension_calls_in_expr(
     extension_containers: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            rewrite_extension_calls_in_expr(callee, extension_methods, extension_containers);
+            for a in args {
+                rewrite_extension_calls_in_expr(a, extension_methods, extension_containers);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
@@ -19484,6 +19637,30 @@ fn char_arg_to_string(expr: &Expression) -> Expression {
     }
 }
 
+/// A receiver the `MemoryExtensions` rewrite may claim.
+///
+/// Span-ness is not inferable from a bare identifier here — this pass has no
+/// declared types — so the test is SYNTACTIC: the value came from an `AsSpan`
+/// or `AsMemory` conversion, possibly through a `Slice`. That covers how spans
+/// are actually written (`arr.AsSpan().Slice(1, 2).Clear()`) and, crucially,
+/// excludes every ordinary collection, which is what the missing test cost.
+fn is_csharp_span_receiver(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return false;
+    };
+    if field.eq_ignore_ascii_case("AsSpan") || field.eq_ignore_ascii_case("AsMemory") {
+        return true;
+    }
+    // A span stays a span through the operations that return one.
+    if field.eq_ignore_ascii_case("Slice") {
+        return is_csharp_span_receiver(object);
+    }
+    false
+}
+
 fn csharp_span_extension_method_call(
     receiver: Expression,
     field: &str,
@@ -19553,6 +19730,35 @@ fn csharp_span_extension_method_call(
         }));
     }
 
+    // ⛔ EVERY NAME BELOW IS ALSO A `List<T>` MEMBER. Without a receiver test
+    // this rewrite claimed all of them on ANY receiver, so `list.Clear()` and
+    // `dict.Clear()` became `MemoryExtensions.Clear(x)` — which ZEROES a span,
+    // i.e. writes `0` at each index. Measured: a two-entry Dictionary came back
+    // with FOUR keys, `a, b, 0, 1`, and `List.Clear()` was a silent no-op.
+    // `AsSpan`/`AsMemory` above are exempt: those NAME the conversion and are
+    // what makes a receiver span-shaped in the first place.
+    // ⛔ Gate only the names that COLLIDE with a real collection member.
+    // `AsSpan`/`Slice`/`SequenceEqual` name span operations and nothing else,
+    // so they may claim any receiver — that is how a span comes into being.
+    // `Clear`/`Contains`/`IndexOf`/`Reverse`/`Fill`/`ToArray` are also
+    // `List<T>` members, and claiming those unconditionally is what turned
+    // `list.Clear()` into a span zero-fill.
+    let collides_with_collection = matches!(
+        field.to_ascii_lowercase().as_str(),
+        "clear" | "contains" | "indexof" | "lastindexof" | "reverse" | "toarray" | "fill"
+    );
+    if collides_with_collection && !is_csharp_span_receiver(&receiver) {
+        return None;
+    }
+    csharp_span_extension_method_call_unchecked(receiver, field, args)
+}
+
+/// The rewrite itself, with the receiver test already made by the caller.
+fn csharp_span_extension_method_call_unchecked(
+    receiver: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     let name = match field.to_ascii_lowercase().as_str() {
         "slice" if args.len() == 2 => "Slice",
         "toarray" if args.is_empty() => "ToArray",
@@ -20322,31 +20528,20 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     field.eq_ignore_ascii_case("IsNullOrWhiteSpace"),
                 );
             }
-            // string.Join(sep, arr) → arr.join(sep)
-            if (obj_name.eq_ignore_ascii_case("string")
-                || obj_name.eq_ignore_ascii_case("System.String"))
-                && field.eq_ignore_ascii_case("Join")
-                && args.len() == 2
-            {
-                let sep = args[0].value.clone();
-                let arr = args[1].value.clone();
-                // Wrap in [...arr] to materialize generators/iterators
-                let materialized = Expression::new(ExprKind::Array(vec![ArrayElement {
-                    key: None,
-                    spread: true,
-                    by_ref: false,
-                    value: arr,
-                }]));
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(materialized),
-                        field: "join".to_string(),
-                        null_safe: false,
-                    })),
-                    args: vec![Argument::positional(sep)],
-                    optional: false,
-                });
-            }
+            // `string.Join` is NOT rewritten here, for the same reason as the
+            // `char` statics below: it is a `System.String` static, declared in
+            // the tree as `Join/2` → `dotnet.string_join_sep_first`, and the
+            // shared resolver answers it with .NET semantics (each element
+            // through its `ToString` role, so a `Boolean` joins as `True`, not
+            // JavaScript's `true`).
+            //
+            // ⛔ The rewrite that used to sit here lowered it to `[...arr]
+            // .join(sep)` — a JS ARRAY spelling. `join` on an enumerable
+            // receiver collides with LINQ's own `Join`, so declaring `Join` on
+            // the shared `IEnumerable` surface silently captured every
+            // `string.Join` in the language and returned an unjoined value.
+            // `char.ToUpper` was removed from this same block for the same
+            // collision.
             // `char.IsXxx` / `char.ToXxx` are NOT rewritten here. They are
             // `System.Char` statics, registered in the dotnet namespace tree,
             // and the shared resolver answers them — namespaceplan.md: walkers
@@ -20379,29 +20574,14 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     }
     if let ExprKind::Ident(name) = &callee.kind {
         if let Some((prefix, field)) = name.rsplit_once('.') {
-            if (prefix.eq_ignore_ascii_case("string")
-                || prefix.eq_ignore_ascii_case("System.String"))
-                && field.eq_ignore_ascii_case("Join")
-                && args.len() == 2
-            {
-                let sep = args[0].value.clone();
-                let arr = args[1].value.clone();
-                let materialized = Expression::new(ExprKind::Array(vec![ArrayElement {
-                    key: None,
-                    spread: true,
-                    by_ref: false,
-                    value: arr,
-                }]));
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(materialized),
-                        field: "join".to_string(),
-                        null_safe: false,
-                    })),
-                    args: vec![Argument::positional(sep)],
-                    optional: false,
-                });
-            }
+            // `string.Join` is NOT rewritten here either. This is the
+            // dotted-IDENT spelling of the same call the member path carries,
+            // and it had the same `[...arr].join(sep)` lowering — a JS array
+            // spelling that collides with LINQ's `Join` on the shared
+            // `IEnumerable` surface. The declared leaf (`Join/2` →
+            // `dotnet.string_join_sep_first`) answers both shapes with .NET
+            // semantics.
+            let _ = (prefix, field);
         }
     }
     Expression::new(ExprKind::Call {

@@ -42,6 +42,46 @@ const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
     ("float.MinValue", -3.4028235e38),
     ("char.MaxValue", 65535.0),
     ("char.MinValue", 0.0),
+    // ⛔ `Profile::lookup_constant` LOWERCASES the key for a case-insensitive
+    // language and looks the cased name up verbatim for a case-sensitive one.
+    // That is what the cased/lowercase duplicate pairs further down this table
+    // are for — the lowercase row serves VB, the cased row serves C#. Every
+    // limit above had only the C# spelling, so `Integer.MaxValue` and
+    // `Char.MaxValue` resolved to NOTHING in VB: the first rendered empty and
+    // the second trapped in `charCodeAt` under `AscW`.
+    //
+    // The rows below are the lowercase halves, plus the VB type names (`Integer`
+    // is Int32's VB alias, not a different type).
+    ("int.maxvalue", 2_147_483_647.0),
+    ("int.minvalue", -2_147_483_648.0),
+    ("integer.maxvalue", 2_147_483_647.0),
+    ("integer.minvalue", -2_147_483_648.0),
+    ("short.maxvalue", 32_767.0),
+    ("short.minvalue", -32_768.0),
+    ("int16.maxvalue", 32_767.0),
+    ("int16.minvalue", -32_768.0),
+    ("int32.maxvalue", 2_147_483_647.0),
+    ("int32.minvalue", -2_147_483_648.0),
+    ("byte.maxvalue", 255.0),
+    ("byte.minvalue", 0.0),
+    ("double.maxvalue", f64::MAX),
+    ("double.minvalue", -f64::MAX),
+    ("double.nan", f64::NAN),
+    ("double.positiveinfinity", f64::INFINITY),
+    ("double.negativeinfinity", f64::NEG_INFINITY),
+    ("float.maxvalue", 3.4028235e38),
+    ("float.minvalue", -3.4028235e38),
+    ("single.maxvalue", 3.4028235e38),
+    ("single.minvalue", -3.4028235e38),
+    // The CODE UNIT, not the one-character string .NET's `Char.MaxValue` really
+    // is — this table is f64-only, and every measured use is a limit comparison
+    // or an `AscW`.
+    ("char.maxvalue", 65535.0),
+    ("char.minvalue", 0.0),
+    // ⛔ `Long`/`ULong`/`Decimal` limits are deliberately ABSENT. Their maxima
+    // are not representable in f64: `Int64.MaxValue` would come back as
+    // ...808 rather than ...807. A missing constant is a loud failure; a
+    // silently-off-by-one one is not.
     ("commandtype.text", 1.0),
     ("CommandType.Text", 1.0),
     ("commandtype.storedprocedure", 4.0),
@@ -160,6 +200,20 @@ const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
         "System.Text.RegularExpressions.RegexOptions.CultureInvariant",
         512.0,
     ),
+    // `System.IO.SeekOrigin` — `Begin`/`Current`/`End`, the values
+    // `MemoryStream.Seek` branches on.
+    ("seekorigin.begin", 0.0),
+    ("SeekOrigin.Begin", 0.0),
+    ("system.io.seekorigin.begin", 0.0),
+    ("System.IO.SeekOrigin.Begin", 0.0),
+    ("seekorigin.current", 1.0),
+    ("SeekOrigin.Current", 1.0),
+    ("system.io.seekorigin.current", 1.0),
+    ("System.IO.SeekOrigin.Current", 1.0),
+    ("seekorigin.end", 2.0),
+    ("SeekOrigin.End", 2.0),
+    ("system.io.seekorigin.end", 2.0),
+    ("System.IO.SeekOrigin.End", 2.0),
 ];
 
 static KNOWN_TYPE_MAPPINGS: LazyLock<Vec<KnownTypeMapping>> = LazyLock::new(|| {

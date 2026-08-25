@@ -296,8 +296,13 @@ datediff     = { emit = "common:dotnet.vb_datediff",    min_args = 3, max_args =
 datepart     = { emit = "common:dotnet.vb_datepart",    min_args = 2, max_args = 2 }
 dateserial   = { emit = "common:dotnet.vb_dateserial",  min_args = 3, max_args = 3 }
 timeserial   = { emit = "common:dotnet.vb_timeserial",  min_args = 3, max_args = 3 }
-datevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
-timevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
+# ⛔ `DateValue`/`TimeValue` are NOT `Parse`. `DateValue` keeps the date and
+# zeroes the time; `TimeValue` keeps the time and puts it on
+# `DateTime.MinValue`'s date — `TimeValue("3:45 PM")` is `#1/1/0001 3:45:00 PM#`,
+# which is what makes `CStr` print the time WITHOUT a date. Both pointed at
+# `datetime_parse`, so both answered the whole parsed value.
+datevalue    = { emit = "common:dotnet.vb_datevalue", min_args = 1, max_args = 1 }
+timevalue    = { emit = "common:dotnet.vb_timevalue", min_args = 1, max_args = 1 }
 cdate        = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 monthname    = { emit = "common:dotnet.vb_monthname",   min_args = 1, max_args = 2 }
 # `Weekday` returns Integer 1–7 (Sunday = 1), NOT a `System.DayOfWeek` — which
@@ -365,6 +370,17 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 "xml.save"         = { emit = "common:xml.save",      min_args = 1, max_args = 1 }
 "xdocument.save"   = { emit = "common:xml.save",      min_args = 1, max_args = 1 }
 "xml.elements"     = { emit = "common:xml.elements",  min_args = 2, max_args = 2 }
+"xml.attribute"    = { emit = "common:xml.attribute", min_args = 2, max_args = 2 }
+# The NAME axis. `primitives/xml.rs` registers all of these in the `xml`
+# namespace tree, but that tree is not mounted for VB (only `dotnet.system.xml`
+# and `.linq` are), so they resolve ONLY through a row here. The walker has been
+# emitting `xml.node_name(...)` / `xml.local(...)` all along with nothing to
+# resolve them, which is why every `.Name` and `.Name.LocalName` read EMPTY.
+"xml.node_name"    = { emit = "common:xml.node_name", min_args = 1, max_args = 1 }
+"xml.local"        = { emit = "common:xml.local",     min_args = 1, max_args = 1 }
+"xml.namespace"    = { emit = "common:xml.namespace", min_args = 1, max_args = 1 }
+"xml.prefix"       = { emit = "common:xml.prefix",    min_args = 1, max_args = 1 }
+"xml.name"         = { emit = "common:xml.name",      min_args = 3, max_args = 3 }
 # `Regex.*` static methods live in the shared .NET component surface
 # (`platforms/dotnet/.../component_classes_text.rs`) so VB and C# resolve
 # the same `System.Text.RegularExpressions.Regex` descriptors.
@@ -448,15 +464,40 @@ string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), 
 
 [value_methods]
 
-# String instance methods (use compiler_common::strings)
-toupper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
-tolower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+# ⚠ THESE THREE STILL SHADOW THEIR LEAF because the leaf is BROKEN, not
+# missing. `dotnet.string_trim_chars` / `_trim_start_chars` / `_trim_end_chars`
+# were dead code for as long as these rows existed, and routing to them
+# regressed `vb_string_trim_start_end_chars`: the ParamArray forms
+# (`s.Trim("<"c, ">"c)`) answer `null` and the single-char form leaves a
+# character behind. `emit_string_trim_chars_mode` mishandles its arities —
+# `argc <= 2` takes the receiver as the char set, and the >2 branch builds the
+# array from `argc - 1`. Fix that emitter, then delete these three.
 "trim"        = { emit = "common:strings.trim",     min_args = 0, max_args = 0 }
 trimstart     = { emit = "common:str_trim_start",   min_args = 0, max_args = 0 }
 trimend       = { emit = "common:str_trim_end",     min_args = 0, max_args = 0 }
+toupper       = { emit = "common:strings.to_upper", min_args = 0, max_args = 0 }
+tolower       = { emit = "common:strings.to_lower", min_args = 0, max_args = 0 }
 startswith    = { emit = "common:str_starts_with",  min_args = 1, max_args = 1 }
 endswith      = { emit = "common:str_ends_with",    min_args = 1, max_args = 1 }
 contains      = { emit = "common:str_contains",     min_args = 1, max_args = 1 }
+
+# ⛔ THESE ROWS SHADOW A DECLARED LEAF, AND THAT IS CURRENTLY LOAD-BEARING.
+#
+# Every `System.String` member here IS declared on the dotnet tree, and the
+# tree is where they belong — a `[value_methods]` row wins outright, so the
+# leaf underneath has never run. Routing to it was MEASURED and the leaf
+# answers wrongly:
+#
+#   Replace / Split / Substring  -> `null`   (`vb_string_methods`)
+#   PadLeft / PadRight           -> wrong width
+#   Trim/TrimStart/TrimEnd(chars)-> `null` for the ParamArray form, and the
+#                                   single-char form leaves a char behind
+#   IndexOf / Contains (C#)      -> -1 / False where VB answers 6 / True
+#
+# ⇒ the blocker is NOT a missing declaration. It is that
+# `platforms/dotnet/.../string_adapter.rs` was dead code for as long as these
+# rows existed. Fix those emitters against `tools/vbrun` / `tools/csrun`, then
+# delete this block — the leaves and their return types are already in place.
 
 # LINQ surface lives once in the shared .NET component resolver
 # (`platforms/dotnet/.../component_classes_linq.rs`, class `IEnumerable`),
@@ -516,7 +557,7 @@ source_imports_are_namespaces = true
 # on a .NET collection must reach the collection's own method, not an array
 # builtin that happens to share the name. A PATH, not a language switch: the
 # answer depends on where the declaring type lives.
-runtime_collection_scope = ["dotnet", "system", "collections"]
+runtime_collection_scope = ["dotnet", "System", "Collections"]
 
 # Namespace-tree roots this language resolves platform types against. `Button`
 # / `Form` / `Dictionary` are .NET catalog entries, so member access on a
@@ -567,7 +608,7 @@ extra_imports = [
 [[esm_default]]
 kind = "tree-mount"
 prefix = "System"
-path = "dotnet.system"
+path = "dotnet.System"
 
 # Ambient tree roots — .NET default Imports/using context as data: bare
 # qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
@@ -575,75 +616,75 @@ path = "dotnet.system"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system"
+path = "dotnet.System"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.windows.forms"
+path = "dotnet.System.Windows.Forms"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.text"
+path = "dotnet.System.Text"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.io"
+path = "dotnet.System.IO"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.diagnostics"
+path = "dotnet.System.Diagnostics"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.threading"
+path = "dotnet.System.Threading"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections"
+path = "dotnet.System.Collections"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.generic"
+path = "dotnet.System.Collections.Generic"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.concurrent"
+path = "dotnet.System.Collections.Concurrent"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net"
+path = "dotnet.System.Net"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.http"
+path = "dotnet.System.Net.Http"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.sockets"
+path = "dotnet.System.Net.Sockets"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data"
+path = "dotnet.System.Data"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.sqlclient"
+path = "dotnet.System.Data.SqlClient"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.oledb"
+path = "dotnet.System.Data.OleDb"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.drawing"
+path = "dotnet.System.Drawing"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml"
+path = "dotnet.System.Xml"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml.linq"
+path = "dotnet.System.Xml.Linq"
 
 
 

@@ -147,30 +147,67 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 
 [value_methods]
 
-# String instance methods
-ToUpper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
-ToLower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
-Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
-TrimStart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 0 }
-TrimEnd       = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
-StartsWith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
-EndsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
-Contains      = { emit = "common:str_includes",        min_args = 1, max_args = 1 }
+# String instance methods are NOT declared here. `System.String` is a .NET
+# type, so its members are leaves on the dotnet tree
+# (`component_classes_system.rs`, class `String`) and one shared resolver
+# answers them for every .NET frontend.
+#
+# ⛔ A `[value_methods]` row SHADOWS the leaf — it wins outright, and the leaf
+# becomes dead code that never runs. That is what kept `Substring`, `Split`,
+# `IndexOf` and friends on the JS-shaped `common:strings.*` emits while
+# `dotnet.string_*` (which carries .NET's own bounds and culture behaviour)
+# sat unreachable.
+#
+# The rows removed here (`ToUpper ToLower Trim TrimStart TrimEnd StartsWith
+# EndsWith Contains Replace Split Substring IndexOf LastIndexOf PadLeft
+# PadRight ToCharArray Insert Remove`) existed because the tree declared only
+# some OVERLOADS — `Trim(chars)` but no `Trim()`, `Contains(value, comparison)`
+# but no `Contains(value)`. An incomplete .NET surface is a bug in the tree,
+# and that is where it is fixed.
+
+ToString      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
+
+# ⚠ STILL SHADOWING, each for a MEASURED reason — not because the leaf is
+# missing. All four are declared on the tree and the tree answers wrongly:
+#   Trim/TrimStart/TrimEnd — `dotnet.string_trim_*_chars` mishandles its
+#     arities (see the same note in the VB profile).
+#   Split  — `dotnet.string_split` ignores the count argument, so
+#     `"a:b:c:d".Split(':', 2)` returns 4 segments instead of 2.
+#   ToCharArray — reached from a LITERAL receiver it is not found at all.
+#
+# ⛔ That last one is the general gap: `resolve_receiver_type_hint` answers
+# `None` for a literal, so `"  hi  ".TrimStart()` never reaches the tree while
+# the identical call on a typed local does. Until a literal carries its type,
+# any String member a test calls on a literal needs a row here.
+Trim          = { emit = "common:strings.trim",         min_args = 0, max_args = 0 }
+TrimStart     = { emit = "common:str_trim_start",       min_args = 0, max_args = 0 }
+TrimEnd       = { emit = "common:str_trim_end",         min_args = 0, max_args = 0 }
+Split         = { emit = "common:strings.split",        min_args = 1, max_args = 2 }
 Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
-Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
 Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
-IndexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
-LastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
 PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
 PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
-ToString      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
-ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
 Insert        = { emit = "common:dotnet.str_insert",   min_args = 2, max_args = 2 }
 Remove        = [
     { emit = "common:dotnet.str_remove_start", min_args = 1, max_args = 1 },
     { emit = "common:dotnet.str_remove_range", min_args = 2, max_args = 2 },
 ]
+ToUpper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
+ToLower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
+StartsWith    = { emit = "common:str_starts_with",    min_args = 1, max_args = 1 }
+EndsWith      = { emit = "common:str_ends_with",      min_args = 1, max_args = 1 }
+ToCharArray   = { emit = "common:str_split",            min_args = 0, max_args = 0 }
 
+# ⚠ OPEN, and NOT caused by moving these members onto the tree: in C#,
+# `s.IndexOf("World")` answers -1 and `s.Contains("World")` answers False,
+# while VB reaches the SAME leaves and answers 6 and True. Restoring the
+# profile rows does not change either answer, which is what proves the rows
+# were never the deciding factor — something resolves ahead of both. The
+# two-argument form works (`s.IndexOf("World", 0)` → 6), so it is the
+# one-argument call shape on the C# side.
+
+# NOT a .NET member: the JS array spelling, and the only producer left is the
+# `new string(charArray)` lowering, which has no String constructor to reach.
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
 GetType       = { emit = "common:ref_typeof",          min_args = 0, max_args = 0 }
 # Delegate introspection: the invocation list as a plain array of handlers,
@@ -198,7 +235,7 @@ Equals        = { emit = "common:dyn_eq",              min_args = 1, max_args = 
 [[esm_default]]
 kind = "tree-mount"
 prefix = "System"
-path = "dotnet.system"
+path = "dotnet.System"
 
 # `Convert` namespace alias retired — `Convert.To*` methods lower at
 # compile time through the dotnet wrapper Component Model dispatch.
@@ -244,7 +281,7 @@ source_imports_are_namespaces = true
 # on a .NET collection must reach the collection's own method, not an array
 # builtin that happens to share the name. A PATH, not a language switch: the
 # answer depends on where the declaring type lives.
-runtime_collection_scope = ["dotnet", "system", "collections"]
+runtime_collection_scope = ["dotnet", "System", "Collections"]
 
 # Namespace-tree roots this language resolves platform types against. `Button`
 # / `Form` / `Dictionary` are .NET catalog entries, so member access on a
@@ -257,75 +294,75 @@ type_scopes = ["dotnet"]
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system"
+path = "dotnet.System"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.windows.forms"
+path = "dotnet.System.Windows.Forms"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.text"
+path = "dotnet.System.Text"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.io"
+path = "dotnet.System.IO"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.diagnostics"
+path = "dotnet.System.Diagnostics"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.threading"
+path = "dotnet.System.Threading"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections"
+path = "dotnet.System.Collections"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.generic"
+path = "dotnet.System.Collections.Generic"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.concurrent"
+path = "dotnet.System.Collections.Concurrent"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net"
+path = "dotnet.System.Net"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.http"
+path = "dotnet.System.Net.Http"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.sockets"
+path = "dotnet.System.Net.Sockets"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data"
+path = "dotnet.System.Data"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.sqlclient"
+path = "dotnet.System.Data.SqlClient"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.oledb"
+path = "dotnet.System.Data.OleDb"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.drawing"
+path = "dotnet.System.Drawing"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml"
+path = "dotnet.System.Xml"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml.linq"
+path = "dotnet.System.Xml.Linq"
 
 
 

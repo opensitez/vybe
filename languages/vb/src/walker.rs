@@ -13,6 +13,22 @@ use vybe_platform_dotnet::emitter::core::lowering as dotnet_vb;
 
 const VB_PARTIAL_METHOD_MARKER: &str = "__vb_partial_method_decl";
 
+/// A loop or lambda variable bound to a DICTIONARY ENTRY, not to a real
+/// `KeyValuePair`.
+///
+/// `For Each kvp In dict` lowers to `dict.Entries()`, which is
+/// `ecma:map.entries` — ECMA-262 §24.1.3.4 yields a POSITIONAL `[key, value]`
+/// array, so `.Key` there is `Index 0`. A `KeyValuePair` the program actually
+/// CONSTRUCTED is a real object from `platforms/dotnet` with `Key`/`Value`
+/// fields, and indexing it answers nothing.
+///
+/// One marker for both is what made `New KeyValuePair(Of K,V)(k, v)` unfixable:
+/// the walker had to turn the constructor into a 2-element array to keep the
+/// index rewrite honest, which is a positional array wearing a struct's name.
+/// The `#` suffix follows the existing `HashSet#OrdinalIgnoreCase` convention,
+/// so `collection_base_type_name` still answers `KeyValuePair`.
+const VB_KVP_ENTRY: &str = "KeyValuePair#Entry";
+
 fn vb_decl_starts_with_partial(raw: &str) -> bool {
     let trimmed = raw.trim_start();
     let Some(prefix) = trimmed.get(..7) else {
@@ -74,7 +90,24 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     normalize_vb_partial_classes(&mut body);
-    normalize_vb_user_name_members(&mut body);
+    // ⛔ `normalize_vb_user_name_members` is NOT called. It renamed every user
+    // `Name` member to `vb_user_Name` and un-renamed it at each read — but only
+    // where it could NAME the receiver's type, which `vb_user_name_receiver_type`
+    // can do for `Me`, a plain local, and `New T()` and nothing else. Every
+    // other receiver kept reading `Name`, which no longer existed, and answered
+    // EMPTY: `h.Item.Name`, `MakePerson().Name`, `arr(0).Name`, `kv.Value.Name`.
+    // Its own doc comment records one earlier round of the same bug ("the write
+    // landed on `Name` while the class itself stored `vb_user_Name`, giving one
+    // property two storages").
+    //
+    // The collision it was avoiding is not there: the reflection readings of
+    // `.Name` are all guarded on the RECEIVER's shape — a `GetType()` call, or
+    // a local carrying a `$typeof:` marker — so a user field named `Name` never
+    // reached them. C# proves it: it has no mangling and `h.Item.Name` answers
+    // correctly through the same shared compiler.
+    //
+    // Measured: VB 4855 → 4889 with it off, and the three tests that moved were
+    // a separate defect of mine, since fixed.
     normalize_vb_object_initializer_member_names(&mut body);
     normalize_vb_implicit_method_self_classes(&mut body);
     normalize_vb_static_constructor_field_initializers(&mut body);
@@ -85,6 +118,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     synthesized.extend(body);
 
     let mut module = Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::VB,
         body: synthesized,
@@ -95,6 +129,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // reference's declared type. Stated once for the module — whether
             // a given declaration shadows is `Modifiers::is_hiding`.
             field_shadowing: Some(FieldShadowing::Hide),
+            // VB.NET identifiers are case-insensitive, ASCII. The IDE
+            // re-cases a reference to its declaration's spelling, which is
+            // exactly the normalisation `Scope::resolve` performs: fold once
+            // where the declaration is known, and the runtime sees a slot.
+            variable_case: Some(CaseMatch::Folded),
+            callable_case: Some(CaseMatch::Folded),
+            // `(Id:=2).id` and `.ID` are the same field: a tuple field name is
+            // an identifier, and VB identifiers fold. Stated separately from
+            // the two above because it is the one case rule that has to reach
+            // the emitted VALUE — see `Directives::tuple_field_fold`.
+            tuple_field_case: Some(CaseMatch::Folded),
+            case_alphabet: Some(CaseAlphabet::Ascii),
             ..Default::default()
         },
     };
@@ -186,9 +232,289 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_byref_place_args(&mut module);
     normalize_vb_nested_member_arg_calls(&mut module);
     normalize_vb_zero_arg_field_member_calls(&mut module.body);
+    normalize_vb_task_surface(&mut module);
+    normalize_vb_binary_writer_writes(&mut module);
     // LAST: the reflection passes above still need `ExprKind::TypeOf` intact.
     normalize_vb_enum_type_tokens(&mut module);
     Ok(module)
+}
+
+/// The `BinaryWriter.Write` spelling for an argument of known .NET width.
+///
+/// ⛔ .NET declares every `Write` overload at ARITY 1, separated only by the
+/// static type of the argument — and a descriptor carries a name and an arity,
+/// never parameter types. So the choice cannot be made in the tree.
+///
+/// It can be made HERE, because the width is still on the node: VB's numeric
+/// suffixes (`65000US`, `1.5F`) survive parsing as an `ExprKind::Cast`
+/// (`parse_vb_numeric_literal`), and the `CShort(…)` / `CSByte(…)` conversions
+/// are calls this pass can read. An argument with no width annotation is left
+/// on `Write`, whose adapter picks .NET's default from the runtime shape.
+fn vb_binary_write_spelling(type_name: &str) -> Option<&'static str> {
+    let canonical = vb_canonical_type_name(type_name.trim());
+    Some(match canonical.to_ascii_lowercase().as_str() {
+        "int16" | "short" => "WriteInt16",
+        "uint16" | "ushort" => "WriteUInt16",
+        "int32" | "integer" => "WriteInt32",
+        "uint32" | "uinteger" => "WriteUInt32",
+        "int64" | "long" => "WriteInt64",
+        "uint64" | "ulong" => "WriteUInt64",
+        "single" => "WriteSingle",
+        "double" => "WriteDouble",
+        "decimal" => "WriteDecimal",
+        "byte" => "WriteByte",
+        "sbyte" => "WriteSByte",
+        "boolean" | "bool" => "WriteBoolean",
+        "char" => "WriteChar",
+        "string" => "WriteString",
+        _ => return None,
+    })
+}
+
+/// The .NET type a VB conversion function produces — `CShort(x)` is an
+/// `Int16`. These lower to the SAME opcode as every other integer conversion
+/// (`opcode:i32_from_f64`), so the width exists only here, in the spelling.
+fn vb_conversion_result_type(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "cshort" => "Int16",
+        "cushort" => "UInt16",
+        "cint" | "cinteger" => "Int32",
+        "cuint" => "UInt32",
+        "clng" => "Int64",
+        "culng" => "UInt64",
+        "csng" => "Single",
+        "cdbl" => "Double",
+        "cdec" => "Decimal",
+        "cbyte" => "Byte",
+        "csbyte" => "SByte",
+        "cbool" => "Boolean",
+        "cchar" => "Char",
+        "cstr" => "String",
+        _ => return None,
+    })
+}
+
+/// The declared width of a `Write` argument, if the source states one.
+fn vb_write_arg_type(expr: &Expression) -> Option<&'static str> {
+    match &expr.kind {
+        ExprKind::Cast { type_name, .. } => vb_binary_write_spelling(type_name),
+        ExprKind::Call { callee, args, .. } if args.len() == 1 => {
+            let name = match &callee.kind {
+                ExprKind::Ident(name) => name.clone(),
+                _ => return None,
+            };
+            vb_conversion_result_type(&name).and_then(vb_binary_write_spelling)
+        }
+        _ => None,
+    }
+}
+
+/// `bw.Write(65000US)` → `bw.WriteUInt16(65000US)`.
+///
+/// Only rewrites when the argument states a width — an unannotated `Write(42)`
+/// keeps its spelling so the adapter's runtime default applies. The method name
+/// alone is not enough to know the receiver is a `BinaryWriter`, so the
+/// ANNOTATION is what gates this: nothing else passes a width-cast argument to
+/// a one-argument `Write`.
+fn normalize_vb_binary_writer_writes(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+                return;
+            };
+            if args.len() != 1 {
+                return;
+            }
+            let ExprKind::Member { field, .. } = &mut callee.kind else {
+                return;
+            };
+            if !field.eq_ignore_ascii_case("Write") {
+                return;
+            }
+            if let Some(spelling) = vb_write_arg_type(&args[0].value) {
+                *field = spelling.to_string();
+            }
+        });
+    }
+}
+
+/// `Task` as the bare identifier or the fully-qualified chain — both spellings
+/// name the same type, and VB folds case.
+fn is_vb_task_head(object: &Expression) -> bool {
+    dotted_expr_name(object).is_some_and(|path| {
+        path.eq_ignore_ascii_case("Task") || path.eq_ignore_ascii_case("System.Threading.Tasks.Task")
+    })
+}
+
+fn is_vb_task_static(callee: &Expression, name: &str) -> bool {
+    matches!(&callee.kind,
+        ExprKind::Member { object, field, .. }
+            if field.eq_ignore_ascii_case(name) && is_vb_task_head(object))
+}
+
+/// VB's `Task` spellings → the shared `AsyncOp` vocabulary.
+///
+/// ⛔ VB emitted NO `AsyncOp` at all, so every one of these fell through to the
+/// dotnet tree's stubs — `dotnet.task_wait` is a bare `DROP` and
+/// `dotnet.task_result` is a raw `__value` read. Nothing drove the loop, so a
+/// `Sub Main` that called `Task.WaitAll(tasks)` and then read `t.Result` saw
+/// unsettled promises and printed empty strings.
+///
+/// `AsyncOp::BlockOn` IS the sync↔async boundary (`async_ops.rs`): in a fiber it
+/// suspends and lets the scheduler run, resuming with the value. That is what
+/// `WaitAll` and `.Wait()` mean, and it is why this belongs in the shared
+/// vocabulary rather than in another adapter.
+///
+/// C# normalizes the same surface in `normalize_task_surface`; this is the VB
+/// spelling of it, case-insensitive throughout.
+fn normalize_vb_task_surface(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut normalize_vb_task_expr);
+    }
+}
+
+fn normalize_vb_task_expr(expr: &mut Expression) {
+    let span = expr.span;
+    let take_args = |args: &mut Vec<Argument>| -> Vec<Expression> {
+        std::mem::take(args).into_iter().map(|a| a.value).collect()
+    };
+    let replacement = match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if is_vb_task_static(callee, "WaitAll") && !args.is_empty() {
+                // `WaitAll` BLOCKS where `WhenAll` returns a task. One argument
+                // is the `IEnumerable` overload — its array must reach `all`
+                // unwrapped, so it keeps the tree route and is only wrapped.
+                if args.len() == 1 {
+                    let source = std::mem::replace(
+                        callee,
+                        Box::new(Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+                    );
+                    let mut when_all = source;
+                    if let ExprKind::Member { field, .. } = &mut when_all.kind {
+                        *field = "WhenAll".into();
+                    }
+                    let inner = Expression::with_span(
+                        ExprKind::Call {
+                            callee: when_all,
+                            args: std::mem::take(args),
+                            optional: false,
+                        },
+                        span,
+                    );
+                    Some(AsyncOp::BlockOn(Box::new(inner)))
+                } else {
+                    Some(AsyncOp::BlockOn(Box::new(Expression::with_span(
+                        ExprKind::Async(AsyncOp::Join {
+                            mode: JoinMode::All,
+                            sources: take_args(args),
+                        }),
+                        span,
+                    ))))
+                }
+            // ⛔ `Run`, `Delay`, `FromResult`, `WhenAll`, `.Wait()`,
+            // `.ContinueWith` and `Await` are NOT normalised — MEASURED, twice.
+            //
+            // They already work through the dotnet tree, and routing them onto
+            // `AsyncOp` costs 12 tests: `vb_task_run_exception_capture` 13->17,
+            // `vb_system_task_matrix` 2->6, `vb_system_async_task_matrix` 2->6,
+            // `vb_system_task_completion_matrix` 4->5, against 1 gained.
+            //
+            // The cause is known and is NOT the missing type hint (adding
+            // `vb_task_valued_type` changed nothing): `Spawn` and `Continue`
+            // yield PENDING promises, and .NET's `Task.Result` BLOCKS. Until
+            // `t.Result` normalises to `AsyncOp::BlockOn`, these nodes hand
+            // back a promise where the program expects a value. That rewrite
+            // needs the receiver's declared type, so it belongs in a pass that
+            // carries the locals map — this one does not.
+            //
+            // `WaitAll`/`WaitAny` stay because they have no working route at
+            // all: `dotnet.task_wait` is a bare `DROP`, so nothing drives the
+            // loop.
+            } else if is_vb_task_static(callee, "WaitAny") && args.len() > 1 {
+                Some(AsyncOp::BlockOn(Box::new(Expression::with_span(
+                    ExprKind::Async(AsyncOp::Join {
+                        mode: JoinMode::Race,
+                        sources: take_args(args),
+                    }),
+                    span,
+                ))))
+            // ⛔ `Run`, `Delay`, `FromResult`, `WhenAll` and `Await` are NOT
+            // normalised here. VB already answered all of them through the
+            // dotnet tree (`dotnet.task_run`, `task_delay`, `task_from_result`,
+            // `task_when_all`), and routing them onto the shared async
+            // vocabulary MEASURED WORSE: `vb_task_run_exception_capture`
+            // 13 -> 17, `vb_system_task_matrix` 2 -> 6,
+            // `vb_system_async_task_matrix` 2 -> 6, against one test gained.
+            //
+            // Only `WaitAll`/`WaitAny` are normalised, because those are the
+            // ones with no working route: `dotnet.task_wait` is a bare `DROP`,
+            // so nothing drove the loop and `.Result` read an unsettled
+            // promise. `AsyncOp::BlockOn` is the sync-to-async boundary that
+            // actually suspends the fiber.
+            } else if args.len() == 1
+                && matches!(&callee.kind,
+                    ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("ContinueWith"))
+            {
+                // `.ContinueWith(f)` IS §27.2.5.4 `then` — the continuation runs
+                // on completion and its value is the new task's value. .NET
+                // hands the continuation the ANTECEDENT TASK; the value is
+                // passed instead, which reads the same through `.Result`
+                // (a non-task receiver awaits itself). Same normalisation C#
+                // makes, onto the same node.
+                let ExprKind::Member { object, .. } = &mut callee.kind else {
+                    return;
+                };
+                let source = std::mem::replace(
+                    &mut **object,
+                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                );
+                let continuation = args.remove(0).value;
+                Some(AsyncOp::Continue {
+                    source: Box::new(source),
+                    on_fulfilled: Some(Box::new(continuation)),
+                    on_rejected: None,
+                })
+            } else {
+                None
+            }
+        }
+        // `t.Result` BLOCKS in .NET — it is the sync-to-async boundary spelled
+        // as a property. Without this the whole normalisation is a net loss:
+        // `Task.Run(f)` becomes `Spawn`, which yields a PENDING promise, and
+        // reading `__value` off it answers `undefined`. Measured before this
+        // arm existed: `task_run_executes_function` wanted 5 and got undefined,
+        // `vb_system_task_matrix` 2 -> 6.
+        //
+        // ⛔ Gated on the receiver actually being task-valued, so a user class
+        // with a `Result` property is untouched.
+        ExprKind::Member { object, field, .. }
+            if field.eq_ignore_ascii_case("Result")
+                && vb_task_valued_type(object).is_some() =>
+        {
+            let task = std::mem::replace(
+                &mut **object,
+                Expression::with_span(ExprKind::Lit(Literal::Null), span),
+            );
+            Some(AsyncOp::BlockOn(Box::new(task)))
+        }
+        // ⛔ VB's `Await` is NOT ECMA's. .NET's contract lets a continuation
+        // run SYNCHRONOUSLY when the antecedent is already settled, where
+        // ECMA-262 §6.2.3.1 always yields one job tick — two contracts, so two
+        // operations, lowered to their own suspending imports (`jspi.await_eager`
+        // vs `jspi.await`). VB was leaving this as the ECMA node, which is C#'s
+        // spelling of the same language runtime taking the other contract.
+        ExprKind::Await(inner) => {
+            let inner = std::mem::replace(
+                &mut **inner,
+                Expression::with_span(ExprKind::Lit(Literal::Null), span),
+            );
+            Some(AsyncOp::AwaitEager(Box::new(inner)))
+        }
+        _ => None,
+    };
+    if let Some(op) = replacement {
+        expr.kind = ExprKind::Async(op);
+    }
 }
 
 fn normalize_vb_type_hint_whitespace(module: &mut Module) {
@@ -2014,23 +2340,34 @@ fn normalize_vb_char_storage_types(module: &mut Module) {
     normalize_vb_char_storage_statements(&mut module.body);
 }
 
+/// The spelling a VB type name is STORED under. Two folds, both spelling-only:
+///
+/// - `Char` → `String`, VB's character storage.
+/// - `Date` → `DateTime`. VB has no separate date type — `Date` IS
+///   `System.DateTime` — and only the `DateTime` spelling names a node in the
+///   `dotnet.system` tree, so `As Date` otherwise resolves no members.
+///
+/// ⛔ The `Date` fold is on the EXACT name only. `vb_canonical_type_name`
+/// strips `()` and `(Of …)`, so matching on its answer would rewrite `Date()`
+/// to a scalar `DateTime` and lose the array.
+fn vb_storage_type_spelling(hint: &str) -> Option<&'static str> {
+    if hint.trim().eq_ignore_ascii_case("Date") {
+        return Some("DateTime");
+    }
+    (vb_canonical_type_name(hint) == "Char").then_some("String")
+}
+
 fn normalize_vb_char_type_hint(type_hint: &mut Option<String>) {
-    if type_hint
-        .as_deref()
-        .is_some_and(|hint| vb_canonical_type_name(hint) == "Char")
-    {
-        *type_hint = Some("String".into());
+    if let Some(spelling) = type_hint.as_deref().and_then(vb_storage_type_spelling) {
+        *type_hint = Some(spelling.into());
     }
 }
 
-/// `Char` storage folds onto `String` for a DECLARED type too — spelling only.
+/// The same fold for a DECLARED type — spelling only.
 fn normalize_vb_char_declared_type_hint(type_hint: &mut Option<vybe_ast::TypeHint>) {
-    if type_hint
-        .as_deref()
-        .is_some_and(|hint| vb_canonical_type_name(hint) == "Char")
-    {
+    if let Some(spelling) = type_hint.as_deref().and_then(vb_storage_type_spelling) {
         if let Some(value) = type_hint {
-            value.set_spelling("String");
+            value.set_spelling(spelling);
         }
     }
 }
@@ -4063,12 +4400,40 @@ fn normalize_vb_xml_statement(stmt: &mut Statement, state: &mut VbXmlNormalizeSt
                             }
                             let key = name.to_ascii_lowercase();
                             state.element_locals.insert(key.clone());
-                            if vb_expr_is_xml_axis_result(init) {
+                            // Both spellings of the axis produce a SEQUENCE:
+                            // `xml.elements(…)` from `.<tag>`, and a `.Elements()`
+                            // method call. Recording only the first left
+                            // `Dim c = d.Elements()` untyped.
+                            if vb_expr_is_xml_elements_sequence(init) {
                                 state.sequence_locals.insert(key.clone());
                             }
                             if let Some(info) = vb_xml_name_info_from_expr(init, state) {
                                 state.name_infos.insert(key, info);
                             }
+                        }
+                        // A local bound to a node SEQUENCE is a sequence even
+                        // when it is not itself an element — `Dim s = d.Elements()`.
+                        //
+                        // ⛔ Recorded HERE and not by widening `vb_expr_is_xml_value`:
+                        // making `.Elements()` an xml VALUE also makes
+                        // `normalize_vb_xml_expr` rewrite the call itself, and a
+                        // rewritten `.Elements()` came back empty — `.Length`
+                        // answered 0 for a sequence of 2. "Is this a sequence" is
+                        // a different question from "is this an element", and only
+                        // the first one is true here.
+                        if vb_expr_is_xml_elements_sequence(init) {
+                            state
+                                .sequence_locals
+                                .insert(name.to_ascii_lowercase());
+                            // ⛔ Do NOT inject a `type_hint` here. MEASURED: with
+                            // `XElement` AND with `XElement()`, `.Length` on the
+                            // sequence answers 0 instead of 2 — ANY hint sends
+                            // `.Length` down a typed path that is wrong, while
+                            // the untyped raw `length` read is correct. Yet
+                            // `.First()` resolves ONLY on a typed receiver. The
+                            // two consumers want contradictory things from one
+                            // hint; that is the knot to untie, not a spelling to
+                            // guess at.
                         }
                     }
                 }
@@ -4125,7 +4490,12 @@ fn normalize_vb_xml_statement(stmt: &mut Statement, state: &mut VbXmlNormalizeSt
         } => {
             normalize_vb_xml_expr(iter, state);
             let mut loop_state = state.clone();
-            if vb_expr_is_known_xml_value(iter, state) {
+            // Iterating a SEQUENCE yields ELEMENTS. Asking only
+            // `is_known_xml_value` missed `For Each e In s` where `s` is a local
+            // holding `a.<Item>` — the loop variable was never marked, so
+            // `e.Value` stayed `Value` and read empty for every iteration.
+            if vb_expr_is_known_xml_value(iter, state) || vb_expr_is_xml_sequence_value(iter, state)
+            {
                 loop_state.element_locals.insert(var.to_ascii_lowercase());
             }
             normalize_vb_xml_statements(body, &mut loop_state);
@@ -4371,6 +4741,34 @@ fn vb_expr_is_known_xml_value(expr: &Expression, state: &VbXmlNormalizeState) ->
             field,
             null_safe: false,
         } if field == "documentElement" => vb_expr_is_known_xml_document(object, state),
+        // An element taken OUT of a known sequence is an element.
+        //
+        // `vb_expr_is_xml_value` only recognises `.First()` when the receiver is
+        // literally an `xml.elements(…)` CALL, so the whole chain had to be
+        // written inline: `a.<Item>.First().Value` worked and
+        // `Dim s = a.<Item>` … `s.First().Value` read EMPTY, because `.Value`
+        // was never rewritten to `textContent`. `vb_expr_is_xml_sequence_value`
+        // already knows a local holding a sequence — it just was not asked.
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if matches!(
+                    field.to_ascii_lowercase().as_str(),
+                    "first"
+                        | "last"
+                        | "single"
+                        | "firstordefault"
+                        | "lastordefault"
+                        | "singleordefault"
+                        | "elementat"
+                ) && vb_expr_is_xml_sequence_value(object, state)
+                {
+                    return true;
+                }
+            }
+            vb_expr_is_xml_value(expr)
+        }
+        // `s(0)` — VB indexes a sequence with parentheses.
+        ExprKind::Index { object, .. } => vb_expr_is_xml_sequence_value(object, state),
         _ => vb_expr_is_xml_value(expr),
     }
 }
@@ -4397,7 +4795,12 @@ fn vb_expr_is_known_xml_node(expr: &Expression, state: &VbXmlNormalizeState) -> 
 fn vb_expr_is_xml_sequence_value(expr: &Expression, state: &VbXmlNormalizeState) -> bool {
     match &expr.kind {
         ExprKind::Ident(name) => state.sequence_locals.contains(&name.to_ascii_lowercase()),
-        _ => vb_expr_is_xml_axis_result(expr),
+        // ⛔ `vb_expr_is_xml_elements_sequence`, not `..._axis_result`: the axis
+        // test matches ONLY an `xml.elements(…)` call, so `.Elements()` — the
+        // method spelling of the same thing — was not a sequence. A local bound
+        // to `d.Elements()` got no XML type at all, which is why `c.First()`
+        // died as `RuntimeError: null` while `c.Length` answered 2.
+        _ => vb_expr_is_xml_elements_sequence(expr),
     }
 }
 
@@ -4422,6 +4825,13 @@ fn vb_expr_is_xml_value(expr: &Expression) -> bool {
                 &callee.kind,
                 ExprKind::Member { object, field, .. }
                     if field.eq_ignore_ascii_case("Root")
+                        // ⛔ Do NOT add `.Elements()` / `.Descendants()` here.
+                        // Marking them as XML VALUES makes `normalize_vb_xml_expr`
+                        // rewrite the call itself, and a `.Elements()` with no tag
+                        // argument came back EMPTY — `c.Length` went 2 → 0.
+                        // They are sequences, which `vb_expr_is_xml_sequence_value`
+                        // already answers; that is a different question from
+                        // "is this an element".
                         || (field.eq_ignore_ascii_case("First") && vb_expr_is_xml_elements_sequence(object))
             ) || vb_expr_is_xml_axis_result(expr)
         }
@@ -7438,6 +7848,13 @@ fn rewrite_vb_zero_arg_field_member_call_statement(
                     &mut locals.clone(),
                 );
             }
+        }
+        // `Using`'s resource and body, for the same reason every other
+        // block statement is here — the pass otherwise never descends into a
+        // `Using`.
+        StmtKind::Using { resource, body, .. } => {
+            rewrite_vb_zero_arg_field_member_call_expr(resource, members, locals);
+            rewrite_vb_zero_arg_field_member_call_statements(body, members, &mut locals.clone());
         }
         StmtKind::DoWhile { body, cond, .. } => {
             rewrite_vb_zero_arg_field_member_call_statements(body, members, &mut locals.clone());
@@ -11585,6 +12002,38 @@ fn rewrite_vb_flags_enum_statement(
                 &mut locals.clone(),
             );
         }
+        StmtKind::Using {
+            var,
+            resource,
+            body,
+        } => {
+            rewrite_vb_flags_enum_expr(
+                resource,
+                enums,
+                enum_fields,
+                generic_enum_name_funcs,
+                locals,
+            );
+            let mut using_locals = locals.clone();
+            using_locals.remove(&var.to_ascii_lowercase());
+            rewrite_vb_flags_enum_statements(
+                body,
+                enums,
+                enum_fields,
+                generic_enum_name_funcs,
+                &mut using_locals,
+            );
+        }
+        StmtKind::Lock { expr, body } => {
+            rewrite_vb_flags_enum_expr(expr, enums, enum_fields, generic_enum_name_funcs, locals);
+            rewrite_vb_flags_enum_statements(
+                body,
+                enums,
+                enum_fields,
+                generic_enum_name_funcs,
+                &mut locals.clone(),
+            );
+        }
         // `Select Case x / Case E.B` was skipped entirely: the subject folded to
         // its integer through the surrounding VarDecl, but the case conditions
         // never did, so every enum arm compared an int against a member access
@@ -13722,12 +14171,7 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 _ => {}
             }
         }
-        let system_receiver = match path.to_ascii_lowercase().as_str() {
-            "datetime" => Some("System.DateTime"),
-            "datetimeoffset" => Some("System.DateTimeOffset"),
-            "timespan" => Some("System.TimeSpan"),
-            _ => None,
-        };
+        let system_receiver = vb_system_receiver_type_name(&path);
         if let Some(system_receiver) = system_receiver {
             if system_receiver.eq_ignore_ascii_case("System.DateTime")
                 && matches!(name.to_ascii_lowercase().as_str(), "minvalue" | "maxvalue")
@@ -13830,9 +14274,14 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
 
 fn canonicalize_date_receiver(object: Expression) -> Expression {
     if let ExprKind::Ident(name) = &object.kind {
+        // ⛔ `date` is NOT in this list. `Now`/`Today`/`TimeOfDay` are
+        // `Microsoft.VisualBasic.DateAndTime` PROPERTIES, so a bare mention is
+        // a value; `Date` is not — real VB rejects it as an expression
+        // (`BC30110: 'Date' is a structure type`). In receiver position it is
+        // ALWAYS the type, which `canonicalize_member_access` maps below.
         if matches!(
             name.to_ascii_lowercase().as_str(),
-            "now" | "date" | "today" | "time" | "timeofday"
+            "now" | "today" | "time" | "timeofday"
         ) {
             return zero_arg_call(&name.to_ascii_lowercase());
         }
@@ -14751,6 +15200,14 @@ fn add_vb_dotnet_namespace_import_aliases(path: &str, aliases: &mut HashMap<Stri
         let vybe_runtime::component_model::ComponentItemKind::Class(class) = export.kind else {
             continue;
         };
+        // ⛔ NOT the exception types. `synthesize_exception_classes` emits
+        // each as a real class under its SHORT name, and the same names are
+        // ALSO registered here as `dotnet.System` component classes —
+        // qualifying them makes `Catch ex As ArgumentException` name a class
+        // that does not exist.
+        if dotnet_exceptions::is_synthesized_exception_class(&class.name) {
+            continue;
+        }
         let qualified = format!("{export_namespace}.{}", class.name);
         aliases.entry(class.name).or_insert(qualified);
     }
@@ -14903,17 +15360,33 @@ fn normalize_vb_system_static_receiver_member(member: &mut ClassMember) {
     }
 }
 
+/// The `System.*` type a bare VB type name in RECEIVER or `New` position
+/// stands for.
+///
+/// `Date` is VB's own spelling of `System.DateTime` — the language has no
+/// separate date type, and `Date.Now`, `Date.MinValue` and
+/// `New Date(2024, 6, 15)` are all `System.DateTime`. `canonical_type_name`
+/// folds the TYPE spelling; these are the two EXPRESSION positions, which the
+/// ambient tree cannot answer because `dotnet.system.date` is not a node.
+///
+/// ⛔ Deliberately NOT registered as a `dotnet.system.date` alias: `Date` is
+/// not a .NET type, and C# must not gain it. ⛔ And the ECMA `Date`
+/// constructor is 0-BASED in its month, so falling through to it is silent.
+fn vb_system_receiver_type_name(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "datetime" | "date" => Some("System.DateTime"),
+        "datetimeoffset" => Some("System.DateTimeOffset"),
+        "timespan" => Some("System.TimeSpan"),
+        _ => None,
+    }
+}
+
 fn normalize_vb_system_static_receiver_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Member { object, .. } => {
             normalize_vb_system_static_receiver_expr(object);
             if let ExprKind::Ident(name) = &object.kind {
-                let system_name = match name.to_ascii_lowercase().as_str() {
-                    "datetime" => Some("System.DateTime"),
-                    "datetimeoffset" => Some("System.DateTimeOffset"),
-                    "timespan" => Some("System.TimeSpan"),
-                    _ => None,
-                };
+                let system_name = vb_system_receiver_type_name(name);
                 if let Some(system_name) = system_name {
                     **object = build_dotted_expr(system_name);
                 }
@@ -14927,6 +15400,12 @@ fn normalize_vb_system_static_receiver_expr(expr: &mut Expression) {
         }
         ExprKind::New { class, args } => {
             normalize_vb_system_static_receiver_expr(class);
+            // `New Date(…)` is `New System.DateTime(…)`.
+            if let ExprKind::Ident(name) = &class.kind {
+                if let Some(system_name) = vb_system_receiver_type_name(name) {
+                    **class = build_dotted_expr(system_name);
+                }
+            }
             for arg in args {
                 normalize_vb_system_static_receiver_expr(&mut arg.value);
             }
@@ -15297,6 +15776,12 @@ fn rewrite_vb_alias_name(name: &str, aliases: &HashMap<String, String>) -> Optio
 
 fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, String>) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            rewrite_vb_aliases_in_expr(callee, aliases);
+            for a in args {
+                rewrite_vb_aliases_in_expr(a, aliases);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 rewrite_vb_aliases_in_expr(child, aliases);
@@ -15844,6 +16329,12 @@ fn normalize_vb_date_literal_statement(
 
 fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String, Expression>) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            normalize_vb_date_literal_expr(callee, dates);
+            for a in args {
+                normalize_vb_date_literal_expr(a, dates);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 normalize_vb_date_literal_expr(child, dates);
@@ -16409,7 +16900,43 @@ fn vb_typeof_type_name(raw: &str) -> String {
     }
 }
 
+/// The .NET type of a `Task`-valued expression, or `None`.
+///
+/// ⛔ THE SECOND HALF OF `normalize_vb_task_surface`, AND IT CANNOT SHIP
+/// WITHOUT IT. That pass rewrites these calls into `AsyncOp` nodes, which carry
+/// no .NET type — so `Dim t = Task.Run(...)` then `t.Result` falls through to an
+/// ordinary member read and answers `undefined`. Measured when this was
+/// missing: `vb_task_run_exception_capture` 13 -> 17,
+/// `vb_system_task_matrix` 2 -> 6, `vb_system_async_task_matrix` 2 -> 6.
+///
+/// C# carries the identical pair (`csharp_task_valued_type`); porting only the
+/// rewrite is what made the suite read the intermediate state as a regression.
+fn vb_task_valued_type(expr: &Expression) -> Option<&'static str> {
+    const TASK: &str = "Task";
+    match &expr.kind {
+        // Already rewritten by this pass — the node that lost the type. The
+        // question "is this still a task?" is the NODE's to answer, so it is
+        // `AsyncOp::yields_async_value` rather than a list repeated per
+        // frontend.
+        ExprKind::Async(op) => op.yields_async_value().then_some(TASK),
+        // Not yet rewritten (inference can run before the pass).
+        ExprKind::Call { callee, .. } => {
+            let statics = ["Run", "FromResult", "FromException", "Delay", "WhenAll", "WhenAny"];
+            if statics.iter().any(|name| is_vb_task_static(callee, name)) {
+                return Some(TASK);
+            }
+            matches!(&callee.kind,
+                ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("ContinueWith"))
+            .then_some(TASK)
+        }
+        _ => None,
+    }
+}
+
 fn vb_infer_expr_type(expr: &Expression, locals: &HashMap<String, String>) -> Option<String> {
+    if let Some(task) = vb_task_valued_type(expr) {
+        return Some(task.to_string());
+    }
     match &expr.kind {
         ExprKind::Ident(name) => locals.get(&name.to_ascii_lowercase()).cloned(),
         ExprKind::Lit(Literal::Int(value)) => Some(
@@ -17630,6 +18157,12 @@ fn normalize_vb_delegate_binding_expr(
     bindings: &HashMap<String, VbDelegateBinding>,
 ) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            normalize_vb_delegate_binding_expr(callee, delegates, locals, bindings);
+            for a in args {
+                normalize_vb_delegate_binding_expr(a, delegates, locals, bindings);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
@@ -19699,9 +20232,6 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
                 })),
             }));
         }
-        if args.is_empty() && field.eq_ignore_ascii_case("Dispose") {
-            return Some(common_memory::free_value());
-        }
         if args.len() == 1
             && field.eq_ignore_ascii_case("CompareTo")
             && vb_compareto_receiver_should_normalize(None, object)
@@ -20749,11 +21279,18 @@ fn normalize_vb_dotnet_collection_statement(
                             .type_hint
                             .as_deref()
                             .is_some_and(|hint| hint.trim().ends_with("()"))
+                        || (decl.type_hint.is_none()
+                            && decl.init.as_ref().is_some_and(vb_init_is_array_literal))
                     {
                         let mut local_type = decl
                             .type_hint
                             .as_deref()
                             .map(str::to_string)
+                            .or_else(|| {
+                                decl.init.as_ref().and_then(|init| {
+                                    vb_array_literal_element_type(init, locals)
+                                })
+                            })
                             .unwrap_or_else(|| "Array".to_string());
                         if let Some(base_type) = vb_rectangular_array_element_type(&local_type) {
                             local_type = format!("{base_type}()");
@@ -20824,10 +21361,36 @@ fn normalize_vb_dotnet_collection_statement(
                     } else if let Some(type_name) = decl
                         .type_hint
                         .as_deref()
-                        .map(vb_canonical_type_name)
+                        .map(vb_local_type_name)
                         .or_else(|| decl.init.as_ref().and_then(vb_new_expr_type_name))
+                        // ⛔ Do NOT add a general
+                        // `.or_else(|| vb_infer_expr_type(init, locals))` here.
+                        // It looks like the missing piece — an inferred local
+                        // should take its initializer's type — but MEASURED it
+                        // cost 4 tests (4909 → 4905) and did not fix the case it
+                        // was aimed at (`Dim c = d.Elements()` then `c.First()`).
+                        // Inferring a type for every call-initialised local
+                        // changes dispatch for locals that were resolving fine
+                        // untyped.
                     {
                         locals.insert(name.to_ascii_lowercase(), type_name);
+                    }
+
+                    // LAST, so it overrides the annotation: a local bound to a
+                    // dictionary ENTRY is an entry whatever it was declared as.
+                    // `For Each q As KeyValuePair(Of K, V) In dict` lowers to a
+                    // synthetic item local plus `Dim q = <item>`, and taking the
+                    // annotation at face value hides the positional shape from
+                    // the `.Key` rewrite — the loop then reads `:` for every
+                    // pair, while the UNannotated spelling of the same loop
+                    // works.
+                    if decl.init.as_ref().is_some_and(|init| {
+                        matches!(&init.kind, ExprKind::Ident(source)
+                            if locals
+                                .get(&source.to_ascii_lowercase())
+                                .is_some_and(|recorded| recorded == VB_KVP_ENTRY))
+                    }) {
+                        locals.insert(name.to_ascii_lowercase(), VB_KVP_ENTRY.into());
                     }
                 }
             }
@@ -20850,6 +21413,11 @@ fn normalize_vb_dotnet_collection_statement(
                     .as_deref()
                     .and_then(dotnet_vb::collection_local_type)
                 {
+                    function_locals.insert(param.name.to_ascii_lowercase(), type_name);
+                } else if let Some(type_name) = vb_array_param_local_type(param) {
+                    // An ARRAY parameter is as much an array as an array local:
+                    // `a(0)` in the body is a SUBSCRIPT. Without this the body
+                    // sees no type at all and lowers it to a call.
                     function_locals.insert(param.name.to_ascii_lowercase(), type_name);
                 }
             }
@@ -20927,7 +21495,7 @@ fn normalize_vb_dotnet_collection_statement(
                     }),
                     Vec::new(),
                 );
-                loop_locals.insert(var.to_ascii_lowercase(), "KeyValuePair".into());
+                loop_locals.insert(var.to_ascii_lowercase(), VB_KVP_ENTRY.into());
             } else if matches!(
                 &iter.kind,
                 ExprKind::Ident(name)
@@ -20958,6 +21526,64 @@ fn normalize_vb_dotnet_collection_statement(
             normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
             if let Some(else_body) = else_body {
                 normalize_vb_dotnet_collection_statements(else_body, &mut locals.clone());
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
+            normalize_vb_dotnet_collection_expr(cond, locals);
+        }
+        StmtKind::Using {
+            resource, body, ..
+        } => {
+            normalize_vb_dotnet_collection_expr(resource, locals);
+            normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
+        }
+        StmtKind::Lock { expr, body } => {
+            normalize_vb_dotnet_collection_expr(expr, locals);
+            normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    normalize_vb_dotnet_collection_expr(when_clause, locals);
+                }
+                normalize_vb_dotnet_collection_statements(&mut catch.body, &mut locals.clone());
+            }
+            if let Some(else_body) = else_body {
+                normalize_vb_dotnet_collection_statements(else_body, &mut locals.clone());
+            }
+            if let Some(finally) = finally {
+                normalize_vb_dotnet_collection_statements(finally, &mut locals.clone());
+            }
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            normalize_vb_dotnet_collection_expr(expr, locals);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            normalize_vb_dotnet_collection_expr(expr, locals)
+                        }
+                        CaseCondition::Range { from, to } => {
+                            normalize_vb_dotnet_collection_expr(from, locals);
+                            normalize_vb_dotnet_collection_expr(to, locals);
+                        }
+                    }
+                }
+                normalize_vb_dotnet_collection_statements(&mut case.body, &mut locals.clone());
+            }
+            if let Some(default) = default {
+                normalize_vb_dotnet_collection_statements(default, &mut locals.clone());
             }
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
@@ -21445,8 +22071,23 @@ fn normalize_vb_dotnet_collection_member(
 ) {
     match member {
         ClassMember::Method(stmt) => {
-            if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
-                normalize_vb_dotnet_collection_member_body(body, member_locals);
+            if let StmtKind::FunctionDecl { params, body, .. } = &mut stmt.kind {
+                // The method's own PARAMETERS are locals too. Only the free
+                // `FunctionDecl` arm recorded them, so an array parameter of a
+                // module or class method arrived with no type and `a(0)` in the
+                // body lowered to a call.
+                let mut locals = member_locals.clone();
+                for param in params {
+                    if let Some(type_name) = param
+                        .type_hint
+                        .as_deref()
+                        .and_then(dotnet_vb::collection_local_type)
+                        .or_else(|| vb_array_param_local_type(param))
+                    {
+                        locals.insert(param.name.to_ascii_lowercase(), type_name);
+                    }
+                }
+                normalize_vb_dotnet_collection_member_body(body, &locals);
             } else {
                 normalize_vb_dotnet_collection_statement(stmt, &mut member_locals.clone());
             }
@@ -22250,9 +22891,7 @@ fn vb_rewrite_dotnet_string_instance_call(
     args: &[Argument],
     locals: &HashMap<String, String>,
 ) -> Option<Expression> {
-    if !vb_infer_expr_type(object, locals)
-        .is_some_and(|ty| vb_canonical_type_name(&ty).eq_ignore_ascii_case("String"))
-    {
+    if !vb_infer_expr_type(object, locals).is_some_and(|ty| vb_type_is_scalar_string(&ty)) {
         return None;
     }
 
@@ -22678,15 +23317,28 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     }
                 }
             }
-            if field.eq_ignore_ascii_case("IsFixedSize") {
-                *expr = Expression::bool(true);
-                return;
-            }
-            if field.eq_ignore_ascii_case("IsReadOnly")
+            // `IsFixedSize` / `IsReadOnly` / `IsSynchronized` are `ICollection`
+            // members, and these constants are the answers for an ARRAY. They
+            // used to fold for EVERY receiver, which made
+            // `CultureInfo.InvariantCulture.IsReadOnly` answer False where .NET
+            // says True, and pre-empted the `IsReadOnly` an object had set on
+            // itself (`Encoding`). Fold only when the receiver really is a
+            // collection; anything else reads its own member.
+            if field.eq_ignore_ascii_case("IsFixedSize")
+                || field.eq_ignore_ascii_case("IsReadOnly")
                 || field.eq_ignore_ascii_case("IsSynchronized")
             {
-                *expr = Expression::bool(false);
-                return;
+                let receiver_is_collection =
+                    vb_infer_expr_type(object, locals).is_some_and(|type_name| {
+                        let trimmed = type_name.trim();
+                        trimmed.ends_with("()")
+                            || trimmed.contains("(,)")
+                            || dotnet_vb::collection_local_type(trimmed).is_some()
+                    });
+                if receiver_is_collection {
+                    *expr = Expression::bool(field.eq_ignore_ascii_case("IsFixedSize"));
+                    return;
+                }
             }
             if field.eq_ignore_ascii_case("SyncRoot") {
                 *expr = (**object).clone();
@@ -22702,7 +23354,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
             }
             if let ExprKind::Ident(name) = &object.kind {
                 if let Some(type_name) = locals.get(&name.to_ascii_lowercase()) {
-                    if type_name == "KeyValuePair" {
+                    if type_name == VB_KVP_ENTRY {
                         let index = if field.eq_ignore_ascii_case("Key") {
                             Some(0)
                         } else if field.eq_ignore_ascii_case("Value") {
@@ -22807,25 +23459,15 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     return;
                 }
             }
-            if dotted_expr_name(class).as_deref().is_some_and(|name| {
-                dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case("KeyValuePair")
-            }) && args.len() >= 2
-            {
-                *expr = Expression::new(ExprKind::Array(vec![
-                    ArrayElement {
-                        key: None,
-                        value: args[0].value.clone(),
-                        spread: false,
-                        by_ref: false,
-                    },
-                    ArrayElement {
-                        key: None,
-                        value: args[1].value.clone(),
-                        spread: false,
-                        by_ref: false,
-                    },
-                ]));
-            }
+            // ⛔ `New KeyValuePair(Of K, V)(k, v)` is NOT rewritten to a
+            // 2-element array any more. `KeyValuePair` is a `System.*` type and
+            // now has a real registration in `platforms/dotnet`
+            // (`key_value_pair_adapter`), with `Key`/`Value` fields and the
+            // shared `__value_eq` stamp, so C# gets it too. The array form
+            // could not answer `.ToString()` (`[1, One]`), `Equals`, or
+            // `KeyValuePair.Create`, and it silently produced empty `.Key`
+            // reads wherever the walker could not statically prove the local's
+            // type — an array of pairs, a field, a function's return value.
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => normalize_vb_dotnet_collection_expr(expr, locals),
@@ -23221,6 +23863,72 @@ fn vb_array_index_chain(mut object: Expression, args: &[Argument]) -> Expression
         });
     }
     object
+}
+
+/// A SCALAR `String` receiver — `String`, but never `String()`.
+///
+/// `canonical_type_name` answers "which .NET type is this" and so strips the
+/// array suffix: `String()` canonicalizes to `String`. A guard that only asks
+/// the canonical name sends a string ARRAY down the string path, where
+/// `words.Contains(value, comparer)` becomes a SUBSTRING test instead of
+/// `Enumerable.Contains`.
+fn vb_type_is_scalar_string(type_name: &str) -> bool {
+    !type_name.trim().ends_with("()")
+        && !type_name.contains("(,)")
+        && vb_canonical_type_name(type_name).eq_ignore_ascii_case("String")
+}
+
+/// The recorded type for an ARRAY parameter — `ByVal a As String()`,
+/// `ByVal a() As String`, or a `ParamArray`. `None` for everything else.
+fn vb_array_param_local_type(param: &Param) -> Option<String> {
+    let hint = param.type_hint.as_deref();
+    if param.is_rest {
+        return Some(match hint {
+            Some(spelling) if !spelling.trim().ends_with("()") => {
+                format!("{}()", vb_canonical_type_name(spelling))
+            }
+            Some(spelling) => vb_local_type_name(spelling),
+            None => "Array()".to_string(),
+        });
+    }
+    hint.filter(|spelling| spelling.trim().ends_with("()"))
+        .map(vb_local_type_name)
+}
+
+/// An array literal initializer — `{1, 2}`, or `New String() {…}`, which the
+/// `new_expression` arm already folds down to the same `ExprKind::Array`.
+///
+/// VB spells both as an ARRAY and nothing else, so an inferred local bound to
+/// one is an array even with no `As` clause. Without this, `Dim a = {"A","B"}`
+/// records no type at all and `a(0)` stays a CALL.
+fn vb_init_is_array_literal(init: &Expression) -> bool {
+    matches!(&init.kind, ExprKind::Array(_))
+}
+
+/// The element type of an array literal, when every element agrees on one.
+///
+/// Mixed or unknown elements answer `None`; the caller then records the local
+/// as a plain `Array()`, which is enough to make `a(0)` a subscript.
+fn vb_array_literal_element_type(
+    init: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Array(items) = &init.kind else {
+        return None;
+    };
+    let mut element_type: Option<String> = None;
+    for item in items {
+        if item.spread {
+            return None;
+        }
+        let item_type = vb_infer_expr_type(&item.value, locals)?;
+        match &element_type {
+            Some(seen) if !seen.eq_ignore_ascii_case(&item_type) => return None,
+            Some(_) => {}
+            None => element_type = Some(item_type),
+        }
+    }
+    element_type
 }
 
 fn vb_local_is_array_like(name: &str, _argc: usize, locals: &HashMap<String, String>) -> bool {
@@ -23827,6 +24535,12 @@ fn normalize_vb_nested_member_arg_call_statement(stmt: &mut Statement) {
                 }
             }
         }
+        // `Using`'s resource and body, which this pass otherwise never
+        // reaches.
+        StmtKind::Using { resource, body, .. } => {
+            normalize_vb_nested_member_arg_call_expr(resource);
+            normalize_vb_nested_member_arg_call_statements(body);
+        }
         StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 normalize_vb_nested_member_arg_call_expr(target);
@@ -23953,6 +24667,14 @@ fn normalize_vb_nested_member_arg_call_expr(expr: &mut Expression) {
                         *callee = inner_callee.clone();
                     }
                 }
+            }
+        }
+        // A `New`'s arguments, which this walker otherwise never descends
+        // into — the collapse below only ever saw a plain call's argument list.
+        ExprKind::New { class, args } => {
+            normalize_vb_nested_member_arg_call_expr(class);
+            for arg in args {
+                normalize_vb_nested_member_arg_call_expr(&mut arg.value);
             }
         }
         ExprKind::Member { object, .. } => normalize_vb_nested_member_arg_call_expr(object),
@@ -24222,6 +24944,60 @@ fn normalize_vb_array_paren_index_statement(
                 &mut arrays.clone(),
                 array_return_functions,
             );
+        }
+        // ⛔ `Try` must be walked like any other block, and `Using` lowers to
+        // one. A `Dim buf(2) As Byte` declared inside is otherwise never
+        // recorded as an array, so `buf(0) = 9` stays a CALL instead of
+        // becoming an `Index` — and the write is silently dropped while
+        // `buf.Length` still answers correctly.
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_vb_array_paren_index_statements(
+                body,
+                &mut arrays.clone(),
+                array_return_functions,
+            );
+            for catch in catches {
+                normalize_vb_array_paren_index_statements(
+                    &mut catch.body,
+                    &mut arrays.clone(),
+                    array_return_functions,
+                );
+            }
+            for block in [else_body, finally].into_iter().flatten() {
+                normalize_vb_array_paren_index_statements(
+                    block,
+                    &mut arrays.clone(),
+                    array_return_functions,
+                );
+            }
+        }
+        StmtKind::DoWhile { body, .. } => {
+            normalize_vb_array_paren_index_statements(
+                body,
+                &mut arrays.clone(),
+                array_return_functions,
+            );
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                normalize_vb_array_paren_index_statements(
+                    &mut case.body,
+                    &mut arrays.clone(),
+                    array_return_functions,
+                );
+            }
+            if let Some(default) = default {
+                normalize_vb_array_paren_index_statements(
+                    default,
+                    &mut arrays.clone(),
+                    array_return_functions,
+                );
+            }
         }
         _ => {}
     }
@@ -24529,7 +25305,14 @@ fn vb_is_dictionary_local_type(type_name: &str) -> bool {
         || vb_is_dictionary_type_name(&dotnet_vb::collection_base_type_name(type_name))
 }
 
-fn vb_default_indexer_local_type(type_hint: &str) -> String {
+/// The type to record for a local, KEEPING the `()` array suffix.
+///
+/// `canonical_type_name` deliberately strips `()` — it answers "which .NET type
+/// is this", and `String()` is a String array. Every local table that decides
+/// whether `x(0)` is a SUBSCRIPT or a call must keep the suffix, or an
+/// `As String()` declaration is indistinguishable from `As String` and the
+/// subscript resolves to `String.Chars`.
+fn vb_local_type_name(type_hint: &str) -> String {
     let canonical = vb_canonical_type_name(type_hint);
     if type_hint.trim().ends_with("()") && !canonical.trim().ends_with("()") {
         format!("{canonical}()")
@@ -24568,9 +25351,9 @@ fn rewrite_vb_default_indexer_statement(
                             decl.init
                                 .as_ref()
                                 .and_then(|init| vb_infer_expr_type(init, locals))
-                                .unwrap_or_else(|| vb_default_indexer_local_type(type_hint))
+                                .unwrap_or_else(|| vb_local_type_name(type_hint))
                         } else {
-                            vb_default_indexer_local_type(type_hint)
+                            vb_local_type_name(type_hint)
                         };
                         if decl.array_bounds.is_some() && !local_type.trim().ends_with("()") {
                             local_type.push_str("()");
@@ -24610,7 +25393,7 @@ fn rewrite_vb_default_indexer_statement(
                 if let Some(type_hint) = &param.type_hint {
                     fn_locals.insert(
                         param.name.to_ascii_lowercase(),
-                        vb_default_indexer_local_type(type_hint),
+                        vb_local_type_name(type_hint),
                     );
                 }
             }
@@ -25505,7 +26288,7 @@ fn normalize_vb_array_segment_statement(
                     if vb_is_array_segment_type(type_hint) {
                         locals.insert(
                             name.to_ascii_lowercase(),
-                            vb_default_indexer_local_type(type_hint),
+                            vb_local_type_name(type_hint),
                         );
                     }
                 }
@@ -25530,7 +26313,7 @@ fn normalize_vb_array_segment_statement(
                     if vb_is_array_segment_type(type_hint) {
                         fn_locals.insert(
                             param.name.to_ascii_lowercase(),
-                            vb_default_indexer_local_type(type_hint),
+                            vb_local_type_name(type_hint),
                         );
                     }
                 }
@@ -27112,7 +27895,7 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                         if let Some(param) = params.first() {
                             let mut lambda_locals = locals.clone();
                             lambda_locals
-                                .insert(param.name.to_ascii_lowercase(), "KeyValuePair".into());
+                                .insert(param.name.to_ascii_lowercase(), VB_KVP_ENTRY.into());
                             match body {
                                 LambdaBody::Expr(expr) => {
                                     normalize_vb_dotnet_collection_expr(expr, &lambda_locals)
@@ -27222,9 +28005,9 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                         *expr = Expression::bool(haystack.contains(&needle));
                         return;
                     }
-                    let is_string_receiver = vb_infer_expr_type(object, locals).is_some_and(|ty| {
-                        vb_canonical_type_name(&ty).eq_ignore_ascii_case("String")
-                    }) || matches!(
+                    let is_string_receiver = vb_infer_expr_type(object, locals)
+                        .is_some_and(|ty| vb_type_is_scalar_string(&ty))
+                        || matches!(
                         &object.kind,
                         ExprKind::Member { field, .. }
                             if field.eq_ignore_ascii_case("Message")
@@ -27692,6 +28475,13 @@ fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
 
 fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            let mut changed = rewrite_vb_err_expr(callee);
+            for a in args {
+                changed |= rewrite_vb_err_expr(a);
+            }
+            changed
+        }
         ExprKind::Async(op) => {
             let mut changed = false;
             for child in op.children_mut() {
@@ -28457,7 +29247,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
-            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
+            Rule::add_op | Rule::concat_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
                 match op_pair.as_str().to_lowercase().as_str() {
                     "+" => BinOp::Add,
                     "-" => BinOp::Sub,
@@ -30713,7 +31503,10 @@ fn normalize_vb_implicit_property_self_expr(
     }
 }
 
-fn normalize_vb_myclass_calls(members: &mut Vec<ClassMember>, class_name: &str) {
+fn normalize_vb_myclass_calls(members: &mut Vec<ClassMember>, class_name: &str, uses: bool) {
+    if !uses {
+        return;
+    }
     let mut aliases = Vec::new();
     for member in members.iter_mut() {
         match member {
@@ -30770,7 +31563,7 @@ fn normalize_vb_myclass_calls(members: &mut Vec<ClassMember>, class_name: &str) 
             }
             ClassMember::NestedType(stmt) => {
                 if let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind {
-                    normalize_vb_myclass_calls(members, name);
+                    normalize_vb_myclass_calls(members, name, uses);
                 }
             }
             _ => {}
@@ -31100,6 +31893,14 @@ fn resolve_vb_this_constructor_chains(members: &mut [ClassMember]) {
 fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let decorators = parse_vb_attribute_specs(pair.as_str());
+    // `MyClass.M()` needs a private non-overridable ALIAS holding this class's
+    // own body, because `Me.M()` would find a derived override. Building that
+    // alias means CLONING the method, so it must not happen for classes that
+    // never say `MyClass` — 1463 corpus files declare a class and 10 use the
+    // keyword. Scanning the class's own source is sound in both directions: a
+    // nested class's text is a substring of its outer class's, so a `false`
+    // here cannot hide a use further in.
+    let uses_myclass = pair.as_str().to_ascii_lowercase().contains("myclass");
     let inner = pair.into_inner();
     let mut name = String::new();
     let mut is_partial = false;
@@ -31331,7 +32132,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     expand_vb_array_field_bounds_from_usage(&mut members);
     inject_vb_array_field_initialization_guards(&mut members);
     normalize_vb_implicit_property_self(&name, &mut members);
-    normalize_vb_myclass_calls(&mut members, &name);
+    normalize_vb_myclass_calls(&mut members, &name, uses_myclass);
     normalize_vb_interface_event_alias_raises(&mut members);
     normalize_vb_withevents_assignments(&mut members);
 
@@ -34522,7 +35323,10 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             | Rule::equality
             | Rule::comparison
             | Rule::bit_shift
+            | Rule::concat
             | Rule::additive
+            | Rule::modulo
+            | Rule::intdiv
             | Rule::multiplicative
             | Rule::exponent => {
                 let mut probe = pair.clone().into_inner();
@@ -34871,7 +35675,10 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::anonymous_new_expression => return parse_anonymous_new_expression(pair),
             Rule::new_expression => {
                 let raw_new_text = pair.as_str().to_string();
-                let mut inner = pair.into_inner();
+                // `new_keyword` is a token — step over it for the class name.
+                let mut inner = pair
+                    .into_inner()
+                    .filter(|p| p.as_rule() != Rule::new_keyword);
                 let id_pair = inner.next().unwrap();
                 let mut class_name = id_pair.as_str().to_string();
                 let mut args = Vec::new();
@@ -35174,7 +35981,10 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
             Rule::add_op
+            | Rule::concat_op
             | Rule::mult_op
+            | Rule::intdiv_op
+            | Rule::mod_op
             | Rule::eq_op
             | Rule::comp_op
             | Rule::and_op
@@ -35253,7 +36063,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         let span = to_span(&pair);
         let kind = match pair.as_rule() {
             Rule::expression | Rule::logical_xor | Rule::logical_or | Rule::logical_and |
-            Rule::equality | Rule::comparison | Rule::bit_shift | Rule::additive |
+            Rule::equality | Rule::comparison | Rule::bit_shift | Rule::concat | Rule::additive |
             Rule::multiplicative | Rule::exponent => {
                 let mut probe = pair.clone().into_inner();
                 let first = probe.next().unwrap();
@@ -35401,7 +36211,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
-            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
+            Rule::add_op | Rule::concat_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
                 match op_pair.as_str().to_lowercase().as_str() {
                     "+" => BinOp::Add,
                     "-" => BinOp::Sub,
@@ -35492,7 +36302,9 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::anonymous_new_expression => return parse_anonymous_new_expression(pair),
         Rule::new_expression => {
             let raw_new_text = pair.as_str().to_string();
-            let mut inner = pair.into_inner();
+            let mut inner = pair
+                .into_inner()
+                .filter(|p| p.as_rule() != Rule::new_keyword);
             let id_pair = inner.next().unwrap();
             let mut class_name = id_pair.as_str().to_string();
             let mut args: Vec<Argument> = Vec::new();
@@ -35822,7 +36634,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
-            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
+            Rule::add_op | Rule::concat_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
                 match op_pair.as_str().to_lowercase().as_str() {
                     "+" => BinOp::Add,
                     "-" => BinOp::Sub,
@@ -35996,13 +36808,18 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             // delegates to the shared Dotnet lowering helpers.
             // `expr` is the `Member` callee.
             if let ExprKind::Member { object, field, .. } = &expr.kind {
-                if field.eq_ignore_ascii_case("TryParse") && arguments.len() == 2 {
+                // ⛔ 2 OR 4 arguments: .NET's numeric `TryParse` also has
+                // `(s, NumberStyles, IFormatProvider, out)`, and the out-param
+                // is the LAST argument in both.
+                if field.eq_ignore_ascii_case("TryParse")
+                    && matches!(arguments.len(), 2 | 4)
+                {
                     let recv = dotted_expr_name(object);
                     if let Some(rewritten) = dotnet_vb::try_parse_desugar(
                         recv.as_deref(),
                         &expr,
                         &arguments[0].value,
-                        &arguments[1].value,
+                        &arguments[arguments.len() - 1].value,
                     ) {
                         return Ok(rewritten);
                     }
@@ -36036,6 +36853,20 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                         &arguments[0].value,
                         &arguments[1].value,
                     ));
+                }
+                // `ms.TryGetBuffer(segment)` — the out-param shape: the
+                // one-argument core answers the SEGMENT, and a non-null is the
+                // `True`.
+                if field.eq_ignore_ascii_case("TryGetBuffer") && arguments.len() == 1 {
+                    let core = call_expr(expr.clone(), vec![]);
+                    return Ok(Expression::new(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(Expression::new(ExprKind::Assign {
+                            target: Box::new(arguments[0].value.clone()),
+                            value: Box::new(core),
+                        })),
+                        right: Box::new(Expression::null()),
+                    }));
                 }
                 if field.eq_ignore_ascii_case("GetOrAdd") && arguments.len() == 2 {
                     return Ok(dotnet_vb::get_or_add_desugar(
@@ -36137,7 +36968,7 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             }
             // `X.TryParse(s, r)` out-param normalization for the combined
             // name+args grammar form; `expr` is the receiver, `name` the method.
-            if name.eq_ignore_ascii_case("TryParse") && arguments.len() == 2 {
+            if name.eq_ignore_ascii_case("TryParse") && matches!(arguments.len(), 2 | 4) {
                 let recv = dotted_expr_name(&expr);
                 let callee = Expression::new(ExprKind::Member {
                     object: Box::new(expr.clone()),
@@ -36148,7 +36979,7 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     recv.as_deref(),
                     &callee,
                     &arguments[0].value,
-                    &arguments[1].value,
+                    &arguments[arguments.len() - 1].value,
                 ) {
                     return Ok(rewritten);
                 }
@@ -36187,6 +37018,24 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     &arguments[0].value,
                     &arguments[1].value,
                 ));
+            }
+            if name.eq_ignore_ascii_case("TryGetBuffer") && arguments.len() == 1 {
+                let core = call_expr(
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(expr.clone()),
+                        field: name.clone(),
+                        null_safe: false,
+                    }),
+                    vec![],
+                );
+                return Ok(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::new(ExprKind::Assign {
+                        target: Box::new(arguments[0].value.clone()),
+                        value: Box::new(core),
+                    })),
+                    right: Box::new(Expression::null()),
+                }));
             }
             if name.eq_ignore_ascii_case("GetOrAdd") && arguments.len() == 2 {
                 return Ok(dotnet_vb::get_or_add_desugar(
@@ -36269,6 +37118,24 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             Ok(build_vb_xml_axis_call(expr, &name))
+        }
+        // `doc.@id` — the ATTRIBUTE axis. Without this arm the new grammar node
+        // fell to the `_ => Ok(expr)` catch-all below, which drops the axis and
+        // yields the RECEIVER: a silent wrong value, worse than the parse error
+        // it replaced.
+        Rule::member_chain_xml_attribute_axis => {
+            let name = chain
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Ok(call_expr(
+                build_dotted_expr("xml.attribute"),
+                vec![
+                    Argument::positional(expr),
+                    Argument::positional(Expression::string(&name)),
+                ],
+            ))
         }
         Rule::member_chain => {
             let inner_chain = chain.into_inner().next().unwrap();
@@ -39548,20 +40415,21 @@ fn build_linq_lambda_call(
 fn parse_xml_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let xml_text = pair.as_str().to_string();
-    if xml_text.contains("<%=") && !xml_text.contains("<![CDATA[") && !xml_text.contains("<!--") {
-        if let (Some(root_name), Some(content_src)) = (
-            vb_xml_literal_root_name_from_source(&xml_text),
-            vb_xml_literal_embedded_expr_from_source(&xml_text),
-        ) {
-            let content = parse_expression_str(&content_src)?;
+    // A literal carrying `<%=` is BUILT, not parsed: the embedded expressions are
+    // values that only exist at run time, so there is no source text to hand to
+    // `xml.parse`.
+    //
+    // ⛔ This used to be a TEXT SCAN — it took the ROOT element's name and the
+    // FIRST `<%= … %>` anywhere in the source and emitted
+    // `New XElement(root, first_expr)`. Every element in between was DISCARDED
+    // and every embedded expression after the first was ignored, so
+    // `<User><Name><%= nm %></Name></User>` compiled to `<User>Bob</User>` —
+    // the `<Name>` element simply vanished. The grammar already gives the full
+    // tree (`xml_element` / `xml_attribute` / `xml_content`); build from it.
+    if xml_text.contains("<%=") {
+        if let Some(element) = vb_xml_literal_element_pair(pair.clone()) {
             return Ok(Expression::with_span(
-                ExprKind::New {
-                    class: Box::new(Expression::ident("XElement")),
-                    args: vec![
-                        Argument::positional(Expression::string(&root_name)),
-                        Argument::positional(content),
-                    ],
-                },
+                vb_xml_element_expr(element)?.kind,
                 span,
             ));
         }
@@ -39587,6 +40455,156 @@ fn parse_xml_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         },
         span,
     ))
+}
+
+/// The `xml_element` inside an `xml_literal` — the literal may wrap it in an
+/// `xml_document` (an `<?xml …?>` declaration followed by the root element).
+fn vb_xml_literal_element_pair(pair: Pair<Rule>) -> Option<Pair<Rule>> {
+    match pair.as_rule() {
+        Rule::xml_element => Some(pair),
+        Rule::xml_literal | Rule::xml_document => {
+            pair.into_inner().find_map(vb_xml_literal_element_pair)
+        }
+        _ => None,
+    }
+}
+
+/// One `xml_element` → `New XElement(name, {children…})`.
+///
+/// The second argument is an ARRAY because `emit_xelement_new` already walks an
+/// array content and appends each item — attributes via `setAttribute`
+/// (recognised by their kind stamp), elements via `appendChild`, and anything
+/// scalar via `createTextNode`. So the whole literal is expressible with the
+/// constructors `platforms/dotnet` already registers; nothing new is needed on
+/// that side.
+fn vb_xml_element_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut name = String::new();
+    let mut children: Vec<Expression> = Vec::new();
+
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            // `<a>…</a>` yields the name TWICE, opening and closing. The first
+            // wins; the closing tag carries no information the open one lacks.
+            Rule::xml_name => {
+                if name.is_empty() {
+                    name = part.as_str().to_string();
+                }
+            }
+            Rule::xml_attribute => children.push(vb_xml_attribute_expr(part)?),
+            Rule::xml_content => {
+                if let Some(child) = vb_xml_content_expr(part)? {
+                    children.push(child);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if name.is_empty() {
+        return Err("xml literal: element with no name".to_string());
+    }
+    let mut args = vec![Argument::positional(Expression::string(&name))];
+    match children.len() {
+        0 => {}
+        // ⛔ A LONE child is passed DIRECTLY, not wrapped.
+        //
+        // `emit_xelement_new`'s arity-2 content is "an array OR a single item",
+        // and it flattens exactly ONE level. An embedded expression that is
+        // itself a SEQUENCE — `<Root><%= From x In items Select <Item>… %></Root>`
+        // — must therefore arrive as the content itself; wrapping it made a
+        // nested array, which the constructor appended as one opaque child and
+        // the Root came back empty.
+        1 => args.push(Argument::positional(children.pop().expect("len == 1"))),
+        _ => args.push(Argument::positional(Expression::new(ExprKind::Array(
+            children
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )))),
+    }
+    Ok(Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("XElement")),
+        args,
+    }))
+}
+
+/// `name="literal"` or `name=<%= expr %>` → `New XAttribute(name, value)`.
+fn vb_xml_attribute_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut name = String::new();
+    let mut value: Option<Expression> = None;
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            Rule::xml_name if name.is_empty() => name = part.as_str().to_string(),
+            Rule::string_literal => value = Some(Expression::string(&vb_xml_string_text(&part))),
+            Rule::xml_embedded_expression => value = Some(vb_xml_embedded_expr(part)?),
+            _ => {}
+        }
+    }
+    Ok(Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("XAttribute")),
+        args: vec![
+            Argument::positional(Expression::string(&name)),
+            Argument::positional(value.unwrap_or_else(|| Expression::string(""))),
+        ],
+    }))
+}
+
+/// One `xml_content` item. `None` means "contributes nothing".
+fn vb_xml_content_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    let Some(inner) = pair.into_inner().next() else {
+        return Ok(None);
+    };
+    match inner.as_rule() {
+        Rule::xml_element => vb_xml_element_expr(inner).map(Some),
+        Rule::xml_embedded_expression => vb_xml_embedded_expr(inner).map(Some),
+        Rule::xml_cdata => {
+            let raw = inner.as_str();
+            let text = raw
+                .strip_prefix("<![CDATA[")
+                .and_then(|rest| rest.strip_suffix("]]>"))
+                .unwrap_or(raw);
+            Ok(Some(Expression::string(text)))
+        }
+        // ⛔ Whitespace-only text between elements is FORMATTING, not content —
+        // VB does not put the source's indentation into the document, and
+        // keeping it would append a text node before every child and change
+        // `.Value`.
+        Rule::xml_text => {
+            let text = inner.as_str();
+            Ok((!text.trim().is_empty()).then(|| Expression::string(text.trim())))
+        }
+        // A comment contributes no value; it is dropped rather than guessed at.
+        Rule::xml_comment => Ok(None),
+        _ => Ok(None),
+    }
+}
+
+/// The text of a `string_literal` pair — quotes stripped, `""` unescaped.
+/// Same rule the general literal arm applies; an XML attribute value is an
+/// ordinary VB string.
+fn vb_xml_string_text(pair: &Pair<Rule>) -> String {
+    let raw = pair
+        .as_str()
+        .trim_end_matches(|ch: char| ch == 'c' || ch == 'C');
+    if raw.len() < 2 {
+        return String::new();
+    }
+    raw[1..raw.len() - 1].replace("\"\"", "\"")
+}
+
+/// `<%= expr %>` → the expression itself.
+fn vb_xml_embedded_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    pair.into_inner()
+        .find(|p| p.as_rule() == Rule::expression)
+        .map_or_else(
+            || Err("xml literal: empty <%= %>".to_string()),
+            parse_expression,
+        )
 }
 
 fn vb_xml_literal_root_name_from_source(source: &str) -> Option<String> {

@@ -120,22 +120,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // (`primitives::strings`, pure WASM over code points); case conversion
         // is `ecma:string`, which is a real ECMA String method.
         if matches!(name, "Char" | "char") {
+            // ⛔ Static lookup (`emitter/mod.rs:574`) matches on NAME ALONE and
+            // never reads `arity` — unlike the instance path right above it.
+            // So the six classifiers below cannot be given a second arity-2
+            // registration for the `(string, index)` overload: the first row
+            // would win and the second would be dead code. Each now routes to
+            // `char_adapter`, whose body branches on `argc`.
+            //
+            // Before this, `Char.IsDigit(text, 1)` reached the arity-1
+            // `str_is_digit` with an extra value on the stack and trapped in
+            // `wasm:js-string.length — not a string`.
             for (method, emit) in [
-                ("IsDigit", "str_is_digit"),
-                ("IsLetter", "str_is_alpha"),
-                ("IsLetterOrDigit", "str_is_alnum"),
-                ("IsUpper", "str_is_upper"),
-                ("IsLower", "str_is_lower"),
-                ("IsWhiteSpace", "str_is_space"),
-                // The UNDOTTED dispatch keys. Measured 2026-08-07: a tree
-                // `CommonEmit` leaf named `strings.to_upper` reaches
-                // `undefined is not callable`, while `str_is_digit` in the same
-                // registration resolves — a dotted emit name is routed by its
-                // PREFIX first, and `strings` is not a registered dispatcher.
-                // `str_to_upper` / `str_to_lower` are the same emitters under
-                // names the tree path resolves.
-                ("ToUpper", "str_to_upper"),
-                ("ToLower", "str_to_lower"),
+                ("IsDigit", "dotnet.char_is_digit"),
+                ("IsLetter", "dotnet.char_is_letter"),
+                ("IsLetterOrDigit", "dotnet.char_is_letter_or_digit"),
+                ("IsUpper", "dotnet.char_is_upper"),
+                ("IsLower", "dotnet.char_is_lower"),
+                ("IsWhiteSpace", "dotnet.char_is_white_space"),
+                ("ToUpper", "dotnet.char_to_upper"),
+                ("ToLower", "dotnet.char_to_lower"),
+                // The rest of the static surface, registered nowhere before —
+                // every one of these resolved to nothing and rendered empty.
+                ("IsAscii", "dotnet.char_is_ascii"),
+                ("IsAsciiDigit", "dotnet.char_is_ascii_digit"),
+                ("IsAsciiLetter", "dotnet.char_is_ascii_letter"),
+                ("IsAsciiLetterOrDigit", "dotnet.char_is_ascii_letter_or_digit"),
+                ("IsAsciiHexDigit", "dotnet.char_is_ascii_hex_digit"),
+                ("IsControl", "dotnet.char_is_control"),
+                ("IsSeparator", "dotnet.char_is_separator"),
+                ("IsPunctuation", "dotnet.char_is_punctuation"),
+                ("IsSymbol", "dotnet.char_is_symbol"),
+                ("IsSurrogate", "dotnet.char_is_surrogate"),
+                ("IsHighSurrogate", "dotnet.char_is_high_surrogate"),
+                ("IsLowSurrogate", "dotnet.char_is_low_surrogate"),
+                ("IsSurrogatePair", "dotnet.char_is_surrogate_pair"),
+                ("ConvertToUtf32", "dotnet.char_convert_to_utf32"),
+                ("ConvertFromUtf32", "dotnet.char_convert_from_utf32"),
+                ("GetNumericValue", "dotnet.char_get_numeric_value"),
+                ("GetUnicodeCategory", "dotnet.char_get_unicode_category"),
             ] {
                 ty = ty.with_method(MethodDef::static_method(
                     method,
@@ -144,11 +166,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ));
             }
         }
-        if matches!(name, "Int32" | "int") {
+        // ⛔ The 1-arg `TryParse` EVERY numeric type needs.
+        // `lowering::try_parse_desugar` rewrites `T.TryParse(s, out)` into
+        // `(out = T.TryParse(s)) <> Nothing`, so the one-argument form is the
+        // core of the whole feature — and only `Int32` had it. `Double`,
+        // `Single`, `Int64`, `Byte` and `Decimal` resolved it to nothing and
+        // answered `null`.
+        //
+        // Integral types floor, so they take the `int` body; the rest keep
+        // their fraction.
+        let try_parse_emit = match name {
+            "Int32" | "int" | "Int64" | "long" | "Byte" | "byte" | "Int16" | "short" => {
+                Some("dotnet.try_parse_int")
+            }
+            "Single" | "float" | "Double" | "double" | "Decimal" | "decimal" => {
+                Some("dotnet.try_parse_double")
+            }
+            _ => None,
+        };
+        if let Some(emit) = try_parse_emit {
             ty = ty.with_method(MethodDef::static_method(
                 "TryParse",
                 1,
-                MethodBody::Common("dotnet.try_parse_int".into()),
+                MethodBody::Common(emit.into()),
             ));
         }
         exports.push(DotnetClassExport::new("dotnet.System", ty));

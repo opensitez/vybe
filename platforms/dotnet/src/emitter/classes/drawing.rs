@@ -1705,6 +1705,48 @@ pub fn classes() -> &'static [DotnetClass] {
         // Width`) and are not stored; they are listed so the property axis
         // knows the names, and read back through the same keyed getter that
         // answers `Point.X`.
+            // **The floating-point mirrors — `SizeF`, `PointF`, `RectangleF`.**
+            //
+            // `System.Drawing` declares each value type twice, once in integers
+            // and once in `Single`, and only the integer half was here. Every
+            // VB designer emits
+            // `Me.AutoScaleDimensions = New System.Drawing.SizeF(6.0!, 13.0!)`,
+            // so a form whose designer includes that line failed with
+            // "undefined is not callable" inside `InitializeComponent` — the
+            // constructor resolved to nothing. Samples that happened to omit
+            // the line ran, which is why this looked like one broken project
+            // rather than a missing type.
+            //
+            // Separate declarations rather than aliases of the integer ones:
+            // the `__type` string IS the identity a value type compares by, so
+            // a `SizeF` answering "Size" would make the two equal.
+            DotnetClass {
+                name: "SizeF",
+                parent: None,
+                properties: &["Width", "Height", "IsEmpty"],
+                methods: &[],
+                ctor_arity: 2,
+                widget_host_fn: None,
+            },
+            DotnetClass {
+                name: "PointF",
+                parent: None,
+                properties: &["X", "Y", "IsEmpty"],
+                methods: &[],
+                ctor_arity: 2,
+                widget_host_fn: None,
+            },
+            DotnetClass {
+                name: "RectangleF",
+                parent: None,
+                properties: &[
+                    "X", "Y", "Width", "Height", "Left", "Top", "Right", "Bottom", "Location",
+                    "Size", "IsEmpty",
+                ],
+                methods: &[],
+                ctor_arity: 4,
+                widget_host_fn: None,
+            },
         DotnetClass {
             name: "Rectangle",
             parent: None,

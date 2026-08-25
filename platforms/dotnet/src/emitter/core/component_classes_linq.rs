@@ -35,6 +35,16 @@ pub(super) fn enumerable_static_export() -> DotnetClassExport {
                 "Sum",
                 2,
                 MethodBody::Common("dotnet.linq_sum_selector".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "Range",
+                2,
+                MethodBody::Common("dotnet.linq_range".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "Repeat",
+                2,
+                MethodBody::Common("dotnet.linq_repeat".into()),
             )),
     )
 }
@@ -202,9 +212,29 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_group_by".into()),
     ));
     class.methods.push(MethodDef::new(
+        "GroupBy",
+        2,
+        MethodBody::Common("dotnet.linq_group_by_element".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Join",
+        4,
+        MethodBody::Common("dotnet.linq_join".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "GroupJoin",
+        4,
+        MethodBody::Common("dotnet.linq_group_join".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "SelectMany",
         1,
         MethodBody::Common("dotnet.linq_select_many".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "SelectMany",
+        2,
+        MethodBody::Common("dotnet.linq_select_many_result".into()),
     ));
     class.methods.push(MethodDef::new(
         "ToDictionary",
@@ -330,6 +360,61 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "SingleOrDefault",
         0,
         MethodBody::Common("dotnet.linq_single_or_default".into()),
+    ));
+    // ⛔ The `First`/`Last`/`Single` family carries FOUR shapes each in .NET —
+    // `()`, `(predicate)`, `(defaultValue)` and `(predicate, defaultValue)` —
+    // and only the no-argument one was declared. `emit_resolve_sequence_overloads`
+    // picks between the two one-argument forms on whether the argument is
+    // callable, which is the same question .NET answers from the static type.
+    class.methods.push(MethodDef::new(
+        "First",
+        1,
+        MethodBody::Common("dotnet.linq_first".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Last",
+        1,
+        MethodBody::Common("dotnet.linq_last".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "FirstOrDefault",
+        1,
+        MethodBody::Common("dotnet.linq_first_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "FirstOrDefault",
+        2,
+        MethodBody::Common("dotnet.linq_first_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "LastOrDefault",
+        1,
+        MethodBody::Common("dotnet.linq_last_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "LastOrDefault",
+        2,
+        MethodBody::Common("dotnet.linq_last_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Single",
+        1,
+        MethodBody::Common("dotnet.linq_single".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "SingleOrDefault",
+        1,
+        MethodBody::Common("dotnet.linq_single_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "SingleOrDefault",
+        2,
+        MethodBody::Common("dotnet.linq_single_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ElementAtOrDefault",
+        2,
+        MethodBody::Common("dotnet.linq_element_at_or_default".into()),
     ));
     class.methods.push(MethodDef::new(
         "MaxBy",

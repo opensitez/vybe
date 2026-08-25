@@ -343,6 +343,35 @@ pub fn emit_dict_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let current_value = key + 2;
     let len = key + 3;
 
+    // `ICollection<KeyValuePair<K,V>>.Remove(pair)` removes only when the key
+    // AND the value match, unlike `Remove(key)`. The pair reaches this in TWO
+    // shapes: a real `KeyValuePair` object from
+    // `key_value_pair_adapter::emit_key_value_pair_new`, and the positional
+    // `[key, value]` that `Dictionary.Entries` still yields (`ecma:map.entries`,
+    // ECMA-262 §24.1.3.4). Both must be recognised.
+    //
+    // The object form is identified by the SHARED `__value_eq` stamp rather
+    // than by probing for a `Key` property: an absent property reads back as
+    // `Undefined`, and `REF_IS_NULL` is FALSE for `Undefined`, so a
+    // presence test would call every argument a pair.
+    let is_pair = chunks[current].alloc_scratch(1);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, is_pair, line);
+
+    vybe_compiler::primitives::records::emit_is_value_eq(&mut chunks[current], arg, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    chunks[current].emit_string_const("Key", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    chunks[current].emit_string_const("Value", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, is_pair, line);
+    chunks[current].emit_end(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
@@ -350,17 +379,22 @@ pub fn emit_dict_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
     core_wasm::i32_const(&mut chunks[current], line, 2);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-
+    chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
-
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, is_pair, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, is_pair, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
@@ -1078,6 +1112,28 @@ pub fn emit_observable_collection_clear(chunks: &mut [Chunk], current: usize, li
     emit_observable_count_and_indexer_changed(chunks, current, recv, line);
     let args = emit_observable_event_args(chunks, current, "Reset", None, None, None, None, line);
     emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `List.Clear()` — empty the ITEMS, whichever shape the receiver has.
+///
+/// ⛔ `collections.clear` splices the RECEIVER, which is right only when the
+/// list value is a bare array. A `List` can also be an object carrying its
+/// elements in `__dotnet_observable_items` (see `emit_observable_items_slot`),
+/// and splicing that object left the elements untouched — `Count` still
+/// answered 2 after `Clear()`, and the receiver came back not-a-number on the
+/// next read. This routes through the same items slot every other List member
+/// uses, so both shapes clear.
+///
+/// Distinct from `emit_observable_collection_clear`, which additionally raises
+/// the `Reset` change notification an `ObservableCollection` owes its
+/// subscribers; a plain `List` has none.
+pub fn emit_list_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_clear(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 

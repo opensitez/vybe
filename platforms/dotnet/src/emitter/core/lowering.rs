@@ -277,6 +277,12 @@ pub fn runtime_type_name_expr(expr: Expression) -> Expression {
 }
 
 /// `X.TryParse(s, r)` out-param normalization.
+/// The receiver's canonical .NET type name — `Integer` and `int` are both
+/// `Int32`, and the leaf of `System.Double` is `Double`.
+fn vybe_platform_dotnet_canonical(recv: &str) -> String {
+    crate::emitter::canonical_type_name(recv)
+}
+
 pub fn try_parse_desugar(
     recv: Option<&str>,
     callee: &Expression,
@@ -316,11 +322,16 @@ pub fn try_parse_desugar(
             else_: Box::new(Expression::bool(false)),
         }));
     }
-    if recv.eq_ignore_ascii_case("Integer")
-        || recv.eq_ignore_ascii_case("int")
-        || recv.eq_ignore_ascii_case("Int32")
-        || recv.eq_ignore_ascii_case("System.Int32")
-    {
+    // ⛔ EVERY numeric type. The shape below — parse, else write the type's
+    // default and report failure — is type-independent, and a type left out
+    // gets no desugar at all: the raw 2-arg call then reaches the 1-arg
+    // registration (the dotnet static lookup ignores arity), consumes the
+    // OUT-PARAM as its input, and leaks the extra operand onto the stack.
+    if matches!(
+        vybe_platform_dotnet_canonical(recv).as_str(),
+        "Int16" | "Int32" | "Int64" | "Byte" | "SByte" | "UInt16" | "UInt32" | "UInt64"
+            | "Single" | "Double" | "Decimal"
+    ) {
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(assign_core),

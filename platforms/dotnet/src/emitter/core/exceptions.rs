@@ -40,6 +40,21 @@ pub fn synthesize_exception_classes() -> Vec<Statement> {
         .collect()
 }
 
+/// Whether `name` is one of the exception types [`synthesize_exception_classes`]
+/// emits as a REAL class into the program, under its SHORT name.
+///
+/// A caller that qualifies bare type names with an imported namespace must ask
+/// this first and leave these alone: the same names are ALSO registered as
+/// `dotnet.System` component classes (from `EXCEPTION_HIERARCHY`, a few lines
+/// into `component_classes_system`), so `Imports System` rewrote a
+/// `Catch ex As ArgumentException` to `System.ArgumentException` — a name no
+/// class in the program has — and the catch silently stopped matching.
+pub fn is_synthesized_exception_class(name: &str) -> bool {
+    EXCEPTION_HIERARCHY
+        .iter()
+        .any(|(class, _)| class.eq_ignore_ascii_case(name))
+}
+
 fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
     let span = Span::default();
     let needs_param_name = matches!(

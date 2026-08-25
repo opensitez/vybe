@@ -314,6 +314,12 @@ fn emit_string_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, values_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sep_slot, line);
 
+    // `String.Join` takes `IEnumerable<T>`, so the values can be a generator or
+    // a query result; the index loop below needs a materialized array.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, values_slot, line);
+
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_slot, line);
 

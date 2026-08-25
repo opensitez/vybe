@@ -1,3 +1,11 @@
+//! ⛔ KEYS KEEP THE .NET DECLARED SPELLING (`Console`, `WriteLine`, `Length`).
+//!
+//! They used to be lowercased here. That served VB — which is case-insensitive
+//! — and quietly mis-served C#, which is not: a rule that folds is wrong on
+//! C#'s own terms even when it happens to answer. Tree lookups now match EXACT
+//! first and fold only on a miss, so C# resolves by the real spelling and VB
+//! still resolves by the fold. One registration, both languages, neither
+//! compromised. See `documentation/casesensitivityplan.md`.
 //! `dotnet.*` namespace-tree registration (namespaceplan.md, dotnet phase).
 //!
 //! The dotnet platform contributes DATA — its component-model class
@@ -75,7 +83,7 @@ pub fn register_namespace_tree() {
                     // leaf is found as a name and then not called — `b.Hide()`
                     // reached `undefined is not callable`. Same registration
                     // path, only the target differs.
-                    let entries = method_overloads.entry(m.name.to_lowercase()).or_default();
+                    let entries = method_overloads.entry(m.name.to_string()).or_default();
                     // Same "first declaration of an arity wins" rule as the
                     // ordinary path below. `inherited_methods` yields nearest
                     // first, so an override shadows the base declaration it
@@ -109,7 +117,7 @@ pub fn register_namespace_tree() {
                 } else {
                     &mut method_overloads
                 };
-                let entries = bucket.entry(m.name.to_lowercase()).or_default();
+                let entries = bucket.entry(m.name.to_string()).or_default();
                 // First declaration of an arity wins, matching the
                 // descriptor-order scan this registration replaces.
                 if !entries.iter().any(|(a, _)| *a == m.arity) {
@@ -154,10 +162,10 @@ pub fn register_namespace_tree() {
                 let node = namespaces::property(
                     p.getter
                         .as_ref()
-                        .map(|t| accessor_node(t, &p.name, is_control)),
+                        .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
                     p.setter
                         .as_ref()
-                        .map(|t| accessor_node(t, &p.name, is_control)),
+                        .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
                 );
                 // What the property READS BACK as, declared from its ROLE so
                 // the one answer serves every frontend registered this way.
@@ -172,13 +180,13 @@ pub fn register_namespace_tree() {
                         }
                         .as_str(),
                     ) {
-                        property_returns.insert(p.name.to_lowercase(), value_type.to_string());
+                        property_returns.insert(p.name.to_string(), value_type.to_string());
                     }
                 }
                 methods
-                    .entry(p.name.to_lowercase())
+                    .entry(p.name.to_string())
                     .or_insert_with(|| node.clone());
-                statics.entry(p.name.to_lowercase()).or_insert(node);
+                statics.entry(p.name.to_string()).or_insert(node);
             }
             for (name, node) in shared_emit_accessors(&class.name) {
                 methods.insert(name, node);
@@ -186,18 +194,21 @@ pub fn register_namespace_tree() {
             if interface.eq_ignore_ascii_case("dotnet.System")
                 && class.name.eq_ignore_ascii_case("Console")
             {
-                statics.insert("out".into(), console_stdout_writer_node());
-                statics.insert("error".into(), console_stderr_writer_node());
+                // `Console.Out` / `Console.Error` — the CLR spelling. These were
+                // authored lowercase for a tree that folded everything; the
+                // fold is gone, so the DECLARATION has to be right.
+                statics.insert("Out".into(), console_stdout_writer_node());
+                statics.insert("Error".into(), console_stderr_writer_node());
             }
             if interface.eq_ignore_ascii_case("dotnet.System")
                 && class.name.eq_ignore_ascii_case("Object")
             {
                 statics.insert(
-                    "equals".into(),
+                    "Equals".into(),
                     NamespaceNode::CommonEmit("dotnet.object_equals".into()),
                 );
                 statics.insert(
-                    "referenceequals".into(),
+                    "ReferenceEquals".into(),
                     NamespaceNode::CommonEmit("dotnet.object_reference_equals".into()),
                 );
             }
@@ -205,11 +216,11 @@ pub fn register_namespace_tree() {
                 && class.name.eq_ignore_ascii_case("DateTime")
             {
                 statics.insert(
-                    "minvalue".into(),
+                    "MinValue".into(),
                     NamespaceNode::CommonEmit("dotnet.datetime_min_value".into()),
                 );
                 statics.insert(
-                    "maxvalue".into(),
+                    "MaxValue".into(),
                     NamespaceNode::CommonEmit("dotnet.datetime_max_value".into()),
                 );
             }
@@ -227,7 +238,7 @@ pub fn register_namespace_tree() {
                     super::instance_method_return_type(&class.name, &m.name)
                 };
                 if let Some(rt) = rt {
-                    member_returns.insert(m.name.to_lowercase(), rt);
+                    member_returns.insert(m.name.to_string(), rt);
                 }
             }
             // Property roles fill in what the method scan does not cover. A
@@ -245,7 +256,7 @@ pub fn register_namespace_tree() {
             // said nothing about what it is.
             for (name, ty) in super::declared_instance_property_types(&class.name) {
                 member_returns
-                    .entry(name.to_lowercase())
+                    .entry(name.to_string())
                     .or_insert_with(|| (*ty).to_string());
             }
             // A member that IS the receiver overrides both — the descriptor's
@@ -260,7 +271,8 @@ pub fn register_namespace_tree() {
             // member after it resolves against nothing, which is the exact
             // failure `self_member_returns` was written for on `Items`.
             if class_is_control {
-                member_returns.insert("controls".to_string(), "Control".to_string());
+                // `Control.Controls` — the declared property name.
+                member_returns.insert("Controls".to_string(), "Control".to_string());
             }
 
             // The descriptor's backing constructor, as a tree node. dotnet
@@ -323,8 +335,8 @@ pub fn register_namespace_tree() {
             // wants the short spelling says so in its profile instead of
             // inheriting it from a registration side effect.
             let mut segments: Vec<String> =
-                interface.split('.').map(|s| s.to_lowercase()).collect();
-            segments.push(class.name.to_lowercase());
+                interface.split('.').map(|s| s.to_string()).collect();
+            segments.push(class.name.to_string());
 
             let mut node = ty;
             while segments.len() > 1 {
@@ -358,13 +370,18 @@ fn register_color_statics() {
     let mut colors = Subtree::new();
     for (member, _) in super::classes::drawing::COLOR_STATICS {
         colors.insert(
-            member.to_lowercase(),
+            member.to_string(),
             NamespaceNode::CommonEmit(super::classes::drawing::color_static_emit_key(member)),
         );
     }
 
     let mut node = NamespaceNode::Namespace(colors);
-    for segment in ["color", "drawing", "system"] {
+    // ⛔ The DECLARED spelling, and it must match what the main registration
+    // loop produces (`interface.split('.')` → `System`, `Drawing`, plus
+    // `class.name` → `Color`). These merge into that type's `statics` only if
+    // the KEYS ARE THE SAME; a lowercase path builds a SECOND branch instead,
+    // and `Color.Red` then resolves only by folding.
+    for segment in ["Color", "Drawing", "System"] {
         let mut parent = Subtree::new();
         parent.insert(segment.to_string(), node);
         node = NamespaceNode::Namespace(parent);
@@ -495,10 +512,53 @@ fn gui_control_verb(method: &str, is_form: bool) -> Option<&'static str> {
 /// the same two generic host functions, so the target name alone cannot tell
 /// them apart from a `Button` — only the class can, and it does it by whether
 /// it descends from `Control`.
+/// Does this control INHERIT `Text` without ever painting it?
+///
+/// `Control.Text` exists on everything; drawing it is the individual control's
+/// business. A `Label` or `Button` is its caption, a `Form`'s is the window
+/// title, a `GroupBox`'s is its frame caption — and a `Panel`, a `TreeView` or
+/// a toolbar simply never shows one. Getting this wrong is not cosmetic: the
+/// property still round-trips (it lands on `data-text`), but PAINTING it puts
+/// the control's own name inside it and, for a composed control, replaces the
+/// chrome it was built with.
+fn text_is_unpainted(class_name: &str) -> bool {
+    matches!(
+        class_name.to_ascii_lowercase().as_str(),
+        "panel"
+            | "flowlayoutpanel"
+            | "tablelayoutpanel"
+            | "splitcontainer"
+            | "splitter"
+            | "tabcontrol"
+            | "treeview"
+            | "listview"
+            | "listbox"
+            | "checkedlistbox"
+            | "combobox"
+            | "picturebox"
+            | "progressbar"
+            | "trackbar"
+            | "hscrollbar"
+            | "vscrollbar"
+            | "monthcalendar"
+            | "datagridview"
+            | "datagrid"
+            | "propertygrid"
+            | "menustrip"
+            | "toolstrip"
+            | "statusstrip"
+            | "contextmenustrip"
+            | "bindingnavigator"
+            | "webbrowser"
+            | "usercontrol"
+    )
+}
+
 fn accessor_node(
     target: &vybe_runtime::component_model::HostTarget,
     prop: &str,
     is_control: bool,
+    class_name: &str,
 ) -> NamespaceNode {
     let setting = target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY;
     if is_control
@@ -506,6 +566,23 @@ fn accessor_node(
     {
         let role = match gui_property_role(prop) {
             "" => prop.to_ascii_lowercase(),
+            // **Most controls INHERIT `Text` and never draw it.** A designer
+            // writes one on everything it generates, so a container took its
+            // own name as content: a `<div>` reading `pnl1`, a `<ul>` reading
+            // `tvw1`, and — where the control is composed — a caption that
+            // REPLACED its chrome, since `textContent` replaces all children
+            // (DOM §4.4).
+            //
+            // Declared here because it is WinForms' own vocabulary: `Label`,
+            // `Button`, `CheckBox`, `GroupBox` and `Form` paint their `Text`
+            // and a `Panel` or `TreeView` does not. The shared role only has
+            // to know that this one is not painted.
+            //
+            // ⚠ `ListBox`/`ComboBox`/`CheckedListBox` are here for a second
+            // reason: their `Text` is the SELECTED item, and writing it as a
+            // text child of a `<select>` is invalid markup that would sit
+            // among the options.
+            "text" if text_is_unpainted(class_name) => "unpaintedtext".to_string(),
             r => r.to_string(),
         };
         let prefix = if setting {
@@ -585,8 +662,18 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // registrar's.
         "statusstrip" => "footer",
         "combobox" => "select",
-        "listbox" => "ul",
-        "treeview" => "ul",
+        // **A ListBox and a ComboBox are ONE element, one attribute apart.**
+        // HTML §4.10.7: a `<select>` with `size` above one is a list box,
+        // without it a dropdown. This was a `<ul>` — which renders items and
+        // has no selection model whatever, so a list could be looked at and not
+        // used, while the ComboBox beside it worked. `size` is the whole
+        // difference, and `SelectedIndex`/`SelectedItem`/`SelectedIndexChanged`
+        // now resolve against the same `<select>` surface the ComboBox uses.
+        "listbox" => "select;@size=4",
+        // A tree is a nested list, and an EMPTY one is still a control: the
+        // border and white field are what the user sees before a single node
+        // is added, and what a bare `<ul>` does not draw.
+        "treeview" => "ul;border:1px solid #c8c8c8;background-color:#ffffff;overflow:auto",
         // HTML has these outright, and they carry real semantics a `<div>`
         // cannot: a range input is keyboard-operable and `<progress>` is
         // announced as a progress indicator.
@@ -630,12 +717,27 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // and threw away the `Location`/`Size` the designer gave it, pushing
         // the first real control off the top of the form. A context menu is
         // attached to a control and shown on demand — it is not a bar.
-        "contextmenustrip" => "vybe-contextmenustrip",
+        // A context menu IS a `<menu>` — what differs from the bar is that it
+        // is not shown until something opens it, and `display:none` is how HTML
+        // says that. The custom tag was standing in for the DOCKING difference
+        // described below, which a declaration can state directly.
+        "contextmenustrip" => "menu;display:none;position:absolute",
         // Declared `vybe-*` custom elements. `control_kind` strips `vybe-` and
         // looks the remainder up against the widget list, so the TAG carries
         // the kind and these two land on real widgets that already exist
         // (`checkedlistbox`; `datagrid` folds onto `datagridview`).
-        "checkedlistbox" => "vybe-checkedlistbox",
+        // The same list, multi-select: HTML's own way to spell "several of
+        // these at once", and a strict improvement on the `<ul>` this was —
+        // items are shown AND selectable instead of only shown.
+        //
+        // ⚠ Not the whole control. A per-item CHECKBOX is the one thing
+        // `<select>` does not have, and `CheckedIndices`/`CheckedItems` are
+        // declared as property names with nothing registered behind them, so
+        // the checked API answers nothing on either mapping. Wiring it means
+        // deciding whether "checked" reads the selection or the control grows
+        // a `<ul>` of `<input type=checkbox>` — an open question, not something
+        // this mapping settles.
+        "checkedlistbox" => "select;@size=4;@multiple",
         // The legacy grid is the same control and takes the same element, or
         // the two spellings would render differently for no reason.
         "datagrid" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
@@ -643,15 +745,28 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // `vybe_widgets` grows one — the designed degradation, visible in a
         // capture instead of the control vanishing. The declaration still buys
         // construction, identity, geometry, text, events and data binding.
-        "propertygrid" => "vybe-propertygrid",
-        "splitter" => "vybe-splitter",
-        "domainupdown" => "vybe-domainupdown",
+        // A property grid is a two-column table of name/value rows, which is
+        // what a `<table>` is. Its rows arrive at runtime like a grid's.
+        "propertygrid" => "table;border-collapse:collapse;background-color:#ffffff",
+        // The bare drag bar (plib's `TSplitter`), not the two-panel container.
+        "splitter" => "div;background-color:#c8c8c8;cursor:col-resize",
+        // A text field you step through a list of strings with — the same
+        // control as `NumericUpDown` over words instead of numbers.
+        "domainupdown" => "input:text",
         // A UserControl is a plain composite container, and `<section>` is a
         // real element that already establishes a containing block.
         "usercontrol" => "section",
-        "hscrollbar" => "vybe-hscrollbar",
-        "vscrollbar" => "vybe-vscrollbar",
-        "bindingnavigator" => "vybe-bindingnavigator",
+        // **A scrollbar is a value in a range**, which is what `<input
+        // type=range>` IS — `Minimum`/`Maximum`/`Value`/`LargeChange` and the
+        // `Scroll` event map onto it one for one, the same way `TrackBar`
+        // already does. The vertical one says so in CSS rather than in a
+        // different tag: one control, one element, an axis.
+        "hscrollbar" => "input:range",
+        "vscrollbar" => "input:range;writing-mode:vertical-lr",
+        // A toolbar of buttons around a position box — the markup is declared
+        // in `default_markup_for_control`, which is what makes it a navigator
+        // rather than an empty strip.
+        "bindingnavigator" => "menu;display:flex;align-items:center;gap:2px",
         // ⚠ `vybe-splitter`, not `vybe-splitcontainer`, made this a LABEL.
         // The tag carries the kind: `control_kind` strips `vybe-` and looks the
         // remainder up against the widget list, which spells it
@@ -659,10 +774,16 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // label — so a mapping that renames the control silently deletes it.
         // plib's `TSplitter` is a different control (a bare drag bar); this one
         // is WinForms' two-panel container.
-        "splitcontainer" => "vybe-splitcontainer",
-        "tabcontrol" => "vybe-tabcontrol",
-        "tabpage" => "vybe-tabpage",
-        "timer" => "vybe-timer",
+        // Two panes and a splitter, declared as markup — a flex row whose
+        // children ARE `Panel1` and `Panel2`.
+        "splitcontainer" => "div;display:flex;flex-direction:row",
+        // A tab strip over a page. Both are ordinary containers; which page
+        // shows is a `display` question the control answers at runtime.
+        "tabcontrol" => "div;display:flex;flex-direction:column;border:1px solid #c8c8c8;background-color:#ffffff",
+        "tabpage" => "section",
+        // A Timer is a `components` member like the providers below: present and
+        // scriptable, never painted.
+        "timer" => "div;display:none",
 
         // ── The layout panels ──────────────────────────────────────────────
         // **Neither is a control — both are a `<div>` and a `display` mode.**
@@ -744,9 +865,13 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // `border-collapse` is the grid look: one line between cells rather
         // than two, which is what a data grid draws.
         "datagridview" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
-        // No HTML counterpart, but a real widget behind the name.
-        "listview" => "vybe-listview",
-        "monthcalendar" => "vybe-monthcalendar",
+        // A ListView in its Details mode is a table with a header row, which is
+        // what `DataGridView` above already resolves to and what its `Columns`
+        // and `Items` append into. The other view modes are a `display`
+        // difference over the same items, not a different control.
+        "listview" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
+        // A month grid — the chrome is declared in `default_markup_for_control`.
+        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff",
 
         // ── Non-visual components and the dialogs ──────────────────────────
         // A Timer, ToolTip or file dialog is a member of the form, not a box
@@ -769,17 +894,34 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // right, the widget is a later job. When that widget lands, the only
         // change needed is a `control_kind` arm; this mapping stays.
         "webbrowser" => "iframe",
-        "imagelist" => "vybe-imagelist",
-        "tooltip" => "vybe-tooltip",
-        "notifyicon" => "vybe-notifyicon",
-        "errorprovider" => "vybe-errorprovider",
-        "helpprovider" => "vybe-helpprovider",
-        "backgroundworker" => "vybe-backgroundworker",
-        "openfiledialog" => "vybe-openfiledialog",
-        "savefiledialog" => "vybe-savefiledialog",
-        "folderbrowserdialog" => "vybe-folderbrowserdialog",
-        "colordialog" => "vybe-colordialog",
-        "fontdialog" => "vybe-fontdialog",
+        // **"Renders nothing" is a CSS answer, not a tag we had to invent.**
+        // `display: none` is HTML's own way to say a node is present, scriptable
+        // and unpainted — exactly what a `components` member is — and it needs
+        // no `customElements.define` for a real engine to honour it. These were
+        // `vybe-*` only because the widget side kept a `renders_nothing` list of
+        // tag names; a declaration says the same thing in the cascade, where a
+        // browser already reads it.
+        //
+        // An ImageList holds `<img>` children that are never shown, which is
+        // what a hidden container IS.
+        "imagelist" | "tooltip" | "notifyicon" | "errorprovider" | "helpprovider"
+        | "backgroundworker" => "div;display:none",
+        // **The file dialogs ARE `<input type=file>`.** A web page opens a file
+        // chooser by clicking a hidden file input — that is not a polyfill, it
+        // is how the platform exposes the OS chooser, and `ShowDialog` is that
+        // click. The control keeps its `FileName`/`Filter` surface; what it
+        // stops needing is a custom element standing in for a picker HTML has.
+        // (`control_kind` already maps `file` to the `fileinput` widget, and
+        // htmlbox draws the button-plus-label.)
+        "openfiledialog" | "savefiledialog" | "folderbrowserdialog" => "input:file;display:none",
+        // Likewise the colour chooser: `<input type=color>` IS one, with the
+        // swatch and the picker htmlbox already implements.
+        "colordialog" => "input:color;display:none",
+        // HTML has no font picker, but it does have the element a dialog IS.
+        // A `<dialog>` without `open` is not rendered (HTML §4.11.4), so this
+        // is invisible until something shows it — the control's own semantics,
+        // spelled by the element rather than by a list of tag names.
+        "fontdialog" => "dialog",
 
         // A `Panel` IS a `<div>` — a block container that draws a background
         // and holds children, which is the whole of what the control is. plib
@@ -850,10 +992,75 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
         field_gui: Vec::new(),
         ancestry: control_ancestry(class_name),
         control_fn: Some(element.to_string()),
+        inner_html: default_markup_for_control(class_name).map(str::to_string),
         // A WinForms control IS its element at construction; nothing to inflate.
         nest_coerce: None,
         value_equality: false,
     }
+}
+
+/// The chrome a composite control is BORN with, as HTML.
+///
+/// **.NET's own constructor builds these, which is why a designer file never
+/// does.** `BindingNavigator`'s ctor runs `AddStandardItems`; `SplitContainer`
+/// comes with `Panel1`/`Panel2` already there — `sc.Panel1.Controls.Add(x)`
+/// only works because the pane EXISTS; a `MonthCalendar` is a month grid the
+/// moment you make one. A declaration that could name only a tag left each of
+/// them one empty box, which is exactly how they rendered: a bare label with
+/// the control's name and nothing inside it.
+///
+/// Written as markup because the chrome IS static HTML. Every part is a real
+/// element — selectable, stylable, and able to take a listener — so wiring a
+/// navigator button to its `BindingSource` is `querySelector` + a listener,
+/// the same two calls a script would make. Children built from RUNTIME values
+/// stay with their adapter instead (`DataGridView`'s `Columns.Add`).
+///
+/// ⛔ No `id` anywhere: an id must be unique per document (DOM §4.9), and this
+/// template is instantiated once per control, so ids would collide the moment
+/// a form held two navigators and quietly break `getElementById` for both.
+/// The parts carry CLASSES, which are as addressable and stay valid.
+///
+/// The styling is the CONTROL's appearance, not HTML's — the same argument
+/// `datagrid_adapter` makes about its cell borders. It rides in the markup's
+/// own `style` attributes rather than the UA sheet, so it cascades normally
+/// and an author's later write simply overrides it.
+fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
+    Some(match class_name.to_ascii_lowercase().as_str() {
+        // The standard items, in WinForms' order: move-first, move-previous,
+        // the position box reading "N of M", move-next, move-last.
+        "bindingnavigator" => concat!(
+            "<button type='button' class='vybe-nav vybe-nav-first' style='min-width:24px'>|&#9664;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-prev' style='min-width:24px'>&#9664;</button>",
+            "<input type='text' class='vybe-nav-position' value='0 of 0'",
+            " style='width:64px;text-align:center;margin:0 4px'>",
+            "<button type='button' class='vybe-nav vybe-nav-next' style='min-width:24px'>&#9654;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-last' style='min-width:24px'>&#9654;|</button>"
+        ),
+        // Two panes and the splitter between them. `Panel1`/`Panel2` resolve to
+        // these, so they must exist before any code adds a control to one.
+        "splitcontainer" => concat!(
+            "<div class='vybe-split-panel1' style='flex:1 1 50%;overflow:auto'></div>",
+            "<div class='vybe-splitter' style='flex:0 0 4px;background-color:#c8c8c8;cursor:col-resize'></div>",
+            "<div class='vybe-split-panel2' style='flex:1 1 50%;overflow:auto'></div>"
+        ),
+        // A caption with its two arrows, the weekday initials, and a day grid.
+        // Static chrome only — which month it shows and which day is selected
+        // are VALUES, so they are written by the control, not baked in here.
+        "monthcalendar" => concat!(
+            "<div class='vybe-cal-header' style='display:flex;justify-content:space-between;align-items:center'>",
+            "<button type='button' class='vybe-cal-prev'>&#9664;</button>",
+            "<span class='vybe-cal-title'></span>",
+            "<button type='button' class='vybe-cal-next'>&#9654;</button>",
+            "</div>",
+            "<table class='vybe-cal-grid' style='width:100%;border-collapse:collapse'>",
+            "<thead><tr>",
+            "<th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th><th>S</th>",
+            "</tr></thead>",
+            "<tbody class='vybe-cal-days'></tbody>",
+            "</table>"
+        ),
+        _ => return None,
+    })
 }
 
 /// Does this class DESCEND FROM `Control` — i.e. is it a control at all?
@@ -974,33 +1181,48 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             // owns. Both directions are declared together on purpose — a read
             // and a write that disagree about the storage shape is the bug the
             // pair was gated to avoid.
-            ("item", rw("dotnet.sb_index_get", "dotnet.sb_index_set")),
-            ("length", rw("dotnet.sb_length", "dotnet.sb_set_length")),
-            (
-                "capacity",
-                rw("dotnet.sb_capacity", "dotnet.sb_set_capacity"),
-            ),
-            ("maxcapacity", ro("dotnet.sb_max_capacity")),
+            ("Item", rw("dotnet.sb_index_get", "dotnet.sb_index_set")),
+            ("Length", rw("dotnet.sb_length", "dotnet.sb_set_length")),
+            ("Capacity", rw("dotnet.sb_capacity", "dotnet.sb_set_capacity")),
+            ("MaxCapacity", ro("dotnet.sb_max_capacity")),
+        ],
+        // `Lazy(Of T)` — READ-ONLY computed properties, which is what makes
+        // `.Value` run the factory on first read. An eager struct field could
+        // not keep `IsValueCreated` False until someone asks.
+        "lazy" => vec![
+            ("Value", ro("dotnet.lazy_value")),
+            ("IsValueCreated", ro("dotnet.lazy_is_value_created")),
         ],
         "stopwatch" => vec![
-            ("elapsedmilliseconds", ro("dotnet.stopwatch_elapsed_ms")),
-            ("elapsedticks", ro("dotnet.stopwatch_elapsed_ticks")),
-            ("elapsed", ro("dotnet.stopwatch_elapsed")),
-            ("isrunning", ro("dotnet.stopwatch_is_running")),
+            ("ElapsedMilliseconds", ro("dotnet.stopwatch_elapsed_ms")),
+            ("ElapsedTicks", ro("dotnet.stopwatch_elapsed_ticks")),
+            ("Elapsed", ro("dotnet.stopwatch_elapsed")),
+            ("IsRunning", ro("dotnet.stopwatch_is_running")),
         ],
         "task" => vec![
-            ("result", ro("dotnet.task_result")),
-            ("iscompleted", ro("dotnet.task_is_completed")),
-            ("iscanceled", ro("dotnet.task_is_canceled")),
+            ("Result", ro("dotnet.task_result")),
+            ("IsCompleted", ro("dotnet.task_is_completed")),
+            ("IsCanceled", ro("dotnet.task_is_canceled")),
         ],
-        "list" | "arraylist" => vec![("capacity", ro("dotnet.list_capacity"))],
+        "list" | "arraylist" => vec![("Capacity", ro("dotnet.list_capacity"))],
+        // `MemoryStream` — every one of these is DERIVED. `Length` changes on
+        // each write, `Position` is the cursor, and `Capacity`'s setter has to
+        // resize the backing store and can refuse.
+        "memorystream" => vec![
+            ("Capacity", rw("dotnet.ms_capacity", "dotnet.ms_set_capacity")),
+            ("Length", ro("dotnet.ms_length")),
+            ("Position", rw("dotnet.ms_position", "dotnet.ms_set_position")),
+            ("CanRead", ro("dotnet.ms_can_read")),
+            ("CanWrite", ro("dotnet.ms_can_write")),
+            ("CanSeek", ro("dotnet.ms_can_seek")),
+        ],
         // The two members a cursor cannot store — both are derived from
         // whatever `DataSource` currently points at, so a field would go stale
         // the moment the source changed. `Position`, `DataMember`, `Filter` and
         // `Sort` are NOT here: those are real fields the constructor writes.
         "bindingsource" => vec![
-            ("count", ro("dotnet.bindingsource_count")),
-            ("current", ro("dotnet.bindingsource_current")),
+            ("Count", ro("dotnet.bindingsource_count")),
+            ("Current", ro("dotnet.bindingsource_current")),
         ],
         // ── Strips and their items ─────────────────────────────────────────
         // `Items` IS the strip: WinForms wraps the contents in a
@@ -1025,10 +1247,18 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         | "contextmenustrip"
         | "toolstripmenuitem"
         | "toolstripdropdownitem" => vec![
-            ("items", ro("dotnet.self")),
-            ("dropdownitems", ro("dotnet.self")),
+            ("Items", ro("dotnet.self")),
+            ("DropDownItems", ro("dotnet.self")),
+            // ⚠ The DECLARED .NET spelling. These read `"add"` / `"capacity"`
+            // while every sibling here reads `Items` / `Length` / `MaxCapacity`,
+            // which is the fold the tree used to require: a lowercase key was
+            // the only kind a `get(&name.to_lowercase())` could ever find.
+            // Exact-first lookup made that a liability rather than a rule — C#
+            // writes `Add` and now MISSES the exact key, resolving only because
+            // `fold_get` tries the fold afterwards. Correct spelling means C#
+            // hits directly and VB still folds to it (casesensitivityplan §5d).
             (
-                "add",
+                "Add",
                 namespaces::overloads(vec![(
                     2,
                     emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT),
@@ -1045,15 +1275,15 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // Aliasing them to one `Add` the way the strips do would make a column
         // and a row the same thing, which is exactly what they are not.
         "datagridview" | "datagrid" => vec![
-            ("columns", ro("dotnet.self")),
-            ("rows", ro("dotnet.self")),
+            ("Columns", ro("dotnet.self")),
+            ("Rows", ro("dotnet.self")),
         ],
         // The two collection types the members above read back as. They hold
         // nothing and are never constructed — they exist so that `Add` has
         // somewhere to be found, and so that it can be a DIFFERENT `Add` on
         // each. Arity counts the receiver.
         "datagridviewcolumncollection" => vec![(
-            "add",
+            "Add",
             namespaces::overloads(vec![
                 (2, emit("dotnet.datagrid_add_column")),
                 (3, emit("dotnet.datagrid_add_column")),
@@ -1064,7 +1294,7 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // reads `argc` to know how many cells to build. Eight is a stated
         // ceiling — beyond it the call is not found, which is the loud answer.
         "datagridviewrowcollection" => vec![(
-            "add",
+            "Add",
             namespaces::overloads(
                 (1..=9)
                     .map(|argc| (argc, emit("dotnet.datagrid_add_row")))
@@ -1102,12 +1332,14 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         let ro = |name: &str| {
             namespaces::property(Some(NamespaceNode::CommonEmit(name.to_string())), None)
         };
-        out.push(("controls".to_string(), ro("dotnet.self")));
+        // `Controls` and `Add`, in the spelling .NET declares — see the note
+        // on the strips above.
+        out.push(("Controls".to_string(), ro("dotnet.self")));
         // Arity counts the receiver, as every other node here does — a bare
         // `CommonEmit` leaf is found as a NAME and then not called, which is
         // the fault already recorded on `Hide`.
         out.push((
-            "add".to_string(),
+            "Add".to_string(),
             namespaces::overloads(vec![(
                 2,
                 NamespaceNode::CommonEmit(
@@ -1137,8 +1369,8 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
         | "contextmenustrip"
         | "toolstripmenuitem"
         | "toolstripdropdownitem" => &[
-            ("items", "ToolStripMenuItem"),
-            ("dropdownitems", "ToolStripMenuItem"),
+            ("Items", "ToolStripMenuItem"),
+            ("DropDownItems", "ToolStripMenuItem"),
         ],
         // ⚠ Two DIFFERENT types, where the strips above alias one. A strip and
         // its item are the same `<menu>` element, so a single member set serves
@@ -1146,8 +1378,8 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
         // build different elements. Declaring one type for both would silently
         // make `Rows.Add` append a `<th>`.
         "datagridview" | "datagrid" => &[
-            ("columns", "DataGridViewColumnCollection"),
-            ("rows", "DataGridViewRowCollection"),
+            ("Columns", "DataGridViewColumnCollection"),
+            ("Rows", "DataGridViewRowCollection"),
         ],
         _ => &[],
     }

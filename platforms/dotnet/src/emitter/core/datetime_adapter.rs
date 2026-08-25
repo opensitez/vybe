@@ -198,6 +198,13 @@ fn emit_day_of_week_object(chunks: &mut Vec<Chunk>, current: usize, dow_slot: u1
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     struct_set_named_field_drop(chunk, "value", line);
+    // The enum's NUMERIC value. `Value`/`value` hold the NAME, because that is
+    // what `CStr(d.DayOfWeek)` must print, so a consumer that needs the index —
+    // `datetime_format_adapter`, for `ddd`/`dddd` — had nothing to read and
+    // multiplied a string by the name width.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dow_slot, line);
+    struct_set_named_field_drop(chunk, "__index", line);
     bind_value_to_string(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -319,13 +326,18 @@ fn emit_wrap_ms_internal(
     push_const(chunk, Value::String(Arc::from("Unspecified")), line);
     struct_set_named_field_drop(chunk, "kind", line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    push_const(chunk, Value::F64(10_000.0), line);
-    chunk.emit_op(Op::F64_MUL, line);
-    push_const(chunk, Value::F64(621_355_968_000_000_000.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    struct_set_named_field_drop(chunk, "Ticks", line);
+    // ⛔ BOTH spellings, like `Kind`/`kind` above and the component loop below:
+    // a case-insensitive frontend folds the member name, so a PascalCase-only
+    // field is invisible to it — and reads `undefined` rather than erroring.
+    for spelling in ["Ticks", "ticks"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+        push_const(chunk, Value::F64(10_000.0), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        push_const(chunk, Value::F64(621_355_968_000_000_000.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
 
     for (field, slot) in [
         ("Year", year_slot),
@@ -344,20 +356,24 @@ fn emit_wrap_ms_internal(
         struct_set_named_field_drop(chunk, &field.to_ascii_lowercase(), line);
     }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, year_start_slot, line);
-    chunk.emit_op(Op::F64_SUB, line);
-    push_const(
-        chunk,
-        Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY),
-        line,
-    );
-    chunk.emit_op(Op::F64_DIV, line);
-    chunk.emit_op(Op::F64_TRUNC, line);
-    push_const(chunk, Value::I32(1), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    struct_set_named_field_drop(chunk, "DayOfYear", line);
+    // Both spellings — `DayOfYear` was PascalCase-only, the same silent gap
+    // `Ticks` had.
+    for spelling in ["DayOfYear", "dayofyear"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, year_start_slot, line);
+        chunk.emit_op(Op::F64_SUB, line);
+        push_const(
+            chunk,
+            Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY),
+            line,
+        );
+        chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_op(Op::F64_TRUNC, line);
+        push_const(chunk, Value::I32(1), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     emit_day_of_week_object(chunks, current, dow_slot, line);
@@ -453,24 +469,6 @@ pub fn emit_datetime_now(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 pub fn emit_datetime_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     call_import(chunks, current, "ecma:date", "parse", 1, line);
     emit_wrap_ms(chunks, current, line);
-}
-
-pub fn emit_datetime_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    call_import(chunks, current, "ecma:date", "parse", 1, line);
-    let chunk = &mut chunks[current];
-    let ms_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    chunk.emit_op(Op::F64_NE, line);
-    // Value-typed: both arms leave the parse result. Was `emit_if` (void),
-    // which discarded it — the same trap as `emit_compare_numeric_slots`.
-    chunk.emit_if_value(line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    emit_wrap_ms(chunks, current, line);
-    chunks[current].emit_end(line);
 }
 
 /// `DateTime.Today` — synonym for `Now` in .NET (returns midnight of
@@ -875,21 +873,12 @@ pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Static `DateTime.Compare(a, b)` — the same comparison as
-/// [`emit_datetime_compare`], with the two operands exchanged first because a
-/// static `MethodBody::Common` delivers them in the opposite stack order from
-/// an instance one. Both shapes are declared on the DateTime component class
-/// (`static_method("Compare", 2)` and `new("CompareTo", 1)`), so one body
-/// cannot serve both.
+/// [`emit_datetime_compare`].
+///
+/// ⛔ Do NOT exchange the operands. Static and instance shapes BOTH push
+/// left-to-right, and `emit_datetime_compare` pops `right` then `left`, which
+/// is correct for each; a swap here inverts every static answer.
 pub fn emit_datetime_compare_static(chunks: &mut [Chunk], current: usize, line: u32) {
-    {
-        let chunk = &mut chunks[current];
-        let first_slot = chunk.alloc_scratch(2);
-        let second_slot = first_slot + 1;
-        chunk.emit_op_u16(Op::LOCAL_SET, first_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, second_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, first_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, second_slot, line);
-    }
     emit_datetime_compare(chunks, current, line);
 }
 
@@ -1240,9 +1229,30 @@ fn bind_datetime_compare(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16,
     method.local_count = 2;
     let time_key = method.add_constant(Value::String(Arc::from(TIME_KEY)));
 
-    let load_time = |method: &mut Chunk, local: u16| {
+    // ⛔ A NULL operand is `Nothing`, and `Nothing` for a VALUE TYPE is its
+    // DEFAULT — `DateTime.MinValue` — not "no answer". Reading `__time` off
+    // null yielded `undefined`, both `<` and `>` answered false, and the
+    // method returned 0: "equal". Every `d = Nothing` was therefore TRUE and
+    // every `d <> Nothing` FALSE, which is what made `DateTime.TryParse(s, d)`
+    // report failure on a date it had just parsed correctly —
+    // `lowering::try_parse_desugar` asks exactly that question.
+    //
+    // ⛔ It hid behind a walk-time fold: on a LITERAL the VB walker computes
+    // the comparison itself and answers correctly, so the defect only shows
+    // with a value the walker cannot see through.
+    let load_time = move |method: &mut Chunk, local: u16| {
+        method.emit_op_u16(Op::LOCAL_GET, local, line);
+        method.emit_op(Op::REF_IS_NULL, line);
+        method.emit_if_value(line);
+        push_const(
+            method,
+            Value::F64(vybe_compiler::primitives::datetime::DOTNET_DATETIME_MIN_UNIX_MS),
+            line,
+        );
+        method.emit_else(line);
         method.emit_op_u16(Op::LOCAL_GET, local, line);
         method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
+        method.emit_end(line);
     };
 
     load_time(&mut method, 0);
@@ -1328,92 +1338,31 @@ fn emit_concat(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(concat, 2, line);
 }
 
-pub fn emit_datetime_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let obj_slot = chunk.alloc_scratch(3);
-    let format_slot = obj_slot + 1;
-    let iso_slot = obj_slot + 2;
-    if argc >= 3 {
-        chunk.emit_op(Op::DROP, line);
-    }
-    if argc >= 2 {
-        chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
-    }
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    emit_iso_string_from_datetime_obj(chunks, current, obj_slot, line);
-    if argc >= 2 {
+/// `value.ToString([format[, provider]])`.
+///
+/// The pattern is interpreted by `datetime_format_adapter`. No format at all
+/// is `"G"`, .NET's general pattern.
+pub fn emit_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::LOCAL_SET, iso_slot, line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("yyyy/MM/dd")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 4, line);
-        push_const(chunk, Value::String(Arc::from("/")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 5, 7, line);
-        emit_concat(chunk, line);
-        push_const(chunk, Value::String(Arc::from("/")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 8, 10, line);
-        emit_concat(chunk, line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("yyyy-MM-dd")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 10, line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("yyyy-MM-dd HH:mm")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 10, line);
-        push_const(chunk, Value::String(Arc::from(" ")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 11, 16, line);
-        emit_concat(chunk, line);
-        chunk.emit_else(line);
-
-        // dd/MM/yyyy — day-first; the ISO slices reversed.
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("dd/MM/yyyy")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 8, 10, line);
-        push_const(chunk, Value::String(Arc::from("/")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 5, 7, line);
-        emit_concat(chunk, line);
-        push_const(chunk, Value::String(Arc::from("/")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 4, line);
-        emit_concat(chunk, line);
-        chunk.emit_else(line);
-
-        // HH:mm:ss — the ISO time half verbatim.
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("HH:mm:ss")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 11, 19, line);
-        chunk.emit_else(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 19, line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
+        let obj_slot = chunk.alloc_scratch(2);
+        let fmt_slot = obj_slot + 1;
+        // A provider argument beyond the format sits on TOP; the invariant
+        // culture is the only one this surface renders.
+        for _ in 2..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        if argc >= 2 {
+            chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+        } else {
+            push_const(chunk, Value::String(Arc::from("G")), line);
+            chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+        }
+        chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     }
+    super::datetime_format_adapter::emit_date_format(chunks, current, line);
 }
 
 pub fn emit_datetime_parse_exact(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -1486,6 +1435,13 @@ fn bind_datetimeoffset_roles(chunks: &mut Vec<Chunk>, current: usize, obj_slot: 
         tostring_idx,
         line,
     );
+
+    // `CompareTo` and the `Compare` SLOT the relational operators read. The
+    // DateTimeOffset object stores `__time` as the UTC instant, which is
+    // exactly what .NET compares two offsets by, so DateTime's body is the
+    // right one — it was simply never bound here, leaving `a > b` and
+    // `a.CompareTo(b)` unanswered on an offset.
+    bind_datetime_compare(chunks, current, obj_slot, line);
 }
 
 fn emit_datetimeoffset_wrap_utc_offset(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -1516,6 +1472,9 @@ fn emit_datetimeoffset_wrap_utc_offset(chunks: &mut Vec<Chunk>, current: usize, 
     chunk.emit_op_u16(Op::LOCAL_GET, offset_ms_slot, line);
     struct_set_named_field_drop(chunk, "__offset_ms", line);
 
+    // ⛔ EVERY property in BOTH spellings, as `emit_wrap_ms_internal` writes
+    // DateTime's. A case-insensitive frontend reads a member FOLDED — VB emits
+    // `struct.get (hour)` for `dto.Hour` — so PascalCase alone is invisible.
     for field in [
         "Year",
         "Month",
@@ -1525,32 +1484,53 @@ fn emit_datetimeoffset_wrap_utc_offset(chunks: &mut Vec<Chunk>, current: usize, 
         "Second",
         "Millisecond",
         "DayOfYear",
+        "DayOfWeek",
+        "TimeOfDay",
         "Ticks",
     ] {
-        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-        emit_named_field_from_obj(chunk, local_dt_slot, field, line);
-        struct_set_named_field_drop(chunk, field, line);
+        for spelling in [field.to_string(), field.to_ascii_lowercase()] {
+            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+            emit_named_field_from_obj(chunk, local_dt_slot, field, line);
+            struct_set_named_field_drop(chunk, &spelling, line);
+        }
     }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, local_dt_slot, line);
-    struct_set_named_field_drop(chunk, "DateTime", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    // ⛔ NOT `LocalDateTime`. `DateTimeOffset.DateTime` is the offset-local
+    // clock reading, which is what `local_dt` holds; `LocalDateTime` is
+    // `UtcDateTime.ToLocalTime()` — the SYSTEM zone, Kind=Local — and the two
+    // agree only when the system zone happens to equal the offset. Left
+    // unregistered rather than aliased to the wrong value.
+    for spelling in ["DateTime", "datetime"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, local_dt_slot, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
     emit_named_field_from_obj(chunk, local_dt_slot, "Date", line);
     let date_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     bind_datetime_date_to_string(chunks, current, date_slot, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, date_slot, line);
-    struct_set_named_field_drop(chunk, "Date", line);
+    for spelling in ["Date", "date"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, date_slot, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    // ⛔ Each composite is BUILT ONCE into a slot, then written under both
+    // spellings. Building per spelling runs `emit_wrap_ms` twice, and every
+    // extra `alloc_scratch` here aliases the CALLER's named locals.
+    let offset_ts_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, offset_ms_slot, line);
     timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
-    struct_set_named_field_drop(chunk, "Offset", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, offset_ts_slot, line);
+    for spelling in ["Offset", "offset"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, offset_ts_slot, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, utc_ms_slot, line);
+    let utc_dt_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, utc_ms_slot, line);
     emit_wrap_ms(chunks, current, line);
     let chunk = &mut chunks[current];
     core_wasm::dup(chunk, line);
@@ -1559,7 +1539,12 @@ fn emit_datetimeoffset_wrap_utc_offset(chunks: &mut Vec<Chunk>, current: usize, 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Utc")), line);
     struct_set_named_field_drop(chunk, "kind", line);
-    struct_set_named_field_drop(chunk, "UtcDateTime", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, utc_dt_slot, line);
+    for spelling in ["UtcDateTime", "utcdatetime"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, utc_dt_slot, line);
+        struct_set_named_field_drop(chunk, spelling, line);
+    }
 
     bind_datetimeoffset_roles(chunks, current, obj_slot, line);
 
@@ -1678,20 +1663,75 @@ pub fn emit_datetimeoffset_try_parse(chunks: &mut Vec<Chunk>, current: usize, li
     chunks[current].emit_end(line);
 }
 
-pub fn emit_datetimeoffset_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+/// `dto.Add<Unit>(n)` — shift the UTC instant by `n * unit_ms` and rebuild at
+/// the SAME offset, which is what .NET does: the offset is a property of the
+/// value, not of the instant.
+///
+/// The unit is the only thing that varies, so all six share this body.
+fn emit_datetimeoffset_add_scaled(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    unit_ms: f64,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
-    let hours_slot = chunk.alloc_scratch(2);
-    let obj_slot = hours_slot + 1;
-    chunk.emit_op_u16(Op::LOCAL_SET, hours_slot, line);
+    let amount_slot = chunk.alloc_scratch(2);
+    let obj_slot = amount_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, amount_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_named_field_from_obj(chunk, obj_slot, TIME_KEY, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
-    push_const(
-        chunk,
-        Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
+    chunk.emit_op_u16(Op::LOCAL_GET, amount_slot, line);
+    push_const(chunk, Value::F64(unit_ms), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    emit_named_field_from_obj(chunk, obj_slot, "__offset_ms", line);
+    emit_datetimeoffset_wrap_utc_offset(chunks, current, line);
+}
+
+pub fn emit_datetimeoffset_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(
+        chunks,
+        current,
+        vybe_compiler::primitives::datetime::MS_PER_HOUR,
         line,
     );
-    chunk.emit_op(Op::F64_MUL, line);
+}
+
+pub fn emit_datetimeoffset_add_days(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(
+        chunks,
+        current,
+        vybe_compiler::primitives::datetime::MS_PER_DAY,
+        line,
+    );
+}
+
+pub fn emit_datetimeoffset_add_minutes(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(chunks, current, 60_000.0, line);
+}
+
+pub fn emit_datetimeoffset_add_seconds(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(chunks, current, 1_000.0, line);
+}
+
+pub fn emit_datetimeoffset_add_milliseconds(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(chunks, current, 1.0, line);
+}
+
+/// `dto.AddTicks(n)` — 100-nanosecond units, .NET's own resolution.
+pub fn emit_datetimeoffset_add_ticks(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_datetimeoffset_add_scaled(chunks, current, 0.000_1, line);
+}
+
+/// `dto.Add(timespan)`.
+pub fn emit_datetimeoffset_add_timespan(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let ts_slot = chunk.alloc_scratch(2);
+    let obj_slot = ts_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, ts_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    emit_named_field_from_obj(chunk, obj_slot, TIME_KEY, line);
+    emit_timespan_total_ms_from_obj(chunk, ts_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_named_field_from_obj(chunk, obj_slot, "__offset_ms", line);
     emit_datetimeoffset_wrap_utc_offset(chunks, current, line);
@@ -1811,66 +1851,37 @@ fn emit_offset_text_from_slot(chunk: &mut Chunk, offset_ms_slot: u16, line: u32)
     emit_concat(chunk, line);
 }
 
-pub fn emit_datetimeoffset_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let obj_slot = chunks[current].alloc_scratch(5);
-    let format_slot = obj_slot + 1;
-    let iso_slot = obj_slot + 2;
-    let offset_ms_slot = obj_slot + 3;
-    let local_dt_slot = obj_slot + 4;
-
+/// `dto.ToString([format])` — the same interpreter as `DateTime`'s.
+///
+/// The offset object carries `Year`/`Month`/… and `__offset_ms`, which is all
+/// `zzz` needs, so there is no second implementation to keep in step. Its
+/// no-format rendering is .NET's general pattern plus the offset.
+pub fn emit_datetimeoffset_to_string(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
-        if argc >= 3 {
+        let obj_slot = chunk.alloc_scratch(2);
+        let fmt_slot = obj_slot + 1;
+        for _ in 2..argc {
             chunk.emit_op(Op::DROP, line);
         }
         if argc >= 2 {
-            chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+        } else {
+            push_const(
+                chunk,
+                Value::String(Arc::from("M/d/yyyy h:mm:ss tt zzz")),
+                line,
+            );
+            chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
         }
         chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-
-        emit_named_field_from_obj(chunk, obj_slot, "DateTime", line);
-        chunk.emit_op_u16(Op::LOCAL_SET, local_dt_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     }
-    emit_iso_string_from_datetime_obj(chunks, current, local_dt_slot, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, iso_slot, line);
-    emit_named_field_from_obj(chunk, obj_slot, "__offset_ms", line);
-    chunk.emit_op_u16(Op::LOCAL_SET, offset_ms_slot, line);
-
-    if argc >= 2 {
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(
-            chunk,
-            Value::String(Arc::from("yyyy-MM-dd HH:mm zzz")),
-            line,
-        );
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 10, line);
-        push_const(chunk, Value::String(Arc::from(" ")), line);
-        emit_concat(chunk, line);
-        emit_substring_from_slot(chunk, iso_slot, 11, 16, line);
-        emit_concat(chunk, line);
-        push_const(chunk, Value::String(Arc::from(" ")), line);
-        emit_concat(chunk, line);
-        emit_offset_text_from_slot(chunk, offset_ms_slot, line);
-        emit_concat(chunk, line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("o")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 19, line);
-        emit_offset_text_from_slot(chunk, offset_ms_slot, line);
-        emit_concat(chunk, line);
-        chunk.emit_else(line);
-        emit_substring_from_slot(chunk, iso_slot, 0, 19, line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-    } else {
-        emit_substring_from_slot(chunk, iso_slot, 0, 19, line);
-    }
+    super::datetime_format_adapter::emit_date_format(chunks, current, line);
 }

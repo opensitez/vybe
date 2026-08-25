@@ -641,6 +641,161 @@ pub fn instance_method_return_type(class_name: &str, method_name: &str) -> Optio
 
 fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("TimeZoneInfo") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "getutcoffset" => Some("TimeSpan".into()),
+            "isdaylightsavingtime" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    // ── Value types and builders ──────────────────────────────────────────
+    //
+    // A leaf that does not say what it RETURNS ends the chain: the value it
+    // produces is untyped, so the next member resolves against nothing. These
+    // are the classes whose methods return their own type (or another declared
+    // one), which is what makes `d.AddDays(1).AddHours(2).ToString("s")` and
+    // `sb.Append(x).AppendLine(y)` resolve past the first hop.
+    if class.eq_ignore_ascii_case("DateTime") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "adddays" | "addhours" | "addminutes" | "addseconds"
+            | "addmilliseconds" | "addmonths" | "addyears" | "addticks" | "date"
+            | "touniversaltime" | "tolocaltime" | "fromoadate" | "frombinary"
+            | "fromfiletimeutc" | "specifykind" | "parse" | "parseexact" | "now" | "utcnow"
+            | "today" | "minvalue" | "maxvalue" => Some("DateTime".into()),
+            "subtract" | "timeofday" => Some("TimeSpan".into()),
+            "tostring" | "toshortdatestring" | "tolongdatestring" | "toshorttimestring"
+            | "tolongtimestring" => Some("String".into()),
+            "compareto" | "compare" | "year" | "month" | "day" | "hour" | "minute" | "second"
+            | "millisecond" | "dayofyear" | "daysinmonth" => Some("Int32".into()),
+            "equals" | "isleapyear" | "isdaylightsavingtime" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeSpan") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "subtract" | "negate" | "duration" | "fromdays" | "fromhours"
+            | "fromminutes" | "fromseconds" | "frommilliseconds" | "fromticks" | "parse"
+            | "minvalue" | "maxvalue" | "multiply" | "divide" => Some("TimeSpan".into()),
+            "tostring" => Some("String".into()),
+            "compareto" | "compare" | "days" | "hours" | "minutes" | "seconds"
+            | "milliseconds" => Some("Int32".into()),
+            "equals" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "adddays" | "addhours" | "addminutes" | "addseconds"
+            | "addmilliseconds" | "addmonths" | "addyears" | "addticks" | "touniversaltime"
+            | "tolocaltime" | "parse" | "now" | "utcnow" => Some("DateTimeOffset".into()),
+            "subtract" | "offset" => Some("TimeSpan".into()),
+            "datetime" | "utcdatetime" | "localdatetime" | "date" => Some("DateTime".into()),
+            "tostring" => Some("String".into()),
+            "compareto" | "compare" => Some("Int32".into()),
+            "equals" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("List") || class.eq_ignore_ascii_case("ArrayList") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "getrange" | "findall" | "convertall" | "toarray" | "tolist" | "asreadonly"
+            | "distinct" | "where" | "select" | "orderby" | "orderbydescending" | "take"
+            | "skip" | "reverse" | "concat" => Some("List".into()),
+            "tostring" => Some("String".into()),
+            "count" | "capacity" | "indexof" | "lastindexof" | "findindex"
+            | "findlastindex" | "binarysearch" | "removeall" => Some("Int32".into()),
+            "contains" | "exists" | "trueforall" | "any" | "all" | "remove" => {
+                Some("Boolean".into())
+            }
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Dictionary") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "keys" | "values" | "entries" | "entriessorted" => Some("List".into()),
+            "tostring" => Some("String".into()),
+            "count" => Some("Int32".into()),
+            "containskey" | "containsvalue" | "tryadd" | "remove" | "trygetvalue" => {
+                Some("Boolean".into())
+            }
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Uri") || class.eq_ignore_ascii_case("UriBuilder") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "uri" => Some("Uri".into()),
+            "tostring" | "absoluteuri" | "absolutepath" | "host" | "scheme" | "query"
+            | "fragment" | "localpath" | "authority" | "pathandquery" | "originalstring"
+            | "getleftpart" | "unescapedatastring" | "escapedatastring" => Some("String".into()),
+            "port" => Some("Int32".into()),
+            "isabsoluteuri" | "isdefaultport" | "isfile" | "isloopback" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Version") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "parse" => Some("Version".into()),
+            "tostring" => Some("String".into()),
+            "major" | "minor" | "build" | "revision" | "compareto" => Some("Int32".into()),
+            "equals" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Guid") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "newguid" | "parse" | "empty" => Some("Guid".into()),
+            "tostring" => Some("String".into()),
+            "equals" => Some("Boolean".into()),
+            "compareto" => Some("Int32".into()),
+            _ => None,
+        };
+    }
+    // ── System.String ─────────────────────────────────────────────────────
+    //
+    // A leaf is not complete until it declares what it RETURNS. `s.Trim()`
+    // resolved fine and `s.Trim().Substring(0, 5)` did not, because the value
+    // `Trim` produced carried no type and the next hop had nothing to resolve
+    // against — the same failure as the XML and ADO chains below.
+    //
+    // It only became visible when the `[value_methods]` rows came out: a
+    // profile row answers on ANY receiver, so while it shadowed these leaves
+    // the missing return type could not be observed.
+    if class.eq_ignore_ascii_case("String") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "trim" | "trimstart" | "trimend" | "toupper" | "tolower" | "substring" | "replace"
+            | "insert" | "remove" | "padleft" | "padright" | "tostring" | "normalize" => {
+                Some("String".into())
+            }
+            // ⛔ NOT `String()`. The array spelling makes the VB walker treat
+            // the local as an array and rewrite `.Length` — the same trap the
+            // `XElement.Elements()` note below records. Left undeclared until
+            // there is a sequence spelling that does not retype the local.
+            "indexof" | "lastindexof" | "indexofany" | "lastindexofany" | "compareto"
+            | "length" => Some("Int32".into()),
+            "contains" | "startswith" | "endswith" | "equals" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    // ── System.Xml.Linq ───────────────────────────────────────────────────
+    //
+    // Same failure as the ADO chains below, one layer up: the methods were
+    // declared, what they RETURN was not. `Dim c = d.Elements()` bound a value
+    // with no type, so `c.First()` could not reach the shared `IEnumerable`
+    // surface and died as `RuntimeError: null` — while `c.Length` answered 2,
+    // because a raw property read needs no type.
+    if class.eq_ignore_ascii_case("XElement") || class.eq_ignore_ascii_case("XDocument") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            // ⛔ `IEnumerable`, NOT `XElement()`. The array spelling also
+            // satisfies the dotnet resolver, but it makes the VB walker treat
+            // the local as an array and rewrite `.Length` — which then answered
+            // 0 for a sequence of 2. Measured both ways.
+            "elements" | "descendants" | "ancestors" | "nodes" | "attributes"
+            | "elementsafterself" | "elementsbeforeself" => Some("IEnumerable".into()),
+            "element" | "root" | "parent" => Some("XElement".into()),
+            "attribute" => Some("XAttribute".into()),
+            _ => None,
+        };
+    }
     // ── ADO.NET ───────────────────────────────────────────────────────────
     //
     // Every ADO chain is a chain of FACTORY calls — `conn.CreateCommand()`,
@@ -1385,6 +1540,18 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
             _ => None,
         };
     }
+    // `System.TimeZoneInfo`. Without these the local in
+    // `Dim ny = TimeZoneInfo.FindSystemTimeZoneById(…)` carried no type, so
+    // `ny.GetUtcOffset(dt)` had nothing to resolve the INSTANCE member against
+    // and answered `undefined` — the members were registered, what they
+    // RETURN was not.
+    if class.eq_ignore_ascii_case("TimeZoneInfo") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "utc" | "local" | "findsystemtimezonebyid" => Some("TimeZoneInfo"),
+            "converttime" | "converttimetoutc" | "converttimefromutc" => Some("DateTime"),
+            _ => None,
+        };
+    }
     if class.eq_ignore_ascii_case("DateTimeOffset")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
@@ -1397,6 +1564,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
         return match method_name.to_ascii_lowercase().as_str() {
             "compare" => Some("Int32"),
             "equals" | "tryparse" => Some("Boolean"),
+            "minvalue" | "maxvalue" => Some("DateTimeOffset"),
             _ => None,
         };
     }
@@ -1615,6 +1783,25 @@ pub fn declared_instance_property_types(
         "sqldatareader" | "oledbdatareader" | "datareader" => {
             &[("HasRows", "Boolean"), ("IsClosed", "Boolean")]
         }
+        "timezoneinfo" => &[
+            ("Id", "String"),
+            ("StandardName", "String"),
+            ("DisplayName", "String"),
+            ("BaseUtcOffset", "TimeSpan"),
+        ],
+        // `DateTimeOffset`'s composite properties. Undeclared, `dto.Date` read
+        // back untyped and the NEXT hop resolved against nothing —
+        // `dto.Date.ToString("yyyy-MM-dd")` rendered `[object datetime]`
+        // because the 1-arg `ToString` could not be found on an unknown type.
+        "datetimeoffset" => &[
+            ("Date", "DateTime"),
+            ("DateTime", "DateTime"),
+            ("UtcDateTime", "DateTime"),
+            ("Offset", "TimeSpan"),
+            ("TimeOfDay", "TimeSpan"),
+        ],
+        // The same for `DateTime` itself.
+        "datetime" => &[("Date", "DateTime"), ("TimeOfDay", "TimeSpan")],
         _ => &[],
     }
 }

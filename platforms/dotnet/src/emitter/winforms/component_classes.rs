@@ -88,6 +88,11 @@ pub(crate) fn common_ctor_for(class: &str) -> Option<&'static str> {
         // insert — so the object is composed here.
         "Point" => Some("dotnet.point_new"),
         "Size" => Some("dotnet.size_new"),
+        // The `Single` mirrors of the three value types above. Same shape, own
+        // identity — see the note on their declarations in `classes/drawing`.
+        "SizeF" => Some("dotnet.sizef_new"),
+        "PointF" => Some("dotnet.pointf_new"),
+        "RectangleF" => Some("dotnet.rectanglef_new"),
         "Font" => Some("dotnet.font_new"),
         "Color" => Some("dotnet.color_new"),
         "Pen" => Some("dotnet.pen_new"),
@@ -121,6 +126,9 @@ fn dotnet_interface_for_class(class: &DotnetClass) -> &'static str {
                 | "Point"
                 | "Size"
                 | "SizeF"
+                | "PointF"
+                | "RectangleF"
+                | "Rectangle"
                 | "Font"
                 | "Color"
         ) =>

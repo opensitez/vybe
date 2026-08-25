@@ -22,6 +22,20 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.xml_value".into()),
                 ))
+                // The DOM spelling of the same member, because the VB walker
+                // rewrites `.Value` to `.textContent` before dispatch. On an
+                // UNTYPED receiver that lands on a raw property read and works;
+                // on a local the walker typed `As XElement` it becomes a
+                // type-directed lookup of `textContent`, which was not
+                // registered — so `Dim it = a.<Item>.First()` then `it.Value`
+                // read EMPTY while the identical inline chain read correctly.
+                // `dotnet.xml_value` is itself `get_field("textContent")`, so
+                // this is the same leaf under the name the walker produces.
+                .with_method(MethodDef::new(
+                    "textContent",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
                 .with_method(MethodDef::new(
                     "Element",
                     1,
