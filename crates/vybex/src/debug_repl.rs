@@ -92,8 +92,30 @@ pub fn attach(vm: &mut VM) {
             }
             match parse_command(line) {
                 Ok(command) => {
-                    if !send_and_print(&cmd_tx, command) {
-                        break; // channel closed — VM gone
+                    // **A resume does not answer.** `send_and_print` blocks on
+                    // the reply, and `Continue`'s reply arrives when the VM
+                    // next PAUSES — which for a GUI program that runs until the
+                    // window closes is never. The REPL thread sat in `recv()`
+                    // and every command typed afterwards was never read, so
+                    // `html`, `widgets` and `capture` looked like they did
+                    // nothing while the program was running. They are all
+                    // client-side and were ready to answer the whole time.
+                    //
+                    // The pause, when it comes, is printed by the event thread
+                    // above — that is what it is for.
+                    let resumes = matches!(command, DebugCommand::Continue);
+                    if resumes {
+                        if cmd_tx
+                            .send(DebugRequest {
+                                command,
+                                reply: channel::<DebugResponse>().0,
+                            })
+                            .is_err()
+                        {
+                            break; // channel closed — VM gone
+                        }
+                    } else if !send_and_print(&cmd_tx, command) {
+                        break;
                     }
                 }
                 Err(msg) => eprintln!("  {msg}"),
@@ -102,74 +124,33 @@ pub fn attach(vm: &mut VM) {
     });
 }
 
-/// One recorded draw command, rendered compactly.
+/// `draws [control]` — what is actually ON each canvas.
 ///
-/// `DrawCmd` derives `Debug`, but `{:?}` is unusable here: `DrawImage` would
-/// dump every pixel. So the common ops get a short form and everything else
-/// falls back to a truncated `Debug`.
-fn format_draw_cmd(cmd: &vybe_widgets::canvas::DrawCmd) -> String {
-    use vybe_widgets::canvas::DrawCmd as D;
-    let hex = |c: &vybe_widgets::canvas::Color| {
-        if c.a == 255 {
-            format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
-        } else {
-            format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a)
-        }
-    };
-    match cmd {
-        D::SetFillColor(c) => format!("setFillColor    {}", hex(c)),
-        D::SetStrokeColor(c) => format!("setStrokeColor  {}", hex(c)),
-        D::SetLineWidth(w) => format!("setLineWidth    {w}"),
-        D::SetGlobalAlpha(a) => format!("setGlobalAlpha  {a}"),
-        D::SetFont(f) => format!("setFont         {} {}px", f.family, f.size),
-        D::BeginPath => "beginPath".to_string(),
-        D::ClosePath => "closePath".to_string(),
-        D::MoveTo(x, y) => format!("moveTo          {x},{y}"),
-        D::LineTo(x, y) => format!("lineTo          {x},{y}"),
-        D::Arc { x, y, r, .. } => format!("arc             {x},{y} r={r}"),
-        D::Ellipse { x, y, rx, ry } => format!("ellipse         {x},{y} {rx}x{ry}"),
-        D::Rect { x, y, w, h } => format!("rect            {x},{y} {w}x{h}"),
-        D::Fill => "fill".to_string(),
-        D::Stroke => "stroke".to_string(),
-        D::FillRect { x, y, w, h } => format!("fillRect        {x},{y} {w}x{h}"),
-        D::StrokeRect { x, y, w, h } => format!("strokeRect      {x},{y} {w}x{h}"),
-        D::ClearRect { x, y, w, h } => format!("clearRect       {x},{y} {w}x{h}"),
-        D::FillText { text, x, y } => format!("fillText        {text:?} @{x},{y}"),
-        D::StrokeText { text, x, y } => format!("strokeText      {text:?} @{x},{y}"),
-        // NEVER `{:?}` an Image — that is the whole pixel buffer.
-        D::DrawImage { image, x, y, w, h } => format!(
-            "drawImage       {}x{} → {x},{y} {w}x{h}",
-            image.width, image.height
-        ),
-        D::Save => "save".to_string(),
-        D::Restore => "restore".to_string(),
-        D::Translate(x, y) => format!("translate       {x},{y}"),
-        D::Scale(x, y) => format!("scale           {x},{y}"),
-        D::Rotate(a) => format!("rotate          {a}"),
-        other => {
-            let mut s = format!("{other:?}");
-            s.truncate(80);
-            s
-        }
-    }
-}
-
-/// `draws [control] [n]` — list the draw commands recorded on a canvas.
+/// This is what tells "nothing was drawn" apart from "drawn in the wrong
+/// place" — two failures that look identical on screen.
 ///
-/// This is what tells "nothing was drawn" apart from "drawn in the wrong place"
-/// and "drawn, then painted over" — three failures that look identical on screen.
+/// It used to list the recorded draw COMMANDS. A canvas paints into its bitmap
+/// as the calls arrive now, so there is no command list to print; there are
+/// pixels, which answer the same two questions more directly — how much ink
+/// landed, and where it landed. The one thing the old form could tell you and
+/// this cannot is "drawn, then painted over", because a bitmap keeps only the
+/// result. Reported honestly below rather than left to be inferred.
 fn print_draws(args: &[&str]) {
-    let limit: usize = args
-        .iter()
-        .find_map(|a| a.parse().ok())
-        .unwrap_or(usize::MAX);
     let wanted = args
         .iter()
         .find(|a| a.parse::<usize>().is_err())
         .map(|w| w.to_lowercase());
 
+    /// Size, ink, and the bounding box of the ink.
+    struct Ink {
+        w: u32,
+        h: u32,
+        inked: usize,
+        bounds: Option<(u32, u32, u32, u32)>,
+    }
+
     // **A drawing surface is a `<canvas>` ELEMENT in the document.**
-    let mut found: Vec<(String, Vec<vybe_widgets::canvas::DrawCmd>)> = Vec::new();
+    let mut found: Vec<(String, Ink)> = Vec::new();
     crate::gui_document::with_live(|document| {
         for node in document.get_elements_by_tag_name("canvas") {
             // Report the name a caller would recognise — the `id`/`name` they
@@ -178,9 +159,31 @@ fn print_draws(args: &[&str]) {
                 .get_attribute(node, "id")
                 .or_else(|| document.get_attribute(node, "name"))
                 .unwrap_or_else(|| format!("n{node}"));
-            if let Some(context) = document.get_context_2d(node) {
-                found.push((label, context.commands_for_debug().to_vec()));
-            }
+            let Some(ink) = document.with_canvas_bitmap(node, |bitmap| {
+                let (w, h) = (bitmap.width(), bitmap.height());
+                let mut inked = 0usize;
+                let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+                for (i, px) in bitmap.pixels().iter().enumerate() {
+                    if px.alpha() == 0 {
+                        continue;
+                    }
+                    inked += 1;
+                    let (x, y) = (i as u32 % w, i as u32 / w);
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+                Ink {
+                    w,
+                    h,
+                    inked,
+                    bounds: (inked > 0).then_some((x0, y0, x1, y1)),
+                }
+            }) else {
+                continue;
+            };
+            found.push((label, ink));
         }
     });
 
@@ -190,7 +193,7 @@ fn print_draws(args: &[&str]) {
     }
 
     let mut shown = false;
-    for (name, cmds) in &found {
+    for (name, ink) in &found {
         if let Some(w) = &wanted {
             // Same forgiving match as `--capture-control`: a canvas named after
             // a window title is not something anyone types exactly.
@@ -199,12 +202,22 @@ fn print_draws(args: &[&str]) {
             }
         }
         shown = true;
-        eprintln!("  {} command(s) on `{name}`", cmds.len());
-        for (i, cmd) in cmds.iter().take(limit).enumerate() {
-            eprintln!("  {i:>4}  {}", format_draw_cmd(cmd));
-        }
-        if cmds.len() > limit {
-            eprintln!("  … {} more (pass a count to see more)", cmds.len() - limit);
+        match ink.bounds {
+            None => eprintln!(
+                "  `{name}`  {}x{}  NOTHING DRAWN (every pixel transparent)",
+                ink.w, ink.h
+            ),
+            Some((x0, y0, x1, y1)) => {
+                let total = (ink.w as usize) * (ink.h as usize);
+                let pct = 100.0 * ink.inked as f32 / total.max(1) as f32;
+                eprintln!(
+                    "  `{name}`  {}x{}  {} px inked ({pct:.1}%)  ink bounds {x0},{y0} → {x1},{y1}",
+                    ink.w, ink.h, ink.inked
+                );
+                if x1 >= ink.w || y1 >= ink.h {
+                    eprintln!("        ⚠ ink reaches the bitmap edge — it may be clipped");
+                }
+            }
         }
     }
     if !shown {
@@ -549,17 +562,21 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .first()
                 .ok_or("usage: click <control>  (see `widgets` for names)")?
                 .to_string(),
-            event: "Click".to_string(),
+            event: "click".to_string(),
         },
         "fire" => {
             let control = rest
                 .first()
                 .ok_or("usage: fire <control> <event>")?
                 .to_string();
+            // Folded HERE, not in the DOM: a person types `Click` and means
+            // the `click` event, and that convenience belongs to the command
+            // rather than to `addEventListener`, whose types are
+            // case-SENSITIVE (DOM §2.7).
             let event = rest
                 .get(1)
                 .ok_or("usage: fire <control> <event>")?
-                .to_string();
+                .to_ascii_lowercase();
             DebugCommand::FireEvent { control, event }
         }
         "close" | "window-close" => DebugCommand::FireEvent {
@@ -905,7 +922,7 @@ fn print_help() {
          \x20 frame:    fr/frame [n]  EVERY slot incl. compiler+capture, with local_count/capture_base\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
          \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
-         \x20 gui+:     draws [control] [n] recorded draw cmds · capture [control] [file.png] offscreen PNG\n\
+         \x20 gui+:     draws [control]    canvas ink + bounds · capture [control] [file.png] offscreen PNG\n\
          \x20 stream+:  trace canvas on|off  (draw routing — which control each draw resolved to)\n\
          \x20 reload:   reload  (recompile + swap changed fn bodies in place; heap/globals kept)\n\
          \x20 stream:   trace on|off  (live opcode stream — the VYBE_TRACE replacement)\n\

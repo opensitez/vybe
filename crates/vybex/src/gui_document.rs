@@ -80,7 +80,11 @@ pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
 /// when this is false: the declaration covers a UI built later, from a timer or
 /// a handler, which no test at this instant can see.
 pub fn has_content() -> bool {
-    with_live(|_| ()).is_some()
+    // Through `platforms/web`, so the answer is about the LIVE engine's
+    // document. `with_live` below still names the toolkit, which is why this
+    // no longer goes through it: under `--engine htmlbox` that asks the wrong
+    // tree and reports an empty UI for a form htmlbox laid out perfectly well.
+    vybe_platform_web::present::has_content(active())
 }
 
 /// Read and write one element, live — the inspector half of the debugger.
@@ -95,8 +99,14 @@ pub mod inspect {
     use super::{NodeId, with_live};
     use vybe_widgets::dom::Document;
 
+    /// The INDENTED form, which is what a person reading a dump wants.
+    ///
+    /// `outer_html` is the DOM getter and adds no whitespace, as the HTML
+    /// fragment serialization algorithm requires — correct as markup, one long
+    /// line as a debugger's output. The two callers want different things and
+    /// now ask for them by name.
     pub fn outer_html(node: NodeId) -> Option<String> {
-        with_live(|d| d.outer_html(node))
+        with_live(|d| d.outer_html_pretty(node))
     }
 
     pub fn style(node: NodeId, property: &str) -> Option<String> {
@@ -121,11 +131,26 @@ pub mod inspect {
     }
 
     pub fn attribute(node: NodeId, name: &str) -> Option<String> {
-        with_live(|d| d.get_attribute(node, name)).flatten()
+        // Seam, not toolkit — see `node_by_id`.
+        match vybe_platform_web::engine::apply(
+            super::active(),
+            vybe_platform_web::engine::DomOp::GetAttribute(node, name.to_string()),
+        ) {
+            vybe_platform_web::engine::DomValue::Text(v) => Some(v),
+            _ => None,
+        }
     }
 
     pub fn set_attribute(node: NodeId, name: &str, value: &str) -> Option<()> {
-        with_live(|d| d.set_attribute(node, name, value))
+        vybe_platform_web::engine::apply(
+            super::active(),
+            vybe_platform_web::engine::DomOp::SetAttribute(
+                node,
+                name.to_string(),
+                value.to_string(),
+            ),
+        );
+        Some(())
     }
 
     pub fn text(node: NodeId) -> Option<String> {
@@ -148,7 +173,29 @@ pub mod inspect {
 /// "something moved"; this says which element, and a golden file can be
 /// reviewed in a patch.
 pub fn html() -> Option<String> {
-    with_live(Document::to_html)
+    let markup = engine_html();
+    (!markup.is_empty()).then_some(markup)
+}
+
+/// The live tree as the ENGINE has it — through the seam, so it answers for
+/// whichever engine is installed.
+///
+/// `with_live` borrows `vybe_widgets::dom` directly, which is the toolkit
+/// whether or not the toolkit is the live engine. Every GUI command in the step
+/// debugger went through it, so under `--engine htmlbox` they reported an empty
+/// tree for a document htmlbox had built perfectly well — the debugger was
+/// inspecting the engine that was NOT running.
+///
+/// `outerHTML` on the document is the one question that needs no toolkit type
+/// to answer, which is why the structure dump is the first of them to move.
+pub fn engine_html() -> String {
+    match vybe_platform_web::engine::apply(
+        active(),
+        vybe_platform_web::engine::DomOp::OuterHtml(vybe_platform_web::engine::DOCUMENT),
+    ) {
+        vybe_platform_web::engine::DomValue::Text(markup) => markup,
+        _ => String::new(),
+    }
 }
 
 /// The size the document says the window is, when the document is the live
@@ -160,11 +207,22 @@ pub fn html() -> Option<String> {
 /// actually set. `GuiState.width`/`height` keep their defaults and a 280×400
 /// form opened at 800×600.
 pub fn viewport() -> Option<(u32, u32)> {
-    with_live(|d| {
-        let r = d.viewport();
-        (r.w >= 1.0 && r.h >= 1.0).then(|| (r.w.round() as u32, r.h.round() as u32))
-    })
-    .flatten()
+    // `window.innerWidth` / `innerHeight` — asked through the seam, in the
+    // vocabulary both engines already answer, rather than by borrowing the
+    // toolkit's document. Under `--engine htmlbox` the toolkit's is empty, so
+    // this reported "no live document to capture" for a form htmlbox had laid
+    // out perfectly well.
+    if !vybe_platform_web::present::has_content(active()) {
+        return None;
+    }
+    match vybe_platform_web::engine::window(vybe_platform_web::engine::WindowOp::InnerSize(
+        active(),
+    )) {
+        vybe_platform_web::engine::WindowValue::Pair(w, h) if w >= 1.0 && h >= 1.0 => {
+            Some((w.round() as u32, h.round() as u32))
+        }
+        _ => None,
+    }
 }
 
 /// One realized element, in the vocabulary a GUI debugger reports in.
@@ -259,19 +317,31 @@ pub fn controls() -> Vec<DomControl> {
 /// addressable: that is the handle `widgets` prints for it, and without it a
 /// form that builds its buttons in a loop can be listed but never clicked.
 pub fn node_by_id(name: &str) -> Option<NodeId> {
-    with_live(|d| {
-        if let Some(found) = d
-            .elements_with_id()
-            .into_iter()
-            .find(|(_, id)| id.eq_ignore_ascii_case(name))
-            .map(|(node, _)| node)
-        {
-            return Some(found);
+    // Through the seam, so the inspector answers for whichever engine is live.
+    // This walked `vybe_widgets`' document directly, which is the toolkit
+    // whether or not the toolkit is running — so under `--engine htmlbox`
+    // every `css`/`attr`/`text` command reported "no control named X" for
+    // controls that were plainly in the tree. `html` was fixed first and made
+    // that obvious: the dump listed the element the next command denied.
+    use vybe_platform_web::engine::{DomOp, DomValue, apply};
+    match apply(active(), DomOp::GetElementById(name.to_string())) {
+        DomValue::Node(node) => return Some(node),
+        _ => {}
+    }
+    // `getElementById` is case-SENSITIVE (DOM §4.5), and a debugger user types
+    // what they saw. Fall back to a case-insensitive sweep of the ids that
+    // exist, which is a convenience of this command and not of the DOM.
+    if let DomValue::Nodes(all) = apply(active(), DomOp::QuerySelectorAll("[id]".into())) {
+        for node in all {
+            if let DomValue::Text(id) = apply(active(), DomOp::GetAttribute(node, "id".into())) {
+                if id.eq_ignore_ascii_case(name) {
+                    return Some(node);
+                }
+            }
         }
-        let node: NodeId = name.strip_prefix('n')?.parse().ok()?;
-        d.node(node).map(|_| node)
-    })
-    .flatten()
+    }
+    // `n<id>` — the internal node number, for anything the author never named.
+    name.strip_prefix('n')?.parse().ok()
 }
 
 /// The listeners registered for one event type on one node, in registration

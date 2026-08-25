@@ -63,12 +63,7 @@ impl Application for FormApp {
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
         // One renderer, shared with `--capture` and the debugger's `capture`,
         // so a captured frame is byte-for-byte what the window shows.
-        crate::gui_capture::render_into(
-            pixmap,
-            &mut self.font_system,
-            &mut self.swash_cache,
-            scale,
-        );
+        crate::gui_capture::render_into(pixmap, scale);
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
@@ -106,8 +101,24 @@ impl Application for FormApp {
                 buttons,
                 ..UiEvent::default()
             });
+            // Through the seam, so the LIVE engine hit-tests it. This called
+            // `vybe_widgets`' form directly, which is the toolkit whether or
+            // not the toolkit is the engine in use — so under
+            // `--engine htmlbox` every click was hit-tested against an empty
+            // tree and nothing at all happened.
+            //
+            // The SAME W3C fields the queue above is given: one translation
+            // from the window's vocabulary, two consumers.
+            vybe_platform_web::engine::apply(
+                crate::gui_document::active(),
+                vybe_platform_web::engine::DomOp::DispatchPointer {
+                    kind: kind.to_string(),
+                    client_x: event.x,
+                    client_y: event.y,
+                    button,
+                },
+            );
         }
-        crate::gui_document::with_live(|d| d.form_mut().handle_mouse(&event));
         self.dispatch_document_events();
         true
     }

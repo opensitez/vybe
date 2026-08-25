@@ -22,26 +22,21 @@ use vybe_widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_backgroun
 ///
 /// This is the whole frame: `FormApp::render` calls it for the live window and
 /// the capture paths call it for an offscreen buffer.
-pub fn render_into(
-    pixmap: &mut Pixmap,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    scale: f32,
-) {
+/// The fonts used to be parameters. They are not any more: the ENGINE owns its
+/// own text stack, and a host that supplies one is a host that can supply the
+/// wrong one — a frame rendered with fonts other than the ones the engine
+/// measured with lays text out to the wrong width.
+pub fn render_into(pixmap: &mut Pixmap, scale: f32) {
     fill_background(pixmap, 240, 240, 240, 255);
-    let mut ctx = RenderContext {
-        pixmap,
-        font_system,
-        swash_cache,
-        scale,
-    };
-    // Through `gui_document`, so this asks the same "is the document the live
-    // tree" question the runner and the debugger ask. Reaching for
-    // `html::active_document()` here instead painted an EMPTY document twice
-    // over: once for a designer form that never opened one, and once for the
-    // debugger's `capture`, which runs on the REPL thread where that
-    // thread-local is a different document entirely.
-    crate::gui_document::with_live(|document| document.render(&mut ctx));
+    // Through `platforms/web`, which forwards to whichever engine is live.
+    // This used to call `vybe_widgets::dom` directly — around the intermediary
+    // rather than through it — so `--engine htmlbox` swapped the engine and
+    // left the renderer pointed at the toolkit's empty tree.
+    //
+    // `gui_document::active()` rather than `html::active_document()`: the
+    // debugger reads from its own REPL thread, where that thread-local is a
+    // different, empty document entirely.
+    vybe_platform_web::present::render(crate::gui_document::active(), pixmap, scale);
     // ⛔ Nothing composites an overlay on top. A `<canvas>` is an element in
     // the document and paints as part of it, like any other control — so a
     // capture and a window show the same thing BY CONSTRUCTION rather than by
@@ -136,7 +131,20 @@ pub fn capture_to_png(
 ) -> Result<(u32, u32), String> {
     // The frame IS the document's viewport: a form's `Width`/`Height` are CSS
     // on the body and land there.
-    let (w, h) = crate::gui_document::viewport().ok_or("no live document to capture")?;
+    // The failure says WHAT THE ENGINE HOLDS, not just that it holds nothing
+    // useful. "no live document" is true of an empty document and of a document
+    // the guest built into an engine that is not the live one, and those are
+    // completely different bugs — the first is a program that drew nothing, the
+    // second is a swap that only half happened.
+    let (w, h) = crate::gui_document::viewport().ok_or_else(|| {
+        format!(
+            "no live document to capture — engine `{}` holds: {}",
+            vybe_platform_web::engine_select::live()
+                .map(|e| e.as_str())
+                .unwrap_or("none"),
+            crate::gui_document::engine_html()
+        )
+    })?;
     let (w, h) = (w.max(1) as f32, h.max(1) as f32);
     let pw = (w * scale).round().max(1.0) as u32;
     let ph = (h * scale).round().max(1.0) as u32;
@@ -144,7 +152,7 @@ pub fn capture_to_png(
 
     let mut font_system = FontSystem::new();
     let mut swash_cache = SwashCache::new();
-    render_into(&mut pixmap, &mut font_system, &mut swash_cache, scale);
+    render_into(&mut pixmap, scale);
 
     let shot = match control {
         None => pixmap,

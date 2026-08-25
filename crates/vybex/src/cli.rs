@@ -14,6 +14,8 @@
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
+//!   --engine NAME     Browser engine: `widgets` (default) or `htmlbox`.
+//!                     Also settable with VYBE_ENGINE; the flag wins.
 //!   --capture FILE    Render one GUI frame to a PNG instead of opening a window
 //!   --capture-control N  Crop --capture to a single control
 //!
@@ -287,6 +289,32 @@ pub fn run() {
                     std::process::exit(1);
                 };
                 dap_port = p.parse().ok();
+            }
+            // `--engine <name>` picks the browser engine for this run. Both
+            // are linked, and `engine_select::choose` beats `VYBE_ENGINE`, so a
+            // flag typed on this command line wins over a variable that may
+            // have been left set in the shell hours ago.
+            //
+            // A bad value EXITS here, where a bad `VYBE_ENGINE` only warns: a
+            // flag is something you typed and got wrong on this run, and
+            // starting anyway would silently give you the other engine.
+            "--engine" => {
+                let Some(name) = iter.next() else {
+                    eprintln!("Missing value for --engine (try: widgets, htmlbox)");
+                    std::process::exit(1);
+                };
+                let Some(engine) = vybe_platform_web::engine_select::Engine::parse(name) else {
+                    eprintln!(
+                        "Unknown engine `{name}` (try: {})",
+                        vybe_platform_web::engine_select::available()
+                            .iter()
+                            .map(|e| e.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    std::process::exit(1);
+                };
+                vybe_platform_web::engine_select::choose(engine);
             }
             "--capture" => {
                 let Some(p) = iter.next() else {
@@ -986,6 +1014,8 @@ fn print_usage() {
     eprintln!("      --dap-port N  Debug Adapter Protocol server on 127.0.0.1:N (VS Code attach)");
     eprintln!("  -W, --watch       Re-run on source change (Phase-1 hot reload)");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
+    eprintln!("      --engine NAME Browser engine: widgets (default) or htmlbox");
+    eprintln!("                    Also settable with VYBE_ENGINE; the flag wins");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
     eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");
     eprintln!("                    BIND defaults to 127.0.0.1:8080, ROOT to current dir");
