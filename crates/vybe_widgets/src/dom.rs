@@ -358,9 +358,22 @@ impl crate::selector::Element for ElementRef<'_> {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.css_text());
         }
-        self.doc
-            .node(self.node)
-            .and_then(|n| n.attribute(name).map(str::to_string))
+        // **An attribute NAME in a selector is ASCII case-insensitive for an
+        // HTML document.** Names are folded on the way in, so `[DATA-Foo]` and
+        // `[data-foo]` name the same attribute — and a page that writes one
+        // spelling and styles the other is one a browser handles silently.
+        //
+        // Exact FIRST, fold on a miss: the same shape the namespace tree
+        // settled on, and it leaves an XML document — whose attribute names
+        // keep their case — matching exactly as it must.
+        let node = self.doc.node(self.node)?;
+        if let Some(value) = node.attribute(name) {
+            return Some(value.to_string());
+        }
+        node.attributes
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .map(|a| a.value.clone())
     }
 
     fn parent(&self) -> Option<Self> {
@@ -619,6 +632,10 @@ impl DomNode {
         self.attributes.retain(|a| a.name != name);
     }
 }
+
+/// The HTML namespace — DOM §1.5. An element created without a namespace in an
+/// HTML document is in it, which is why `namespace: None` counts as HTML here.
+pub const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 
 /// A document and the widget tree that IS its rendering.
 pub struct Document {
@@ -1267,6 +1284,32 @@ impl Document {
             return "#document".to_string();
         }
         match self.node(node).map(|n| (n.kind, n.tag.clone())) {
+            // **The HTML-UPPERCASED qualified name** — DOM §4.9: "If this is
+            // in the HTML namespace and its node document is an HTML document,
+            // then return qualifiedName in ASCII uppercase."
+            //
+            // This answered the stored tag, which HTML folds to lowercase on
+            // the way in, so `el.nodeName == "DIV"` — the comparison a page
+            // actually writes — was false for every element. `local_name` is
+            // the lowercase half and is what tree-shape checks want.
+            //
+            // ⛔ BOTH conditions. An `<svg:rect>` inside an HTML document is in
+            // the SVG namespace and keeps its case, and an XML document keeps
+            // every name as written.
+            Some((NodeKind::Element, tag))
+                if matches!(self.kind, DocumentKind::Html)
+                    && self
+                        .node(node)
+                        .map(|n| {
+                            n.namespace
+                                .as_deref()
+                                .map(|ns| ns == HTML_NAMESPACE)
+                                .unwrap_or(true)
+                        })
+                        .unwrap_or(true) =>
+            {
+                tag.to_ascii_uppercase()
+            }
             Some((NodeKind::Element, tag)) => tag,
             Some((NodeKind::ProcessingInstruction, target)) => target,
             Some((NodeKind::Text, _)) => "#text".to_string(),
@@ -9458,7 +9501,12 @@ mod tests {
     fn an_xml_document_keeps_the_case_an_html_one_folds() {
         let mut html = Document::new("t");
         let folded = html.create_element_typed("DIV", "");
-        assert_eq!(html.node_name(folded), "div");
+        // The STORED name is folded — that is what this test is about.
+        assert_eq!(html.local_name(folded), "div");
+        // `nodeName` is the HTML-UPPERCASED qualified name (DOM §4.9), which is
+        // what `el.nodeName == "DIV"` compares against in a browser. Folded
+        // storage and an uppercase `nodeName` are the same fact seen twice.
+        assert_eq!(html.node_name(folded), "DIV");
         html.set_attribute(folded, "DataRole", "x");
         assert_eq!(html.get_attribute(folded, "datarole").as_deref(), Some("x"));
         assert_eq!(html.get_elements_by_tag_name("Div"), vec![folded]);
@@ -12478,7 +12526,7 @@ mod tests {
                 if doc.node(c).map(|n| n.kind) == Some(NodeKind::Text) {
                     doc.text_data(c)
                 } else {
-                    format!("<{}>", doc.node_name(c))
+                    format!("<{}>", doc.local_name(c))
                 }
             })
             .collect();
@@ -12499,10 +12547,10 @@ mod tests {
 
         assert!(doc.remove_child(from, moved));
         assert!(doc.child_nodes(from).is_empty(), "it left its old parent");
-        assert_eq!(doc.node_name(moved), "p", "…and is still a <p>");
+        assert_eq!(doc.local_name(moved), "p", "…and is still a <p>");
 
         doc.append_child(to, moved);
-        let tags: Vec<String> = doc.child_nodes(to).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(to).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["p"]);
     }
 
@@ -12530,7 +12578,7 @@ mod tests {
 
         // The fragment is NOT in the tree — its children are, in order, and at
         // the level the caller asked for rather than one deeper.
-        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["i", "div", "b"]);
         assert!(
             !tags.iter().any(|t| t == "#document-fragment"),
@@ -12561,7 +12609,7 @@ mod tests {
 
         // Each child goes before the SAME reference, so they arrive in the
         // order they were in — not reversed.
-        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["div", "b", "i"]);
     }
 
@@ -12660,7 +12708,7 @@ mod tests {
 
         // The naive implementation — insert each before the CURRENT first child
         // — yields b, a, i. The nodes must arrive in the order they were given.
-        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["a", "b", "i"]);
     }
 
@@ -12676,12 +12724,12 @@ mod tests {
         let b = doc.create_element("b");
         doc.before(pivot, &[a]);
         doc.after(pivot, &[b]);
-        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["a", "i", "b"]);
 
         let u = doc.create_element("u");
         doc.replace_with(pivot, &[u]);
-        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(tags, vec!["a", "u", "b"], "the pivot is gone and `u` sits where it was");
     }
 
@@ -12710,11 +12758,16 @@ mod tests {
         }
 
         // `beforebegin`/`afterend` are p's SIBLINGS…
-        let outer: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        let outer: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.local_name(c)).collect();
         assert_eq!(outer, vec!["a", "p", "s"]);
         // …and `afterbegin`/`beforeend` are its children, around the text.
+        //
+        // `node_name` here rather than `local_name`, because this line is about
+        // the TEXT NODE sitting between them and only `nodeName` names it —
+        // `localName` is empty for anything that is not an element. Which means
+        // the elements answer their HTML-uppercased names (DOM §4.9).
         let inner: Vec<String> = doc.child_nodes(p).iter().map(|&c| doc.node_name(c)).collect();
-        assert_eq!(inner, vec!["b", "#text", "u"]);
+        assert_eq!(inner, vec!["B", "#text", "U"]);
 
         assert_eq!(doc.insert_adjacent_element(p, "sideways", d), None);
     }

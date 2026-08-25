@@ -116,10 +116,20 @@ pub fn clear_document_listeners(document: DocumentId) {
 
 /// `target.addEventListener(type, callback)`.
 pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callback: Value) {
+    // ⛔ **An event type is CASE-SENSITIVE** (DOM §2.7 — the type is a plain
+    // string and listeners are keyed by it). `addEventListener("Click", …)`
+    // never fires for a real click in a browser, and folding it here made the
+    // two the same event — leniency that lets a frontend register the wrong
+    // spelling and still appear to work, which is exactly what hid
+    // `onChanged` being wired to `click`.
+    //
+    // The debugger's `fire <control> Click` used to depend on this fold; it now
+    // folds at its own edge, where a convenience for a person typing a command
+    // belongs, rather than in the DOM.
     listeners()
         .lock()
         .unwrap()
-        .entry((document, node, kind.to_ascii_lowercase()))
+        .entry((document, node, kind.to_string()))
         .or_default()
         .push(callback);
 }
@@ -140,7 +150,7 @@ pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callba
 /// that keeps firing.
 pub fn remove_event_listener(document: DocumentId, node: NodeId, kind: &str, callback: &Value) {
     let mut all = listeners().lock().unwrap();
-    let key = (document, node, kind.to_ascii_lowercase());
+    let key = (document, node, kind.to_string());
     let Some(list) = all.get_mut(&key) else {
         return;
     };
@@ -211,7 +221,7 @@ pub fn listeners_for(document: DocumentId, node: NodeId, kind: &str) -> Vec<Valu
     listeners()
         .lock()
         .unwrap()
-        .get(&(document, node, kind.to_ascii_lowercase()))
+        .get(&(document, node, kind.to_string()))
         .cloned()
         .unwrap_or_default()
 }
