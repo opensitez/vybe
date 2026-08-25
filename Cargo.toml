@@ -39,7 +39,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 authors = ["Opensitez Vybe Team"]
 license = "GPLv3"
