@@ -35,7 +35,6 @@ members = [
     "platforms/web",
     "platforms/wasi",
     "platforms/node",
-    "ecma/testecma",
     "crates/testrunner",
 ]
 
