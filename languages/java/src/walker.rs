@@ -408,6 +408,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(Module {
+        canon: Default::default(),
         name: String::new(),
         language: Lang::Java,
         body,

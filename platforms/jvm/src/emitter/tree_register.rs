@@ -1,3 +1,8 @@
+//! ⛔ KEYS KEEP THE DECLARED SPELLING. They used to be lowercased here, which
+//! only worked because every tree lookup lowercased its query too. Lookups now
+//! match EXACT first and fold only on a miss, so a case-sensitive language
+//! resolves by the real name and a case-insensitive one still resolves by the
+//! fold. See `documentation/casesensitivityplan.md`.
 //! `java.*` namespace-tree registration — the JDK as a PLATFORM.
 //!
 //! Mirrors the dotnet registrar: this crate contributes DATA — explicit
@@ -134,7 +139,7 @@ fn merge_type_member_returns(root: &mut Subtree, path: &str, returns: &[(&str, &
         return;
     };
     for (member, ty) in returns {
-        member_returns.insert(member.to_lowercase(), (*ty).to_string());
+        member_returns.insert(member.to_string(), (*ty).to_string());
     }
 }
 
@@ -293,7 +298,7 @@ fn insert_java_namespace_constants(root: &mut Subtree) {
             JavaConst::Float(v) => NamespaceNode::Const(Value::F64(v)),
             JavaConst::Str(v) => NamespaceNode::Const(Value::String(v.into())),
         };
-        let key = name.to_lowercase();
+        let key = name.to_string();
         let path = key.strip_prefix("java.").unwrap_or(key.as_str());
         insert_path(root, path, node);
     }
@@ -356,23 +361,23 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
 fn insert_java_lang_system(root: &mut Subtree) {
     let mut statics = Subtree::new();
     statics.insert(
-        "getproperty".to_string(),
+        "getProperty".to_string(),
         namespaces::overloads(vec![
             (1, common_emit("jvm.java.lang.system_get_property")),
             (2, common_emit("jvm.java.lang.system_get_property")),
         ]),
     );
     statics.insert(
-        "currenttimemillis".to_string(),
+        "currentTimeMillis".to_string(),
         common_emit("jvm.java.current_time_millis"),
     );
     statics.insert(
-        "nanotime".to_string(),
+        "nanoTime".to_string(),
         common_emit("jvm.java.current_time_millis"),
     );
     insert_path(
         root,
-        "lang.system",
+        "lang.System",
         NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
@@ -387,199 +392,205 @@ fn insert_java_util_core_statics(root: &mut Subtree) {
     for (member, emit) in [
         ("equals", "object.equals"),
         ("hash", "object.hash"),
-        ("hashcode", "object.hash_code"),
-        ("isnull", "object.is_null"),
-        ("nonnull", "object.non_null"),
+        ("hashCode", "object.hash_code"),
+        ("isNull", "object.is_null"),
+        ("nonNull", "object.non_null"),
         ("compare", "object.compare"),
-        ("tostring", "object.to_string_or"),
+        ("toString", "object.to_string_or"),
     ] {
-        insert_common_static(root, "util.objects", member, emit);
+        insert_common_static(root, "util.Objects", member, emit);
     }
 
-    insert_common_static(root, "util.uuid", "fromstring", "jvm.java.uuid_from_string");
-    insert_host_static(root, "util.uuid", "randomuuid", "web:crypto", "randomUUID");
+    insert_common_static(root, "util.UUID", "fromString", "jvm.java.uuid_from_string");
+    // ⛔ `util.UUID` and `randomUUID`, matching the `t("UUID", "util", …)` Type
+    // registration below. These used to be `util.uuid`/`randomuuid`, which made
+    // `jvm.java.util.uuid` a SECOND, separate node beside the Type — merged only
+    // because registration lowercased both. Once keys keep their case, exact-first
+    // hits the Type and this static is orphaned: `UUID.randomUUID()` resolves the
+    // type, descends its statics, and does not find the member.
+    insert_host_static(root, "util.UUID", "randomUUID", "web:crypto", "randomUUID");
     insert_common_static(
         root,
-        "util.uuid",
-        "nameuuidfrombytes",
+        "util.UUID",
+        "nameUUIDFromBytes",
         "jvm.java.uuid_name_from_bytes",
     );
-    insert_common_static(root, "util.bitset", "valueof", "jvm.java.bitset_value_of");
+    insert_common_static(root, "util.BitSet", "valueOf", "jvm.java.bitset_value_of");
     insert_common_static(
         root,
-        "util.concurrent.concurrenthashmap",
-        "newkeyset",
+        "util.concurrent.ConcurrentHashMap",
+        "newKeySet",
         "jvm.java.hash_set_new",
     );
 }
 
 fn insert_java_lang_core_statics(root: &mut Subtree) {
     for (type_path, member, emit) in [
-        ("lang.integer", "parseint", "jvm.java.parse_int"),
-        ("lang.integer", "valueof", "jvm.java.parse_int"),
-        ("lang.integer", "compare", "jvm.java.compare"),
-        ("lang.long", "parselong", "jvm.java.parse_int"),
-        ("lang.long", "valueof", "jvm.java.parse_int"),
-        ("lang.long", "compare", "jvm.java.compare"),
-        ("lang.double", "compare", "jvm.java.compare"),
+        ("lang.Integer", "parseInt", "jvm.java.parse_int"),
+        ("lang.Integer", "valueOf", "jvm.java.parse_int"),
+        ("lang.Integer", "compare", "jvm.java.compare"),
+        ("lang.Long", "parseLong", "jvm.java.parse_int"),
+        ("lang.Long", "valueOf", "jvm.java.parse_int"),
+        ("lang.Long", "compare", "jvm.java.compare"),
+        ("lang.Double", "compare", "jvm.java.compare"),
         (
-            "lang.integer",
-            "tobinarystring",
+            "lang.Integer",
+            "toBinaryString",
             "jvm.java.to_binary_string",
         ),
-        ("lang.integer", "tohexstring", "jvm.java.to_hex_string"),
-        ("lang.integer", "bitcount", "jvm.java.int_bit_count"),
+        ("lang.Integer", "toHexString", "jvm.java.to_hex_string"),
+        ("lang.Integer", "bitCount", "jvm.java.int_bit_count"),
         (
-            "lang.integer",
-            "compareunsigned",
+            "lang.Integer",
+            "compareUnsigned",
             "jvm.java.int_compare_unsigned",
         ),
         (
-            "lang.integer",
-            "numberofleadingzeros",
+            "lang.Integer",
+            "numberOfLeadingZeros",
             "jvm.java.int_leading_zeros",
         ),
         (
-            "lang.integer",
-            "numberoftrailingzeros",
+            "lang.Integer",
+            "numberOfTrailingZeros",
             "jvm.java.int_trailing_zeros",
         ),
-        ("lang.integer", "rotateleft", "jvm.java.int_rotate_left"),
-        ("lang.integer", "rotateright", "jvm.java.int_rotate_right"),
+        ("lang.Integer", "rotateLeft", "jvm.java.int_rotate_left"),
+        ("lang.Integer", "rotateright", "jvm.java.int_rotate_right"),
         (
-            "lang.integer",
-            "lowestonebit",
+            "lang.Integer",
+            "lowestOneBit",
             "jvm.java.int_lowest_one_bit",
         ),
         (
-            "lang.integer",
-            "highestonebit",
+            "lang.Integer",
+            "highestOneBit",
             "jvm.java.int_highest_one_bit",
         ),
-        ("lang.integer", "tooctalstring", "jvm.java.to_octal_string"),
-        ("lang.double", "isinfinite", "jvm.java.is_infinite"),
-        ("lang.math", "signum", "jvm.java.signum"),
-        ("lang.math", "scalb", "jvm.java.math_scalb"),
-        ("lang.math", "ulp", "jvm.java.math_ulp"),
-        ("lang.math", "getexponent", "jvm.java.math_get_exponent"),
-        ("lang.math", "copysign", "jvm.java.math_copy_sign"),
-        ("lang.math", "nextafter", "jvm.java.math_next_after"),
-        ("lang.math", "nextup", "jvm.java.math_next_up"),
-        ("lang.math", "nextdown", "jvm.java.math_next_down"),
-        ("lang.math", "fma", "jvm.java.math_fma"),
-        ("lang.math", "expm1", "jvm.java.math_expm1"),
-        ("lang.math", "log1p", "jvm.java.math_log1p"),
-        ("lang.math", "todegrees", "jvm.java.math_to_degrees"),
-        ("lang.math", "toradians", "jvm.java.math_to_radians"),
-        ("lang.math", "ieeeremainder", "jvm.java.math_ieee_remainder"),
-        ("lang.math", "addexact", "jvm.java.math_add_exact"),
-        ("lang.math", "subtractexact", "jvm.java.math_subtract_exact"),
-        ("lang.math", "multiplyexact", "jvm.java.math_multiply_exact"),
+        ("lang.Integer", "toOctalString", "jvm.java.to_octal_string"),
+        ("lang.Double", "isInfinite", "jvm.java.is_infinite"),
+        ("lang.Math", "signum", "jvm.java.signum"),
+        ("lang.Math", "scalb", "jvm.java.math_scalb"),
+        ("lang.Math", "ulp", "jvm.java.math_ulp"),
+        ("lang.Math", "getExponent", "jvm.java.math_get_exponent"),
+        ("lang.Math", "copySign", "jvm.java.math_copy_sign"),
+        ("lang.Math", "nextAfter", "jvm.java.math_next_after"),
+        ("lang.Math", "nextUp", "jvm.java.math_next_up"),
+        ("lang.Math", "nextDown", "jvm.java.math_next_down"),
+        ("lang.Math", "fma", "jvm.java.math_fma"),
+        ("lang.Math", "expm1", "jvm.java.math_expm1"),
+        ("lang.Math", "log1p", "jvm.java.math_log1p"),
+        ("lang.Math", "toDegrees", "jvm.java.math_to_degrees"),
+        ("lang.Math", "toRadians", "jvm.java.math_to_radians"),
+        ("lang.Math", "IEEEremainder", "jvm.java.math_ieee_remainder"),
+        ("lang.Math", "addExact", "jvm.java.math_add_exact"),
+        ("lang.Math", "subtractExact", "jvm.java.math_subtract_exact"),
+        ("lang.Math", "multiplyExact", "jvm.java.math_multiply_exact"),
         (
-            "lang.math",
-            "incrementexact",
+            "lang.Math",
+            "incrementExact",
             "jvm.java.math_increment_exact",
         ),
         (
-            "lang.math",
-            "decrementexact",
+            "lang.Math",
+            "decrementExact",
             "jvm.java.math_decrement_exact",
         ),
-        ("lang.math", "negateexact", "jvm.java.math_negate_exact"),
-        ("lang.math", "floordiv", "jvm.java.floor_div"),
-        ("lang.math", "floormod", "jvm.java.floor_mod"),
-        ("lang.strictmath", "signum", "jvm.java.signum"),
-        ("lang.strictmath", "scalb", "jvm.java.math_scalb"),
-        ("lang.strictmath", "ulp", "jvm.java.math_ulp"),
+        ("lang.Math", "negateExact", "jvm.java.math_negate_exact"),
+        ("lang.Math", "floorDiv", "jvm.java.floor_div"),
+        ("lang.Math", "floorMod", "jvm.java.floor_mod"),
+        ("lang.StrictMath", "signum", "jvm.java.signum"),
+        ("lang.StrictMath", "scalb", "jvm.java.math_scalb"),
+        ("lang.StrictMath", "ulp", "jvm.java.math_ulp"),
         (
-            "lang.strictmath",
-            "getexponent",
+            "lang.StrictMath",
+            "getExponent",
             "jvm.java.math_get_exponent",
         ),
-        ("lang.strictmath", "copysign", "jvm.java.math_copy_sign"),
-        ("lang.strictmath", "nextafter", "jvm.java.math_next_after"),
-        ("lang.strictmath", "nextup", "jvm.java.math_next_up"),
-        ("lang.strictmath", "nextdown", "jvm.java.math_next_down"),
-        ("lang.strictmath", "fma", "jvm.java.math_fma"),
-        ("lang.strictmath", "expm1", "jvm.java.math_expm1"),
-        ("lang.strictmath", "log1p", "jvm.java.math_log1p"),
-        ("lang.strictmath", "todegrees", "jvm.java.math_to_degrees"),
-        ("lang.strictmath", "toradians", "jvm.java.math_to_radians"),
+        ("lang.StrictMath", "copySign", "jvm.java.math_copy_sign"),
+        ("lang.StrictMath", "nextAfter", "jvm.java.math_next_after"),
+        ("lang.StrictMath", "nextUp", "jvm.java.math_next_up"),
+        ("lang.StrictMath", "nextDown", "jvm.java.math_next_down"),
+        ("lang.StrictMath", "fma", "jvm.java.math_fma"),
+        ("lang.StrictMath", "expm1", "jvm.java.math_expm1"),
+        ("lang.StrictMath", "log1p", "jvm.java.math_log1p"),
+        ("lang.StrictMath", "toDegrees", "jvm.java.math_to_degrees"),
+        ("lang.StrictMath", "toRadians", "jvm.java.math_to_radians"),
         (
-            "lang.strictmath",
-            "ieeeremainder",
+            "lang.StrictMath",
+            "IEEEremainder",
             "jvm.java.math_ieee_remainder",
         ),
-        ("lang.character", "isdigit", "jvm.java.char_is_digit"),
-        ("lang.character", "isletter", "jvm.java.char_is_letter"),
+        ("lang.Character", "isDigit", "jvm.java.char_is_digit"),
+        ("lang.Character", "isLetter", "jvm.java.char_is_letter"),
         (
-            "lang.character",
-            "isletterordigit",
+            "lang.Character",
+            "isLetterOrDigit",
             "jvm.java.char_is_alnum",
         ),
-        ("lang.character", "isuppercase", "jvm.java.char_is_upper"),
-        ("lang.character", "islowercase", "jvm.java.char_is_lower"),
-        ("lang.character", "iswhitespace", "jvm.java.char_is_space"),
-        ("lang.character", "touppercase", "jvm.java.char_to_upper"),
-        ("lang.character", "tolowercase", "jvm.java.char_to_lower"),
-        ("lang.character", "getnumericvalue", "jvm.java.char_numeric"),
-        ("lang.character", "valueof", "jvm.java.identity"),
+        ("lang.Character", "isUpperCase", "jvm.java.char_is_upper"),
+        ("lang.Character", "isLowerCase", "jvm.java.char_is_lower"),
+        ("lang.Character", "isWhitespace", "jvm.java.char_is_space"),
+        ("lang.Character", "toUpperCase", "jvm.java.char_to_upper"),
+        ("lang.Character", "toLowerCase", "jvm.java.char_to_lower"),
+        ("lang.Character", "getNumericValue", "jvm.java.char_numeric"),
+        ("lang.Character", "valueOf", "jvm.java.identity"),
     ] {
         insert_common_static(root, type_path, member, emit);
     }
 
     for (type_path, member, module, func) in [
-        ("lang.double", "parsedouble", "ecma:number", "Number"),
-        ("lang.double", "valueof", "ecma:number", "Number"),
-        ("lang.float", "parsefloat", "ecma:number", "Number"),
-        ("lang.float", "valueof", "ecma:number", "Number"),
-        ("math.biginteger", "valueof", "ecma:bigint", "BigInt"),
-        ("lang.double", "isnan", "ecma:number", "isNaN"),
-        ("lang.math", "abs", "ecma:math", "abs"),
-        ("lang.math", "sqrt", "ecma:math", "sqrt"),
-        ("lang.math", "floor", "ecma:math", "floor"),
-        ("lang.math", "ceil", "ecma:math", "ceil"),
-        ("lang.math", "round", "ecma:math", "round"),
-        ("lang.math", "min", "ecma:math", "minOf"),
-        ("lang.math", "max", "ecma:math", "maxOf"),
-        ("lang.math", "rint", "ecma:math", "round"),
-        ("lang.math", "pow", "ecma:math", "pow"),
-        ("lang.math", "exp", "ecma:math", "exp"),
-        ("lang.math", "log", "ecma:math", "log"),
-        ("lang.math", "log10", "ecma:math", "log10"),
-        ("lang.math", "sin", "ecma:math", "sin"),
-        ("lang.math", "cos", "ecma:math", "cos"),
-        ("lang.math", "tan", "ecma:math", "tan"),
-        ("lang.math", "asin", "ecma:math", "asin"),
-        ("lang.math", "acos", "ecma:math", "acos"),
-        ("lang.math", "atan", "ecma:math", "atan"),
-        ("lang.math", "atan2", "ecma:math", "atan2"),
-        ("lang.math", "random", "ecma:math", "random"),
-        ("lang.math", "hypot", "ecma:math", "hypot"),
-        ("lang.math", "cbrt", "ecma:math", "cbrt"),
-        ("lang.strictmath", "abs", "ecma:math", "abs"),
-        ("lang.strictmath", "sqrt", "ecma:math", "sqrt"),
-        ("lang.strictmath", "floor", "ecma:math", "floor"),
-        ("lang.strictmath", "ceil", "ecma:math", "ceil"),
-        ("lang.strictmath", "min", "ecma:math", "minOf"),
-        ("lang.strictmath", "max", "ecma:math", "maxOf"),
-        ("lang.strictmath", "rint", "ecma:math", "round"),
-        ("lang.strictmath", "pow", "ecma:math", "pow"),
-        ("lang.strictmath", "exp", "ecma:math", "exp"),
-        ("lang.strictmath", "log", "ecma:math", "log"),
-        ("lang.strictmath", "log10", "ecma:math", "log10"),
-        ("lang.strictmath", "sin", "ecma:math", "sin"),
-        ("lang.strictmath", "cos", "ecma:math", "cos"),
-        ("lang.strictmath", "tan", "ecma:math", "tan"),
-        ("lang.strictmath", "asin", "ecma:math", "asin"),
-        ("lang.strictmath", "acos", "ecma:math", "acos"),
-        ("lang.strictmath", "atan", "ecma:math", "atan"),
-        ("lang.strictmath", "atan2", "ecma:math", "atan2"),
-        ("lang.strictmath", "sinh", "ecma:math", "sinh"),
-        ("lang.strictmath", "cosh", "ecma:math", "cosh"),
-        ("lang.strictmath", "tanh", "ecma:math", "tanh"),
-        ("lang.strictmath", "hypot", "ecma:math", "hypot"),
-        ("lang.strictmath", "cbrt", "ecma:math", "cbrt"),
+        ("lang.Double", "parseDouble", "ecma:number", "Number"),
+        ("lang.Double", "valueOf", "ecma:number", "Number"),
+        ("lang.Float", "parseFloat", "ecma:number", "Number"),
+        ("lang.Float", "valueOf", "ecma:number", "Number"),
+        ("math.BigInteger", "valueOf", "ecma:bigint", "BigInt"),
+        ("lang.Double", "isNaN", "ecma:number", "isNaN"),
+        ("lang.Math", "abs", "ecma:math", "abs"),
+        ("lang.Math", "sqrt", "ecma:math", "sqrt"),
+        ("lang.Math", "floor", "ecma:math", "floor"),
+        ("lang.Math", "ceil", "ecma:math", "ceil"),
+        ("lang.Math", "round", "ecma:math", "round"),
+        ("lang.Math", "min", "ecma:math", "minOf"),
+        ("lang.Math", "max", "ecma:math", "maxOf"),
+        ("lang.Math", "rint", "ecma:math", "round"),
+        ("lang.Math", "pow", "ecma:math", "pow"),
+        ("lang.Math", "exp", "ecma:math", "exp"),
+        ("lang.Math", "log", "ecma:math", "log"),
+        ("lang.Math", "log10", "ecma:math", "log10"),
+        ("lang.Math", "sin", "ecma:math", "sin"),
+        ("lang.Math", "cos", "ecma:math", "cos"),
+        ("lang.Math", "tan", "ecma:math", "tan"),
+        ("lang.Math", "asin", "ecma:math", "asin"),
+        ("lang.Math", "acos", "ecma:math", "acos"),
+        ("lang.Math", "atan", "ecma:math", "atan"),
+        ("lang.Math", "atan2", "ecma:math", "atan2"),
+        ("lang.Math", "random", "ecma:math", "random"),
+        ("lang.Math", "hypot", "ecma:math", "hypot"),
+        ("lang.Math", "cbrt", "ecma:math", "cbrt"),
+        ("lang.StrictMath", "abs", "ecma:math", "abs"),
+        ("lang.StrictMath", "sqrt", "ecma:math", "sqrt"),
+        ("lang.StrictMath", "floor", "ecma:math", "floor"),
+        ("lang.StrictMath", "ceil", "ecma:math", "ceil"),
+        ("lang.StrictMath", "min", "ecma:math", "minOf"),
+        ("lang.StrictMath", "max", "ecma:math", "maxOf"),
+        ("lang.StrictMath", "rint", "ecma:math", "round"),
+        ("lang.StrictMath", "pow", "ecma:math", "pow"),
+        ("lang.StrictMath", "exp", "ecma:math", "exp"),
+        ("lang.StrictMath", "log", "ecma:math", "log"),
+        ("lang.StrictMath", "log10", "ecma:math", "log10"),
+        ("lang.StrictMath", "sin", "ecma:math", "sin"),
+        ("lang.StrictMath", "cos", "ecma:math", "cos"),
+        ("lang.StrictMath", "tan", "ecma:math", "tan"),
+        ("lang.StrictMath", "asin", "ecma:math", "asin"),
+        ("lang.StrictMath", "acos", "ecma:math", "acos"),
+        ("lang.StrictMath", "atan", "ecma:math", "atan"),
+        ("lang.StrictMath", "atan2", "ecma:math", "atan2"),
+        ("lang.StrictMath", "sinh", "ecma:math", "sinh"),
+        ("lang.StrictMath", "cosh", "ecma:math", "cosh"),
+        ("lang.StrictMath", "tanh", "ecma:math", "tanh"),
+        ("lang.StrictMath", "hypot", "ecma:math", "hypot"),
+        ("lang.StrictMath", "cbrt", "ecma:math", "cbrt"),
     ] {
         insert_host_static(root, type_path, member, module, func);
     }
@@ -594,63 +605,63 @@ fn insert_java_lang_core_statics(root: &mut Subtree) {
 fn insert_java_math_biginteger_methods(root: &mut Subtree) {
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
         (
-            "math.biginteger",
-            "tostring",
+            "math.BigInteger",
+            "toString",
             "jvm.java.bigint_to_string",
             0,
             0,
         ),
-        ("math.biginteger", "add", "jvm.java.bigint_add", 1, 1),
-        ("math.biginteger", "subtract", "jvm.java.bigint_sub", 1, 1),
-        ("math.biginteger", "multiply", "jvm.java.bigint_mul", 1, 1),
-        ("math.biginteger", "divide", "jvm.java.bigint_div", 1, 1),
-        ("math.biginteger", "remainder", "jvm.java.bigint_rem", 1, 1),
-        ("math.biginteger", "mod", "jvm.java.bigint_rem", 1, 1),
-        ("math.biginteger", "pow", "jvm.java.bigint_pow", 1, 1),
-        ("math.biginteger", "gcd", "jvm.java.bigint_gcd", 1, 1),
-        ("math.biginteger", "and", "jvm.java.bigint_and", 1, 1),
-        ("math.biginteger", "or", "jvm.java.bigint_or", 1, 1),
-        ("math.biginteger", "xor", "jvm.java.bigint_xor", 1, 1),
-        ("math.biginteger", "equals", "jvm.java.bigint_eq", 1, 1),
-        ("math.biginteger", "not", "jvm.java.bigint_not", 0, 0),
-        ("math.biginteger", "negate", "jvm.java.bigint_neg", 0, 0),
-        ("math.biginteger", "abs", "jvm.java.bigint_abs", 0, 0),
-        ("math.biginteger", "shiftleft", "jvm.java.bigint_shl", 1, 1),
-        ("math.biginteger", "shiftright", "jvm.java.bigint_shr", 1, 1),
+        ("math.BigInteger", "add", "jvm.java.bigint_add", 1, 1),
+        ("math.BigInteger", "subtract", "jvm.java.bigint_sub", 1, 1),
+        ("math.BigInteger", "multiply", "jvm.java.bigint_mul", 1, 1),
+        ("math.BigInteger", "divide", "jvm.java.bigint_div", 1, 1),
+        ("math.BigInteger", "remainder", "jvm.java.bigint_rem", 1, 1),
+        ("math.BigInteger", "mod", "jvm.java.bigint_rem", 1, 1),
+        ("math.BigInteger", "pow", "jvm.java.bigint_pow", 1, 1),
+        ("math.BigInteger", "gcd", "jvm.java.bigint_gcd", 1, 1),
+        ("math.BigInteger", "and", "jvm.java.bigint_and", 1, 1),
+        ("math.BigInteger", "or", "jvm.java.bigint_or", 1, 1),
+        ("math.BigInteger", "xor", "jvm.java.bigint_xor", 1, 1),
+        ("math.BigInteger", "equals", "jvm.java.bigint_eq", 1, 1),
+        ("math.BigInteger", "not", "jvm.java.bigint_not", 0, 0),
+        ("math.BigInteger", "negate", "jvm.java.bigint_neg", 0, 0),
+        ("math.BigInteger", "abs", "jvm.java.bigint_abs", 0, 0),
+        ("math.BigInteger", "shiftLeft", "jvm.java.bigint_shl", 1, 1),
+        ("math.BigInteger", "shiftRight", "jvm.java.bigint_shr", 1, 1),
         (
-            "math.biginteger",
-            "compareto",
+            "math.BigInteger",
+            "compareTo",
             "jvm.java.bigint_compare_to",
             1,
             1,
         ),
-        ("math.biginteger", "signum", "jvm.java.bigint_signum", 0, 0),
-        ("math.biginteger", "min", "jvm.java.bigint_min", 1, 1),
-        ("math.biginteger", "max", "jvm.java.bigint_max", 1, 1),
+        ("math.BigInteger", "signum", "jvm.java.bigint_signum", 0, 0),
+        ("math.BigInteger", "min", "jvm.java.bigint_min", 1, 1),
+        ("math.BigInteger", "max", "jvm.java.bigint_max", 1, 1),
         (
-            "math.biginteger",
-            "testbit",
+            "math.BigInteger",
+            "testBit",
             "jvm.java.bigint_test_bit",
             1,
             1,
         ),
         (
-            "math.biginteger",
-            "bitlength",
+            "math.BigInteger",
+            "bitLength",
             "jvm.java.bigint_bit_length",
             0,
             0,
         ),
         (
-            "math.biginteger",
-            "isprobableprime",
+            "math.BigInteger",
+            "isProbablePrime",
             "jvm.java.bigint_is_probable_prime",
             1,
             1,
         ),
         (
-            "math.biginteger",
-            "nextprobableprime",
+            "math.BigInteger",
+            "nextProbablePrime",
             "jvm.java.bigint_next_probable_prime",
             0,
             0,
@@ -663,8 +674,8 @@ fn insert_java_math_biginteger_methods(root: &mut Subtree) {
             common_method(emit, *min_args, *max_args),
         );
     }
-    ensure_type_node(root, "math.biginteger");
-    merge_type_methods(root, "math.biginteger", methods);
+    ensure_type_node(root, "math.BigInteger");
+    merge_type_methods(root, "math.BigInteger", methods);
 }
 
 /// The `java.util` collection surface.
@@ -705,14 +716,14 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Iterable", "iterator", "jvm.java.list_iterator", 0, 0),
         // ── Iterator / ListIterator ────────────────────────────────────────
         ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
-        ("Iterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("Iterator", "hasNext", "jvm.java.iterator_has_next", 0, 0),
         ("Iterator", "remove", "jvm.java.iterator_remove_unsupported", 0, 0),
         ("ListIterator", "next", "jvm.java.iterator_next", 0, 0),
-        ("ListIterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("ListIterator", "hasNext", "jvm.java.iterator_has_next", 0, 0),
         ("ListIterator", "previous", "jvm.java.iterator_previous", 0, 0),
-        ("ListIterator", "hasprevious", "jvm.java.iterator_has_previous", 0, 0),
-        ("ListIterator", "nextindex", "jvm.java.iterator_next_index", 0, 0),
-        ("ListIterator", "previousindex", "jvm.java.iterator_previous_index", 0, 0),
+        ("ListIterator", "hasPrevious", "jvm.java.iterator_has_previous", 0, 0),
+        ("ListIterator", "nextIndex", "jvm.java.iterator_next_index", 0, 0),
+        ("ListIterator", "previousIndex", "jvm.java.iterator_previous_index", 0, 0),
         ("ListIterator", "set", "jvm.java.list_set", 1, 1),
         // `it.add(x)` — `jvm.java.add`'s argc-2 form probes the
         // `__java_list_iterator` shape and inserts at the cursor.
@@ -721,23 +732,23 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // ── Collection ─────────────────────────────────────────────────────
         ("Collection", "add", "jvm.java.add", 1, 1),
         ("Collection", "size", "jvm.java.size", 0, 0),
-        ("Collection", "isempty", "jvm.java.is_empty", 0, 0),
+        ("Collection", "isEmpty", "jvm.java.is_empty", 0, 0),
         ("Collection", "contains", "jvm.java.contains", 1, 1),
         ("Collection", "clear", "jvm.java.list_clear", 0, 0),
         // `AbstractCollection.toString()` — see `emit_collection_to_string` for
         // why this cannot be a runtime probe: a `List` and a Java array are the
         // same ECMA array, and Java renders only one of them element-wise.
-        ("Collection", "tostring", "jvm.java.collection_to_string", 0, 0),
+        ("Collection", "toString", "jvm.java.collection_to_string", 0, 0),
         // `Collection.remove(Object)` is BY VALUE — `jvm.java.list_remove` at
         // this arity is `emit_remove_at`, i.e. by INDEX, which a `Set` has no
         // notion of. `List` overrides below with the index overload that is
         // genuinely List's.
         ("Collection", "remove", "jvm.java.list_remove_value", 1, 1),
-        ("Collection", "addall", "jvm.java.add_all", 1, 1),
-        ("Collection", "removeall", "jvm.java.remove_all", 1, 1),
-        ("Collection", "retainall", "jvm.java.retain_all", 1, 1),
-        ("Collection", "containsall", "jvm.java.list_contains_all", 1, 1),
-        ("Collection", "removeif", "jvm.java.list_remove_if", 1, 1),
+        ("Collection", "addAll", "jvm.java.add_all", 1, 1),
+        ("Collection", "removeAll", "jvm.java.remove_all", 1, 1),
+        ("Collection", "retainAll", "jvm.java.retain_all", 1, 1),
+        ("Collection", "containsAll", "jvm.java.list_contains_all", 1, 1),
+        ("Collection", "removeIf", "jvm.java.list_remove_if", 1, 1),
         ("Collection", "spliterator", "jvm.java.spliterator_new", 0, 0),
         // ── List ───────────────────────────────────────────────────────────
         // `add(index, e)` is the List-only overload, so List widens the arity.
@@ -751,12 +762,12 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // `List.sort(cmp)`, not the `Arrays.sort` static shape.
         ("List", "sort", "jvm.java.list_sort", 0, 1),
         // JDK 21 SequencedCollection accessors.
-        ("List", "getfirst", "jvm.java.peek_first", 0, 0),
-        ("List", "getlast", "jvm.java.peek_last", 0, 0),
-        ("List", "listiterator", "jvm.java.list_iterator", 0, 1),
+        ("List", "getFirst", "jvm.java.peek_first", 0, 0),
+        ("List", "getLast", "jvm.java.peek_last", 0, 0),
+        ("List", "listIterator", "jvm.java.list_iterator", 0, 1),
         // `List.addAll(index, coll)` widens the Collection arity, like `add`.
-        ("List", "addall", "jvm.java.add_all", 1, 2),
-        ("List", "sublist", "jvm.java.sub_list", 2, 2),
+        ("List", "addAll", "jvm.java.add_all", 1, 2),
+        ("List", "subList", "jvm.java.sub_list", 2, 2),
         // ── SortedSet / NavigableSet ───────────────────────────────────────
         ("SortedSet", "add", "jvm.java.sorted_add", 1, 1),
         ("SortedSet", "first", "jvm.java.sorted_first", 0, 0),
@@ -767,7 +778,7 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("NavigableSet", "lower", "jvm.java.sorted_lower", 1, 1),
         (
             "NavigableSet",
-            "descendingset",
+            "descendingSet",
             "jvm.java.sorted_descending_set",
             0,
             0,
@@ -777,160 +788,160 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Queue", "poll", "jvm.java.queue_poll", 0, 0),
         ("Queue", "peek", "jvm.java.peek_first", 0, 0),
         // ── Deque ──────────────────────────────────────────────────────────
-        ("Deque", "addfirst", "jvm.java.add_first", 1, 1),
-        ("Deque", "addlast", "collections.push", 1, 1),
-        ("Deque", "offerfirst", "jvm.java.add_first", 1, 1),
-        ("Deque", "offerlast", "collections.push", 1, 1),
-        ("Deque", "removefirst", "jvm.java.remove_first", 0, 0),
-        ("Deque", "removelast", "collections.pop", 0, 0),
-        ("Deque", "peekfirst", "jvm.java.peek_first", 0, 0),
-        ("Deque", "peeklast", "jvm.java.peek_last", 0, 0),
+        ("Deque", "addFirst", "jvm.java.add_first", 1, 1),
+        ("Deque", "addLast", "collections.push", 1, 1),
+        ("Deque", "offerFirst", "jvm.java.add_first", 1, 1),
+        ("Deque", "offerLast", "collections.push", 1, 1),
+        ("Deque", "removeFirst", "jvm.java.remove_first", 0, 0),
+        ("Deque", "removeLast", "collections.pop", 0, 0),
+        ("Deque", "peekFirst", "jvm.java.peek_first", 0, 0),
+        ("Deque", "peekLast", "jvm.java.peek_last", 0, 0),
         ("Deque", "push", "jvm.java.add_first", 1, 1),
         ("Deque", "pop", "jvm.java.poll_first", 0, 0),
         // ── Map.Entry (binary name `Map$Entry`) ────────────────────────────
-        ("Map$Entry", "getkey", "jvm.java.entry_key", 0, 0),
-        ("Map$Entry", "getvalue", "jvm.java.entry_value", 0, 0),
-        ("Map$Entry", "setvalue", "jvm.java.entry_set_value", 1, 1),
+        ("Map$Entry", "getKey", "jvm.java.entry_key", 0, 0),
+        ("Map$Entry", "getValue", "jvm.java.entry_value", 0, 0),
+        ("Map$Entry", "setValue", "jvm.java.entry_set_value", 1, 1),
         // ── Map (NOT a Collection — no `iterator`, its own `size`) ─────────
         ("Map", "put", "jvm.java.map_put", 2, 2),
         ("Map", "get", "jvm.java.map_get", 1, 1),
         ("Map", "size", "jvm.java.map_size", 0, 0),
-        ("Map", "isempty", "jvm.java.map_is_empty", 0, 0),
+        ("Map", "isEmpty", "jvm.java.map_is_empty", 0, 0),
         ("Map", "clear", "jvm.java.map_clear", 0, 0),
-        ("Map", "keyset", "jvm.java.map_key_set", 0, 0),
+        ("Map", "keySet", "jvm.java.map_key_set", 0, 0),
         ("Map", "values", "jvm.java.map_values", 0, 0),
-        ("Map", "entryset", "jvm.java.entry_set", 0, 0),
+        ("Map", "entrySet", "jvm.java.entry_set", 0, 0),
         ("Map", "remove", "jvm.java.map_remove", 1, 2),
-        ("Map", "putall", "jvm.java.map_put_all", 1, 1),
-        ("Map", "getordefault", "jvm.java.map_get_or_default", 2, 2),
-        ("Map", "containskey", "jvm.java.map_contains_key", 1, 1),
-        ("Map", "containsvalue", "jvm.java.map_contains_value", 1, 1),
-        ("Map", "putifabsent", "jvm.java.put_if_absent", 2, 2),
-        ("Map", "computeifabsent", "jvm.java.compute_if_absent", 2, 2),
-        ("Map", "computeifpresent", "jvm.java.compute_if_present", 2, 2),
+        ("Map", "putAll", "jvm.java.map_put_all", 1, 1),
+        ("Map", "getOrDefault", "jvm.java.map_get_or_default", 2, 2),
+        ("Map", "containsKey", "jvm.java.map_contains_key", 1, 1),
+        ("Map", "containsValue", "jvm.java.map_contains_value", 1, 1),
+        ("Map", "putIfAbsent", "jvm.java.put_if_absent", 2, 2),
+        ("Map", "computeIfAbsent", "jvm.java.compute_if_absent", 2, 2),
+        ("Map", "computeIfPresent", "jvm.java.compute_if_present", 2, 2),
         ("Map", "compute", "jvm.java.map_compute", 2, 2),
         ("Map", "merge", "jvm.java.map_merge", 3, 3),
         // `replace(k, v)` and the conditional `replace(k, old, new)`.
         ("Map", "replace", "jvm.java.map_replace", 2, 3),
-        ("Map", "replaceall", "jvm.java.map_replace_all", 1, 1),
-        ("Map", "foreach", "jvm.java.map_for_each", 1, 1),
+        ("Map", "replaceAll", "jvm.java.map_replace_all", 1, 1),
+        ("Map", "forEach", "jvm.java.map_for_each", 1, 1),
         ("Map", "equals", "jvm.java.map_equals", 1, 1),
         ("Map", "clone", "jvm.java.map_clone", 0, 0),
         // ── SortedMap / NavigableMap ───────────────────────────────────────
-        ("SortedMap", "keyset", "jvm.java.sorted_map_key_set", 0, 0),
+        ("SortedMap", "keySet", "jvm.java.sorted_map_key_set", 0, 0),
         ("SortedMap", "values", "jvm.java.sorted_map_values", 0, 0),
         (
             "SortedMap",
-            "firstkey",
+            "firstKey",
             "jvm.java.sorted_map_first_key",
             0,
             0,
         ),
-        ("SortedMap", "lastkey", "jvm.java.sorted_map_last_key", 0, 0),
-        ("SortedMap", "headmap", "jvm.java.map_head_map", 1, 1),
-        ("SortedMap", "tailmap", "jvm.java.map_tail_map", 1, 1),
-        ("SortedMap", "submap", "jvm.java.map_sub_map", 2, 2),
+        ("SortedMap", "lastKey", "jvm.java.sorted_map_last_key", 0, 0),
+        ("SortedMap", "headMap", "jvm.java.map_head_map", 1, 1),
+        ("SortedMap", "tailMap", "jvm.java.map_tail_map", 1, 1),
+        ("SortedMap", "subMap", "jvm.java.map_sub_map", 2, 2),
         (
             "NavigableMap",
-            "higherkey",
+            "higherKey",
             "jvm.java.sorted_map_higher_key",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "lowerkey",
+            "lowerKey",
             "jvm.java.sorted_map_lower_key",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "ceilingkey",
+            "ceilingKey",
             "jvm.java.sorted_map_ceiling_key",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "floorkey",
+            "floorKey",
             "jvm.java.sorted_map_floor_key",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "firstentry",
+            "firstEntry",
             "jvm.java.sorted_map_first_entry",
             0,
             0,
         ),
         (
             "NavigableMap",
-            "lastentry",
+            "lastEntry",
             "jvm.java.sorted_map_last_entry",
             0,
             0,
         ),
         (
             "NavigableMap",
-            "ceilingentry",
+            "ceilingEntry",
             "jvm.java.sorted_map_ceiling_entry",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "floorentry",
+            "floorEntry",
             "jvm.java.sorted_map_floor_entry",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "higherentry",
+            "higherEntry",
             "jvm.java.sorted_map_higher_entry",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "lowerentry",
+            "lowerEntry",
             "jvm.java.sorted_map_lower_entry",
             1,
             1,
         ),
         (
             "NavigableMap",
-            "pollfirstentry",
+            "pollFirstEntry",
             "jvm.java.sorted_map_poll_first_entry",
             0,
             0,
         ),
         (
             "NavigableMap",
-            "polllastentry",
+            "pollLastEntry",
             "jvm.java.sorted_map_poll_last_entry",
             0,
             0,
         ),
         (
             "NavigableMap",
-            "descendingmap",
+            "descendingMap",
             "jvm.java.sorted_map_descending_map",
             0,
             0,
         ),
         (
             "NavigableMap",
-            "descendingkeyset",
+            "descendingKeySet",
             "jvm.java.sorted_map_descending_key_set",
             0,
             0,
         ),
         // ── Iterator ───────────────────────────────────────────────────────
         ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
-        ("Iterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("Iterator", "hasNext", "jvm.java.iterator_has_next", 0, 0),
         ("Iterator", "remove", "jvm.java.iterator_remove", 0, 0),
         (
             "ListIterator",
@@ -941,21 +952,21 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ),
         (
             "ListIterator",
-            "hasprevious",
+            "hasPrevious",
             "jvm.java.iterator_has_previous",
             0,
             0,
         ),
         (
             "ListIterator",
-            "nextindex",
+            "nextIndex",
             "jvm.java.iterator_next_index",
             0,
             0,
         ),
         (
             "ListIterator",
-            "previousindex",
+            "previousIndex",
             "jvm.java.iterator_previous_index",
             0,
             0,
@@ -967,21 +978,21 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // its own arms carry that, the rest of the surface folds in from
         // Collection/Iterable like every other type.
         ("EnumSet", "add", "jvm.java.enum_set_add", 1, 1),
-        ("EnumSet", "addall", "jvm.java.enum_set_add_all", 1, 1),
+        ("EnumSet", "addAll", "jvm.java.enum_set_add_all", 1, 1),
         ("EnumSet", "contains", "jvm.java.enum_set_contains", 1, 1),
         (
             "EnumSet",
-            "containsall",
+            "containsAll",
             "jvm.java.enum_set_contains_all",
             1,
             1,
         ),
         ("EnumSet", "remove", "jvm.java.enum_set_remove", 1, 1),
         ("EnumSet", "equals", "jvm.java.enum_set_equals", 1, 1),
-        ("EnumSet", "hashcode", "jvm.java.enum_set_hash_code", 0, 0),
+        ("EnumSet", "hashCode", "jvm.java.enum_set_hash_code", 0, 0),
         ("EnumSet", "iterator", "jvm.java.enum_set_iterator", 0, 0),
-        ("Vector", "addelement", "jvm.java.add", 1, 1),
-        ("Vector", "elementat", "jvm.java.get", 1, 1),
+        ("Vector", "addElement", "jvm.java.add", 1, 1),
+        ("Vector", "elementAt", "jvm.java.get", 1, 1),
         // `Stack` is a `Vector`, so it inherits the whole list surface; these
         // four are its own, and `pop`/`peek` work the far end from `Deque`.
         ("Stack", "push", "jvm.java.add", 1, 1),
@@ -1048,7 +1059,7 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         if methods.is_empty() {
             continue;
         }
-        let type_path = format!("{}.{}", ty.package, ty.name.to_lowercase());
+        let type_path = format!("{}.{}", ty.package, ty.name);
         ensure_type_node(root, &type_path);
         merge_type_methods(root, &type_path, methods);
 
@@ -1110,7 +1121,7 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         if methods.is_empty() {
             continue;
         }
-        let type_path = format!("util.{}", iface.to_lowercase());
+        let type_path = format!("util.{}", iface);
         ensure_type_node(root, &type_path);
         merge_type_methods(root, &type_path, methods);
 
@@ -1130,7 +1141,7 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
 
     merge_type_member_returns(
         root,
-        "util.vector",
+        "util.Vector",
         &[
             ("iterator", "java.util.Iterator"),
             ("listIterator", "java.util.ListIterator"),
@@ -1138,12 +1149,12 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
     );
 
     for (type_path, member, emit) in [
-        ("util.hashmap", "keys", "jvm.java.map_key_set"),
-        ("util.hashmap", "values", "jvm.java.map_values"),
-        ("util.linkedhashmap", "keys", "jvm.java.map_key_set"),
-        ("util.linkedhashmap", "values", "jvm.java.map_values"),
-        ("util.treemap", "keys", "jvm.java.sorted_map_key_set"),
-        ("util.treemap", "values", "jvm.java.sorted_map_values"),
+        ("util.HashMap", "keys", "jvm.java.map_key_set"),
+        ("util.HashMap", "values", "jvm.java.map_values"),
+        ("util.LinkedHashMap", "keys", "jvm.java.map_key_set"),
+        ("util.LinkedHashMap", "values", "jvm.java.map_values"),
+        ("util.TreeMap", "keys", "jvm.java.sorted_map_key_set"),
+        ("util.TreeMap", "values", "jvm.java.sorted_map_values"),
     ] {
         let mut methods = Subtree::new();
         methods.insert(member.to_string(), common_emit(emit));
@@ -1193,29 +1204,33 @@ fn insert_java_optional_and_class(root: &mut Subtree) {
         ("equals", "jvm.java.optional_equals", 1, 1),
         ("toString", "jvm.java.optional_to_string", 0, 0),
     ] {
+        // ⛔ The DECLARED spelling. Lowercasing here silently overrode the rows
+        // above — `ifPresentOrElse` went in as `ifpresentorelse` — which was
+        // invisible while the tree folded and unreachable the moment Java
+        // started asking exactly.
         optional.insert(
-            member.to_ascii_lowercase(),
+            (*member).to_string(),
             common_method(emit, min_args, max_args),
         );
     }
-    for type_path in ["util.optional", "util.optionalint", "util.optionallong", "util.optionaldouble"] {
+    for type_path in ["util.Optional", "util.OptionalInt", "util.OptionalLong", "util.OptionalDouble"] {
         ensure_type_node(root, type_path);
         merge_type_methods(root, type_path, optional.clone());
     }
 
     let mut class_methods = Subtree::new();
     for (member, emit) in [
-        ("getname", "jvm.java.class_name"),
-        ("getsimplename", "jvm.java.class_simple_name"),
+        ("getName", "jvm.java.class_name"),
+        ("getSimpleName", "jvm.java.class_simple_name"),
     ] {
         class_methods.insert(member.to_string(), common_method(emit, 0, 0));
     }
-    ensure_type_node(root, "lang.class");
-    merge_type_methods(root, "lang.class", class_methods);
+    ensure_type_node(root, "lang.Class");
+    merge_type_methods(root, "lang.Class", class_methods);
 }
 
 fn insert_java_util_bitset(root: &mut Subtree) {
-    ensure_type_node(root, "util.bitset");
+    ensure_type_node(root, "util.BitSet");
     let mut methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
         ("set", "jvm.java.bitset_set", 1, 3),
@@ -1244,48 +1259,52 @@ fn insert_java_util_bitset(root: &mut Subtree) {
         ("toString", "jvm.java.bitset_to_string", 0, 0),
         ("hashCode", "jvm.java.bitset_hash_code", 0, 0),
     ] {
+        // Declared spelling — see the `Optional` registration above.
         methods.insert(
-            member.to_ascii_lowercase(),
+            (*member).to_string(),
             common_method(emit, min_args, max_args),
         );
     }
-    merge_type_methods(root, "util.bitset", methods);
+    merge_type_methods(root, "util.BitSet", methods);
 }
 
 fn insert_java_util_regex(root: &mut Subtree) {
-    ensure_type_node(root, "util.regex.pattern");
-    ensure_type_node(root, "util.regex.matcher");
+    ensure_type_node(root, "util.regex.Pattern");
+    ensure_type_node(root, "util.regex.Matcher");
 
     insert_path(
         root,
-        "util.regex.pattern.compile",
+        "util.regex.Pattern.compile",
         common_method("jvm.java.regex_pattern_compile", 1, 2),
     );
     insert_path(
         root,
-        "util.regex.pattern.quote",
+        "util.regex.Pattern.quote",
         common_emit("strings.escape_regex"),
     );
+    // The JDK's own spellings — `Pattern.CASE_INSENSITIVE`, not
+    // `case_insensitive`. These are public static final FIELDS, and a field is
+    // reached by its declared name once the tree stops folding.
     for (name, value) in [
-        ("unix_lines", 1.0),
-        ("case_insensitive", 2.0),
-        ("comments", 4.0),
-        ("multiline", 8.0),
-        ("literal", 16.0),
-        ("dotall", 32.0),
-        ("unicode_case", 64.0),
-        ("canonical_eq", 128.0),
-        ("unicode_character_class", 256.0),
+        ("UNIX_LINES", 1.0),
+        ("CASE_INSENSITIVE", 2.0),
+        ("COMMENTS", 4.0),
+        ("MULTILINE", 8.0),
+        ("LITERAL", 16.0),
+        ("DOTALL", 32.0),
+        ("UNICODE_CASE", 64.0),
+        ("CANON_EQ", 128.0),
+        ("UNICODE_CHARACTER_CLASS", 256.0),
     ] {
         insert_path(
             root,
-            &format!("util.regex.pattern.{name}"),
+            &format!("util.regex.Pattern.{name}"),
             NamespaceNode::Const(Value::F64(value)),
         );
     }
     merge_type_methods(
         root,
-        "util.regex.pattern",
+        "util.regex.Pattern",
         [
             (
                 "matcher".to_string(),
@@ -1313,7 +1332,7 @@ fn insert_java_util_regex(root: &mut Subtree) {
     );
     merge_type_member_returns(
         root,
-        "util.regex.pattern",
+        "util.regex.Pattern",
         &[
             ("matcher", "java.util.regex.Matcher"),
             ("split", "Array"),
@@ -1325,7 +1344,7 @@ fn insert_java_util_regex(root: &mut Subtree) {
 
     merge_type_methods(
         root,
-        "util.regex.matcher",
+        "util.regex.Matcher",
         [
             (
                 "find".to_string(),
@@ -1394,7 +1413,7 @@ fn insert_java_util_regex(root: &mut Subtree) {
     );
     merge_type_member_returns(
         root,
-        "util.regex.matcher",
+        "util.regex.Matcher",
         &[
             ("find", "Boolean"),
             ("matches", "Boolean"),
@@ -1414,535 +1433,535 @@ fn insert_java_util_regex(root: &mut Subtree) {
 fn insert_java_io_methods(root: &mut Subtree) {
     insert_common_static(
         root,
-        "io.file",
-        "createtempfile",
+        "io.File",
+        "createTempFile",
         "jvm.java.io_file_create_temp",
     );
 
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
-        ("io.file", "writetext", "jvm.java.io_file_write_text", 1, 2),
+        ("io.File", "writeText", "jvm.java.io_file_write_text", 1, 2),
         (
-            "io.file",
-            "appendtext",
+            "io.File",
+            "appendText",
             "jvm.java.io_file_append_text",
             1,
             2,
         ),
-        ("io.file", "readtext", "jvm.java.io_file_read_text", 0, 1),
-        ("io.file", "readlines", "jvm.java.io_file_read_lines", 0, 1),
-        ("io.file", "listfiles", "jvm.java.io_file_list_files", 0, 1),
-        ("io.file", "walk", "jvm.java.io_file_walk", 0, 0),
-        ("io.file", "walktopdown", "jvm.java.io_file_walk", 0, 0),
-        ("io.file", "walkbottomup", "jvm.java.io_file_walk", 0, 0),
-        ("io.file", "writebytes", "jvm.java.io_file_write_text", 1, 1),
-        ("io.file", "readbytes", "jvm.java.io_file_read_text", 0, 0),
-        ("io.file", "exists", "jvm.java.io_file_exists", 0, 0),
-        ("io.file", "delete", "jvm.java.io_file_delete", 0, 0),
-        ("io.file", "deleteonexit", "jvm.java.io_false", 0, 0),
-        ("io.file", "mkdir", "jvm.java.io_file_mkdirs", 0, 0),
-        ("io.file", "mkdirs", "jvm.java.io_file_mkdirs", 0, 0),
-        ("io.file", "isfile", "jvm.java.io_file_is_file", 0, 0),
+        ("io.File", "readText", "jvm.java.io_file_read_text", 0, 1),
+        ("io.File", "readLines", "jvm.java.io_file_read_lines", 0, 1),
+        ("io.File", "listFiles", "jvm.java.io_file_list_files", 0, 1),
+        ("io.File", "walk", "jvm.java.io_file_walk", 0, 0),
+        ("io.File", "walkTopDown", "jvm.java.io_file_walk", 0, 0),
+        ("io.File", "walkBottomUp", "jvm.java.io_file_walk", 0, 0),
+        ("io.File", "writeBytes", "jvm.java.io_file_write_text", 1, 1),
+        ("io.File", "readBytes", "jvm.java.io_file_read_text", 0, 0),
+        ("io.File", "exists", "jvm.java.io_file_exists", 0, 0),
+        ("io.File", "delete", "jvm.java.io_file_delete", 0, 0),
+        ("io.File", "deleteOnExit", "jvm.java.io_false", 0, 0),
+        ("io.File", "mkdir", "jvm.java.io_file_mkdirs", 0, 0),
+        ("io.File", "mkdirs", "jvm.java.io_file_mkdirs", 0, 0),
+        ("io.File", "isFile", "jvm.java.io_file_is_file", 0, 0),
         (
-            "io.file",
-            "isdirectory",
+            "io.File",
+            "isDirectory",
             "jvm.java.io_file_is_directory",
             0,
             0,
         ),
-        ("io.file", "canread", "jvm.java.io_file_exists", 0, 0),
-        ("io.file", "canwrite", "jvm.java.io_file_exists", 0, 0),
-        ("io.file", "canexecute", "jvm.java.io_false", 0, 0),
-        ("io.file", "getpath", "jvm.java.io_file_get_path", 0, 0),
-        ("io.file", "path", "jvm.java.io_file_get_path", 0, 0),
+        ("io.File", "canRead", "jvm.java.io_file_exists", 0, 0),
+        ("io.File", "canWrite", "jvm.java.io_file_exists", 0, 0),
+        ("io.File", "canexecute", "jvm.java.io_false", 0, 0),
+        ("io.File", "getPath", "jvm.java.io_file_get_path", 0, 0),
+        ("io.File", "path", "jvm.java.io_file_get_path", 0, 0),
         (
-            "io.file",
+            "io.File",
             "getabsolutepath",
             "jvm.java.io_file_get_path",
             0,
             0,
         ),
-        ("io.file", "absolutepath", "jvm.java.io_file_get_path", 0, 0),
-        ("io.file", "getabsolutefile", "jvm.java.identity", 0, 0),
-        ("io.file", "absolutefile", "jvm.java.identity", 0, 0),
-        ("io.file", "getname", "jvm.java.io_file_get_name", 0, 0),
-        ("io.file", "name", "jvm.java.io_file_get_name", 0, 0),
-        ("io.file", "filename", "jvm.java.io_file_get_name", 0, 0),
-        ("io.file", "extension", "jvm.java.io_file_extension", 0, 0),
+        ("io.File", "absolutePath", "jvm.java.io_file_get_path", 0, 0),
+        ("io.File", "getabsolutefile", "jvm.java.identity", 0, 0),
+        ("io.File", "absoluteFile", "jvm.java.identity", 0, 0),
+        ("io.File", "getName", "jvm.java.io_file_get_name", 0, 0),
+        ("io.File", "name", "jvm.java.io_file_get_name", 0, 0),
+        ("io.File", "fileName", "jvm.java.io_file_get_name", 0, 0),
+        ("io.File", "extension", "jvm.java.io_file_extension", 0, 0),
         (
-            "io.file",
-            "namewithoutextension",
+            "io.File",
+            "nameWithoutExtension",
             "jvm.java.io_file_name_without_extension",
             0,
             0,
         ),
-        ("io.file", "getparent", "jvm.java.io_file_parent", 0, 0),
-        ("io.file", "parent", "jvm.java.io_file_parent", 0, 0),
+        ("io.File", "getParent", "jvm.java.io_file_parent", 0, 0),
+        ("io.File", "parent", "jvm.java.io_file_parent", 0, 0),
         (
-            "io.file",
+            "io.File",
             "getparentfile",
             "jvm.java.io_file_parent_file",
             0,
             0,
         ),
         (
-            "io.file",
-            "parentfile",
+            "io.File",
+            "parentFile",
             "jvm.java.io_file_parent_file",
             0,
             0,
         ),
-        ("io.file", "topath", "jvm.java.identity", 0, 0),
-        ("io.file", "touri", "jvm.java.io_file_get_path", 0, 0),
-        ("io.file", "tostring", "jvm.java.io_file_get_path", 0, 0),
+        ("io.File", "toPath", "jvm.java.identity", 0, 0),
+        ("io.File", "toURI", "jvm.java.io_file_get_path", 0, 0),
+        ("io.File", "toString", "jvm.java.io_file_get_path", 0, 0),
         (
-            "io.file",
-            "lastmodified",
+            "io.File",
+            "lastModified",
             "jvm.java.current_time_millis",
             0,
             0,
         ),
-        ("io.file", "renameto", "jvm.java.io_file_rename_to", 1, 1),
-        ("io.file", "copyto", "jvm.java.io_file_copy_to", 1, 2),
+        ("io.File", "renameTo", "jvm.java.io_file_rename_to", 1, 1),
+        ("io.File", "copyTo", "jvm.java.io_file_copy_to", 1, 2),
         (
-            "io.file",
-            "inputstream",
+            "io.File",
+            "inputStream",
             "jvm.java.io_file_input_stream",
             0,
             0,
         ),
         (
-            "io.file",
-            "outputstream",
+            "io.File",
+            "outputStream",
             "jvm.java.io_file_output_stream",
             0,
             0,
         ),
         (
-            "io.file",
+            "io.File",
             "appendstream",
             "jvm.java.io_file_append_stream",
             0,
             0,
         ),
-        ("io.file", "reader", "jvm.java.io_file_input_stream", 0, 0),
-        ("io.file", "writer", "jvm.java.io_file_output_stream", 0, 0),
-        ("io.bytearrayoutputstream", "size", "jvm.java.io_size", 0, 0),
-        ("io.bytearrayoutputstream", "use", "jvm.java.io_use", 1, 1),
+        ("io.File", "reader", "jvm.java.io_file_input_stream", 0, 0),
+        ("io.File", "writer", "jvm.java.io_file_output_stream", 0, 0),
+        ("io.ByteArrayOutputStream", "size", "jvm.java.io_size", 0, 0),
+        ("io.ByteArrayOutputStream", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.bytearrayoutputstream",
+            "io.ByteArrayOutputStream",
             "flush",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.bytearrayoutputstream",
+            "io.ByteArrayOutputStream",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.bytearrayoutputstream",
-            "tostring",
+            "io.ByteArrayOutputStream",
+            "toString",
             "jvm.java.io_output_to_string",
             0,
             1,
         ),
         (
-            "io.bytearrayoutputstream",
+            "io.ByteArrayOutputStream",
             "write",
             "jvm.java.io_output_write",
             1,
             3,
         ),
         (
-            "io.bytearrayoutputstream",
+            "io.ByteArrayOutputStream",
             "reset",
             "jvm.java.io_reset_buffer",
             0,
             0,
         ),
         (
-            "io.bytearrayoutputstream",
-            "tobytearray",
+            "io.ByteArrayOutputStream",
+            "toByteArray",
             "jvm.java.io_to_byte_array",
             0,
             0,
         ),
-        ("io.bytearrayinputstream", "read", "jvm.java.io_read", 0, 1),
+        ("io.ByteArrayInputStream", "read", "jvm.java.io_read", 0, 1),
         (
-            "io.bytearrayinputstream",
-            "copyto",
+            "io.ByteArrayInputStream",
+            "copyTo",
             "jvm.java.io_stream_copy_to",
             1,
             1,
         ),
-        ("io.bytearrayinputstream", "use", "jvm.java.io_use", 1, 1),
+        ("io.ByteArrayInputStream", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.bytearrayinputstream",
+            "io.ByteArrayInputStream",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.bytearrayinputstream",
+            "io.ByteArrayInputStream",
             "available",
             "jvm.java.io_available",
             0,
             0,
         ),
-        ("io.bytearrayinputstream", "mark", "jvm.java.io_mark", 1, 1),
+        ("io.ByteArrayInputStream", "mark", "jvm.java.io_mark", 1, 1),
         (
-            "io.bytearrayinputstream",
+            "io.ByteArrayInputStream",
             "reset",
             "jvm.java.io_reset_pos",
             0,
             0,
         ),
         (
-            "io.bytearrayinputstream",
-            "marksupported",
+            "io.ByteArrayInputStream",
+            "markSupported",
             "jvm.java.io_mark_supported",
             0,
             0,
         ),
-        ("io.bytearrayinputstream", "skip", "jvm.java.io_skip", 1, 1),
-        ("io.stringreader", "read", "jvm.java.io_read", 0, 1),
-        ("io.stringreader", "use", "jvm.java.io_use", 1, 1),
-        ("io.stringreader", "close", "jvm.java.io_flush_close", 0, 0),
-        ("io.stringreader", "mark", "jvm.java.io_mark", 1, 1),
-        ("io.stringreader", "reset", "jvm.java.io_reset_pos", 0, 0),
-        ("io.stringreader", "skip", "jvm.java.io_skip", 1, 1),
-        ("io.chararrayreader", "read", "jvm.java.io_read", 0, 1),
-        ("io.chararrayreader", "use", "jvm.java.io_use", 1, 1),
+        ("io.ByteArrayInputStream", "skip", "jvm.java.io_skip", 1, 1),
+        ("io.StringReader", "read", "jvm.java.io_read", 0, 1),
+        ("io.StringReader", "use", "jvm.java.io_use", 1, 1),
+        ("io.StringReader", "close", "jvm.java.io_flush_close", 0, 0),
+        ("io.StringReader", "mark", "jvm.java.io_mark", 1, 1),
+        ("io.StringReader", "reset", "jvm.java.io_reset_pos", 0, 0),
+        ("io.StringReader", "skip", "jvm.java.io_skip", 1, 1),
+        ("io.CharArrayReader", "read", "jvm.java.io_read", 0, 1),
+        ("io.CharArrayReader", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.chararrayreader",
+            "io.CharArrayReader",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.chararrayreader", "mark", "jvm.java.io_mark", 1, 1),
-        ("io.chararrayreader", "reset", "jvm.java.io_reset_pos", 0, 0),
-        ("io.chararrayreader", "skip", "jvm.java.io_skip", 1, 1),
-        ("io.inputstreamreader", "read", "jvm.java.io_read", 0, 1),
+        ("io.CharArrayReader", "mark", "jvm.java.io_mark", 1, 1),
+        ("io.CharArrayReader", "reset", "jvm.java.io_reset_pos", 0, 0),
+        ("io.CharArrayReader", "skip", "jvm.java.io_skip", 1, 1),
+        ("io.InputStreamReader", "read", "jvm.java.io_read", 0, 1),
         (
-            "io.inputstreamreader",
-            "readtext",
+            "io.InputStreamReader",
+            "readText",
             "jvm.java.io_read_text",
             0,
             0,
         ),
-        ("io.inputstreamreader", "use", "jvm.java.io_use", 1, 1),
+        ("io.InputStreamReader", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.inputstreamreader",
+            "io.InputStreamReader",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.inputstreamreader", "ready", "jvm.java.io_ready", 0, 0),
-        ("io.bufferedinputstream", "read", "jvm.java.io_read", 0, 1),
+        ("io.InputStreamReader", "ready", "jvm.java.io_ready", 0, 0),
+        ("io.BufferedInputStream", "read", "jvm.java.io_read", 0, 1),
         (
-            "io.bufferedinputstream",
-            "readtext",
+            "io.BufferedInputStream",
+            "readText",
             "jvm.java.io_read_text",
             0,
             0,
         ),
         (
-            "io.bufferedinputstream",
-            "copyto",
+            "io.BufferedInputStream",
+            "copyTo",
             "jvm.java.io_stream_copy_to",
             1,
             1,
         ),
-        ("io.bufferedinputstream", "use", "jvm.java.io_use", 1, 1),
+        ("io.BufferedInputStream", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.bufferedinputstream",
+            "io.BufferedInputStream",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.filterinputstream", "read", "jvm.java.io_read", 0, 1),
+        ("io.FilterInputStream", "read", "jvm.java.io_read", 0, 1),
         (
-            "io.filterinputstream",
-            "readtext",
+            "io.FilterInputStream",
+            "readText",
             "jvm.java.io_read_text",
             0,
             0,
         ),
         (
-            "io.filterinputstream",
-            "copyto",
+            "io.FilterInputStream",
+            "copyTo",
             "jvm.java.io_stream_copy_to",
             1,
             1,
         ),
-        ("io.filterinputstream", "use", "jvm.java.io_use", 1, 1),
+        ("io.FilterInputStream", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.filterinputstream",
+            "io.FilterInputStream",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.pushbackinputstream", "read", "jvm.java.io_read", 0, 0),
+        ("io.PushbackInputStream", "read", "jvm.java.io_read", 0, 0),
         (
-            "io.pushbackinputstream",
+            "io.PushbackInputStream",
             "unread",
             "jvm.java.io_unread",
             1,
             1,
         ),
-        ("io.bufferedreader", "read", "jvm.java.io_read", 0, 1),
+        ("io.BufferedReader", "read", "jvm.java.io_read", 0, 1),
         (
-            "io.bufferedreader",
-            "readtext",
+            "io.BufferedReader",
+            "readText",
             "jvm.java.io_read_text",
             0,
             0,
         ),
-        ("io.bufferedreader", "use", "jvm.java.io_use", 1, 1),
+        ("io.BufferedReader", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.bufferedreader",
+            "io.BufferedReader",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.bufferedreader",
-            "readline",
+            "io.BufferedReader",
+            "readLine",
             "jvm.java.io_read_line",
             0,
             0,
         ),
-        ("io.bufferedreader", "ready", "jvm.java.io_ready", 0, 0),
+        ("io.BufferedReader", "ready", "jvm.java.io_ready", 0, 0),
         (
-            "io.bufferedreader",
-            "marksupported",
+            "io.BufferedReader",
+            "markSupported",
             "jvm.java.io_mark_supported",
             0,
             0,
         ),
         (
-            "io.linenumberreader",
-            "readline",
+            "io.LineNumberReader",
+            "readLine",
             "jvm.java.io_read_line",
             0,
             0,
         ),
         (
-            "io.linenumberreader",
-            "getlinenumber",
+            "io.LineNumberReader",
+            "getLineNumber",
             "jvm.java.io_get_line_number",
             0,
             0,
         ),
-        ("io.printwriter", "print", "jvm.java.io_writer_print", 1, 1),
+        ("io.PrintWriter", "print", "jvm.java.io_writer_print", 1, 1),
         (
-            "io.printwriter",
+            "io.PrintWriter",
             "println",
             "jvm.java.io_writer_println",
             0,
             1,
         ),
         (
-            "io.printwriter",
+            "io.PrintWriter",
             "append",
             "jvm.java.io_writer_append",
             1,
             1,
         ),
-        ("io.printwriter", "flush", "jvm.java.io_flush_close", 0, 0),
-        ("io.printwriter", "close", "jvm.java.io_flush_close", 0, 0),
-        ("io.printwriter", "checkerror", "jvm.java.io_false", 0, 0),
-        ("io.printstream", "print", "jvm.java.io_writer_print", 1, 1),
+        ("io.PrintWriter", "flush", "jvm.java.io_flush_close", 0, 0),
+        ("io.PrintWriter", "close", "jvm.java.io_flush_close", 0, 0),
+        ("io.PrintWriter", "checkError", "jvm.java.io_false", 0, 0),
+        ("io.PrintStream", "print", "jvm.java.io_writer_print", 1, 1),
         (
-            "io.printstream",
+            "io.PrintStream",
             "println",
             "jvm.java.io_writer_println",
             0,
             1,
         ),
-        ("io.printstream", "flush", "jvm.java.io_flush_close", 0, 0),
+        ("io.PrintStream", "flush", "jvm.java.io_flush_close", 0, 0),
         (
-            "io.outputstreamwriter",
+            "io.OutputStreamWriter",
             "write",
             "jvm.java.io_writer_write",
             1,
             3,
         ),
-        ("io.outputstreamwriter", "use", "jvm.java.io_use", 1, 1),
+        ("io.OutputStreamWriter", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.outputstreamwriter",
+            "io.OutputStreamWriter",
             "flush",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.outputstreamwriter",
+            "io.OutputStreamWriter",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.stringwriter", "write", "jvm.java.io_writer_write", 1, 3),
-        ("io.stringwriter", "use", "jvm.java.io_use", 1, 1),
+        ("io.StringWriter", "write", "jvm.java.io_writer_write", 1, 3),
+        ("io.StringWriter", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.stringwriter",
+            "io.StringWriter",
             "append",
             "jvm.java.io_writer_append",
             1,
             1,
         ),
         (
-            "io.stringwriter",
-            "tostring",
+            "io.StringWriter",
+            "toString",
             "jvm.java.io_writer_to_string",
             0,
             0,
         ),
-        ("io.stringwriter", "flush", "jvm.java.io_flush_close", 0, 0),
-        ("io.stringwriter", "close", "jvm.java.io_flush_close", 0, 0),
+        ("io.StringWriter", "flush", "jvm.java.io_flush_close", 0, 0),
+        ("io.StringWriter", "close", "jvm.java.io_flush_close", 0, 0),
         (
-            "io.chararraywriter",
+            "io.CharArrayWriter",
             "write",
             "jvm.java.io_writer_write",
             1,
             3,
         ),
-        ("io.chararraywriter", "use", "jvm.java.io_use", 1, 1),
+        ("io.CharArrayWriter", "use", "jvm.java.io_use", 1, 1),
         (
-            "io.chararraywriter",
-            "tochararray",
+            "io.CharArrayWriter",
+            "toCharArray",
             "jvm.java.io_writer_to_char_array",
             0,
             0,
         ),
         (
-            "io.chararraywriter",
-            "tostring",
+            "io.CharArrayWriter",
+            "toString",
             "jvm.java.io_writer_to_string",
             0,
             0,
         ),
         (
-            "io.chararraywriter",
+            "io.CharArrayWriter",
             "flush",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.chararraywriter",
+            "io.CharArrayWriter",
             "close",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
         (
-            "io.bufferedwriter",
+            "io.BufferedWriter",
             "write",
             "jvm.java.io_writer_write",
             1,
             3,
         ),
         (
-            "io.bufferedwriter",
-            "newline",
+            "io.BufferedWriter",
+            "newLine",
             "jvm.java.io_writer_newline",
             0,
             0,
         ),
         (
-            "io.bufferedwriter",
+            "io.BufferedWriter",
             "flush",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.filterwriter", "write", "jvm.java.io_writer_write", 1, 3),
+        ("io.FilterWriter", "write", "jvm.java.io_writer_write", 1, 3),
         (
-            "io.filterwriter",
+            "io.FilterWriter",
             "write$sigint",
             "jvm.java.io_writer_write",
             1,
             1,
         ),
         (
-            "io.filterwriter",
+            "io.FilterWriter",
             "write$sigchararray_int_int",
             "jvm.java.io_writer_write",
             3,
             3,
         ),
         (
-            "io.filterwriter",
+            "io.FilterWriter",
             "write$sigstring_int_int",
             "jvm.java.io_writer_write",
             3,
             3,
         ),
-        ("io.filterwriter", "flush", "jvm.java.io_flush_close", 0, 0),
-        ("io.filterwriter", "close", "jvm.java.io_flush_close", 0, 0),
+        ("io.FilterWriter", "flush", "jvm.java.io_flush_close", 0, 0),
+        ("io.FilterWriter", "close", "jvm.java.io_flush_close", 0, 0),
         (
-            "io.dataoutputstream",
-            "writeint",
+            "io.DataOutputStream",
+            "writeInt",
             "jvm.java.io_output_write",
             1,
             1,
         ),
         (
-            "io.dataoutputstream",
-            "writelong",
+            "io.DataOutputStream",
+            "writeLong",
             "jvm.java.io_output_write",
             1,
             1,
         ),
         (
-            "io.dataoutputstream",
-            "writeboolean",
+            "io.DataOutputStream",
+            "writeBoolean",
             "jvm.java.io_output_write",
             1,
             1,
         ),
         (
-            "io.dataoutputstream",
-            "writeutf",
+            "io.DataOutputStream",
+            "writeUTF",
             "jvm.java.io_output_write",
             1,
             1,
         ),
         (
-            "io.dataoutputstream",
+            "io.DataOutputStream",
             "flush",
             "jvm.java.io_flush_close",
             0,
             0,
         ),
-        ("io.datainputstream", "readint", "jvm.java.io_read", 0, 0),
-        ("io.datainputstream", "readlong", "jvm.java.io_read", 0, 0),
+        ("io.DataInputStream", "readInt", "jvm.java.io_read", 0, 0),
+        ("io.DataInputStream", "readLong", "jvm.java.io_read", 0, 0),
         (
-            "io.datainputstream",
-            "readboolean",
+            "io.DataInputStream",
+            "readBoolean",
             "jvm.java.io_read",
             0,
             0,
         ),
         (
-            "io.datainputstream",
-            "readutf",
+            "io.DataInputStream",
+            "readUTF",
             "jvm.java.io_read_utf",
             0,
             0,
         ),
-        ("io.sequenceinputstream", "read", "jvm.java.io_read", 0, 0),
+        ("io.SequenceInputStream", "read", "jvm.java.io_read", 0, 0),
     ];
 
     let mut by_type: BTreeMap<&str, Subtree> = BTreeMap::new();
@@ -1958,23 +1977,23 @@ fn insert_java_io_methods(root: &mut Subtree) {
     }
 
     for (type_path, returns) in [
-        ("io.printwriter", &[("append", "java.io.PrintWriter")][..]),
-        ("io.stringwriter", &[("append", "java.io.StringWriter")][..]),
+        ("io.PrintWriter", &[("append", "java.io.PrintWriter")][..]),
+        ("io.StringWriter", &[("append", "java.io.StringWriter")][..]),
         (
-            "io.file",
+            "io.File",
             &[
-                ("createtempfile", "java.io.File"),
-                ("copyto", "java.io.File"),
-                ("inputstream", "java.io.ByteArrayInputStream"),
-                ("outputstream", "java.io.ByteArrayOutputStream"),
+                ("createTempFile", "java.io.File"),
+                ("copyTo", "java.io.File"),
+                ("inputStream", "java.io.ByteArrayInputStream"),
+                ("outputStream", "java.io.ByteArrayOutputStream"),
                 ("appendstream", "java.io.ByteArrayOutputStream"),
                 ("reader", "java.io.InputStreamReader"),
                 ("writer", "java.io.OutputStreamWriter"),
                 ("getparentfile", "java.io.File"),
-                ("parentfile", "java.io.File"),
+                ("parentFile", "java.io.File"),
                 ("getabsolutefile", "java.io.File"),
-                ("absolutefile", "java.io.File"),
-                ("topath", "java.io.File"),
+                ("absoluteFile", "java.io.File"),
+                ("toPath", "java.io.File"),
             ][..],
         ),
     ] {
@@ -1982,16 +2001,16 @@ fn insert_java_io_methods(root: &mut Subtree) {
     }
     merge_type_member_returns(
         root,
-        "io.file",
+        "io.File",
         &[
             ("exists", "Boolean"),
             ("delete", "Boolean"),
             ("mkdir", "Boolean"),
             ("mkdirs", "Boolean"),
-            ("isfile", "Boolean"),
-            ("isdirectory", "Boolean"),
-            ("canread", "Boolean"),
-            ("canwrite", "Boolean"),
+            ("isFile", "Boolean"),
+            ("isDirectory", "Boolean"),
+            ("canRead", "Boolean"),
+            ("canWrite", "Boolean"),
             ("canexecute", "Boolean"),
         ],
     );
@@ -2020,78 +2039,78 @@ fn insert_java_io_methods(root: &mut Subtree) {
 /// leaves; the java walker carries NO nio rewrites.
 fn insert_java_nio(root: &mut Subtree) {
     const FILES_STATICS: &[(&str, &str, u8, u8)] = &[
-        ("readstring", "jvm.java.nio_files_read_string", 1, 2),
-        ("writestring", "jvm.java.nio_files_write_string", 2, 3),
-        ("readalllines", "jvm.java.nio_files_read_all_lines", 1, 2),
+        ("readString", "jvm.java.nio_files_read_string", 1, 2),
+        ("writeString", "jvm.java.nio_files_write_string", 2, 3),
+        ("readAllLines", "jvm.java.nio_files_read_all_lines", 1, 2),
         ("lines", "jvm.java.nio_files_read_all_lines", 1, 2),
         ("delete", "jvm.java.nio_files_delete", 1, 1),
-        ("deleteifexists", "jvm.java.nio_files_delete_if_exists", 1, 1),
+        ("deleteIfExists", "jvm.java.nio_files_delete_if_exists", 1, 1),
         ("exists", "jvm.java.nio_files_exists", 1, 1),
-        ("notexists", "jvm.java.nio_files_not_exists", 1, 1),
+        ("notExists", "jvm.java.nio_files_not_exists", 1, 1),
         ("size", "jvm.java.nio_files_size", 1, 1),
-        ("createfile", "jvm.java.nio_files_create_file", 1, 1),
-        ("createdirectory", "jvm.java.nio_files_create_directories", 1, 1),
+        ("createFile", "jvm.java.nio_files_create_file", 1, 1),
+        ("createDirectory", "jvm.java.nio_files_create_directories", 1, 1),
         (
-            "createdirectories",
+            "createDirectories",
             "jvm.java.nio_files_create_directories",
             1,
             1,
         ),
-        ("createtempfile", "jvm.java.nio_files_create_temp_file", 0, 3),
+        ("createTempFile", "jvm.java.nio_files_create_temp_file", 0, 3),
         (
-            "createtempdirectory",
+            "createTempDirectory",
             "jvm.java.nio_files_create_temp_directory",
             0,
             2,
         ),
         ("copy", "jvm.java.nio_files_copy", 2, 3),
         ("move", "jvm.java.nio_files_move", 2, 3),
-        ("isdirectory", "jvm.java.nio_files_is_directory", 1, 1),
-        ("isregularfile", "jvm.java.nio_files_is_regular_file", 1, 1),
+        ("isDirectory", "jvm.java.nio_files_is_directory", 1, 1),
+        ("isRegularFile", "jvm.java.nio_files_is_regular_file", 1, 1),
         ("list", "jvm.java.nio_files_list", 1, 1),
         ("walk", "jvm.java.nio_files_walk", 1, 1),
-        ("issamefile", "jvm.java.nio_files_is_same_file", 2, 2),
+        ("isSameFile", "jvm.java.nio_files_is_same_file", 2, 2),
         ("mismatch", "jvm.java.nio_files_mismatch", 2, 2),
         ("write", "jvm.java.nio_files_write_bytes", 2, 3),
-        ("readallbytes", "jvm.java.nio_files_read_all_bytes", 1, 1),
+        ("readAllBytes", "jvm.java.nio_files_read_all_bytes", 1, 1),
         (
-            "newbufferedreader",
+            "newBufferedReader",
             "jvm.java.nio_files_new_buffered_reader",
             1,
             2,
         ),
         (
-            "newoutputstream",
+            "newOutputStream",
             "jvm.java.nio_files_new_output_stream",
             1,
             2,
         ),
-        ("newbytechannel", "jvm.java.nio_files_new_byte_channel", 1, 2),
+        ("newByteChannel", "jvm.java.nio_files_new_byte_channel", 1, 2),
         (
-            "probecontenttype",
+            "probeContentType",
             "jvm.java.nio_files_probe_content_type",
             1,
             1,
         ),
-        ("readattributes", "jvm.java.nio_files_read_attributes", 1, 3),
-        ("getlastmodifiedtime", "jvm.java.nio_files_get_mtime", 1, 1),
-        ("setlastmodifiedtime", "jvm.java.nio_files_set_mtime", 2, 2),
-        ("isreadable", "jvm.java.nio_files_is_readable", 1, 1),
-        ("iswritable", "jvm.java.nio_files_is_readable", 1, 1),
-        ("ishidden", "jvm.java.nio_files_is_hidden", 1, 1),
-        ("isexecutable", "jvm.java.nio_files_is_executable", 1, 1),
+        ("readAttributes", "jvm.java.nio_files_read_attributes", 1, 3),
+        ("getLastModifiedTime", "jvm.java.nio_files_get_mtime", 1, 1),
+        ("setLastModifiedTime", "jvm.java.nio_files_set_mtime", 2, 2),
+        ("isReadable", "jvm.java.nio_files_is_readable", 1, 1),
+        ("isWritable", "jvm.java.nio_files_is_readable", 1, 1),
+        ("isHidden", "jvm.java.nio_files_is_hidden", 1, 1),
+        ("isExecutable", "jvm.java.nio_files_is_executable", 1, 1),
     ];
     for (member, emit, min_args, max_args) in FILES_STATICS {
         insert_path(
             root,
-            &format!("nio.file.files.{member}"),
+            &format!("nio.file.Files.{member}"),
             common_method(emit, *min_args, *max_args),
         );
     }
-    ensure_type_node(root, "nio.file.files");
+    ensure_type_node(root, "nio.file.Files");
     merge_type_member_returns(
         root,
-        "nio.file.files",
+        "nio.file.Files",
         &[
             ("createTempFile", "java.nio.file.Path"),
             ("createTempDirectory", "java.nio.file.Path"),
@@ -2116,7 +2135,7 @@ fn insert_java_nio(root: &mut Subtree) {
     // The stream-shaped returns above: OutputStream buffers bytes and its
     // close/flush writes back to the store; the byte channel only has to
     // answer `isOpen`/`close` for the corpus surface.
-    ensure_type_node(root, "io.outputstream");
+    ensure_type_node(root, "io.OutputStream");
     let mut os_methods = Subtree::new();
     os_methods.insert(
         "write".to_string(),
@@ -2130,26 +2149,26 @@ fn insert_java_nio(root: &mut Subtree) {
         "flush".to_string(),
         common_method("jvm.java.nio_output_close", 0, 0),
     );
-    merge_type_methods(root, "io.outputstream", os_methods);
+    merge_type_methods(root, "io.OutputStream", os_methods);
 
-    ensure_type_node(root, "nio.channels.seekablebytechannel");
+    ensure_type_node(root, "nio.channels.SeekableByteChannel");
     let mut ch_methods = Subtree::new();
     ch_methods.insert(
-        "isopen".to_string(),
+        "isOpen".to_string(),
         common_method("jvm.java.nio_channel_is_open", 0, 0),
     );
     ch_methods.insert(
         "close".to_string(),
         common_method("jvm.java.io_flush_close", 0, 0),
     );
-    merge_type_methods(root, "nio.channels.seekablebytechannel", ch_methods);
+    merge_type_methods(root, "nio.channels.SeekableByteChannel", ch_methods);
 
     // `java.nio.file.attribute.FileTime` — the store keeps millis, so value
     // equality IS FileTime equality.
-    ensure_type_node(root, "nio.file.attribute.filetime");
+    ensure_type_node(root, "nio.file.attribute.FileTime");
     let mut ft_methods = Subtree::new();
     ft_methods.insert("equals".to_string(), common_method("jvm.java.equals", 1, 1));
-    merge_type_methods(root, "nio.file.attribute.filetime", ft_methods);
+    merge_type_methods(root, "nio.file.attribute.FileTime", ft_methods);
 
     // `StandardOpenOption` — data constants; the write emitters accept and
     // ignore the option argument (the store always creates).
@@ -2162,9 +2181,13 @@ fn insert_java_nio(root: &mut Subtree) {
         "truncate_existing",
         "delete_on_close",
     ] {
+        // ⛔ The KEY is the JDK's own spelling — `APPEND`, not `append`. The
+        // value was already uppercased; only the key was folded, so
+        // `StandardOpenOption.APPEND` resolved to nothing once Java stopped
+        // folding and the write silently stopped appending.
         insert_path(
             root,
-            &format!("nio.file.standardopenoption.{option}"),
+            &format!("nio.file.StandardOpenOption.{}", option.to_uppercase()),
             NamespaceNode::Const(vybe_runtime::Value::String(
                 option.to_uppercase().into(),
             )),
@@ -2173,36 +2196,36 @@ fn insert_java_nio(root: &mut Subtree) {
 
     insert_path(
         root,
-        "nio.file.paths.get",
+        "nio.file.Paths.get",
         common_method("jvm.java.nio_paths_get", 1, 10),
     );
-    ensure_type_node(root, "nio.file.paths");
-    merge_type_member_returns(root, "nio.file.paths", &[("get", "java.nio.file.Path")]);
+    ensure_type_node(root, "nio.file.Paths");
+    merge_type_member_returns(root, "nio.file.Paths", &[("get", "java.nio.file.Path")]);
 
     const PATH_METHODS: &[(&str, &str, u8, u8)] = &[
-        ("tostring", "jvm.java.nio_path_to_string", 0, 0),
-        ("getfilename", "jvm.java.nio_path_file_name", 0, 0),
-        ("getparent", "jvm.java.nio_path_parent", 0, 0),
+        ("toString", "jvm.java.nio_path_to_string", 0, 0),
+        ("getFileName", "jvm.java.nio_path_file_name", 0, 0),
+        ("getParent", "jvm.java.nio_path_parent", 0, 0),
         ("resolve", "jvm.java.nio_path_resolve", 1, 1),
-        ("resolvesibling", "jvm.java.nio_path_resolve_sibling", 1, 1),
-        ("isabsolute", "jvm.java.nio_path_is_absolute", 0, 0),
-        ("getroot", "jvm.java.nio_path_root", 0, 0),
-        ("toabsolutepath", "jvm.java.nio_path_to_absolute", 0, 0),
-        ("getnamecount", "jvm.java.nio_path_name_count", 0, 0),
-        ("getname", "jvm.java.nio_path_get_name", 1, 1),
+        ("resolveSibling", "jvm.java.nio_path_resolve_sibling", 1, 1),
+        ("isAbsolute", "jvm.java.nio_path_is_absolute", 0, 0),
+        ("getRoot", "jvm.java.nio_path_root", 0, 0),
+        ("toAbsolutePath", "jvm.java.nio_path_to_absolute", 0, 0),
+        ("getNameCount", "jvm.java.nio_path_name_count", 0, 0),
+        ("getName", "jvm.java.nio_path_get_name", 1, 1),
         ("subpath", "jvm.java.nio_path_subpath", 2, 2),
         ("normalize", "jvm.java.nio_path_normalize", 0, 0),
-        ("startswith", "jvm.java.nio_path_starts_with", 1, 1),
-        ("endswith", "jvm.java.nio_path_ends_with", 1, 1),
+        ("startsWith", "jvm.java.nio_path_starts_with", 1, 1),
+        ("endsWith", "jvm.java.nio_path_ends_with", 1, 1),
         ("relativize", "jvm.java.nio_path_relativize", 1, 1),
-        ("tofile", "jvm.java.nio_path_to_file", 0, 0),
-        ("touri", "jvm.java.nio_path_to_uri", 0, 0),
+        ("toFile", "jvm.java.nio_path_to_file", 0, 0),
+        ("toUri", "jvm.java.nio_path_to_uri", 0, 0),
         // Two Paths are equal when their path strings are — same test
         // `Files.isSameFile` makes.
         ("equals", "jvm.java.nio_files_is_same_file", 1, 1),
-        ("compareto", "jvm.java.nio_path_compare_to", 1, 1),
+        ("compareTo", "jvm.java.nio_path_compare_to", 1, 1),
     ];
-    ensure_type_node(root, "nio.file.path");
+    ensure_type_node(root, "nio.file.Path");
     let mut methods = Subtree::new();
     for (member, emit, min_args, max_args) in PATH_METHODS {
         methods.insert(
@@ -2210,10 +2233,10 @@ fn insert_java_nio(root: &mut Subtree) {
             common_method(emit, *min_args, *max_args),
         );
     }
-    merge_type_methods(root, "nio.file.path", methods);
+    merge_type_methods(root, "nio.file.Path", methods);
     merge_type_member_returns(
         root,
-        "nio.file.path",
+        "nio.file.Path",
         &[
             ("getFileName", "java.nio.file.Path"),
             ("getParent", "java.nio.file.Path"),
@@ -2247,14 +2270,14 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
     ] {
         insert_path(
             root,
-            &format!("util.spliterator.{}", name.to_lowercase()),
+            &format!("util.Spliterator.{}", name),
             NamespaceNode::Const(Value::F64(value as f64)),
         );
     }
-    ensure_type_node(root, "util.spliterator");
+    ensure_type_node(root, "util.Spliterator");
     let mut methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
-        ("estimatesize", "jvm.java.spliterator_estimate_size", 0u8, 0u8),
+        ("estimateSize", "jvm.java.spliterator_estimate_size", 0u8, 0u8),
         (
             "getexactsizeifknown",
             "jvm.java.spliterator_estimate_size",
@@ -2273,16 +2296,16 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
             1,
             1,
         ),
-        ("tryadvance", "jvm.java.spliterator_try_advance", 1, 1),
+        ("tryAdvance", "jvm.java.spliterator_try_advance", 1, 1),
         (
-            "foreachremaining",
+            "forEachRemaining",
             "jvm.java.spliterator_for_each_remaining",
             1,
             1,
         ),
-        ("trysplit", "jvm.java.spliterator_try_split", 0, 0),
+        ("trySplit", "jvm.java.spliterator_try_split", 0, 0),
         (
-            "getcomparator",
+            "getComparator",
             "jvm.java.spliterator_get_comparator",
             0,
             0,
@@ -2290,10 +2313,10 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
     ] {
         methods.insert(member.to_string(), common_method(emit, min_args, max_args));
     }
-    merge_type_methods(root, "util.spliterator", methods);
+    merge_type_methods(root, "util.Spliterator", methods);
     merge_type_member_returns(
         root,
-        "util.spliterator",
+        "util.Spliterator",
         &[("trySplit", "java.util.Spliterator")],
     );
 
@@ -2301,22 +2324,22 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
     // answer the returned stream carries.
     insert_path(
         root,
-        "util.stream.streamsupport.stream",
+        "util.stream.StreamSupport.stream",
         common_method("jvm.java.stream_support_stream", 1, 2),
     );
-    ensure_type_node(root, "util.stream.streamsupport");
+    ensure_type_node(root, "util.stream.StreamSupport");
     merge_type_member_returns(
         root,
-        "util.stream.streamsupport",
+        "util.stream.StreamSupport",
         &[("stream", "java.util.stream.Stream")],
     );
-    ensure_type_node(root, "util.stream.stream");
+    ensure_type_node(root, "util.stream.Stream");
     let mut stream_methods = Subtree::new();
     stream_methods.insert(
-        "isparallel".to_string(),
+        "isParallel".to_string(),
         common_method("jvm.java.stream_is_parallel", 0, 0),
     );
-    merge_type_methods(root, "util.stream.stream", stream_methods);
+    merge_type_methods(root, "util.stream.Stream", stream_methods);
 }
 
 /// `java.util.function` (+ `Runnable`/`Callable`/`Comparator`'s SAM): each
@@ -2326,32 +2349,32 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
 /// name at which arity each interface spells.
 fn insert_java_util_function(root: &mut Subtree) {
     const SAMS: &[(&str, &str, u8)] = &[
-        ("util.function.function", "apply", 1),
-        ("util.function.bifunction", "apply", 2),
-        ("util.function.unaryoperator", "apply", 1),
-        ("util.function.binaryoperator", "apply", 2),
-        ("util.function.intfunction", "apply", 1),
-        ("util.function.intunaryoperator", "applyasint", 1),
-        ("util.function.intbinaryoperator", "applyasint", 2),
-        ("util.function.tointfunction", "applyasint", 1),
-        ("util.function.tointbifunction", "applyasint", 2),
-        ("util.function.longunaryoperator", "applyaslong", 1),
-        ("util.function.tolongfunction", "applyaslong", 1),
-        ("util.function.doubleunaryoperator", "applyasdouble", 1),
-        ("util.function.todoublefunction", "applyasdouble", 1),
-        ("util.function.supplier", "get", 0),
-        ("util.function.intsupplier", "getasint", 0),
-        ("util.function.longsupplier", "getaslong", 0),
-        ("util.function.doublesupplier", "getasdouble", 0),
-        ("util.function.booleansupplier", "getasboolean", 0),
-        ("util.function.consumer", "accept", 1),
-        ("util.function.biconsumer", "accept", 2),
-        ("util.function.intconsumer", "accept", 1),
-        ("util.function.predicate", "test", 1),
-        ("util.function.bipredicate", "test", 2),
-        ("util.function.intpredicate", "test", 1),
-        ("lang.runnable", "run", 0),
-        ("util.concurrent.callable", "call", 0),
+        ("util.function.Function", "apply", 1),
+        ("util.function.BiFunction", "apply", 2),
+        ("util.function.UnaryOperator", "apply", 1),
+        ("util.function.BinaryOperator", "apply", 2),
+        ("util.function.IntFunction", "apply", 1),
+        ("util.function.IntUnaryOperator", "applyAsInt", 1),
+        ("util.function.IntBinaryOperator", "applyAsInt", 2),
+        ("util.function.ToIntFunction", "applyAsInt", 1),
+        ("util.function.ToIntBiFunction", "applyAsInt", 2),
+        ("util.function.LongUnaryOperator", "applyAsLong", 1),
+        ("util.function.ToLongFunction", "applyAsLong", 1),
+        ("util.function.DoubleUnaryOperator", "applyAsDouble", 1),
+        ("util.function.ToDoubleFunction", "applyAsDouble", 1),
+        ("util.function.Supplier", "get", 0),
+        ("util.function.IntSupplier", "getAsInt", 0),
+        ("util.function.LongSupplier", "getAsLong", 0),
+        ("util.function.DoubleSupplier", "getAsDouble", 0),
+        ("util.function.BooleanSupplier", "getAsBoolean", 0),
+        ("util.function.Consumer", "accept", 1),
+        ("util.function.BiConsumer", "accept", 2),
+        ("util.function.IntConsumer", "accept", 1),
+        ("util.function.Predicate", "test", 1),
+        ("util.function.BiPredicate", "test", 2),
+        ("util.function.IntPredicate", "test", 1),
+        ("lang.Runnable", "run", 0),
+        ("util.concurrent.Callable", "call", 0),
     ];
     for (type_path, sam, arity) in SAMS {
         ensure_type_node(root, type_path);
@@ -2369,22 +2392,22 @@ fn insert_java_util_function(root: &mut Subtree) {
 /// `executor_adapter.rs`, on the same thread machinery `Thread` uses.
 fn insert_java_util_executors(root: &mut Subtree) {
     for factory in [
-        "newfixedthreadpool",
-        "newcachedthreadpool",
-        "newsinglethreadexecutor",
-        "newworkstealingpool",
-        "newvirtualthreadpertaskexecutor",
+        "newFixedThreadPool",
+        "newCachedThreadPool",
+        "newSingleThreadExecutor",
+        "newWorkStealingPool",
+        "newVirtualThreadPerTaskExecutor",
     ] {
         insert_path(
             root,
-            &format!("util.concurrent.executors.{factory}"),
+            &format!("util.concurrent.Executors.{factory}"),
             common_method("jvm.java.executor_new", 0, 1),
         );
     }
-    ensure_type_node(root, "util.concurrent.executors");
+    ensure_type_node(root, "util.concurrent.Executors");
     merge_type_member_returns(
         root,
-        "util.concurrent.executors",
+        "util.concurrent.Executors",
         &[
             (
                 "newFixedThreadPool",
@@ -2409,17 +2432,17 @@ fn insert_java_util_executors(root: &mut Subtree) {
         ],
     );
 
-    ensure_type_node(root, "util.concurrent.executorservice");
+    ensure_type_node(root, "util.concurrent.ExecutorService");
     let mut es_methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
         ("submit", "jvm.java.executor_submit", 1u8, 1u8),
         ("execute", "jvm.java.executor_execute", 1, 1),
         ("shutdown", "jvm.java.executor_shutdown", 0, 0),
-        ("shutdownnow", "jvm.java.executor_shutdown_now", 0, 0),
-        ("isshutdown", "jvm.java.executor_is_shutdown", 0, 0),
+        ("shutdownNow", "jvm.java.executor_shutdown_now", 0, 0),
+        ("isShutdown", "jvm.java.executor_is_shutdown", 0, 0),
         ("isterminated", "jvm.java.executor_is_shutdown", 0, 0),
         (
-            "awaittermination",
+            "awaitTermination",
             "jvm.java.executor_await_termination",
             2,
             2,
@@ -2427,10 +2450,10 @@ fn insert_java_util_executors(root: &mut Subtree) {
     ] {
         es_methods.insert(member.to_string(), common_method(emit, min_args, max_args));
     }
-    merge_type_methods(root, "util.concurrent.executorservice", es_methods);
+    merge_type_methods(root, "util.concurrent.ExecutorService", es_methods);
     merge_type_member_returns(
         root,
-        "util.concurrent.executorservice",
+        "util.concurrent.ExecutorService",
         &[("submit", "java.util.concurrent.Future")],
     );
 
@@ -2438,52 +2461,52 @@ fn insert_java_util_executors(root: &mut Subtree) {
     // instance surface is `Random`'s, declared by the type's ancestry.
     insert_path(
         root,
-        "util.concurrent.threadlocalrandom.current",
+        "util.concurrent.ThreadLocalRandom.current",
         common_method("jvm.java.tlr_current", 0, 0),
     );
-    ensure_type_node(root, "util.concurrent.threadlocalrandom");
+    ensure_type_node(root, "util.concurrent.ThreadLocalRandom");
     merge_type_member_returns(
         root,
-        "util.concurrent.threadlocalrandom",
+        "util.concurrent.ThreadLocalRandom",
         &[("current", "java.util.concurrent.ThreadLocalRandom")],
     );
 
-    ensure_type_node(root, "util.concurrent.future");
+    ensure_type_node(root, "util.concurrent.Future");
     let mut fut_methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
         ("get", "jvm.java.future_get", 0u8, 2u8),
-        ("isdone", "jvm.java.future_is_done", 0, 0),
-        ("iscancelled", "jvm.java.future_is_cancelled", 0, 0),
+        ("isDone", "jvm.java.future_is_done", 0, 0),
+        ("isCancelled", "jvm.java.future_is_cancelled", 0, 0),
         ("cancel", "jvm.java.future_cancel", 1, 1),
     ] {
         fut_methods.insert(member.to_string(), common_method(emit, min_args, max_args));
     }
-    merge_type_methods(root, "util.concurrent.future", fut_methods);
+    merge_type_methods(root, "util.concurrent.Future", fut_methods);
 }
 
 /// `java.util.StringJoiner` — instance surface; the ctor rides the
 /// JAVA_TYPES row like every other class.
 fn insert_java_util_stringjoiner(root: &mut Subtree) {
-    ensure_type_node(root, "util.stringjoiner");
+    ensure_type_node(root, "util.StringJoiner");
     let mut methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
         ("add", "jvm.java.stringjoiner_add", 1u8, 1u8),
         ("merge", "jvm.java.stringjoiner_merge", 1, 1),
         (
-            "setemptyvalue",
+            "setEmptyValue",
             "jvm.java.stringjoiner_set_empty_value",
             1,
             1,
         ),
-        ("tostring", "jvm.java.stringjoiner_to_string", 0, 0),
+        ("toString", "jvm.java.stringjoiner_to_string", 0, 0),
         ("length", "jvm.java.stringjoiner_length", 0, 0),
     ] {
         methods.insert(member.to_string(), common_method(emit, min_args, max_args));
     }
-    merge_type_methods(root, "util.stringjoiner", methods);
+    merge_type_methods(root, "util.StringJoiner", methods);
     merge_type_member_returns(
         root,
-        "util.stringjoiner",
+        "util.StringJoiner",
         &[
             ("add", "java.util.StringJoiner"),
             ("merge", "java.util.StringJoiner"),
@@ -2494,11 +2517,11 @@ fn insert_java_util_stringjoiner(root: &mut Subtree) {
 
 fn insert_java_util_enum_set(root: &mut Subtree) {
     const STATICS: &[(&str, &str, u8, u8)] = &[
-        ("noneof", "jvm.java.enum_set_none_of", 1, 1),
-        ("allof", "jvm.java.enum_set_all_of", 1, 1),
+        ("noneOf", "jvm.java.enum_set_none_of", 1, 1),
+        ("allOf", "jvm.java.enum_set_all_of", 1, 1),
         ("of", "jvm.java.enum_set_of", 1, 10),
-        ("copyof", "jvm.java.enum_set_copy_of", 1, 1),
-        ("complementof", "jvm.java.enum_set_complement_of", 1, 1),
+        ("copyOf", "jvm.java.enum_set_copy_of", 1, 1),
+        ("complementOf", "jvm.java.enum_set_complement_of", 1, 1),
         ("range", "jvm.java.enum_set_range", 2, 2),
     ];
     // Instance methods are NOT declared here: `EnumSet` has a `JAVA_TYPES`
@@ -2510,7 +2533,7 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
     for (member, emit, min_args, max_args) in STATICS {
         insert_path(
             root,
-            &format!("util.enumset.{member}"),
+            &format!("util.EnumSet.{member}"),
             common_method(emit, *min_args, *max_args),
         );
     }
@@ -2520,10 +2543,10 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
     // resolved by path walk while `find_type_node` — which matches `Type`
     // nodes only — saw no type at all, and every instance method and declared
     // return type was dropped without a word.
-    ensure_type_node(root, "util.enumset");
+    ensure_type_node(root, "util.EnumSet");
     merge_type_member_returns(
         root,
-        "util.enumset",
+        "util.EnumSet",
         &[
             ("noneOf", "java.util.EnumSet"),
             ("allOf", "java.util.EnumSet"),
@@ -2542,167 +2565,167 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
     // available to a frontend that declares nothing.
     insert_path(
         root,
-        "lang.enum.__vybe_declare",
+        "lang.Enum.__vybe_declare",
         common_method("jvm.java.enum_declare", 2, 2),
     );
     insert_path(
         root,
-        "lang.enum.getenumconstants",
+        "lang.Enum.getEnumConstants",
         common_method("jvm.java.enum_constants_of", 1, 1),
     );
-    ensure_type_node(root, "lang.enum");
+    ensure_type_node(root, "lang.Enum");
 }
 
 fn insert_java_util_collection_statics(root: &mut Subtree) {
     for (type_path, member, emit) in [
-        ("util.collections", "sort", "jvm.java.collections_sort"),
+        ("util.Collections", "sort", "jvm.java.collections_sort"),
         (
-            "util.collections",
+            "util.Collections",
             "reverse",
             "jvm.java.collections_reverse",
         ),
         (
-            "util.collections",
+            "util.Collections",
             "shuffle",
             "jvm.java.collections_shuffle",
         ),
-        ("util.collections", "fill", "jvm.java.collections_fill"),
-        ("util.collections", "copy", "jvm.java.collections_copy"),
-        ("util.collections", "addall", "jvm.java.collections_add_all"),
-        ("util.collections", "rotate", "jvm.java.collections_rotate"),
+        ("util.Collections", "fill", "jvm.java.collections_fill"),
+        ("util.Collections", "copy", "jvm.java.collections_copy"),
+        ("util.Collections", "addAll", "jvm.java.collections_add_all"),
+        ("util.Collections", "rotate", "jvm.java.collections_rotate"),
         (
-            "util.collections",
-            "replaceall",
+            "util.Collections",
+            "replaceAll",
             "jvm.java.collections_replace_all",
         ),
-        ("util.collections", "swap", "jvm.java.collections_swap"),
+        ("util.Collections", "swap", "jvm.java.collections_swap"),
         (
-            "util.collections",
-            "indexofsublist",
+            "util.Collections",
+            "indexOfSubList",
             "jvm.java.collections_index_of_sublist",
         ),
         (
-            "util.collections",
-            "lastindexofsublist",
+            "util.Collections",
+            "lastIndexOfSubList",
             "jvm.java.collections_last_index_of_sublist",
         ),
-        ("util.collections", "min", "jvm.java.collections_min"),
-        ("util.collections", "max", "jvm.java.collections_max"),
+        ("util.Collections", "min", "jvm.java.collections_min"),
+        ("util.Collections", "max", "jvm.java.collections_max"),
         (
-            "util.collections",
+            "util.Collections",
             "frequency",
             "jvm.java.collections_frequency",
         ),
         (
-            "util.collections",
+            "util.Collections",
             "disjoint",
             "jvm.java.collections_disjoint",
         ),
         (
-            "util.collections",
-            "reverseorder",
+            "util.Collections",
+            "reverseOrder",
             "jvm.java.collections_reverse_order",
         ),
         (
-            "util.collections",
-            "newsetfrommap",
+            "util.Collections",
+            "newSetFromMap",
             "jvm.java.new_set_from_map",
         ),
         (
-            "util.collections",
-            "binarysearch",
+            "util.Collections",
+            "binarySearch",
             "jvm.java.arrays_binary_search",
         ),
         (
-            "util.collections",
-            "unmodifiablelist",
+            "util.Collections",
+            "unmodifiableList",
             "jvm.java.unmodifiable_list",
         ),
         (
-            "util.collections",
-            "unmodifiableset",
+            "util.Collections",
+            "unmodifiableSet",
             "jvm.java.unmodifiable_set",
         ),
         (
-            "util.collections",
-            "unmodifiablemap",
+            "util.Collections",
+            "unmodifiableMap",
             "jvm.java.unmodifiable_map",
         ),
-        ("util.collections", "synchronizedlist", "jvm.java.identity"),
-        ("util.collections", "singleton", "jvm.java.singleton_list"),
-        ("util.collections", "singletonmap", "jvm.java.map_of"),
+        ("util.Collections", "synchronizedList", "jvm.java.identity"),
+        ("util.Collections", "singleton", "jvm.java.singleton_list"),
+        ("util.Collections", "singletonMap", "jvm.java.map_of"),
         (
-            "util.collections",
-            "singletonlist",
+            "util.Collections",
+            "singletonList",
             "jvm.java.singleton_list",
         ),
-        ("util.collections", "emptylist", "jvm.java.empty_list"),
-        ("util.collections", "emptyset", "jvm.java.empty_set"),
-        ("util.collections", "emptymap", "jvm.java.map_of"),
-        ("util.collections", "ncopies", "jvm.java.n_copies"),
-        ("util.arrays", "sort", "jvm.java.arrays_sort"),
-        ("util.arrays", "parallelsort", "jvm.java.arrays_sort"),
-        ("util.arrays", "fill", "jvm.java.arrays_fill"),
-        ("util.arrays", "copyof", "jvm.java.arrays_copy_of"),
+        ("util.Collections", "emptyList", "jvm.java.empty_list"),
+        ("util.Collections", "emptySet", "jvm.java.empty_set"),
+        ("util.Collections", "emptyMap", "jvm.java.map_of"),
+        ("util.Collections", "nCopies", "jvm.java.n_copies"),
+        ("util.Arrays", "sort", "jvm.java.arrays_sort"),
+        ("util.Arrays", "parallelSort", "jvm.java.arrays_sort"),
+        ("util.Arrays", "fill", "jvm.java.arrays_fill"),
+        ("util.Arrays", "copyOf", "jvm.java.arrays_copy_of"),
         (
-            "util.arrays",
-            "copyofrange",
+            "util.Arrays",
+            "copyOfRange",
             "jvm.java.arrays_copy_of_range",
         ),
-        ("util.arrays", "tostring", "jvm.java.arrays_to_string"),
+        ("util.Arrays", "toString", "jvm.java.arrays_to_string"),
         (
-            "util.arrays",
-            "deeptostring",
+            "util.Arrays",
+            "deepToString",
             "jvm.java.arrays_deep_to_string",
         ),
-        ("util.arrays", "aslist", "jvm.java.arrays_as_list"),
-        ("util.arrays", "equals", "jvm.java.arrays_equals"),
-        ("util.arrays", "deepequals", "jvm.java.arrays_deep_equals"),
-        ("util.arrays", "compare", "jvm.java.arrays_compare"),
+        ("util.Arrays", "asList", "jvm.java.arrays_as_list"),
+        ("util.Arrays", "equals", "jvm.java.arrays_equals"),
+        ("util.Arrays", "deepEquals", "jvm.java.arrays_deep_equals"),
+        ("util.Arrays", "compare", "jvm.java.arrays_compare"),
         (
-            "util.arrays",
-            "compareunsigned",
+            "util.Arrays",
+            "compareUnsigned",
             "jvm.java.arrays_compare_unsigned",
         ),
-        ("util.arrays", "mismatch", "jvm.java.arrays_mismatch"),
-        ("util.arrays", "setall", "jvm.java.arrays_set_all"),
-        ("util.arrays", "parallelsetall", "jvm.java.arrays_set_all"),
+        ("util.Arrays", "mismatch", "jvm.java.arrays_mismatch"),
+        ("util.Arrays", "setAll", "jvm.java.arrays_set_all"),
+        ("util.Arrays", "parallelSetAll", "jvm.java.arrays_set_all"),
         (
-            "util.arrays",
-            "parallelprefix",
+            "util.Arrays",
+            "parallelPrefix",
             "jvm.java.arrays_parallel_prefix",
         ),
-        ("util.arrays", "hashcode", "jvm.java.arrays_hash_code"),
+        ("util.Arrays", "hashCode", "jvm.java.arrays_hash_code"),
         (
-            "util.arrays",
-            "deephashcode",
+            "util.Arrays",
+            "deepHashCode",
             "jvm.java.arrays_deep_hash_code",
         ),
         (
-            "util.arrays",
-            "binarysearch",
+            "util.Arrays",
+            "binarySearch",
             "jvm.java.arrays_binary_search",
         ),
-        ("util.arrays", "stream", "jvm.java.identity"),
-        ("util.list", "of", "jvm.java.list_of"),
-        ("util.list", "copyof", "jvm.java.list_copy_of"),
-        ("util.set", "of", "jvm.java.set_of"),
-        ("util.set", "copyof", "jvm.java.set_copy_of"),
-        ("util.map", "of", "jvm.java.map_of"),
-        ("util.map", "entry", "jvm.java.map_entry"),
-        ("util.map", "ofentries", "jvm.java.map_of_entries"),
-        ("lang.string", "format", "sprintf.format"),
-        ("lang.string", "join", "jvm.java.string_join"),
+        ("util.Arrays", "stream", "jvm.java.identity"),
+        ("util.List", "of", "jvm.java.list_of"),
+        ("util.List", "copyOf", "jvm.java.list_copy_of"),
+        ("util.Set", "of", "jvm.java.set_of"),
+        ("util.Set", "copyOf", "jvm.java.set_copy_of"),
+        ("util.Map", "of", "jvm.java.map_of"),
+        ("util.Map", "entry", "jvm.java.map_entry"),
+        ("util.Map", "ofEntries", "jvm.java.map_of_entries"),
+        ("lang.String", "format", "sprintf.format"),
+        ("lang.String", "join", "jvm.java.string_join"),
         (
-            "util.objects",
-            "requirenonnull",
+            "util.Objects",
+            "requireNonNull",
             "jvm.java.require_non_null",
         ),
-        ("util.optional", "empty", "jvm.java.optional_empty"),
-        ("util.optional", "of", "jvm.java.optional_of"),
+        ("util.Optional", "empty", "jvm.java.optional_empty"),
+        ("util.Optional", "of", "jvm.java.optional_of"),
         (
-            "util.optional",
-            "ofnullable",
+            "util.Optional",
+            "ofNullable",
             "jvm.java.optional_of_nullable",
         ),
     ] {
@@ -2713,91 +2736,91 @@ fn insert_java_util_collection_statics(root: &mut Subtree) {
 fn insert_java_time_statics(root: &mut Subtree) {
     for (type_path, member, emit) in [
         (
-            "time.instant",
-            "ofepochsecond",
+            "time.Instant",
+            "ofEpochSecond",
             "jvm.java.instant_of_epoch_second",
         ),
         (
-            "time.instant",
-            "ofepochmilli",
+            "time.Instant",
+            "ofEpochMilli",
             "jvm.java.instant_of_epoch_milli",
         ),
-        ("time.instant", "parse", "jvm.java.instant_parse"),
-        ("time.localdate", "of", "jvm.java.local_date_of"),
-        ("time.localdate", "parse", "jvm.java.local_date_parse"),
-        ("time.localtime", "of", "jvm.java.local_time_of"),
-        ("time.localtime", "parse", "jvm.java.local_time_parse"),
-        ("time.localdatetime", "of", "jvm.java.local_datetime_of"),
+        ("time.Instant", "parse", "jvm.java.instant_parse"),
+        ("time.LocalDate", "of", "jvm.java.local_date_of"),
+        ("time.LocalDate", "parse", "jvm.java.local_date_parse"),
+        ("time.LocalTime", "of", "jvm.java.local_time_of"),
+        ("time.LocalTime", "parse", "jvm.java.local_time_parse"),
+        ("time.LocalDateTime", "of", "jvm.java.local_datetime_of"),
         (
-            "time.localdatetime",
+            "time.LocalDateTime",
             "parse",
             "jvm.java.local_datetime_parse",
         ),
-        ("time.offsetdatetime", "of", "jvm.java.offset_datetime_of"),
+        ("time.OffsetDateTime", "of", "jvm.java.offset_datetime_of"),
         (
-            "time.offsetdatetime",
-            "ofinstant",
+            "time.OffsetDateTime",
+            "ofInstant",
             "jvm.java.offset_datetime_of_instant",
         ),
         (
-            "time.offsetdatetime",
+            "time.OffsetDateTime",
             "parse",
             "jvm.java.offset_datetime_parse",
         ),
-        ("time.zoneddatetime", "of", "jvm.java.zoned_datetime_of"),
+        ("time.ZonedDateTime", "of", "jvm.java.zoned_datetime_of"),
         (
-            "time.zoneddatetime",
-            "ofinstant",
+            "time.ZonedDateTime",
+            "ofInstant",
             "jvm.java.zoned_datetime_of_instant",
         ),
         (
-            "time.zoneddatetime",
-            "ofstrict",
+            "time.ZonedDateTime",
+            "ofStrict",
             "jvm.java.zoned_datetime_of_strict",
         ),
         (
-            "time.zoneddatetime",
+            "time.ZonedDateTime",
             "parse",
             "jvm.java.zoned_datetime_parse",
         ),
-        ("time.period", "ofdays", "jvm.java.period_of_days"),
-        ("time.period", "ofmonths", "jvm.java.period_of_months"),
-        ("time.period", "between", "jvm.java.period_between"),
-        ("time.duration", "ofhours", "jvm.java.duration_of_hours"),
-        ("time.duration", "ofminutes", "jvm.java.duration_of_minutes"),
-        ("time.duration", "ofseconds", "jvm.java.duration_of_seconds"),
-        ("time.duration", "between", "jvm.java.duration_between"),
-        ("time.yearmonth", "parse", "jvm.java.year_month_parse"),
-        ("time.monthday", "parse", "jvm.java.month_day_parse"),
+        ("time.Period", "ofDays", "jvm.java.period_of_days"),
+        ("time.Period", "ofMonths", "jvm.java.period_of_months"),
+        ("time.Period", "between", "jvm.java.period_between"),
+        ("time.Duration", "ofHours", "jvm.java.duration_of_hours"),
+        ("time.Duration", "ofMinutes", "jvm.java.duration_of_minutes"),
+        ("time.Duration", "ofSeconds", "jvm.java.duration_of_seconds"),
+        ("time.Duration", "between", "jvm.java.duration_between"),
+        ("time.YearMonth", "parse", "jvm.java.year_month_parse"),
+        ("time.MonthDay", "parse", "jvm.java.month_day_parse"),
         (
-            "time.zoneoffset",
-            "ofhours",
+            "time.ZoneOffset",
+            "ofHours",
             "jvm.java.zone_offset_of_hours",
         ),
-        ("time.zoneid", "of", "jvm.java.zone_id_of"),
+        ("time.ZoneId", "of", "jvm.java.zone_id_of"),
         (
-            "time.zoneid",
-            "systemdefault",
+            "time.ZoneId",
+            "systemDefault",
             "jvm.java.zone_id_system_default",
         ),
-        ("time.zoneid", "from", "jvm.java.zone_id_from"),
-        ("time.zoneid", "ofoffset", "jvm.java.zone_id_of_offset"),
-        ("time.instant", "now", "jvm.java.instant_now"),
-        ("time.clock", "fixed", "jvm.java.clock_fixed"),
-        ("time.clock", "systemutc", "jvm.java.identity"),
-        ("time.duration", "parse", "jvm.java.duration_parse"),
+        ("time.ZoneId", "from", "jvm.java.zone_id_from"),
+        ("time.ZoneId", "ofOffset", "jvm.java.zone_id_of_offset"),
+        ("time.Instant", "now", "jvm.java.instant_now"),
+        ("time.Clock", "fixed", "jvm.java.clock_fixed"),
+        ("time.Clock", "systemutc", "jvm.java.identity"),
+        ("time.Duration", "parse", "jvm.java.duration_parse"),
         (
-            "time.temporal.chronounit.days",
+            "time.temporal.ChronoUnit.DAYS",
             "between",
             "jvm.java.chrono_days_between",
         ),
         (
-            "time.temporal.chronounit.weeks",
+            "time.temporal.ChronoUnit.WEEKS",
             "between",
             "jvm.java.chrono_weeks_between",
         ),
         (
-            "time.temporal.chronounit.months",
+            "time.temporal.ChronoUnit.MONTHS",
             "between",
             "jvm.java.chrono_months_between",
         ),
@@ -2807,7 +2830,7 @@ fn insert_java_time_statics(root: &mut Subtree) {
 
     for (type_path, returns) in [
         (
-            "time.instant",
+            "time.Instant",
             &[
                 ("ofEpochSecond", "java.time.Instant"),
                 ("ofEpochMilli", "java.time.Instant"),
@@ -2815,30 +2838,30 @@ fn insert_java_time_statics(root: &mut Subtree) {
                 ("now", "java.time.Instant"),
             ][..],
         ),
-        ("time.clock", &[("fixed", "java.time.Clock")][..]),
+        ("time.Clock", &[("fixed", "java.time.Clock")][..]),
         (
-            "time.localdate",
+            "time.LocalDate",
             &[
                 ("of", "java.time.LocalDate"),
                 ("parse", "java.time.LocalDate"),
             ][..],
         ),
         (
-            "time.localtime",
+            "time.LocalTime",
             &[
                 ("of", "java.time.LocalTime"),
                 ("parse", "java.time.LocalTime"),
             ][..],
         ),
         (
-            "time.localdatetime",
+            "time.LocalDateTime",
             &[
                 ("of", "java.time.LocalDateTime"),
                 ("parse", "java.time.LocalDateTime"),
             ][..],
         ),
         (
-            "time.duration",
+            "time.Duration",
             &[
                 ("ofHours", "java.time.Duration"),
                 ("ofMinutes", "java.time.Duration"),
@@ -2847,10 +2870,10 @@ fn insert_java_time_statics(root: &mut Subtree) {
                 ("between", "java.time.Duration"),
             ][..],
         ),
-        ("time.yearmonth", &[("parse", "java.time.YearMonth")][..]),
-        ("time.monthday", &[("parse", "java.time.MonthDay")][..]),
+        ("time.YearMonth", &[("parse", "java.time.YearMonth")][..]),
+        ("time.MonthDay", &[("parse", "java.time.MonthDay")][..]),
         (
-            "time.period",
+            "time.Period",
             &[
                 ("ofDays", "java.time.Period"),
                 ("ofMonths", "java.time.Period"),
@@ -2858,7 +2881,7 @@ fn insert_java_time_statics(root: &mut Subtree) {
             ][..],
         ),
         (
-            "time.zoneid",
+            "time.ZoneId",
             &[
                 ("of", "java.time.ZoneId"),
                 ("systemDefault", "java.time.ZoneId"),
@@ -2867,11 +2890,11 @@ fn insert_java_time_statics(root: &mut Subtree) {
             ][..],
         ),
         (
-            "time.zoneoffset",
+            "time.ZoneOffset",
             &[("ofHours", "java.time.ZoneOffset")][..],
         ),
         (
-            "time.offsetdatetime",
+            "time.OffsetDateTime",
             &[
                 ("of", "java.time.OffsetDateTime"),
                 ("ofInstant", "java.time.OffsetDateTime"),
@@ -2879,7 +2902,7 @@ fn insert_java_time_statics(root: &mut Subtree) {
             ][..],
         ),
         (
-            "time.zoneddatetime",
+            "time.ZonedDateTime",
             &[
                 ("of", "java.time.ZonedDateTime"),
                 ("ofInstant", "java.time.ZonedDateTime"),
@@ -2897,42 +2920,42 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
     let mut date = Subtree::new();
     for (name, emit) in [
         ("year", "jvm.java.instant_get_year"),
-        ("monthvalue", "jvm.java.instant_get_month"),
-        ("dayofmonth", "jvm.java.instant_get_day"),
+        ("monthValue", "jvm.java.instant_get_month"),
+        ("dayOfMonth", "jvm.java.instant_get_day"),
         ("dayofyear", "jvm.java.time_day_of_year"),
-        ("dayofweek", "jvm.java.time_day_of_week"),
+        ("dayOfWeek", "jvm.java.time_day_of_week"),
     ] {
         date.insert(name.to_string(), prop(emit));
     }
     for (name, emit, min_args, max_args) in [
-        ("getyear", "jvm.java.instant_get_year", 0, 0),
-        ("getmonthvalue", "jvm.java.instant_get_month", 0, 0),
-        ("getdayofmonth", "jvm.java.instant_get_day", 0, 0),
-        ("getdayofyear", "jvm.java.time_day_of_year", 0, 0),
-        ("getdayofweek", "jvm.java.time_day_of_week", 0, 0),
+        ("getYear", "jvm.java.instant_get_year", 0, 0),
+        ("getMonthValue", "jvm.java.instant_get_month", 0, 0),
+        ("getDayOfMonth", "jvm.java.instant_get_day", 0, 0),
+        ("getDayOfYear", "jvm.java.time_day_of_year", 0, 0),
+        ("getDayOfWeek", "jvm.java.time_day_of_week", 0, 0),
         ("get", "jvm.java.time_get", 1, 1),
-        ("isleapyear", "jvm.java.time_is_leap_year", 0, 0),
-        ("plusdays", "jvm.java.time_plus_days", 1, 1),
-        ("minusdays", "jvm.java.time_minus_days", 1, 1),
-        ("plusweeks", "jvm.java.time_plus_weeks", 1, 1),
-        ("plusmonths", "jvm.java.time_plus_months", 1, 1),
-        ("minusmonths", "jvm.java.time_minus_months", 1, 1),
-        ("withyear", "jvm.java.time_with_year", 1, 1),
-        ("withmonth", "jvm.java.time_with_month", 1, 1),
-        ("withdayofmonth", "jvm.java.time_with_day", 1, 1),
-        ("lengthofmonth", "jvm.java.time_length_of_month", 0, 0),
-        ("isbefore", "jvm.java.instant_is_before", 1, 1),
-        ("isafter", "jvm.java.instant_is_after", 1, 1),
-        ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.time_to_string", 0, 0),
+        ("isLeapYear", "jvm.java.time_is_leap_year", 0, 0),
+        ("plusDays", "jvm.java.time_plus_days", 1, 1),
+        ("minusDays", "jvm.java.time_minus_days", 1, 1),
+        ("plusWeeks", "jvm.java.time_plus_weeks", 1, 1),
+        ("plusMonths", "jvm.java.time_plus_months", 1, 1),
+        ("minusMonths", "jvm.java.time_minus_months", 1, 1),
+        ("withYear", "jvm.java.time_with_year", 1, 1),
+        ("withMonth", "jvm.java.time_with_month", 1, 1),
+        ("withDayOfMonth", "jvm.java.time_with_day", 1, 1),
+        ("lengthOfMonth", "jvm.java.time_length_of_month", 0, 0),
+        ("isBefore", "jvm.java.instant_is_before", 1, 1),
+        ("isAfter", "jvm.java.instant_is_after", 1, 1),
+        ("compareTo", "jvm.java.instant_compare_to", 1, 1),
+        ("toString", "jvm.java.time_to_string", 0, 0),
     ] {
         date.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
-    ensure_type_node(root, "time.localdate");
-    merge_type_methods(root, "time.localdate", date);
+    ensure_type_node(root, "time.LocalDate");
+    merge_type_methods(root, "time.LocalDate", date);
     merge_type_member_returns(
         root,
-        "time.localdate",
+        "time.LocalDate",
         &[
             ("dayOfWeek", "java.time.DayOfWeek"),
             ("getDayOfWeek", "java.time.DayOfWeek"),
@@ -2956,30 +2979,30 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         time.insert(name.to_string(), prop(emit));
     }
     for (name, emit, min_args, max_args) in [
-        ("gethour", "jvm.java.instant_get_hour", 0, 0),
-        ("getminute", "jvm.java.instant_get_minute", 0, 0),
-        ("getsecond", "jvm.java.instant_get_second", 0, 0),
-        ("plushours", "jvm.java.time_plus_hours", 1, 1),
-        ("minushours", "jvm.java.time_minus_hours", 1, 1),
-        ("plusminutes", "jvm.java.time_plus_minutes", 1, 1),
-        ("minusminutes", "jvm.java.time_minus_minutes", 1, 1),
-        ("plusseconds", "jvm.java.time_plus_seconds", 1, 1),
-        ("minusseconds", "jvm.java.time_minus_seconds", 1, 1),
-        ("withhour", "jvm.java.time_with_hour", 1, 1),
-        ("withminute", "jvm.java.time_with_minute", 1, 1),
-        ("withsecond", "jvm.java.time_with_second", 1, 1),
-        ("isbefore", "jvm.java.instant_is_before", 1, 1),
-        ("isafter", "jvm.java.instant_is_after", 1, 1),
-        ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.timeofday_to_string", 0, 0),
+        ("getHour", "jvm.java.instant_get_hour", 0, 0),
+        ("getMinute", "jvm.java.instant_get_minute", 0, 0),
+        ("getSecond", "jvm.java.instant_get_second", 0, 0),
+        ("plusHours", "jvm.java.time_plus_hours", 1, 1),
+        ("minusHours", "jvm.java.time_minus_hours", 1, 1),
+        ("plusMinutes", "jvm.java.time_plus_minutes", 1, 1),
+        ("minusMinutes", "jvm.java.time_minus_minutes", 1, 1),
+        ("plusSeconds", "jvm.java.time_plus_seconds", 1, 1),
+        ("minusSeconds", "jvm.java.time_minus_seconds", 1, 1),
+        ("withHour", "jvm.java.time_with_hour", 1, 1),
+        ("withMinute", "jvm.java.time_with_minute", 1, 1),
+        ("withSecond", "jvm.java.time_with_second", 1, 1),
+        ("isBefore", "jvm.java.instant_is_before", 1, 1),
+        ("isAfter", "jvm.java.instant_is_after", 1, 1),
+        ("compareTo", "jvm.java.instant_compare_to", 1, 1),
+        ("toString", "jvm.java.timeofday_to_string", 0, 0),
     ] {
         time.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
-    ensure_type_node(root, "time.localtime");
-    merge_type_methods(root, "time.localtime", time);
+    ensure_type_node(root, "time.LocalTime");
+    merge_type_methods(root, "time.LocalTime", time);
     merge_type_member_returns(
         root,
-        "time.localtime",
+        "time.LocalTime",
         &[
             ("plusHours", "java.time.LocalTime"),
             ("minusHours", "java.time.LocalTime"),
@@ -2996,26 +3019,26 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
     let mut duration = Subtree::new();
     duration.insert("seconds".to_string(), prop("jvm.java.identity"));
     for (name, emit, min_args, max_args) in [
-        ("getseconds", "jvm.java.identity", 0, 0),
-        ("tominutes", "jvm.java.duration_to_minutes", 0, 0),
-        ("tomillis", "jvm.java.duration_to_millis", 0, 0),
-        ("tohours", "jvm.java.duration_to_hours", 0, 0),
-        ("plushours", "jvm.java.duration_plus_hours", 1, 1),
-        ("minushours", "jvm.java.duration_minus_hours", 1, 1),
-        ("plusminutes", "jvm.java.duration_plus_minutes", 1, 1),
-        ("minusminutes", "jvm.java.duration_minus_minutes", 1, 1),
-        ("multipliedby", "jvm.java.duration_multiplied_by", 1, 1),
+        ("getSeconds", "jvm.java.identity", 0, 0),
+        ("toMinutes", "jvm.java.duration_to_minutes", 0, 0),
+        ("toMillis", "jvm.java.duration_to_millis", 0, 0),
+        ("toHours", "jvm.java.duration_to_hours", 0, 0),
+        ("plusHours", "jvm.java.duration_plus_hours", 1, 1),
+        ("minusHours", "jvm.java.duration_minus_hours", 1, 1),
+        ("plusMinutes", "jvm.java.duration_plus_minutes", 1, 1),
+        ("minusMinutes", "jvm.java.duration_minus_minutes", 1, 1),
+        ("multipliedBy", "jvm.java.duration_multiplied_by", 1, 1),
         ("negated", "jvm.java.duration_negated", 0, 0),
-        ("iszero", "jvm.java.duration_is_zero", 0, 0),
-        ("tostring", "jvm.java.time_to_string", 0, 0),
+        ("isZero", "jvm.java.duration_is_zero", 0, 0),
+        ("toString", "jvm.java.time_to_string", 0, 0),
     ] {
         duration.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
-    ensure_type_node(root, "time.duration");
-    merge_type_methods(root, "time.duration", duration);
+    ensure_type_node(root, "time.Duration");
+    merge_type_methods(root, "time.Duration", duration);
     merge_type_member_returns(
         root,
-        "time.duration",
+        "time.Duration",
         &[
             ("plusHours", "java.time.Duration"),
             ("minusHours", "java.time.Duration"),
@@ -3028,33 +3051,33 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
 
     let mut instant = Subtree::new();
     for (name, emit, min_args, max_args) in [
-        ("getepochsecond", "jvm.java.instant_get_epoch_second", 0, 0),
-        ("getnano", "jvm.java.instant_get_nano", 0, 0),
-        ("toepochmilli", "jvm.java.instant_to_epoch_milli", 0, 0),
-        ("plusseconds", "jvm.java.instant_plus_seconds", 1, 1),
-        ("minusseconds", "jvm.java.instant_minus_seconds", 1, 1),
-        ("plusmillis", "jvm.java.instant_plus_millis", 1, 1),
-        ("minusmillis", "jvm.java.instant_minus_millis", 1, 1),
-        ("plusnanos", "jvm.java.instant_plus_nanos", 1, 1),
-        ("minusnanos", "jvm.java.instant_minus_nanos", 1, 1),
-        ("isbefore", "jvm.java.instant_is_before", 1, 1),
-        ("isafter", "jvm.java.instant_is_after", 1, 1),
-        ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.instant_to_string", 0, 0),
-        ("toinstant", "jvm.java.identity", 0, 0),
+        ("getEpochSecond", "jvm.java.instant_get_epoch_second", 0, 0),
+        ("getNano", "jvm.java.instant_get_nano", 0, 0),
+        ("toEpochMilli", "jvm.java.instant_to_epoch_milli", 0, 0),
+        ("plusSeconds", "jvm.java.instant_plus_seconds", 1, 1),
+        ("minusSeconds", "jvm.java.instant_minus_seconds", 1, 1),
+        ("plusMillis", "jvm.java.instant_plus_millis", 1, 1),
+        ("minusMillis", "jvm.java.instant_minus_millis", 1, 1),
+        ("plusNanos", "jvm.java.instant_plus_nanos", 1, 1),
+        ("minusNanos", "jvm.java.instant_minus_nanos", 1, 1),
+        ("isBefore", "jvm.java.instant_is_before", 1, 1),
+        ("isAfter", "jvm.java.instant_is_after", 1, 1),
+        ("compareTo", "jvm.java.instant_compare_to", 1, 1),
+        ("toString", "jvm.java.instant_to_string", 0, 0),
+        ("toInstant", "jvm.java.identity", 0, 0),
     ] {
         instant.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
     instant.insert(
-        "epochsecond".to_string(),
+        "epochSecond".to_string(),
         prop("jvm.java.instant_get_epoch_second"),
     );
     instant.insert("nano".to_string(), prop("jvm.java.instant_get_nano"));
-    ensure_type_node(root, "time.instant");
-    merge_type_methods(root, "time.instant", instant);
+    ensure_type_node(root, "time.Instant");
+    merge_type_methods(root, "time.Instant", instant);
     merge_type_member_returns(
         root,
-        "time.instant",
+        "time.Instant",
         &[
             ("plusSeconds", "java.time.Instant"),
             ("minusSeconds", "java.time.Instant"),
@@ -3069,8 +3092,8 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
     let mut date_time = Subtree::new();
     for (name, emit) in [
         ("year", "jvm.java.instant_get_year"),
-        ("monthvalue", "jvm.java.instant_get_month"),
-        ("dayofmonth", "jvm.java.instant_get_day"),
+        ("monthValue", "jvm.java.instant_get_month"),
+        ("dayOfMonth", "jvm.java.instant_get_day"),
         ("hour", "jvm.java.instant_get_hour"),
         ("minute", "jvm.java.instant_get_minute"),
         ("second", "jvm.java.instant_get_second"),
@@ -3081,63 +3104,63 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         date_time.insert(name.to_string(), prop(emit));
     }
     for (name, emit, min_args, max_args) in [
-        ("getyear", "jvm.java.instant_get_year", 0, 0),
-        ("getmonthvalue", "jvm.java.instant_get_month", 0, 0),
-        ("getdayofmonth", "jvm.java.instant_get_day", 0, 0),
-        ("gethour", "jvm.java.instant_get_hour", 0, 0),
-        ("getminute", "jvm.java.instant_get_minute", 0, 0),
-        ("getsecond", "jvm.java.instant_get_second", 0, 0),
-        ("plusdays", "jvm.java.time_plus_days", 1, 1),
-        ("minusdays", "jvm.java.time_minus_days", 1, 1),
-        ("plusweeks", "jvm.java.time_plus_weeks", 1, 1),
-        ("plusmonths", "jvm.java.time_plus_months", 1, 1),
-        ("minusmonths", "jvm.java.time_minus_months", 1, 1),
-        ("plushours", "jvm.java.time_plus_hours", 1, 1),
-        ("minushours", "jvm.java.time_minus_hours", 1, 1),
-        ("plusminutes", "jvm.java.time_plus_minutes", 1, 1),
-        ("minusminutes", "jvm.java.time_minus_minutes", 1, 1),
-        ("plusseconds", "jvm.java.time_plus_seconds", 1, 1),
-        ("minusseconds", "jvm.java.time_minus_seconds", 1, 1),
-        ("withyear", "jvm.java.time_with_year", 1, 1),
-        ("withmonth", "jvm.java.time_with_month", 1, 1),
-        ("withdayofmonth", "jvm.java.time_with_day", 1, 1),
-        ("withhour", "jvm.java.time_with_hour", 1, 1),
-        ("withminute", "jvm.java.time_with_minute", 1, 1),
-        ("withsecond", "jvm.java.time_with_second", 1, 1),
+        ("getYear", "jvm.java.instant_get_year", 0, 0),
+        ("getMonthValue", "jvm.java.instant_get_month", 0, 0),
+        ("getDayOfMonth", "jvm.java.instant_get_day", 0, 0),
+        ("getHour", "jvm.java.instant_get_hour", 0, 0),
+        ("getMinute", "jvm.java.instant_get_minute", 0, 0),
+        ("getSecond", "jvm.java.instant_get_second", 0, 0),
+        ("plusDays", "jvm.java.time_plus_days", 1, 1),
+        ("minusDays", "jvm.java.time_minus_days", 1, 1),
+        ("plusWeeks", "jvm.java.time_plus_weeks", 1, 1),
+        ("plusMonths", "jvm.java.time_plus_months", 1, 1),
+        ("minusMonths", "jvm.java.time_minus_months", 1, 1),
+        ("plusHours", "jvm.java.time_plus_hours", 1, 1),
+        ("minusHours", "jvm.java.time_minus_hours", 1, 1),
+        ("plusMinutes", "jvm.java.time_plus_minutes", 1, 1),
+        ("minusMinutes", "jvm.java.time_minus_minutes", 1, 1),
+        ("plusSeconds", "jvm.java.time_plus_seconds", 1, 1),
+        ("minusSeconds", "jvm.java.time_minus_seconds", 1, 1),
+        ("withYear", "jvm.java.time_with_year", 1, 1),
+        ("withMonth", "jvm.java.time_with_month", 1, 1),
+        ("withDayOfMonth", "jvm.java.time_with_day", 1, 1),
+        ("withHour", "jvm.java.time_with_hour", 1, 1),
+        ("withMinute", "jvm.java.time_with_minute", 1, 1),
+        ("withSecond", "jvm.java.time_with_second", 1, 1),
         ("with", "jvm.java.time_with", 2, 2),
         ("get", "jvm.java.time_get", 1, 1),
-        ("isbefore", "jvm.java.instant_is_before", 1, 1),
-        ("isafter", "jvm.java.instant_is_after", 1, 1),
-        ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.datetime_to_string", 0, 0),
-        ("tolocaldate", "jvm.java.instant_to_local_date", 0, 0),
-        ("tolocaltime", "jvm.java.identity", 0, 0),
-        ("tolocaldatetime", "jvm.java.identity", 0, 0),
-        ("toinstant", "jvm.java.identity", 0, 0),
-        ("tooffsetdatetime", "jvm.java.identity", 0, 0),
-        ("tozoneddatetime", "jvm.java.identity", 0, 0),
-        ("atzonesameinstant", "jvm.java.instant_with_offset", 1, 1),
+        ("isBefore", "jvm.java.instant_is_before", 1, 1),
+        ("isAfter", "jvm.java.instant_is_after", 1, 1),
+        ("compareTo", "jvm.java.instant_compare_to", 1, 1),
+        ("toString", "jvm.java.datetime_to_string", 0, 0),
+        ("toLocalDate", "jvm.java.instant_to_local_date", 0, 0),
+        ("toLocalTime", "jvm.java.identity", 0, 0),
+        ("toLocalDateTime", "jvm.java.identity", 0, 0),
+        ("toInstant", "jvm.java.identity", 0, 0),
+        ("toOffsetDateTime", "jvm.java.identity", 0, 0),
+        ("toZonedDateTime", "jvm.java.identity", 0, 0),
+        ("atZoneSameInstant", "jvm.java.instant_with_offset", 1, 1),
         (
-            "atzonesimilarlocal",
+            "atZoneSimilarLocal",
             "jvm.java.time_with_offset_same_local",
             1,
             1,
         ),
         (
-            "withoffsetsameinstant",
+            "withOffsetSameInstant",
             "jvm.java.instant_with_offset",
             1,
             1,
         ),
         (
-            "withoffsetsamelocal",
+            "withOffsetSameLocal",
             "jvm.java.time_with_offset_same_local",
             1,
             1,
         ),
-        ("withzonesameinstant", "jvm.java.instant_with_zone", 1, 1),
+        ("withZoneSameInstant", "jvm.java.instant_with_zone", 1, 1),
         (
-            "withzonesamelocal",
+            "withZoneSameLocal",
             "jvm.java.time_with_zone_same_local",
             1,
             1,
@@ -3146,9 +3169,9 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         date_time.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
     for type_path in [
-        "time.localdatetime",
-        "time.offsetdatetime",
-        "time.zoneddatetime",
+        "time.LocalDateTime",
+        "time.OffsetDateTime",
+        "time.ZonedDateTime",
     ] {
         ensure_type_node(root, type_path);
         merge_type_methods(root, type_path, date_time.clone());
@@ -3191,31 +3214,31 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         period.insert(name.to_string(), prop(emit));
     }
     for (name, emit) in [
-        ("getdays", "jvm.java.period_get_days"),
-        ("getmonths", "jvm.java.period_get_months"),
+        ("getDays", "jvm.java.period_get_days"),
+        ("getMonths", "jvm.java.period_get_months"),
         ("getyears", "jvm.java.period_get_years"),
     ] {
         period.insert(name.to_string(), common_method(emit, 0, 0));
     }
-    ensure_type_node(root, "time.period");
-    merge_type_methods(root, "time.period", period);
+    ensure_type_node(root, "time.Period");
+    merge_type_methods(root, "time.Period", period);
 
     let mut year_month = Subtree::new();
     for (name, emit) in [
         ("year", "jvm.java.instant_get_year"),
-        ("monthvalue", "jvm.java.instant_get_month"),
+        ("monthValue", "jvm.java.instant_get_month"),
     ] {
         year_month.insert(name.to_string(), prop(emit));
     }
     year_month.insert(
-        "plusmonths".to_string(),
+        "plusMonths".to_string(),
         common_method("jvm.java.time_plus_months", 1, 1),
     );
-    ensure_type_node(root, "time.yearmonth");
-    merge_type_methods(root, "time.yearmonth", year_month);
+    ensure_type_node(root, "time.YearMonth");
+    merge_type_methods(root, "time.YearMonth", year_month);
     merge_type_member_returns(
         root,
-        "time.yearmonth",
+        "time.YearMonth",
         &[("plusMonths", "java.time.YearMonth")],
     );
 
@@ -3223,51 +3246,51 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
     day_of_week.insert("value".to_string(), prop("jvm.java.identity"));
     day_of_week.insert("name".to_string(), prop("jvm.java.day_of_week_name"));
     day_of_week.insert(
-        "getvalue".to_string(),
+        "getValue".to_string(),
         common_method("jvm.java.identity", 0, 0),
     );
     day_of_week.insert(
-        "tostring".to_string(),
+        "toString".to_string(),
         common_method("jvm.java.day_of_week_name", 0, 0),
     );
-    ensure_type_node(root, "time.dayofweek");
-    merge_type_methods(root, "time.dayofweek", day_of_week);
+    ensure_type_node(root, "time.DayOfWeek");
+    merge_type_methods(root, "time.DayOfWeek", day_of_week);
 
     let mut zone_offset = Subtree::new();
     zone_offset.insert("id".to_string(), prop("jvm.java.zone_offset_id"));
     zone_offset.insert(
-        "getid".to_string(),
+        "getId".to_string(),
         common_method("jvm.java.zone_offset_id", 0, 0),
     );
-    ensure_type_node(root, "time.zoneoffset");
-    merge_type_methods(root, "time.zoneoffset", zone_offset);
+    ensure_type_node(root, "time.ZoneOffset");
+    merge_type_methods(root, "time.ZoneOffset", zone_offset);
 
     let mut zone_id = Subtree::new();
     zone_id.insert("id".to_string(), prop("jvm.java.identity"));
     zone_id.insert(
-        "getid".to_string(),
+        "getId".to_string(),
         common_method("jvm.java.identity", 0, 0),
     );
-    ensure_type_node(root, "time.zoneid");
-    merge_type_methods(root, "time.zoneid", zone_id);
+    ensure_type_node(root, "time.ZoneId");
+    merge_type_methods(root, "time.ZoneId", zone_id);
 
     let mut month_day = Subtree::new();
     for (name, emit) in [
-        ("monthvalue", "jvm.java.instant_get_month"),
-        ("dayofmonth", "jvm.java.instant_get_day"),
+        ("monthValue", "jvm.java.instant_get_month"),
+        ("dayOfMonth", "jvm.java.instant_get_day"),
     ] {
         month_day.insert(name.to_string(), prop(emit));
     }
-    ensure_type_node(root, "time.monthday");
-    merge_type_methods(root, "time.monthday", month_day);
+    ensure_type_node(root, "time.MonthDay");
+    merge_type_methods(root, "time.MonthDay", month_day);
 }
 
 fn insert_java_stream_statics(root: &mut Subtree) {
     for type_path in [
-        "util.stream.intstream",
-        "util.stream.longstream",
-        "util.stream.doublestream",
-        "util.stream.stream",
+        "util.stream.IntStream",
+        "util.stream.LongStream",
+        "util.stream.DoubleStream",
+        "util.stream.Stream",
     ] {
         insert_common_static(root, type_path, "empty", "jvm.java.stream_empty");
         insert_common_static(root, type_path, "of", "jvm.java.stream_of");
@@ -3275,50 +3298,50 @@ fn insert_java_stream_statics(root: &mut Subtree) {
         insert_common_static(root, type_path, "generate", "jvm.java.stream_generate");
         insert_common_static(root, type_path, "builder", "jvm.java.stream_builder");
     }
-    for type_path in ["util.stream.intstream", "util.stream.longstream"] {
+    for type_path in ["util.stream.IntStream", "util.stream.LongStream"] {
         insert_common_static(root, type_path, "range", "jvm.java.stream_range");
-        insert_common_static(root, type_path, "rangeclosed", "jvm.java.stream_range_closed");
+        insert_common_static(root, type_path, "rangeClosed", "jvm.java.stream_range_closed");
         insert_common_static(root, type_path, "iterate", "jvm.java.stream_iterate");
     }
     insert_common_static(
         root,
-        "util.stream.doublestream",
+        "util.stream.DoubleStream",
         "iterate",
         "jvm.java.stream_iterate",
     );
     insert_common_static(
         root,
-        "util.stream.stream",
+        "util.stream.Stream",
         "iterate",
         "jvm.java.stream_iterate_strict",
     );
 
     for (member, emit) in [
         ("joining", "jvm.java.collectors_joining"),
-        ("tolist", "jvm.java.collectors_to_list"),
-        ("toset", "jvm.java.collectors_to_set"),
-        ("tounmodifiablelist", "jvm.java.collectors_to_list"),
-        ("tounmodifiableset", "jvm.java.collectors_to_set"),
-        ("tocollection", "jvm.java.collectors_to_collection"),
+        ("toList", "jvm.java.collectors_to_list"),
+        ("toSet", "jvm.java.collectors_to_set"),
+        ("toUnmodifiableList", "jvm.java.collectors_to_list"),
+        ("toUnmodifiableSet", "jvm.java.collectors_to_set"),
+        ("toCollection", "jvm.java.collectors_to_collection"),
         ("counting", "jvm.java.collectors_counting"),
-        ("summingint", "jvm.java.collectors_summing_int"),
-        ("summinglong", "jvm.java.collectors_summing_int"),
-        ("summingdouble", "jvm.java.collectors_summing_int"),
-        ("averagingint", "jvm.java.collectors_averaging_int"),
-        ("averaginglong", "jvm.java.collectors_averaging_int"),
-        ("averagingdouble", "jvm.java.collectors_averaging_int"),
-        ("tomap", "jvm.java.collectors_to_map"),
-        ("tounmodifiablemap", "jvm.java.collectors_to_map"),
+        ("summingInt", "jvm.java.collectors_summing_int"),
+        ("summingLong", "jvm.java.collectors_summing_int"),
+        ("summingDouble", "jvm.java.collectors_summing_int"),
+        ("averagingInt", "jvm.java.collectors_averaging_int"),
+        ("averagingLong", "jvm.java.collectors_averaging_int"),
+        ("averagingDouble", "jvm.java.collectors_averaging_int"),
+        ("toMap", "jvm.java.collectors_to_map"),
+        ("toUnmodifiableMap", "jvm.java.collectors_to_map"),
         ("mapping", "jvm.java.collectors_mapping"),
         ("filtering", "jvm.java.collectors_filtering"),
-        ("collectingandthen", "jvm.java.collectors_collecting_and_then"),
+        ("collectingAndThen", "jvm.java.collectors_collecting_and_then"),
         ("reducing", "jvm.java.collectors_reducing"),
-        ("groupingby", "jvm.java.collectors_grouping_by"),
-        ("partitioningby", "jvm.java.collectors_partitioning_by"),
-        ("minby", "jvm.java.collectors_min_by"),
-        ("maxby", "jvm.java.collectors_max_by"),
+        ("groupingBy", "jvm.java.collectors_grouping_by"),
+        ("partitioningBy", "jvm.java.collectors_partitioning_by"),
+        ("minBy", "jvm.java.collectors_min_by"),
+        ("maxBy", "jvm.java.collectors_max_by"),
     ] {
-        insert_common_static(root, "util.stream.collectors", member, emit);
+        insert_common_static(root, "util.stream.Collectors", member, emit);
     }
 }
 
@@ -3327,35 +3350,35 @@ fn insert_java_util_uuid(root: &mut Subtree) {
     for (name, emit) in [
         ("version", "jvm.java.uuid_version"),
         ("variant", "jvm.java.uuid_variant"),
-        ("getmostsignificantbits", "jvm.java.uuid_most_bits"),
-        ("getleastsignificantbits", "jvm.java.uuid_least_bits"),
-        ("hashcode", "jvm.java.uuid_hash_code"),
+        ("getMostSignificantBits", "jvm.java.uuid_most_bits"),
+        ("getLeastSignificantBits", "jvm.java.uuid_least_bits"),
+        ("hashCode", "jvm.java.uuid_hash_code"),
     ] {
         methods.insert(name.to_string(), common_emit(emit));
     }
     methods.insert(
-        "compareto".to_string(),
+        "compareTo".to_string(),
         namespaces::overloads(vec![(1, common_emit("jvm.java.uuid_compare_to"))]),
     );
-    ensure_type_node(root, "util.uuid");
-    merge_type_methods(root, "util.uuid", methods);
+    ensure_type_node(root, "util.UUID");
+    merge_type_methods(root, "util.UUID", methods);
 }
 
 fn insert_java_util_random(root: &mut Subtree) {
     let mut methods = Subtree::new();
     for (name, emit, min_args, max_args) in [
-        ("setseed", "jvm.java.random_set_seed", 1, 1),
-        ("nextint", "jvm.java.random_next_int", 0, 2),
-        ("nextlong", "jvm.java.random_next_long", 0, 2),
-        ("nextdouble", "jvm.java.random_next_double", 0, 2),
-        ("nextfloat", "jvm.java.random_next_float", 0, 0),
-        ("nextboolean", "jvm.java.random_next_boolean", 0, 0),
-        ("nextgaussian", "jvm.java.random_next_double", 0, 0),
+        ("setSeed", "jvm.java.random_set_seed", 1, 1),
+        ("nextInt", "jvm.java.random_next_int", 0, 2),
+        ("nextLong", "jvm.java.random_next_long", 0, 2),
+        ("nextDouble", "jvm.java.random_next_double", 0, 2),
+        ("nextFloat", "jvm.java.random_next_float", 0, 0),
+        ("nextBoolean", "jvm.java.random_next_boolean", 0, 0),
+        ("nextGaussian", "jvm.java.random_next_double", 0, 0),
         ("split", "jvm.java.random_split", 0, 0),
         ("ints", "jvm.java.random_ints", 0, 3),
         ("longs", "jvm.java.random_longs", 0, 3),
         ("doubles", "jvm.java.random_doubles", 0, 3),
-        ("nextbytes", "jvm.java.random_next_bytes", 1, 1),
+        ("nextBytes", "jvm.java.random_next_bytes", 1, 1),
     ] {
         methods.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
@@ -3365,9 +3388,9 @@ fn insert_java_util_random(root: &mut Subtree) {
     // bounded `ints/longs/doubles(count, origin, bound)` streams) widen the
     // max arity for every random class.
     for type_path in [
-        "util.random",
-        "util.splittablerandom",
-        "util.concurrent.threadlocalrandom",
+        "util.Random",
+        "util.SplittableRandom",
+        "util.concurrent.ThreadLocalRandom",
     ] {
         ensure_type_node(root, type_path);
         merge_type_methods(root, type_path, methods.clone());
@@ -3382,11 +3405,11 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
         common_method("jvm.java.sb_append", 1, 1),
     );
     builder.insert(
-        "appendline".to_string(),
+        "appendLine".to_string(),
         common_method("jvm.java.sb_append_line", 0, 1),
     );
     builder.insert(
-        "tostring".to_string(),
+        "toString".to_string(),
         common_method("jvm.java.sb_to_string", 0, 0),
     );
     for (name, emit, min_args, max_args) in [
@@ -3395,29 +3418,29 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
         ("capacity", "jvm.java.sb_length", 0, 0),
         ("insert", "jvm.java.sb_insert", 2, 2),
         ("delete", "jvm.java.sb_delete", 2, 2),
-        ("deleteat", "jvm.java.sb_delete", 1, 1),
-        ("deletecharat", "jvm.java.sb_delete", 1, 1),
+        ("deleteAt", "jvm.java.sb_delete", 1, 1),
+        ("deleteCharAt", "jvm.java.sb_delete", 1, 1),
         ("reverse", "jvm.java.sb_reverse", 0, 0),
-        ("setlength", "jvm.java.sb_set_length", 1, 1),
+        ("setLength", "jvm.java.sb_set_length", 1, 1),
         ("clear", "jvm.java.sb_clear", 0, 0),
-        ("setcharat", "jvm.java.sb_set_char_at", 2, 2),
+        ("setCharAt", "jvm.java.sb_set_char_at", 2, 2),
         ("set", "jvm.java.sb_set_char_at", 2, 2),
         ("get", "jvm.java.sb_char_at", 1, 1),
-        ("charat", "jvm.java.sb_char_at", 1, 1),
-        ("appendcodepoint", "jvm.java.sb_append_code_point", 1, 1),
+        ("charAt", "jvm.java.sb_char_at", 1, 1),
+        ("appendCodePoint", "jvm.java.sb_append_code_point", 1, 1),
         ("substring", "jvm.java.sb_substring", 1, 2),
-        ("subsequence", "jvm.java.sb_substring", 2, 2),
+        ("subSequence", "jvm.java.sb_substring", 2, 2),
         ("replace", "jvm.java.sb_replace", 3, 3),
-        ("isempty", "jvm.java.sb_is_empty", 0, 0),
-        ("isnotempty", "jvm.java.sb_is_not_empty", 0, 0),
+        ("isEmpty", "jvm.java.sb_is_empty", 0, 0),
+        ("isNotEmpty", "jvm.java.sb_is_not_empty", 0, 0),
     ] {
         builder.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
-    ensure_type_node(root, "lang.stringbuilder");
-    merge_type_methods(root, "lang.stringbuilder", builder);
+    ensure_type_node(root, "lang.StringBuilder");
+    merge_type_methods(root, "lang.StringBuilder", builder);
     merge_type_member_returns(
         root,
-        "lang.stringbuilder",
+        "lang.StringBuilder",
         &[
             ("append", "java.lang.StringBuilder"),
             ("appendLine", "java.lang.StringBuilder"),
@@ -3427,19 +3450,19 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
 
     let mut tokenizer = Subtree::new();
     for (name, emit) in [
-        ("hasmoretokens", "jvm.java.st_has_more"),
-        ("hasmoreelements", "jvm.java.st_has_more"),
-        ("nexttoken", "jvm.java.st_next"),
-        ("nextelement", "jvm.java.st_next"),
-        ("counttokens", "jvm.java.st_count"),
+        ("hasMoreTokens", "jvm.java.st_has_more"),
+        ("hasMoreElements", "jvm.java.st_has_more"),
+        ("nextToken", "jvm.java.st_next"),
+        ("nextElement", "jvm.java.st_next"),
+        ("countTokens", "jvm.java.st_count"),
     ] {
         tokenizer.insert(name.to_string(), common_method(emit, 0, 0));
     }
-    ensure_type_node(root, "util.stringtokenizer");
-    merge_type_methods(root, "util.stringtokenizer", tokenizer);
+    ensure_type_node(root, "util.StringTokenizer");
+    merge_type_methods(root, "util.StringTokenizer", tokenizer);
     merge_type_member_returns(
         root,
-        "util.stringtokenizer",
+        "util.StringTokenizer",
         &[
             ("nextToken", "java.lang.String"),
             ("nextElement", "java.lang.String"),
@@ -3450,25 +3473,25 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
 fn insert_java_net_url_uri(root: &mut Subtree) {
     let mut url_methods = Subtree::new();
     for (name, emit) in [
-        ("getprotocol", "jvm.java.net.url_protocol"),
-        ("gethost", "jvm.java.net.url_host"),
-        ("getport", "jvm.java.net.url_port"),
-        ("getdefaultport", "jvm.java.net.url_default_port"),
-        ("getpath", "jvm.java.net.url_path"),
-        ("getrawpath", "jvm.java.net.url_path"),
-        ("getquery", "jvm.java.net.url_query"),
-        ("getrawquery", "jvm.java.net.url_query"),
-        ("getref", "jvm.java.net.url_ref"),
-        ("getfragment", "jvm.java.net.url_ref"),
-        ("getrawfragment", "jvm.java.net.url_ref"),
-        ("getauthority", "jvm.java.net.url_authority"),
+        ("getProtocol", "jvm.java.net.url_protocol"),
+        ("getHost", "jvm.java.net.url_host"),
+        ("getPort", "jvm.java.net.url_port"),
+        ("getDefaultPort", "jvm.java.net.url_default_port"),
+        ("getPath", "jvm.java.net.url_path"),
+        ("getRawPath", "jvm.java.net.url_path"),
+        ("getQuery", "jvm.java.net.url_query"),
+        ("getRawQuery", "jvm.java.net.url_query"),
+        ("getRef", "jvm.java.net.url_ref"),
+        ("getFragment", "jvm.java.net.url_ref"),
+        ("getRawFragment", "jvm.java.net.url_ref"),
+        ("getAuthority", "jvm.java.net.url_authority"),
         ("getrawauthority", "jvm.java.net.url_authority"),
-        ("getuserinfo", "jvm.java.net.url_user_info"),
+        ("getUserInfo", "jvm.java.net.url_user_info"),
         ("getrawuserinfo", "jvm.java.net.url_user_info"),
-        ("tostring", "jvm.java.net.url_to_string"),
-        ("toexternalform", "jvm.java.net.url_to_string"),
-        ("touri", "jvm.java.net.url_to_uri"),
-        ("hashcode", "jvm.java.net.url_hash"),
+        ("toString", "jvm.java.net.url_to_string"),
+        ("toExternalForm", "jvm.java.net.url_to_string"),
+        ("toURI", "jvm.java.net.url_to_uri"),
+        ("hashCode", "jvm.java.net.url_hash"),
     ] {
         url_methods.insert(name.to_string(), common_emit(emit));
     }
@@ -3477,7 +3500,7 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
         namespaces::overloads(vec![(1, common_emit("jvm.java.net.url_equals"))]),
     );
     url_methods.insert(
-        "samefile".to_string(),
+        "sameFile".to_string(),
         namespaces::overloads(vec![(1, common_emit("jvm.java.net.url_same_file"))]),
     );
     for (name, emit) in [
@@ -3491,17 +3514,19 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
         ("fragment", "jvm.java.net.url_ref"),
         ("authority", "jvm.java.net.url_authority"),
         ("file", "jvm.java.net.url_file"),
-        ("userinfo", "jvm.java.net.url_user_info"),
+        ("userInfo", "jvm.java.net.url_user_info"),
     ] {
         url_methods.insert(name.to_string(), common_emit(emit));
     }
 
     let mut url_returns = BTreeMap::new();
-    url_returns.insert("touri".to_string(), "java.net.URI".to_string());
+    // `URL.toURI()` — the JLS spelling. Authored lowercase for a tree
+    // that folded; the fold is gone, so the declaration has to be right.
+    url_returns.insert("toURI".to_string(), "java.net.URI".to_string());
 
     insert_path(
         root,
-        "net.url",
+        "net.URL",
         NamespaceNode::Type {
             ctor: Some(namespaces::CtorSpec {
                 params: Vec::new(),
@@ -3511,6 +3536,8 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .map(|s| (*s).to_string())
                     .collect(),
                 control_fn: None,
+                // No markup: `java.net.URL` is not a control.
+                inner_html: None,
                 nest_coerce: None,
                 field_gui: Vec::new(),
                 value_equality: false,
@@ -3526,7 +3553,7 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
     encoder_statics.insert("encode".to_string(), common_emit("jvm.java.net.url_encode"));
     insert_path(
         root,
-        "net.urlencoder",
+        "net.URLEncoder",
         NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
@@ -3540,7 +3567,7 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
     decoder_statics.insert("decode".to_string(), common_emit("jvm.java.net.url_decode"));
     insert_path(
         root,
-        "net.urldecoder",
+        "net.URLDecoder",
         NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
@@ -3554,35 +3581,35 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
     uri_statics.insert("create".to_string(), common_emit("jvm.java.net.uri_new"));
     let mut uri_methods = Subtree::new();
     for (name, emit) in [
-        ("getscheme", "jvm.java.net.url_protocol"),
-        ("gethost", "jvm.java.net.url_host"),
-        ("getport", "jvm.java.net.url_port"),
-        ("getpath", "jvm.java.net.url_path"),
-        ("getrawpath", "jvm.java.net.url_path"),
-        ("getquery", "jvm.java.net.url_query"),
-        ("getrawquery", "jvm.java.net.url_query"),
-        ("getfragment", "jvm.java.net.url_ref"),
-        ("getrawfragment", "jvm.java.net.url_ref"),
-        ("getauthority", "jvm.java.net.url_authority"),
+        ("getScheme", "jvm.java.net.url_protocol"),
+        ("getHost", "jvm.java.net.url_host"),
+        ("getPort", "jvm.java.net.url_port"),
+        ("getPath", "jvm.java.net.url_path"),
+        ("getRawPath", "jvm.java.net.url_path"),
+        ("getQuery", "jvm.java.net.url_query"),
+        ("getRawQuery", "jvm.java.net.url_query"),
+        ("getFragment", "jvm.java.net.url_ref"),
+        ("getRawFragment", "jvm.java.net.url_ref"),
+        ("getAuthority", "jvm.java.net.url_authority"),
         ("getrawauthority", "jvm.java.net.url_authority"),
-        ("getuserinfo", "jvm.java.net.url_user_info"),
+        ("getUserInfo", "jvm.java.net.url_user_info"),
         ("getrawuserinfo", "jvm.java.net.url_user_info"),
-        ("getschemespecificpart", "jvm.java.net.uri_ssp"),
+        ("getSchemeSpecificPart", "jvm.java.net.uri_ssp"),
         ("getrawschemespecificpart", "jvm.java.net.uri_ssp"),
-        ("isabsolute", "jvm.java.net.uri_is_absolute"),
-        ("isopaque", "jvm.java.net.uri_is_opaque"),
+        ("isAbsolute", "jvm.java.net.uri_is_absolute"),
+        ("isOpaque", "jvm.java.net.uri_is_opaque"),
         ("normalize", "jvm.java.net.uri_normalize"),
-        ("tostring", "jvm.java.net.url_to_string"),
-        ("toasciistring", "jvm.java.net.url_to_string"),
-        ("tourl", "jvm.java.net.uri_to_url"),
-        ("hashcode", "jvm.java.net.url_hash"),
+        ("toString", "jvm.java.net.url_to_string"),
+        ("toASCIIString", "jvm.java.net.url_to_string"),
+        ("toURL", "jvm.java.net.uri_to_url"),
+        ("hashCode", "jvm.java.net.url_hash"),
     ] {
         uri_methods.insert(name.to_string(), common_emit(emit));
     }
     for (name, emit) in [
         ("resolve", "jvm.java.net.uri_resolve"),
         ("relativize", "jvm.java.net.uri_relativize"),
-        ("compareto", "jvm.java.net.uri_compare_to"),
+        ("compareTo", "jvm.java.net.uri_compare_to"),
         ("equals", "jvm.java.net.url_equals"),
     ] {
         uri_methods.insert(
@@ -3598,10 +3625,10 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
         ("query", "jvm.java.net.url_query"),
         ("fragment", "jvm.java.net.url_ref"),
         ("authority", "jvm.java.net.url_authority"),
-        ("userinfo", "jvm.java.net.url_user_info"),
+        ("userInfo", "jvm.java.net.url_user_info"),
         ("schemespecificpart", "jvm.java.net.uri_ssp"),
-        ("isabsolute", "jvm.java.net.uri_is_absolute"),
-        ("isopaque", "jvm.java.net.uri_is_opaque"),
+        ("isAbsolute", "jvm.java.net.uri_is_absolute"),
+        ("isOpaque", "jvm.java.net.uri_is_opaque"),
     ] {
         uri_methods.insert(name.to_string(), common_emit(emit));
     }
@@ -3610,11 +3637,12 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
     for name in ["normalize", "resolve", "relativize"] {
         uri_returns.insert(name.to_string(), "java.net.URI".to_string());
     }
-    uri_returns.insert("tourl".to_string(), "java.net.URL".to_string());
+    // `URI.toURL()`.
+    uri_returns.insert("toURL".to_string(), "java.net.URL".to_string());
 
     insert_path(
         root,
-        "net.uri",
+        "net.URI",
         NamespaceNode::Type {
             ctor: Some(namespaces::CtorSpec {
                 params: Vec::new(),
@@ -3624,6 +3652,8 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .map(|s| (*s).to_string())
                     .collect(),
                 control_fn: None,
+                // No markup: `java.net.URL` is not a control.
+                inner_html: None,
                 nest_coerce: None,
                 field_gui: Vec::new(),
                 value_equality: false,
@@ -4422,7 +4452,7 @@ pub fn register_namespace_tree() {
             let Some(ctor_call) = java_type_ctor_target(&qualified) else {
                 continue;
             };
-            let path = format!("{}.{}", ty.package, ty.name.to_lowercase());
+            let path = format!("{}.{}", ty.package, ty.name);
             insert_path(
                 &mut root,
                 &path,
@@ -4432,6 +4462,8 @@ pub fn register_namespace_tree() {
                         fields: Vec::new(),
                         ancestry: ty.ancestry.iter().map(|s| (*s).to_string()).collect(),
                         control_fn: None,
+                        // The JDK types are not controls, so none carries markup.
+                        inner_html: None,
                         nest_coerce: None,
                         field_gui: Vec::new(),
                         value_equality: false,

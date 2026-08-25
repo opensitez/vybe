@@ -96,6 +96,10 @@ pub(crate) struct KtWalker {
     kotlin_thread_locals: std::collections::HashSet<String>,
     kotlin_concurrency_locals: std::collections::HashMap<String, String>,
     kotlin_needs_threads: bool,
+    /// Local `val x by lazy { … }` declarations seen while walking the
+    /// current block, drained by `walk_block_statements` which lowers each
+    /// into memoizing locals and rewrites the block's later reads.
+    kotlin_local_lazy_pending: Vec<String>,
     backing_field: Vec<String>,
     kotlin_class_field_aliases: Vec<std::collections::HashMap<String, String>>,
 }
@@ -906,6 +910,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     body.extend(__w.pending_top_level_fns.drain(..));
 
+    // Top-level `val x by lazy { … }` / `var x by Delegates.…` — same
+    // lowering as block locals; the rewrite reaches later function bodies
+    // because `walk_exprs_mut` recurses through declarations.
+    for name in __w.kotlin_local_lazy_pending.split_off(0) {
+        kt_lower_local_lazy(&mut body, &name);
+        kt_lower_local_delegates(&mut body, &name);
+    }
+
     let aliases = kotlin_import_aliases(&imports);
     rewrite_import_aliases_in_stmts(__w, &mut body, &aliases);
     {
@@ -1028,25 +1040,38 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(Module {
+        canon: Default::default(),
         name: "main".to_string(),
         language: Lang::Kotlin,
         body,
         imports,
-        directives: Directives {
-            set_semantics: Some(SetSemantics {
-                mutation_result: SetMutationResult::ChangedBool,
-                delete_result: SetMutationResult::ChangedBool,
-                missing_delete: SetMissingDelete::Ignore,
-                algebra_arity: SetAlgebraArity::Binary,
-                predicate_bool_object: true,
-                // Kotlin sets ARE `java.util` sets — JDK hash-at-insert
-                // membership (data-class structural equality, mutation
-                // breaks lookup).
-                membership: SetMembership::SnapshotKey,
-            }),
-            ..Default::default()
-        },
+        directives: language_directives(),
     })
+}
+
+/// What Kotlin declares about itself.
+///
+/// ONE function because two readers need it: the `Module` above, and
+/// [`kotlin_tree_fold`] — the namespace tree's case policy. Restating the same
+/// fact in two places is how a walker and the tree come to disagree about
+/// whether `Instant` and `instant` are one name.
+fn language_directives() -> Directives {
+    Directives {
+        set_semantics: Some(SetSemantics {
+            mutation_result: SetMutationResult::ChangedBool,
+            delete_result: SetMutationResult::ChangedBool,
+            missing_delete: SetMissingDelete::Ignore,
+            algebra_arity: SetAlgebraArity::Binary,
+            predicate_bool_object: true,
+            // Kotlin sets ARE `java.util` sets — JDK hash-at-insert
+            // membership (data-class structural equality, mutation
+            // breaks lookup).
+            membership: SetMembership::SnapshotKey,
+        }),
+        // Kotlin states no `callable_case`, so `CaseMatch::Exact` — the
+        // default — applies: `Instant` and `instant` are two names.
+        ..Default::default()
+    }
 }
 
 fn collect_kotlin_simple_functions(__w: &mut KtWalker, stmts: &[Statement]) {
@@ -1619,6 +1644,7 @@ fn kotlin_is_builtin_exception_name(name: &str) -> bool {
             | "NoSuchElementException"
             | "UnsupportedOperationException"
             | "InterruptedException"
+            | "UninitializedPropertyAccessException"
             | "Throwable"
             | "Error"
     )
@@ -1651,6 +1677,7 @@ fn kotlin_is_builtin_exception_callee(__w: &mut KtWalker, name: &str) -> bool {
                 | "kotlin.UnsupportedOperationException"
                 | "java.lang.InterruptedException"
                 | "kotlin.InterruptedException"
+                | "kotlin.UninitializedPropertyAccessException"
                 | "java.lang.Throwable"
                 | "kotlin.Throwable"
                 | "java.lang.Error"
@@ -5689,13 +5716,50 @@ fn kotlin_pack_secondary_constructor_delegations(__w: &mut KtWalker, class_name:
         if *initializer_target != ConstructorInitializerTarget::This {
             continue;
         }
-        *args = kotlin_pack_constructor_vararg_args(__w, 
+        *args = kotlin_pack_constructor_vararg_args(__w,
             class_name,
             &args.iter().cloned().map(Argument::positional).collect::<Vec<_>>(),
         )
         .into_iter()
         .map(|arg| arg.value)
         .collect();
+        // A `this(…)` delegation is compiled against the target
+        // constructor's FULL-arity global; it never passes through the
+        // class dispatcher that fills trailing defaults on a plain
+        // call. `constructor() : this(0)` against a primary
+        // `(a, b = 2)` read the arity-1 global, which no constructor
+        // defines. Fill the missing trailing defaults (and same-arity
+        // tags) so the delegation lands on a real arity.
+        let shapes = __w
+            .kotlin_class_ctor_shapes
+            .get(class_name)
+            .cloned()
+            .unwrap_or_default();
+        let argc = args.len();
+        let exact = shapes
+            .iter()
+            .any(|shape| shape.source_params.len() + shape.tag_count == argc);
+        if exact {
+            continue;
+        }
+        let Some(shape) = shapes.iter().find(|shape| {
+            shape.source_params.len() > argc
+                && shape.source_params[argc..]
+                    .iter()
+                    .all(|param| param.default.is_some())
+                && args
+                    .iter()
+                    .zip(shape.source_params.iter())
+                    .all(|(arg, param)| kotlin_ctor_arg_matches_param(arg, param))
+        }) else {
+            continue;
+        };
+        for param in &shape.source_params[argc..] {
+            args.push(param.default.clone().expect("checked above"));
+        }
+        for idx in 0..shape.tag_count {
+            args.push(Expression::int(idx as i64));
+        }
     }
 }
 
@@ -6509,12 +6573,54 @@ fn kotlin_mangle_shadowed_properties(__w: &mut KtWalker, stmts: &mut [Statement]
         }
     }
     // `super.p` survived as a Member on SUPER so the mangling above could
-    // leave it alone — the runtime reads the BASE slot through `this`.
+    // leave it alone. `this.p` is NOT a faithful lowering for a property:
+    // property initializers run as ctor statements AFTER the accessor
+    // bindings, so `this.p` dispatches to the DERIVED getter — the very
+    // override `super.p` exists to bypass. Resolve to the nearest
+    // ancestor's backing slot instead (mangled name if that ancestor
+    // itself shadows), and keep `this.p` only where no ancestor owns a
+    // backing for `p`.
     for stmt in stmts.iter_mut() {
+        let super_backing: Box<dyn Fn(&str) -> Option<String>> =
+            if let StmtKind::ClassDecl { name, .. } = &stmt.kind {
+                let class_name = name.clone();
+                let parents = parents.clone();
+                let props = props.clone();
+                let shadowed = __w.kotlin_shadowed_props.clone();
+                Box::new(move |field: &str| {
+                    let backing = backing_field_name(field);
+                    let mut cur = parents.get(class_name.as_str());
+                    let mut hops = 0;
+                    while let Some(parent) = cur {
+                        if props
+                            .get(parent.as_str())
+                            .is_some_and(|ps| ps.contains(&backing))
+                        {
+                            return Some(
+                                shadowed
+                                    .get(&(parent.clone(), backing.clone()))
+                                    .cloned()
+                                    .unwrap_or(backing),
+                            );
+                        }
+                        cur = parents.get(parent.as_str());
+                        hops += 1;
+                        if hops > 16 {
+                            break;
+                        }
+                    }
+                    None
+                })
+            } else {
+                Box::new(|_| None)
+            };
         stmt.walk_exprs_mut(&mut |e| {
-            if let ExprKind::Member { object, .. } = &mut e.kind
+            if let ExprKind::Member { object, field, .. } = &mut e.kind
                 && matches!(object.kind, ExprKind::Super)
             {
+                if let Some(backing) = super_backing(field) {
+                    *field = backing;
+                }
                 **object = Expression::new(ExprKind::This);
             }
         });
@@ -7905,7 +8011,7 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         | "kotlin.system.identityhashcode"
                 )
             {
-                *expr = dotted_ident_expr("kotlin.system.identityhashcode");
+                *expr = dotted_ident_expr("kotlin.system.identityHashCode");
                 return;
             }
             if let ExprKind::Member { object, field, .. } = &expr.kind
@@ -8059,10 +8165,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     return;
                 }
             }
-            // `kotlin.math.PI` — the namespace tree stores lowercase-canonical
-            // keys and Kotlin is case-sensitive, so uppercase leaves (the
-            // constants) missed. The kotlin.* stdlib surface is case-stable,
-            // so the whole path folds.
+            // `kotlin.math.PI` — a compile-time constant is a LITERAL, and a
+            // dotted `kotlin.*` path is member access on the tree.
             if let Some(path) = dotted_expr_path_of(expr) {
                 // The same shape C#'s walker uses for `System.Math.PI`: a
                 // compile-time constant is a LITERAL, not a lookup —
@@ -8081,8 +8185,13 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 }
                 if let Some(rest) = path.strip_prefix("kotlin.") {
                     if rest.chars().any(|c| c.is_ascii_uppercase()) {
-                        let lowered = path.to_ascii_lowercase();
-                        let mut segs = lowered.split('.');
+                        // ⛔ The path keeps the SOURCE's spelling. It used to be
+                        // folded here to meet a tree whose keys were lowercased
+                        // at registration; `tree_register.rs` now stores what
+                        // Kotlin declares (`math.nextUp`, `text.Regex`), so
+                        // folding here turns every mixed-case stdlib name into
+                        // a miss. The two halves have to move together.
+                        let mut segs = path.split('.');
                         let mut built = Expression::ident(segs.next().unwrap());
                         for seg in segs {
                             built = Expression::new(ExprKind::Member {
@@ -8099,12 +8208,19 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 // Const leaf through the COMMON resolver, same data the jvm
                 // platform registered.
                 if path.starts_with("java.") {
-                    let lowered = path.to_ascii_lowercase();
+                    // ⛔ The path travels in the SOURCE's spelling. It used to be
+                    // lowercased here because the tree itself was lowercase; the
+                    // tree now holds the JDK's own casing (`java.time.Instant`,
+                    // not `java.time.instant`), so lowercasing turned every
+                    // constant read into a miss.
                     let mut segments: Vec<&str> = vec!["jvm"];
-                    segments.extend(lowered.split('.'));
+                    segments.extend(path.split('.'));
                     if let Some(vybe_compiler::primitives::namespaces::ResolutionTarget::Const(
                         value,
-                    )) = vybe_compiler::primitives::namespaces::resolve_path(&segments)
+                    )) = vybe_compiler::primitives::namespaces::resolve_path(
+                        &segments,
+                        kotlin_tree_fold(),
+                    )
                     {
                         use vybe_runtime::Value;
                         let lit = match value {
@@ -8287,7 +8403,7 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         }
                     }
                     "System.identityHashCode" | "System.identityhashcode" => {
-                        *callee = Box::new(dotted_ident_expr("kotlin.system.identityhashcode"));
+                        *callee = Box::new(dotted_ident_expr("kotlin.system.identityHashCode"));
                     }
                     "kotlin.math.log" | "log" if args.len() == 2 => {
                         let ln_left = Expression::new(ExprKind::Call {
@@ -12626,6 +12742,18 @@ fn kotlin_type_is_double_like(ty: &str) -> bool {
     )
 }
 
+/// The case policy the namespace tree must use for Kotlin lookups.
+///
+/// The case policy the namespace tree must use for Kotlin lookups.
+///
+/// Read off [`language_directives`] — the same value the emitted `Module`
+/// carries — so declaring a fold there is the ONLY edit needed to change it.
+/// Kotlin states no `callable_case` today, so `CaseMatch::Exact` applies and
+/// a miss is a miss.
+fn kotlin_tree_fold() -> vybe_runtime::namespaces::Fold {
+    language_directives().callable_fold()
+}
+
 fn kotlin_expr_type(__w: &mut KtWalker, 
     expr: &Expression,
     locals: &KotlinLocalTypes,
@@ -12697,6 +12825,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 &["jvm".to_string(), "kotlin".to_string()],
                 &recv,
                 field,
+                kotlin_tree_fold(),
             )
         }
         // The typed-array factories are erased to Array literals at parse
@@ -12920,6 +13049,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                         &["jvm".to_string(), "kotlin".to_string()],
                         &recv,
                         field,
+                        kotlin_tree_fold(),
                     )
                 {
                     return Some(ret);
@@ -13138,6 +13268,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                         &["jvm".to_string(), "kotlin".to_string()],
                         class_path,
                         member,
+                        kotlin_tree_fold(),
                     )
                 {
                     return Some(ret);
@@ -13191,9 +13322,9 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                         | "kotlin.math.max"
                         | "kotlin.math.min"
                         | "kotlin.math.ulp"
-                        | "kotlin.math.nextafter"
-                        | "kotlin.math.nextup"
-                        | "kotlin.math.nextdown"
+                        | "kotlin.math.nextTowards"
+                        | "kotlin.math.nextUp"
+                        | "kotlin.math.nextDown"
                 ) {
                     return Some("Double".to_string());
                 }
@@ -15300,6 +15431,7 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     }
     let mut is_readonly = false;
     let mut is_const = false;
+    let mut has_by_delegate = false;
     let mut name = String::new();
     let mut type_hint = None;
     let mut type_shape = None;
@@ -15312,6 +15444,7 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     is_const = true;
                 }
             }
+            Rule::by_kw => has_by_delegate = true,
             Rule::val_kw => is_readonly = true,
             Rule::var_kw => is_readonly = false,
             Rule::identifier => name = inner.as_str().to_string(),
@@ -15405,10 +15538,27 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         };
     }
 
+    // A local `val x by lazy { … }` keeps its VarDecl shape here; the
+    // enclosing `walk_block_statements` drains this and lowers the
+    // declaration into memoizing locals plus a read rewrite. (A class-body
+    // property never reaches that drain — its site consumes the decl.)
+    if has_by_delegate
+        && !name.is_empty()
+        && init
+            .as_ref()
+            .is_some_and(|e| kt_expr_is_lazy_call(e) || kt_match_delegates_call(e).is_some())
+    {
+        __w.kotlin_local_lazy_pending.push(name.clone());
+    }
+
     Some(Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            type_hint: type_hint.map(TypeHint::descriptive),
+            // Checked, not Descriptive: kotlin never coerces at the store,
+            // but kotlinc REJECTS a program that assigns another type here —
+            // the runtime value is guaranteed, which is what lets the shared
+            // provably-numeric operator fold fire on `var i: Int`.
+            type_hint: type_hint.map(TypeHint::checked),
             init,
             array_bounds: None,
             with_events: false,
@@ -15419,6 +15569,103 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             VarDeclKind::Var
         },
     }))
+}
+
+fn kt_expr_is_lazy_call(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    matches!(&callee.kind, ExprKind::Ident(n) if n == "lazy")
+        && !args.is_empty()
+        && args.len() <= 2
+        && matches!(
+            args[args.len() - 1].value.kind,
+            ExprKind::Lambda { .. }
+        )
+}
+
+/// Lower a drained local `val <name> by lazy { … }` inside `stmts`: the
+/// declaration becomes a done-flag, a value slot and a memoizing zero-arg
+/// closure, and every later read of `<name>` in the block becomes a call to
+/// that closure. Mutations the block makes to enclosing locals stay visible
+/// because the closure captures them like any other lambda.
+fn kt_lower_local_lazy(stmts: &mut Vec<Statement>, name: &str) {
+    let Some(decl_index) = stmts.iter().position(|stmt| {
+        matches!(&stmt.kind, StmtKind::VarDecl { declarations, .. }
+            if declarations.len() == 1
+                && matches!(&declarations[0].pattern, BindingPattern::Ident(n) if n == name)
+                && declarations[0].init.as_ref().is_some_and(kt_expr_is_lazy_call))
+    }) else {
+        return;
+    };
+    let StmtKind::VarDecl { declarations, .. } = &stmts[decl_index].kind else {
+        return;
+    };
+    let init = declarations[0].init.as_ref().expect("checked by position");
+    let ExprKind::Call { args, .. } = &init.kind else {
+        return;
+    };
+    let ExprKind::Lambda { body, .. } = &args[args.len() - 1].value.kind else {
+        return;
+    };
+    let (run_stmts, value) = match body {
+        LambdaBody::Expr(expr) => (Vec::new(), (**expr).clone()),
+        LambdaBody::Block(block) => {
+            let mut block = block.clone();
+            match block.pop() {
+                Some(last) => match last.kind {
+                    StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => (block, expr),
+                    other => {
+                        block.push(Statement::new(other));
+                        (block, Expression::null())
+                    }
+                },
+                None => (Vec::new(), Expression::null()),
+            }
+        }
+    };
+    let done = format!("__kt_lazy_done_{name}");
+    let slot = format!("__kt_lazy_val_{name}");
+    let getter = format!("__kt_lazy_get_{name}");
+    let mut run_body = run_stmts;
+    run_body.push(kt_assign(Expression::ident(&slot), value));
+    run_body.push(kt_assign(Expression::ident(&done), Expression::bool(true)));
+    let closure = Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Block(vec![
+            kt_if(
+                kt_binary(
+                    BinOp::Eq,
+                    Expression::ident(&done),
+                    Expression::bool(false),
+                ),
+                run_body,
+                None,
+            ),
+            Statement::new(StmtKind::Return(Some(Expression::ident(&slot)))),
+        ]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    stmts.splice(
+        decl_index..=decl_index,
+        [
+            kt_var(&done, Expression::bool(false)),
+            kt_var(&slot, Expression::null()),
+            kt_var(&getter, closure),
+        ],
+    );
+    for stmt in stmts.iter_mut().skip(decl_index + 3) {
+        stmt.walk_exprs_mut(&mut |expr| {
+            if matches!(&expr.kind, ExprKind::Ident(n) if n == name) {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(&getter)),
+                    args: Vec::new(),
+                    optional: false,
+                });
+            }
+        });
+    }
 }
 
 /// Is this expression a STRING by construction, so `+` on it is
@@ -15755,22 +16002,489 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
     }))
 }
 
+/// `val x by lazy { … }` — the delegate is DECLARED as a memoizing getter
+/// over private backing storage: the block runs on the first read, its last
+/// expression is cached, and every later read returns the cache. A separate
+/// done-flag carries "has run" so a lazy block may legally produce null.
+fn kt_lazy_property_members(
+    name: &str,
+    type_hint: Option<String>,
+    init: Option<&Expression>,
+    modifiers: Modifiers,
+) -> Option<Vec<ClassMember>> {
+    let init = init?;
+    let ExprKind::Call { callee, args, .. } = &init.kind else {
+        return None;
+    };
+    let ExprKind::Ident(callee_name) = &callee.kind else {
+        return None;
+    };
+    // `lazy { … }` or `lazy(LazyThreadSafetyMode.X) { … }` — the mode only
+    // selects a locking policy, meaningless single-threaded; the lambda is
+    // always the last argument.
+    if callee_name != "lazy" || args.is_empty() || args.len() > 2 {
+        return None;
+    }
+    let ExprKind::Lambda { body, .. } = &args[args.len() - 1].value.kind else {
+        return None;
+    };
+    let (run_stmts, value) = match body {
+        LambdaBody::Expr(expr) => (Vec::new(), (**expr).clone()),
+        LambdaBody::Block(stmts) => {
+            let mut stmts = stmts.clone();
+            match stmts.pop() {
+                Some(last) => match last.kind {
+                    StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => (stmts, expr),
+                    other => {
+                        stmts.push(Statement::new(other));
+                        (stmts, Expression::null())
+                    }
+                },
+                None => (Vec::new(), Expression::null()),
+            }
+        }
+    };
+    let backing = backing_field_name(name);
+    let done = format!("__kt_lazy_done_{name}");
+    let this_member = |field: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: field.to_string(),
+            null_safe: false,
+        })
+    };
+    let mut run_body = run_stmts;
+    run_body.push(kt_assign(this_member(&backing), value));
+    run_body.push(kt_assign(this_member(&done), Expression::bool(true)));
+    let getter = vec![
+        kt_if(
+            kt_binary(BinOp::Eq, this_member(&done), Expression::null()),
+            run_body,
+            None,
+        ),
+        Statement::new(StmtKind::Return(Some(this_member(&backing)))),
+    ];
+    let private_field = |fname: String| ClassMember::Field {
+        name: fname,
+        type_hint: None,
+        init: None,
+        modifiers: Modifiers {
+            visibility: Visibility::Private,
+            ..Default::default()
+        },
+        with_events: false,
+        array_bounds: None,
+        storage: None,
+    };
+    Some(vec![
+        private_field(backing),
+        private_field(done),
+        ClassMember::Property {
+            name: name.to_string(),
+            type_hint,
+            getter: Some(getter),
+            setter: None,
+            is_auto: false,
+            modifiers: {
+                let mut m = modifiers;
+                m.visibility = Visibility::Public;
+                m.is_readonly = true;
+                m
+            },
+        },
+    ])
+}
+
+enum KtDelegateKind {
+    Observable,
+    Vetoable,
+    NotNull,
+}
+
+/// Recognize `Delegates.observable(init) { p, old, new -> … }`,
+/// `Delegates.vetoable(init) { … }` and `Delegates.notNull()`.
+/// Returns the kind, the initial value and the handler lambda.
+fn kt_match_delegates_call(
+    expr: &Expression,
+) -> Option<(KtDelegateKind, Option<Expression>, Option<Expression>)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let path = dotted_expr_path(callee)?;
+    let leaf = path
+        .strip_prefix("kotlin.properties.")
+        .unwrap_or(path.as_str());
+    let kind = match leaf {
+        "Delegates.observable" => KtDelegateKind::Observable,
+        "Delegates.vetoable" => KtDelegateKind::Vetoable,
+        "Delegates.notNull" => KtDelegateKind::NotNull,
+        _ => return None,
+    };
+    match kind {
+        KtDelegateKind::NotNull => args.is_empty().then_some((kind, None, None)),
+        _ => {
+            if args.len() != 2 || !matches!(args[1].value.kind, ExprKind::Lambda { .. }) {
+                return None;
+            }
+            Some((kind, Some(args[0].value.clone()), Some(args[1].value.clone())))
+        }
+    }
+}
+
+/// Split a `{ prop, old, new -> … }` handler into the old/new parameter
+/// names (`None` for `_`), its body statements, and the trailing result
+/// expression. The handler is INLINED at the write site rather than kept as
+/// a value, so it needs no property object for its first parameter.
+fn kt_delegate_handler_parts(
+    handler: &Expression,
+) -> (Option<String>, Option<String>, Vec<Statement>, Option<Expression>) {
+    let ExprKind::Lambda { params, body, .. } = &handler.kind else {
+        return (None, None, Vec::new(), None);
+    };
+    let pname = |idx: usize| {
+        params
+            .get(idx)
+            .map(|p| p.name.clone())
+            .filter(|n| n != "_" && !n.is_empty())
+    };
+    let (stmts, last) = match body {
+        LambdaBody::Expr(expr) => (Vec::new(), Some((**expr).clone())),
+        LambdaBody::Block(block) => {
+            let mut block = block.clone();
+            match block.pop() {
+                Some(last_stmt) => match last_stmt.kind {
+                    StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => (block, Some(expr)),
+                    other => {
+                        block.push(Statement::new(other));
+                        (block, None)
+                    }
+                },
+                None => (Vec::new(), None),
+            }
+        }
+    };
+    (pname(1), pname(2), stmts, last)
+}
+
+/// Class-body `var x by Delegates.…` — declared as backing storage plus
+/// accessor bodies: observable runs its handler after the write, vetoable
+/// gates the write on the handler's verdict, notNull throws on a read
+/// before the first write.
+fn kt_delegates_property_members(
+    name: &str,
+    type_hint: Option<String>,
+    init: Option<&Expression>,
+    modifiers: Modifiers,
+) -> Option<Vec<ClassMember>> {
+    let (kind, initial, handler) = kt_match_delegates_call(init?)?;
+    let backing = backing_field_name(name);
+    let this_backing = || {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: backing.clone(),
+            null_safe: false,
+        })
+    };
+    let mut getter = Vec::new();
+    if matches!(kind, KtDelegateKind::NotNull) {
+        getter.push(kt_if(
+            kt_binary(BinOp::Eq, this_backing(), Expression::null()),
+            vec![kt_stmt(StmtKind::Throw {
+                expr: Some(kt_call(
+                    "IllegalStateException",
+                    vec![Expression::string(&format!(
+                        "Property {name} should be initialized before get."
+                    ))],
+                )),
+                cause: None,
+            })],
+            None,
+        ));
+    }
+    getter.push(Statement::new(StmtKind::Return(Some(this_backing()))));
+    let mut set_body = Vec::new();
+    match (&kind, &handler) {
+        (KtDelegateKind::NotNull, _) | (_, None) => {
+            set_body.push(kt_assign(this_backing(), Expression::ident("__kt_value")));
+        }
+        (KtDelegateKind::Observable, Some(handler)) => {
+            let (old_name, new_name, body, last) = kt_delegate_handler_parts(handler);
+            if let Some(n) = &old_name {
+                set_body.push(kt_var(n, this_backing()));
+            }
+            if let Some(n) = &new_name {
+                set_body.push(kt_var(n, Expression::ident("__kt_value")));
+            }
+            set_body.push(kt_assign(this_backing(), Expression::ident("__kt_value")));
+            set_body.extend(body);
+            if let Some(last) = last {
+                set_body.push(kt_stmt(StmtKind::Expr(last)));
+            }
+        }
+        (KtDelegateKind::Vetoable, Some(handler)) => {
+            let (old_name, new_name, body, last) = kt_delegate_handler_parts(handler);
+            if let Some(n) = &old_name {
+                set_body.push(kt_var(n, this_backing()));
+            }
+            if let Some(n) = &new_name {
+                set_body.push(kt_var(n, Expression::ident("__kt_value")));
+            }
+            set_body.extend(body);
+            let verdict = last.unwrap_or_else(|| Expression::bool(false));
+            set_body.push(kt_if(
+                kt_binary(BinOp::Eq, verdict, Expression::bool(true)),
+                vec![kt_assign(this_backing(), Expression::ident("__kt_value"))],
+                None,
+            ));
+        }
+    }
+    let value_param = Param {
+        name: "__kt_value".to_string(),
+        type_hint: type_hint.clone().map(Into::into),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    Some(vec![
+        ClassMember::Field {
+            name: backing.clone(),
+            type_hint: None,
+            init: initial,
+            modifiers: Modifiers {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+            with_events: false,
+            array_bounds: None,
+            storage: None,
+        },
+        ClassMember::Property {
+            name: name.to_string(),
+            type_hint,
+            getter: Some(getter),
+            setter: Some(PropertySetter {
+                param: value_param,
+                body: set_body,
+            }),
+            is_auto: false,
+            modifiers: {
+                let mut m = modifiers;
+                m.visibility = Visibility::Public;
+                m.is_readonly = false;
+                m
+            },
+        },
+    ])
+}
+
+/// Lower a drained local (or top-level) `var x by Delegates.…` inside
+/// `stmts`: the declaration becomes backing storage plus a set closure
+/// (and a throwing get closure for notNull), and later uses rewrite —
+/// reads to the backing, writes through the closure. Runs after
+/// `kt_lower_local_lazy`; each ignores the other's shape.
+fn kt_lower_local_delegates(stmts: &mut Vec<Statement>, name: &str) {
+    let Some(decl_index) = stmts.iter().position(|stmt| {
+        matches!(&stmt.kind, StmtKind::VarDecl { declarations, .. }
+            if declarations.len() == 1
+                && matches!(&declarations[0].pattern, BindingPattern::Ident(n) if n == name)
+                && declarations[0]
+                    .init
+                    .as_ref()
+                    .is_some_and(|init| kt_match_delegates_call(init).is_some()))
+    }) else {
+        return;
+    };
+    let StmtKind::VarDecl { declarations, .. } = &stmts[decl_index].kind else {
+        return;
+    };
+    let Some((kind, initial, handler)) = declarations[0]
+        .init
+        .as_ref()
+        .and_then(kt_match_delegates_call)
+    else {
+        return;
+    };
+    let backing = format!("__kt_del_val_{name}");
+    let setter = format!("__kt_del_set_{name}");
+    let getter = format!("__kt_del_get_{name}");
+    let value_param = Param {
+        name: "__kt_value".to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let mut set_body = Vec::new();
+    match (&kind, &handler) {
+        (KtDelegateKind::NotNull, _) | (_, None) => {
+            set_body.push(kt_assign(
+                Expression::ident(&backing),
+                Expression::ident("__kt_value"),
+            ));
+        }
+        (KtDelegateKind::Observable, Some(handler)) => {
+            let (old_name, new_name, body, last) = kt_delegate_handler_parts(handler);
+            if let Some(n) = &old_name {
+                set_body.push(kt_var(n, Expression::ident(&backing)));
+            }
+            if let Some(n) = &new_name {
+                set_body.push(kt_var(n, Expression::ident("__kt_value")));
+            }
+            set_body.push(kt_assign(
+                Expression::ident(&backing),
+                Expression::ident("__kt_value"),
+            ));
+            set_body.extend(body);
+            if let Some(last) = last {
+                set_body.push(kt_stmt(StmtKind::Expr(last)));
+            }
+        }
+        (KtDelegateKind::Vetoable, Some(handler)) => {
+            let (old_name, new_name, body, last) = kt_delegate_handler_parts(handler);
+            if let Some(n) = &old_name {
+                set_body.push(kt_var(n, Expression::ident(&backing)));
+            }
+            if let Some(n) = &new_name {
+                set_body.push(kt_var(n, Expression::ident("__kt_value")));
+            }
+            set_body.extend(body);
+            let verdict = last.unwrap_or_else(|| Expression::bool(false));
+            set_body.push(kt_if(
+                kt_binary(BinOp::Eq, verdict, Expression::bool(true)),
+                vec![kt_assign(
+                    Expression::ident(&backing),
+                    Expression::ident("__kt_value"),
+                )],
+                None,
+            ));
+        }
+    }
+    let set_closure = Expression::new(ExprKind::Lambda {
+        params: vec![value_param],
+        body: LambdaBody::Block(set_body),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    let is_not_null = matches!(kind, KtDelegateKind::NotNull);
+    let mut replacement = vec![
+        kt_var(
+            &backing,
+            initial.unwrap_or_else(Expression::null),
+        ),
+        kt_var(&setter, set_closure),
+    ];
+    if is_not_null {
+        let get_closure = Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(vec![
+                kt_if(
+                    kt_binary(
+                        BinOp::Eq,
+                        Expression::ident(&backing),
+                        Expression::null(),
+                    ),
+                    vec![kt_stmt(StmtKind::Throw {
+                        expr: Some(kt_call(
+                            "IllegalStateException",
+                            vec![Expression::string(&format!(
+                                "Property {name} should be initialized before get."
+                            ))],
+                        )),
+                        cause: None,
+                    })],
+                    None,
+                ),
+                Statement::new(StmtKind::Return(Some(Expression::ident(&backing)))),
+            ]),
+            is_async: false,
+            captures: Vec::new(),
+        });
+        replacement.push(kt_var(&getter, get_closure));
+    }
+    let inserted = replacement.len();
+    stmts.splice(decl_index..=decl_index, replacement);
+    // Post-order visitation: a read substitution lands on the target Ident
+    // BEFORE its enclosing Assign is visited, so the Assign arm keys on the
+    // substituted shape to route the write through the set closure.
+    for stmt in stmts.iter_mut().skip(decl_index + inserted) {
+        stmt.walk_exprs_mut(&mut |expr| {
+            match &mut expr.kind {
+                ExprKind::Ident(n) if n.as_str() == name => {
+                    if is_not_null {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(&getter)),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                    } else {
+                        *expr = Expression::ident(&backing);
+                    }
+                }
+                ExprKind::Assign { target, value } => {
+                    let target_is_read = if is_not_null {
+                        matches!(&target.kind, ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind, ExprKind::Ident(n) if n.as_str() == getter))
+                    } else {
+                        matches!(&target.kind, ExprKind::Ident(n) if n.as_str() == backing)
+                    };
+                    if target_is_read {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(&setter)),
+                            args: vec![Argument::positional((**value).clone())],
+                            optional: false,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+}
+
 fn kt_stored_property_members(
     name: String,
     type_hint: Option<String>,
     init: Option<Expression>,
     is_readonly: bool,
+    is_lateinit: bool,
     decorators: Vec<Expression>,
     mut modifiers: Modifiers,
 ) -> (Vec<ClassMember>, String) {
     let backing = backing_field_name(&name);
-    let getter = vec![Statement::new(StmtKind::Return(Some(Expression::new(
-        ExprKind::Member {
+    let backing_read = || {
+        Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: backing.clone(),
             null_safe: false,
-        },
-    ))))];
+        })
+    };
+    // A `lateinit var` read before its first assignment throws
+    // UninitializedPropertyAccessException; the backing field of a
+    // lateinit property is never null once set (lateinit forbids
+    // nullable types), so a null backing IS the uninitialized state.
+    let mut getter = Vec::new();
+    if is_lateinit {
+        getter.push(kt_if(
+            kt_binary(BinOp::Eq, backing_read(), Expression::null()),
+            vec![kt_stmt(StmtKind::Throw {
+                expr: Some(kt_call(
+                    "UninitializedPropertyAccessException",
+                    vec![Expression::string(&format!(
+                        "lateinit property {name} has not been initialized"
+                    ))],
+                )),
+                cause: None,
+            })],
+            None,
+        ));
+    }
+    getter.push(Statement::new(StmtKind::Return(Some(backing_read()))));
     let setter = (!is_readonly).then(|| {
         let param = Param {
             name: "__kt_value".to_string(),
@@ -15832,14 +16546,32 @@ fn kt_stored_property_members(
 fn kt_rewrite_constructor_property_assigns_stmt(
     stmt: &mut Statement,
     backings: &HashMap<String, String>,
+    skip: &HashSet<String>,
 ) {
     stmt.walk_exprs_mut(&mut |expr| {
-        if let ExprKind::Assign { target, .. } = &mut expr.kind
-            && let ExprKind::Member { object, field, .. } = &mut target.kind
-            && matches!(object.kind, ExprKind::This)
-            && let Some(backing) = backings.get(field)
-        {
-            *field = backing.clone();
+        if let ExprKind::Assign { target, .. } = &mut expr.kind {
+            match &mut target.kind {
+                ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
+                    if let Some(backing) = backings.get(field) {
+                        *field = backing.clone();
+                    }
+                }
+                // A BARE `y = …` in an `init` block or constructor body is a
+                // write to the property — Kotlin has no implicit locals.
+                // Constructor params and declared locals shadow (`skip`).
+                ExprKind::Ident(name) => {
+                    if !skip.contains(name.as_str()) {
+                        if let Some(backing) = backings.get(name) {
+                            **target = Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::new(ExprKind::This)),
+                                field: backing.clone(),
+                                null_safe: false,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     });
 }
@@ -17034,6 +17766,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     if param.as_rule() == Rule::class_parameter {
                         let mut param_is_prop = false;
                         let mut is_readonly = false;
+                        let mut param_is_override = false;
                         let mut pname = String::new();
                         let mut type_hint = None;
                         let mut is_nullable = false;
@@ -17051,6 +17784,11 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 Rule::var_kw => {
                                     param_is_prop = true;
                                     is_readonly = false;
+                                }
+                                Rule::modifier
+                                    if matches!(p.as_str().trim(), "override" | "open") =>
+                                {
+                                    param_is_override = true;
                                 }
                                 Rule::identifier => pname = p.as_str().to_string(),
                                 Rule::type_ref => {
@@ -17077,27 +17815,56 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 is_nullable,
                             });
                             if param_is_prop {
-                                let field_name = field_aliases
-                                    .get(&pname)
-                                    .cloned()
-                                    .unwrap_or_else(|| pname.clone());
-                                let (mut property_members, backing_name) =
-                                    kt_stored_property_members(
-                                        field_name.clone(),
-                                        type_hint.clone(),
-                                        None,
-                                        is_readonly,
-                                        Vec::new(),
-                                        Modifiers::default(),
-                                    );
-                                stored_property_backings
-                                    .insert(field_name.clone(), backing_name.clone());
-                                members.append(&mut property_members);
+                                // A stored property is DECLARED as an
+                                // auto-property; primitives/classes.rs owns
+                                // the backing storage, the default accessors
+                                // and the write routing (flexclassplan §0.3:
+                                // frontends declare, the compiler decides).
+                                // Two shapes keep the walker's accessor
+                                // machinery: a name colliding with a method,
+                                // and `override` — an auto-property has no
+                                // accessor chunk, so an inherited accessor
+                                // (interface default / open ancestor) would
+                                // keep answering the read it must override.
+                                let write_target = if let Some(aliased) = param_is_override
+                                    .then(|| pname.clone())
+                                    .or_else(|| field_aliases.get(&pname).cloned())
+                                {
+                                    let (mut property_members, backing_name) =
+                                        kt_stored_property_members(
+                                            aliased,
+                                            type_hint.clone(),
+                                            None,
+                                            is_readonly,
+                                            false,
+                                            Vec::new(),
+                                            Modifiers::default(),
+                                        );
+                                    stored_property_backings
+                                        .insert(pname.clone(), backing_name.clone());
+                                    members.append(&mut property_members);
+                                    backing_name
+                                } else {
+                                    members.push(ClassMember::Property {
+                                        name: pname.clone(),
+                                        type_hint: type_hint.clone(),
+                                        getter: None,
+                                        setter: None,
+                                        is_auto: true,
+                                        modifiers: Modifiers {
+                                            is_readonly,
+                                            ..Default::default()
+                                        },
+                                    });
+                                    stored_property_backings
+                                        .insert(pname.clone(), pname.clone());
+                                    pname.clone()
+                                };
                                 ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
                                     ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(Expression::new(ExprKind::This)),
-                                            field: backing_name,
+                                            field: write_target,
                                             null_safe: false,
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
@@ -17260,6 +18027,14 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                         .clone()
                                         .into_inner()
                                         .any(|p| p.as_rule() == Rule::val_kw);
+                                    let is_lateinit_var = inner_member.clone().into_inner().any(|p| {
+                                        p.as_rule() == Rule::modifier
+                                            && p.as_str().trim() == "lateinit"
+                                    });
+                                    let has_by_delegate = inner_member
+                                        .clone()
+                                        .into_inner()
+                                        .any(|p| p.as_rule() == Rule::by_kw);
                                     let mut property_modifiers = Modifiers::default();
                                     for p in inner_member.clone().into_inner() {
                                         if p.as_rule() == Rule::modifier {
@@ -17306,28 +18081,139 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                             });
                                                         }
                                                     } else {
-                                                        let (mut property_members, _) =
-                                                            kt_stored_property_members(
-                                                                field_name,
-                                                                decl.type_hint
-                                                                    .as_deref()
-                                                                    .map(str::to_string),
-                                                                decl.init,
-                                                                is_readonly_val,
-                                                                field_decorators.clone(),
-                                                                property_modifiers.clone(),
-                                                            );
-                                                        if let Some(ClassMember::Field {
-                                                            name: backing,
-                                                            ..
-                                                        }) = property_members.first()
+                                                        // The initializer does NOT ride the
+                                                        // Field member: Kotlin interleaves
+                                                        // property initializers and `init`
+                                                        // blocks in DECLARATION order, and a
+                                                        // Field-carried init runs in field
+                                                        // setup — before every init block,
+                                                        // whatever the source order said. It
+                                                        // becomes an `init_stmts` assignment
+                                                        // at THIS source position instead.
+                                                        //
+                                                        // The property itself is DECLARED as
+                                                        // an auto-property and
+                                                        // primitives/classes.rs decides its
+                                                        // storage and accessors
+                                                        // (flexclassplan §0.3). The walker
+                                                        // keeps its own backing machinery
+                                                        // only where the read has custom
+                                                        // semantics (`lateinit` guard) or
+                                                        // the name collides with a method.
+                                                        let property_init = decl.init;
+                                                        if has_by_delegate {
+                                                            if let Some(lazy_members) =
+                                                                kt_lazy_property_members(
+                                                                    &field_name,
+                                                                    decl.type_hint
+                                                                        .as_deref()
+                                                                        .map(str::to_string),
+                                                                    property_init.as_ref(),
+                                                                    property_modifiers.clone(),
+                                                                )
+                                                            {
+                                                                members.extend(lazy_members);
+                                                                continue;
+                                                            }
+                                                            if let Some(delegate_members) =
+                                                                kt_delegates_property_members(
+                                                                    &field_name,
+                                                                    decl.type_hint
+                                                                        .as_deref()
+                                                                        .map(str::to_string),
+                                                                    property_init.as_ref(),
+                                                                    property_modifiers.clone(),
+                                                                )
+                                                            {
+                                                                members.extend(delegate_members);
+                                                                continue;
+                                                            }
+                                                        }
+                                                        // `open`/`override` stay on the
+                                                        // accessor path: an override must
+                                                        // SHADOW an inherited accessor, and
+                                                        // an open property must leave one
+                                                        // for `super.x` and overrides to
+                                                        // resolve against.
+                                                        let write_target = if is_lateinit_var
+                                                            || property_modifiers.is_override
+                                                            || property_modifiers.is_virtual
+                                                            || field_aliases.contains_key(&fname)
                                                         {
+                                                            let (mut property_members, backing_name) =
+                                                                kt_stored_property_members(
+                                                                    field_name,
+                                                                    decl.type_hint
+                                                                        .as_deref()
+                                                                        .map(str::to_string),
+                                                                    None,
+                                                                    is_readonly_val,
+                                                                    is_lateinit_var,
+                                                                    field_decorators.clone(),
+                                                                    property_modifiers.clone(),
+                                                                );
                                                             stored_property_backings.insert(
                                                                 fname.clone(),
-                                                                backing.clone(),
+                                                                backing_name.clone(),
                                                             );
+                                                            members.append(&mut property_members);
+                                                            backing_name
+                                                        } else {
+                                                            members.push(ClassMember::Property {
+                                                                name: field_name.clone(),
+                                                                type_hint: decl
+                                                                    .type_hint
+                                                                    .as_deref()
+                                                                    .map(str::to_string),
+                                                                getter: None,
+                                                                setter: None,
+                                                                is_auto: true,
+                                                                modifiers: {
+                                                                    let mut m =
+                                                                        property_modifiers.clone();
+                                                                    m.is_readonly =
+                                                                        is_readonly_val;
+                                                                    m.decorators =
+                                                                        field_decorators.clone();
+                                                                    // The property surface
+                                                                    // stays Public, exactly
+                                                                    // like the retired
+                                                                    // walker-made accessor
+                                                                    // pair: a Private
+                                                                    // surface routes reads
+                                                                    // into the js-private
+                                                                    // storage machinery,
+                                                                    // which kotlin's own
+                                                                    // methods then miss.
+                                                                    m.visibility =
+                                                                        Visibility::Public;
+                                                                    m
+                                                                },
+                                                            });
+                                                            stored_property_backings.insert(
+                                                                fname.clone(),
+                                                                field_name.clone(),
+                                                            );
+                                                            field_name
+                                                        };
+                                                        if let Some(value) = property_init {
+                                                            init_stmts.push(Statement::new(
+                                                                StmtKind::Expr(Expression::new(
+                                                                    ExprKind::Assign {
+                                                                        target: Box::new(
+                                                                            Expression::new(
+                                                                                ExprKind::Member {
+                                                                                    object: Box::new(Expression::new(ExprKind::This)),
+                                                                                    field: write_target,
+                                                                                    null_safe: false,
+                                                                                },
+                                                                            ),
+                                                                        ),
+                                                                        value: Box::new(value),
+                                                                    },
+                                                                )),
+                                                            ));
                                                         }
-                                                        members.append(&mut property_members);
                                                     }
                                                 }
                                             }
@@ -17862,9 +18748,24 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     }
     if !stored_property_backings.is_empty() {
         for member in &mut members {
-            if let ClassMember::Constructor { body, .. } = member {
+            if let ClassMember::Constructor { body, params, .. } = member {
+                let mut skip: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
+                for stmt in body.iter() {
+                    if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+                        for decl in declarations {
+                            if let BindingPattern::Ident(n) = &decl.pattern {
+                                skip.insert(n.clone());
+                            }
+                        }
+                    }
+                }
                 for stmt in body {
-                    kt_rewrite_constructor_property_assigns_stmt(stmt, &stored_property_backings);
+                    kt_rewrite_constructor_property_assigns_stmt(
+                        stmt,
+                        &stored_property_backings,
+                        &skip,
+                    );
                 }
             }
         }
@@ -18476,11 +19377,20 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
 }
 
 fn walk_block_statements(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Statement> {
+    let pending_mark = __w.kotlin_local_lazy_pending.len();
     let mut stmts = Vec::new();
     for inner in pair.into_inner() {
         if let Some(stmt) = walk_statement(__w, inner) {
             stmts.push(stmt);
         }
+    }
+    // Only entries recorded while walking THIS block: a nested block drains
+    // its own before returning here. A name with no matching declaration in
+    // `stmts` (a class-body property, already consumed by its site) is
+    // ignored by the lowering.
+    for name in __w.kotlin_local_lazy_pending.split_off(pending_mark) {
+        kt_lower_local_lazy(&mut stmts, &name);
+        kt_lower_local_delegates(&mut stmts, &name);
     }
     stmts
 }

@@ -345,9 +345,6 @@ __java_stream_optional_get = { emit = "common:jvm.java.stream_optional_get", min
 __java_uuid_compare_to = { emit = "common:jvm.java.uuid_compare_to", min_args = 2, max_args = 2 }
 __java_uuid_hash_code = { emit = "common:jvm.java.uuid_hash_code", min_args = 1, max_args = 1 }
 # Byte-faithful stdout write — the REAL WASI surface (wasi:cli/stdout
-# get-stdout + wasi:io/streams blocking-write-and-flush), the same
-# proven intrinsic the libc runtime uses. No wasi:logging, no implicit
-# newline.
 __j_write          = { emit = "intrinsic:write_stdout",     min_args = 1, max_args = 1 }
 
 # java.net.URL/URI constructor → WHATWG parse (web:url); the __j_url_*
@@ -784,34 +781,6 @@ path = "jvm.java"
 [[esm_default]]
 kind = "tree-ambient"
 path = "jvm.java.lang"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.util"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.util.concurrent"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.time"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.time.temporal"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.time.format"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.math"
-
-[[esm_default]]
-kind = "tree-ambient"
-path = "jvm.java.io"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES

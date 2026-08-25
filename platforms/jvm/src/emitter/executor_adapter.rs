@@ -193,8 +193,17 @@ pub fn emit_future_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunks[current].emit_else(line);
     prop_get(chunks, current, fut, FUT_HANDLE, line);
     threading::emit_thread_join(&mut chunks[current], line);
-    chunks[current].emit_op(Op::DROP, line);
-    // Join reports only status; the value sits in the record's `__result`.
+    // Join's status: 0 ok / 1 faulted. A task that threw surfaces on
+    // `get()` as the JDK's ExecutionException.
+    chunks[current].emit_if(line);
+    crate::emitter::exceptions::emit_jvm_exception_throw(
+        chunks,
+        current,
+        "ExecutionException",
+        line,
+    );
+    chunks[current].emit_end(line);
+    // The value sits in the record's `__result`.
     prop_get(chunks, current, fut, FUT_RECORD, line);
     let record = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], record, line);

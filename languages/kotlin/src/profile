@@ -390,6 +390,7 @@ NullPointerException       = { emit = "common:kotlin.null_pointer_exception", mi
 IndexOutOfBoundsException  = { emit = "common:kotlin.index_out_of_bounds_exception", min_args = 0, max_args = 1 }
 NoSuchElementException     = { emit = "common:kotlin.no_such_element_exception", min_args = 0, max_args = 1 }
 UnsupportedOperationException = { emit = "common:kotlin.unsupported_operation_exception", min_args = 0, max_args = 1 }
+UninitializedPropertyAccessException = { emit = "common:kotlin.uninitialized_property_access_exception", min_args = 0, max_args = 1 }
 __kt_reduce   = { emit = "common:kotlin.reduce_throwing", min_args = 2, max_args = 2 }
 __kt_slice       = { emit = "common:kotlin.slice_any", min_args = 3, max_args = 3 }
 __kt_char_at     = { emit = "common:kotlin.char_at_throwing", min_args = 2, max_args = 2 }

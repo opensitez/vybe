@@ -348,9 +348,27 @@ expression = {
     assignment_expression ~ ("," ~ assignment_expression)*
 }
 
+// ⛔ THE LEFT SIDE IS PARSED ONCE. This used to be
+//
+//     unary_expression ~ assignment_op ~ assignment_expression
+//   | ternary_expression
+//
+// which, for every expression that is NOT an assignment, parsed the whole left
+// side as a `unary_expression`, failed to find an `assignment_op`, backtracked,
+// and parsed the SAME text again through `ternary_expression`. PEG has no
+// memoisation here, so the cost doubles at every nesting level: a chain inside
+// a call inside a statement is re-parsed 2^depth times.
+//
+// Measured before the fix: `s.trim()` 3.9s, seven chained calls 9.3s, and the
+// growth was in the CHAIN LENGTH, not in the number of distinct methods —
+// repeating one method cost the same as seven different ones, which is the
+// signature of re-parsing rather than of per-method resolution.
+//
+// `ternary_expression` already subsumes `unary_expression`, so pulling it in
+// front costs nothing in what is accepted: `x = y` parses `x` as a ternary with
+// no `?`, then takes the optional assignment tail.
 assignment_expression = {
-    unary_expression ~ assignment_op ~ assignment_expression
-    | ternary_expression
+    ternary_expression ~ (assignment_op ~ assignment_expression)?
 }
 
 assignment_op = {

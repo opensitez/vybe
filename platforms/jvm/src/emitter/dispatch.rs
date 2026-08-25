@@ -1566,7 +1566,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // One arm serves every SAM name at every arity; the tree rows say
         // which names/arities each interface declares.
         "jvm.java.functional_invoke" => {
-            vybe_compiler::primitives::callable::emit_direct_invoke(chunks, current, argc, line);
+            // argc counts the receiver; the receiver IS the callee, so the
+            // invocation's own argument count is one less.
+            vybe_compiler::primitives::callable::emit_direct_invoke(
+                chunks,
+                current,
+                argc.saturating_sub(1),
+                line,
+            );
         }
         "jvm.java.stringjoiner_new" => sj::emit_new(chunks, current, argc, line),
         "jvm.java.stringjoiner_add" => sj::emit_add(chunks, current, line),

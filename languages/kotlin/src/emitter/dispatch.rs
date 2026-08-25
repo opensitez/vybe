@@ -1147,6 +1147,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
             true
         }
+        "kotlin.uninitialized_property_access_exception" => {
+            crate::emitter::nullability::emit_exception(
+                chunks,
+                current,
+                argc,
+                "UninitializedPropertyAccessException",
+                line,
+            );
+            true
+        }
         "kotlin.class_cast_exception" => {
             crate::emitter::nullability::emit_exception(
                 chunks,

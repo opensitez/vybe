@@ -10,7 +10,12 @@ use vybe_runtime::Value;
 use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
 
 fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
-    let mut segments: Vec<String> = path.split('.').map(|s| s.to_ascii_lowercase()).collect();
+    // ⛔ The path keeps the spelling written above it. It used to be lowercased
+    // here, which silently overrode every declaration in this file: a row could
+    // say `math.roundToInt` and the tree would still hold `roundtoint`. That was
+    // invisible while the tree folded on a miss; now that a case-sensitive
+    // language asks EXACTLY, a folded key is simply unreachable.
+    let mut segments: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
     let leaf = segments.pop().expect("non-empty path");
     let mut cursor = root;
     for seg in segments {
@@ -40,7 +45,8 @@ fn common_method(emit: &str, min_args: u8, max_args: u8) -> NamespaceNode {
 fn kotlin_collection_type(methods: &[(&str, &str)], returns: &[(&str, &str)]) -> NamespaceNode {
     let mut method_tree = Subtree::new();
     for (name, emit) in methods {
-        method_tree.insert(name.to_ascii_lowercase(), common_emit(emit));
+        // Declared spelling — see `insert_path`.
+        method_tree.insert((*name).to_string(), common_emit(emit));
     }
     NamespaceNode::Type {
         ctor: None,
@@ -49,23 +55,24 @@ fn kotlin_collection_type(methods: &[(&str, &str)], returns: &[(&str, &str)]) ->
         methods: method_tree,
         member_returns: returns
             .iter()
-            .map(|(name, ty)| (name.to_ascii_lowercase(), (*ty).to_string()))
+            .map(|(name, ty)| ((*name).to_string(), (*ty).to_string()))
             .collect(),
     }
 }
 
 fn kotlin_random_type() -> NamespaceNode {
     let mut statics = Subtree::new();
-    statics.insert("default".to_string(), common_emit("kotlin.random_default"));
+    // `Random.Default` — Kotlin spells the companion with a capital D.
+    statics.insert("Default".to_string(), common_emit("kotlin.random_default"));
 
     let mut methods = Subtree::new();
     for (name, emit, min_args, max_args) in [
-        ("nextint", "jvm.java.random_next_int", 0, 2),
-        ("nextlong", "jvm.java.random_next_long", 0, 2),
-        ("nextdouble", "jvm.java.random_next_double", 0, 2),
-        ("nextfloat", "jvm.java.random_next_float", 0, 0),
-        ("nextboolean", "jvm.java.random_next_boolean", 0, 0),
-        ("nextbytes", "jvm.java.random_next_bytes", 1, 1),
+        ("nextInt", "jvm.java.random_next_int", 0, 2),
+        ("nextLong", "jvm.java.random_next_long", 0, 2),
+        ("nextDouble", "jvm.java.random_next_double", 0, 2),
+        ("nextFloat", "jvm.java.random_next_float", 0, 0),
+        ("nextBoolean", "jvm.java.random_next_boolean", 0, 0),
+        ("nextBytes", "jvm.java.random_next_bytes", 1, 1),
     ] {
         methods.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
@@ -76,12 +83,12 @@ fn kotlin_random_type() -> NamespaceNode {
         statics,
         methods,
         member_returns: [
-            ("nextint".to_string(), "Int".to_string()),
-            ("nextlong".to_string(), "Long".to_string()),
-            ("nextdouble".to_string(), "Double".to_string()),
-            ("nextfloat".to_string(), "Float".to_string()),
-            ("nextboolean".to_string(), "Boolean".to_string()),
-            ("nextbytes".to_string(), "ByteArray".to_string()),
+            ("nextInt".to_string(), "Int".to_string()),
+            ("nextLong".to_string(), "Long".to_string()),
+            ("nextDouble".to_string(), "Double".to_string()),
+            ("nextFloat".to_string(), "Float".to_string()),
+            ("nextBoolean".to_string(), "Boolean".to_string()),
+            ("nextBytes".to_string(), "ByteArray".to_string()),
         ]
         .into_iter()
         .collect(),
@@ -104,7 +111,8 @@ fn kotlin_regex_type() -> NamespaceNode {
         ("toPattern", "kotlin.regex_to_pattern", 0, 0),
         ("pattern", "kotlin.regex_pattern", 0, 0),
     ] {
-        methods.insert(name.to_ascii_lowercase(), common_method(emit, min_args, max_args));
+        // Declared spelling — see `insert_path`.
+        methods.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
 
     // `Regex.escape` and `Regex.fromLiteral` are companion-object functions, so
@@ -115,11 +123,11 @@ fn kotlin_regex_type() -> NamespaceNode {
         common_method("kotlin.regex_escape", 1, 1),
     );
     statics.insert(
-        "escapereplacement".to_string(),
+        "escapeReplacement".to_string(),
         common_method("kotlin.regex_escape", 1, 1),
     );
     statics.insert(
-        "fromliteral".to_string(),
+        "fromLiteral".to_string(),
         common_method("kotlin.regex_from_literal", 1, 1),
     );
 
@@ -131,21 +139,21 @@ fn kotlin_regex_type() -> NamespaceNode {
         member_returns: [
             ("matches".to_string(), "Boolean".to_string()),
             (
-                "matchentire".to_string(),
+                "matchEntire".to_string(),
                 "java.util.regex.Matcher".to_string(),
             ),
-            ("containsmatchin".to_string(), "Boolean".to_string()),
+            ("containsMatchIn".to_string(), "Boolean".to_string()),
             ("find".to_string(), "java.util.regex.Matcher".to_string()),
-            ("matchesat".to_string(), "Boolean".to_string()),
+            ("matchesAt".to_string(), "Boolean".to_string()),
             (
-                "findall".to_string(),
+                "findAll".to_string(),
                 "List<java.util.regex.Matcher>".to_string(),
             ),
             ("split".to_string(), "List".to_string()),
-            ("splittosequence".to_string(), "Sequence".to_string()),
+            ("splitToSequence".to_string(), "Sequence".to_string()),
             ("replace".to_string(), "String".to_string()),
-            ("replacefirst".to_string(), "String".to_string()),
-            ("topattern".to_string(), "java.util.regex.Pattern".to_string()),
+            ("replaceFirst".to_string(), "String".to_string()),
+            ("toPattern".to_string(), "java.util.regex.Pattern".to_string()),
             ("pattern".to_string(), "String".to_string()),
         ]
         .into_iter()
@@ -160,10 +168,10 @@ pub fn register_namespace_tree() {
 
         for (name, module, func) in [
             ("math.abs", "ecma:math", "abs"),
-            ("math.absolutevalue", "ecma:math", "abs"),
+            ("math.absoluteValue", "ecma:math", "abs"),
             ("math.sqrt", "ecma:math", "sqrt"),
             ("math.pow", "ecma:math", "pow"),
-            ("math.roundtoint", "ecma:math", "round"),
+            ("math.roundToInt", "ecma:math", "round"),
             ("math.ceil", "ecma:math", "ceil"),
             ("math.floor", "ecma:math", "floor"),
             ("math.sin", "ecma:math", "sin"),
@@ -183,7 +191,7 @@ pub fn register_namespace_tree() {
             ("math.hypot", "ecma:math", "hypot"),
             ("math.max", "ecma:math", "maxOf"),
             ("math.min", "ecma:math", "minOf"),
-            ("math.isfinite", "ecma:number", "isFinite"),
+            ("math.isFinite", "ecma:number", "isFinite"),
         ] {
             insert_path(&mut root, name, namespaces::host_fn(module, func));
         }
@@ -192,46 +200,46 @@ pub fn register_namespace_tree() {
             ("math.round", "kotlin.round"),
             ("math.sign", "kotlin.sign"),
             ("math.ulp", "jvm.java.math_ulp"),
-            ("math.nextafter", "jvm.java.math_next_after"),
-            ("math.nextup", "jvm.java.math_next_up"),
-            ("math.nextdown", "jvm.java.math_next_down"),
+            ("math.nextTowards", "jvm.java.math_next_after"),
+            ("math.nextUp", "jvm.java.math_next_up"),
+            ("math.nextDown", "jvm.java.math_next_down"),
         ] {
             insert_path(&mut root, name, common_emit(emit));
         }
 
         insert_path(
             &mut root,
-            "math.pi",
+            "math.PI",
             NamespaceNode::Const(Value::F64(std::f64::consts::PI)),
         );
         insert_path(
             &mut root,
-            "math.e",
+            "math.E",
             NamespaceNode::Const(Value::F64(std::f64::consts::E)),
         );
 
         for (name, emit) in [
-            ("collections.setof", "kotlin.set_literal"),
-            ("collections.mutablesetof", "kotlin.set_literal"),
-            ("collections.emptyset", "kotlin.set_literal"),
-            ("collections.buildset", "kotlin.set_literal"),
-            ("collections.linkedsetof", "kotlin.set_literal"),
-            ("collections.hashsetof", "kotlin.hash_set_literal"),
+            ("collections.setOf", "kotlin.set_literal"),
+            ("collections.mutableSetOf", "kotlin.set_literal"),
+            ("collections.emptySet", "kotlin.set_literal"),
+            ("collections.buildSet", "kotlin.set_literal"),
+            ("collections.linkedSetOf", "kotlin.set_literal"),
+            ("collections.hashSetOf", "kotlin.hash_set_literal"),
             ("collections.union", "kotlin.set_union"),
             ("collections.intersect", "kotlin.set_intersect"),
             ("collections.subtract", "kotlin.set_subtract"),
-            ("collections.containsall", "jvm.java.list_contains_all"),
+            ("collections.containsAll", "jvm.java.list_contains_all"),
         ] {
             insert_path(&mut root, name, common_emit(emit));
         }
 
         for (name, target) in [
-            ("collections.arraylist", "jvm.java.util.arraylist"),
-            ("collections.hashmap", "jvm.java.util.hashmap"),
-            ("collections.hashset", "jvm.java.util.hashset"),
-            ("collections.linkedhashmap", "jvm.java.util.linkedhashmap"),
-            ("collections.linkedhashset", "jvm.java.util.linkedhashset"),
-            ("text.stringbuilder", "jvm.java.lang.stringbuilder"),
+            ("collections.ArrayList", "jvm.java.util.ArrayList"),
+            ("collections.HashMap", "jvm.java.util.HashMap"),
+            ("collections.HashSet", "jvm.java.util.HashSet"),
+            ("collections.LinkedHashMap", "jvm.java.util.LinkedHashMap"),
+            ("collections.LinkedHashSet", "jvm.java.util.LinkedHashSet"),
+            ("text.StringBuilder", "jvm.java.lang.StringBuilder"),
         ] {
             insert_path(&mut root, name, NamespaceNode::Alias(target.to_string()));
         }
@@ -240,27 +248,27 @@ pub fn register_namespace_tree() {
             ("union", "kotlin.set_union"),
             ("intersect", "kotlin.set_intersect"),
             ("subtract", "kotlin.set_subtract"),
-            ("containsall", "jvm.java.list_contains_all"),
-            ("toset", "kotlin.to_set"),
-            ("tomutableset", "kotlin.to_set"),
-            ("tohashset", "kotlin.to_hash_set"),
+            ("containsAll", "jvm.java.list_contains_all"),
+            ("toSet", "kotlin.to_set"),
+            ("toMutableSet", "kotlin.to_set"),
+            ("toHashSet", "kotlin.to_hash_set"),
         ];
         let set_returns = [
             ("union", "Set"),
             ("intersect", "Set"),
             ("subtract", "Set"),
-            ("toset", "Set"),
-            ("tomutableset", "Set"),
-            ("tohashset", "Set"),
+            ("toSet", "Set"),
+            ("toMutableSet", "Set"),
+            ("toHashSet", "Set"),
         ];
         insert_path(
             &mut root,
-            "collections.set",
+            "collections.Set",
             kotlin_collection_type(&set_methods, &set_returns),
         );
         insert_path(
             &mut root,
-            "collections.mutableset",
+            "collections.MutableSet",
             kotlin_collection_type(
                 &[
                     ("add", "jvm.java.add"),
@@ -269,44 +277,44 @@ pub fn register_namespace_tree() {
                     ("union", "kotlin.set_union"),
                     ("intersect", "kotlin.set_intersect"),
                     ("subtract", "kotlin.set_subtract"),
-                    ("containsall", "jvm.java.list_contains_all"),
-                    ("toset", "kotlin.to_set"),
-                    ("tomutableset", "kotlin.to_set"),
-                    ("tohashset", "kotlin.to_hash_set"),
+                    ("containsAll", "jvm.java.list_contains_all"),
+                    ("toSet", "kotlin.to_set"),
+                    ("toMutableSet", "kotlin.to_set"),
+                    ("toHashSet", "kotlin.to_hash_set"),
                 ],
                 &set_returns,
             ),
         );
 
-        insert_path(&mut root, "random.random", kotlin_random_type());
-        insert_path(&mut root, "text.regex", kotlin_regex_type());
+        insert_path(&mut root, "random.Random", kotlin_random_type());
+        insert_path(&mut root, "text.Regex", kotlin_regex_type());
         for (name, value) in [
-            ("text.regexoption.ignore_case", 2.0),
-            ("text.regexoption.comments", 4.0),
-            ("text.regexoption.multiline", 8.0),
-            ("text.regexoption.literal", 16.0),
-            ("text.regexoption.dot_matches_all", 32.0),
-            ("text.regexoption.unix_lines", 1.0),
-            ("text.regexoption.canon_eq", 128.0),
+            ("text.RegexOption.IGNORE_CASE", 2.0),
+            ("text.RegexOption.COMMENTS", 4.0),
+            ("text.RegexOption.MULTILINE", 8.0),
+            ("text.RegexOption.LITERAL", 16.0),
+            ("text.RegexOption.DOT_MATCHES_ALL", 32.0),
+            ("text.RegexOption.UNIX_LINES", 1.0),
+            ("text.RegexOption.CANON_EQ", 128.0),
         ] {
             insert_path(&mut root, name, NamespaceNode::Const(Value::F64(value)));
         }
         for (name, emit, min_args, max_args) in [
-            ("random.nextint", "jvm.java.random_next_int", 1, 3),
-            ("random.nextlong", "jvm.java.random_next_long", 1, 3),
-            ("random.nextdouble", "jvm.java.random_next_double", 1, 3),
-            ("random.nextfloat", "jvm.java.random_next_float", 1, 1),
-            ("random.nextboolean", "jvm.java.random_next_boolean", 1, 1),
-            ("random.nextbytes", "jvm.java.random_next_bytes", 2, 2),
+            ("random.nextInt", "jvm.java.random_next_int", 1, 3),
+            ("random.nextLong", "jvm.java.random_next_long", 1, 3),
+            ("random.nextDouble", "jvm.java.random_next_double", 1, 3),
+            ("random.nextFloat", "jvm.java.random_next_float", 1, 1),
+            ("random.nextBoolean", "jvm.java.random_next_boolean", 1, 1),
+            ("random.nextBytes", "jvm.java.random_next_bytes", 2, 2),
         ] {
             insert_path(&mut root, name, common_method(emit, min_args, max_args));
         }
 
         for (name, emit) in [
             ("concurrent.thread", "kotlin.thread_make"),
-            ("system.measuretimemillis", "kotlin.measure_time_millis"),
-            ("system.measurenanotime", "kotlin.measure_nano_time"),
-            ("system.identityhashcode", "kotlin.identity_hash_code"),
+            ("system.measureTimeMillis", "kotlin.measure_time_millis"),
+            ("system.measureNanoTime", "kotlin.measure_nano_time"),
+            ("system.identityHashCode", "kotlin.identity_hash_code"),
         ] {
             insert_path(&mut root, name, common_emit(emit));
         }
