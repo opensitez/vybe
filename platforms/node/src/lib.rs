@@ -31,6 +31,7 @@ pub mod crypto;
 pub mod dgram;
 pub mod dns;
 pub mod events;
+pub mod fsops;
 pub mod fs;
 pub mod http;
 pub mod https;
