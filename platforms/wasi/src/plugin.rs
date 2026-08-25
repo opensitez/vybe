@@ -62,11 +62,6 @@ impl vybe_runtime::Plugin for Plugin {
             //
             // The canonical interface below is the whole of this package.
             crate::filesystem::register(vm); // canonical wasi:filesystem/types
-            // `crate::io::register` is NOT called: `wasi:io` does not exist in
-            // 0.3.1. This was the FOURTH call site, and the one that kept the
-            // package alive after the other three were cut — the coverage gate
-            // is what named it, which is the argument for the gate asserting
-            // ABSENCE rather than carrying an exemption.
         }
         if environment {
             crate::env::register(vm);
@@ -76,6 +71,7 @@ impl vybe_runtime::Plugin for Plugin {
         }
         if sockets {
             crate::sockets::register(vm);
+            crate::tls::register(vm);
         }
         if database {
             crate::sql::register(vm);

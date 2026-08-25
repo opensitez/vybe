@@ -195,23 +195,6 @@ fn request_accessors_reject_a_foreign_resource() {
     assert!(is_error(&got), "expected an error, got {got:?}");
 }
 
-#[test]
-fn response_outparam_round_trips_status_headers_and_body() {
-    let param_id = wasi_http::push_response_outparam();
-    assert!(
-        wasi_http::take_response_outparam(param_id).is_none(),
-        "unset outparam must yield None"
-    );
-}
-
-#[test]
-fn response_outparam_reports_never_set() {
-    // A handler that returns without calling `set` leaves nothing behind — the
-    // host has to be able to tell that apart from a set-with-error.
-    let param_id = wasi_http::push_response_outparam();
-    assert!(wasi_http::take_response_outparam(param_id).is_none());
-}
-
 // TWO TESTS USED TO BE HERE: `send_informational_rejects_non_1xx` and
 // `outgoing_body_finish_succeeds_once_then_errors`.
 //

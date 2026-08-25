@@ -70,16 +70,6 @@ pub fn register(vm: &mut VM) {
     // `get-stdout`, `get-stderr` and `get-stdin` USED TO BE REGISTERED HERE.
     //
     // Each answered a stream HANDLE tagged with an fd, for the 0.2 pair
-    // `get-stdout()` + `wasi:io/streams.[method]output-stream.
-    // blocking-write-and-flush`. `wasi:cli@0.3.1` declares none of them:
-    // `stdout` and `stderr` declare only `write-via-stream(data: stream<u8>)`,
-    // `stdin` only `read-via-stream()`. There is no handle to hand back
-    // because a stream stopped being a RESOURCE — it is a Component Model
-    // type now, which is the same change that deleted `wasi:io` outright.
-    //
-    // The last emitter was `platforms/jvm/src/emitter/print_adapter.rs`, which
-    // is how Java and Kotlin printed; it now uses `primitives::io`, which had
-    // the 0.3.1 transport all along.
 
     // wasi:cli/stdin — 0.3 `read-via-stream: func() -> tuple<stream<u8>,
     // future<result<_, error-code>>>` (`proposals/cli/wit/stdio.wit`).
@@ -96,16 +86,6 @@ pub fn register(vm: &mut VM) {
     //   - A TERMINAL has nothing until somebody types, so this blocks for one
     //     line and closes. It used to close EMPTY here on the grounds that
     //     interactive reads were the 0.2 `get-stdin` + `blocking-read` path —
-    //     but 0.3 deleted `wasi:io` and that path with it, so closing empty
-    //     now means `input()` answers "" forever at a prompt.
-    //
-    // The stream is closed either way rather than left open for more, because
-    // a guest reading it synchronously cannot wait: `canon stream.read` on an
-    // open-but-empty end answers BLOCKED and leaves the end COPYING, where the
-    // NEXT read traps. Closing makes the drain terminate; the caller asks for
-    // the following line by asking for the stream again. Line splitting itself
-    // is the guest's (`primitives::io::emit_input`), not this function's — a
-    // stream carries bytes.
     vm.register_host_fn(
         "wasi:cli/stdin",
         "read-via-stream",

@@ -183,6 +183,7 @@ instr_name = @{
   | "br_on_cast_fail" | "br_on_cast" | "br_on_non_null" | "br_on_null"
   | "br_table" | "br_if" | "br"
   | "return_call_indirect" | "return_call_ref" | "return_call"
+  | "call_indirect_with_tag" | "call_return_with_tag" | "call_with_tag"
   | "call_indirect" | "call_ref" | "call"
   | "return" | "unreachable" | "nop"
     // ── Exception handling (canonical, WASM 3.0) ──────────────────────────
@@ -345,14 +346,20 @@ module_field = {
   | data_field
   | type_field
   | tag_field
+  | call_tag_field
+  | func_switch_field
   | start_field
 }
 
 // ── Function ──────────────────────────────────────────────────────────────────
 
 func_field = {
-    "(" ~ "func" ~ id? ~ export_inline* ~ import_inline? ~ typeuse ~ local* ~ instr* ~ ")"
+    "(" ~ "func" ~ id? ~ export_inline* ~ import_inline? ~ typeuse ~ func_call_tags* ~ local* ~ instr* ~ ")"
 }
+
+// `(func … (call_tag $t*))` — declares which call tags this func's `funcref`
+// handles. Declaring ANY replaces the default (its own canonical tag).
+func_call_tags = { "(" ~ "call_tag" ~ index+ ~ ")" }
 
 // `any_val_type*`, not `+`: `(local)` is the spec's explicit "declare no
 // locals" group (func.wast:81), exactly like the already-fixed empty `(param)`
@@ -374,6 +381,9 @@ import_desc = {
   | "(" ~ "memory" ~ id? ~ mem_type ~ ")"
   | "(" ~ "global" ~ id? ~ global_type ~ ")"
   | "(" ~ "tag"    ~ id? ~ tag_type ~ ")"
+  // "Similarly, one can import and export call tags." A call tag is a module
+  // entity, so it appears in the import descriptor alongside the others.
+  | "(" ~ "call_tag" ~ id? ~ typeuse ~ ")"
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -432,6 +442,37 @@ global_type = {
 // ── Tag (exceptions proposal) ─────────────────────────────────────────────────
 
 tag_field = { "(" ~ "tag" ~ id? ~ export_inline* ~ import_inline? ~ tag_type ~ ")" }
+
+// ── Call tags (proposals/call-tags) ───────────────────────────────────────────
+// A CALL tag is a distinct entity from the EH `tag` above: that one names an
+// exception type, this one names a CALLING CONVENTION over a signature.
+//
+//   (call_tag $t (param ...) (result ...))            ;; canonical for the type
+//   (call_tag $t (param ...) (result ...) (fallback $f))
+//
+// `(fallback $f)` is the Overview's optional handler on `call_tag.new`; with no
+// fallback the tag is canonical and an unhandled call TRAPS. Importable and
+// exportable like any other entity, which is what lets a module keep a tag
+// private — the proposal's stated security property.
+call_tag_field = {
+    "(" ~ "call_tag" ~ id? ~ export_inline* ~ import_inline? ~ call_tag_canon? ~ typeuse ~ call_tag_fallback? ~ ")"
+}
+// `(canon)` selects `call_tag.canon $functype` — the tag INTERNED per
+// signature, which is what `call_indirect` is defined in terms of. Without it a
+// declaration is `call_tag.new`: a FRESH identity over that signature. The
+// Overview makes the fall-back handler optional on `new`, NOT the freshness, so
+// two differently-named tags over one signature must stay distinct.
+call_tag_canon = { "(" ~ "canon" ~ ")" }
+call_tag_fallback = { "(" ~ "fallback" ~ index ~ ")" }
+
+// `func_switch ($call_tag $func)* $func_switch?` — "an alternative to `func`".
+// It has no type and cannot be called directly; `ref.func` on it yields a
+// funcref that switches on the tag it is called with.
+func_switch_field = {
+    "(" ~ "func_switch" ~ id? ~ export_inline* ~ func_switch_arm* ~ func_switch_forward? ~ ")"
+}
+func_switch_arm = { "(" ~ "case" ~ index ~ index ~ ")" }
+func_switch_forward = { "(" ~ "forward" ~ index ~ ")" }
 // A tagtype IS a typeuse: `(type $t)`, an inline `(param …)*`/`(result …)*`, or
 // both. `result*` is not optional decoration — a tag with results is what
 // `tag.wast` asserts INVALID ("non-empty tag result type"), and the file cannot
@@ -636,6 +677,11 @@ module_quote_cmd  = { "(" ~ "module" ~ id? ~ "quote"  ~ string+ ~ ")" }
 script_cmd = {
     module_binary_cmd
   | module_quote_cmd
+  // A COMPONENT is a top-level definition in its own right, not a module
+  // field. It must precede `module`: `(component (core module …))` nests a
+  // module inside itself, and the plain module rule cannot consume the
+  // `component` keyword.
+  | component
   | module
   | assert_return
   | assert_instantiation_trap
@@ -658,3 +704,414 @@ script_cmd = {
 inline_module = { module_field+ }
 
 program = { SOI ~ script_cmd* ~ EOI }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Component Model text format
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Everything above this line is CORE WebAssembly — `(module …)`. The Component
+// Model defines a SECOND, outer text format that wraps core modules and carries
+// the pieces core WASM has no syntax for: the type space, instances, aliases,
+// and above all the CANON SECTION, which is where `canon lift` / `canon lower`
+// and the 46 canonical built-ins actually live.
+//
+// Transcribed from `proposals/component-model/design/mvp/Explainer.md`, EBNF
+// blocks 0-14. Gate legend (`Explainer.md:49`): ungated = WASI 0.2, 🔀 = 0.3,
+// 🧵/🧵② = threads, 📝 error-context, 🪺 nested namespaces, 🔗 canonical
+// interface names, 🐘 memory64, 🗺️ map, 🏷️ implements, 🪙 value imports.
+//
+// Rules are prefixed `comp_`/`core_` where a bare spelling would collide with
+// the core grammar above (`type_field`, `start_field`, `module`, …). The two
+// index spaces are kept apart in the RULE NAMES for the same reason `CalleeRef`
+// keeps them apart in the runtime: `core:funcidx` and `funcidx` are different
+// spaces, and one integer serving both is how a mis-wired definition ends up
+// looking correct.
+//
+// Validation is deliberately NOT done here. This front end parses; it has no
+// typed validator (see the `assert_invalid` note above), so where the spec's
+// well-formedness is a TYPING rule rather than a syntax rule this grammar is
+// permissive and the walker refuses. `bind-id(X)` is the visible case: it
+// admits an `<id>?` after the sort keyword in every externtype position.
+
+// ── §2 component / definition ────────────────────────────────────────────────
+
+component = { "(" ~ "component" ~ id? ~ component_definition* ~ ")" }
+
+component_definition = {
+    core_module_def
+  | core_instance_def
+  | core_type_def
+  | component
+  | comp_instance
+  | comp_alias
+  | canon
+  | comp_start
+  | comp_import
+  | comp_export
+  | comp_value
+  | comp_type
+}
+
+// core-prefix(<X>): where <X> parses `(Y …)`, core-prefix parses `(core Y …)`.
+// A `(core module …)` body is a plain core module — same fields, same walker.
+core_module_def   = { "(" ~ "core" ~ "module" ~ module_definition_kw? ~ id? ~ (module_field | rec_group)* ~ ")" }
+core_instance_def = { "(" ~ "core" ~ "instance" ~ id? ~ core_instanceexpr ~ ")" }
+core_type_def     = { "(" ~ "core" ~ "type" ~ id? ~ (core_moduletype | sub_type | composite_type) ~ ")" }
+
+// ── §3 core:instance ─────────────────────────────────────────────────────────
+
+core_instanceexpr   = { core_instantiate | core_inlineexport* }
+core_instantiate    = { "(" ~ "instantiate" ~ index ~ core_instantiatearg* ~ ")" }
+core_instantiatearg = { "(" ~ "with" ~ string ~ "(" ~ "instance" ~ (core_inlineexport+ | index) ~ ")" ~ ")" }
+core_inlineexport   = { "(" ~ "export" ~ string ~ core_externidx ~ ")" }
+core_externidx      = { "(" ~ core_sort ~ index ~ string* ~ ")" }
+core_sort           = @{ ("func" | "table" | "memory" | "global" | "tag" | "type" | "module" | "instance") ~ !name_char }
+
+// ── §4 instance ──────────────────────────────────────────────────────────────
+
+comp_instance    = { "(" ~ "instance" ~ id? ~ instanceexpr ~ ")" }
+instanceexpr     = { comp_instantiate | inlineexport* }
+comp_instantiate = { "(" ~ "instantiate" ~ index ~ instantiatearg* ~ ")" }
+instantiatearg   = { "(" ~ "with" ~ string ~ ("(" ~ "instance" ~ inlineexport+ ~ ")" | externidx) ~ ")" }
+inlineexport     = { "(" ~ "export" ~ externnamelit ~ versionsuffix? ~ externidx ~ ")" }
+
+// §1 + §6. The trailing `<name>+` is the sortidx alias sugar of block 6:
+// `(func $i "a" "b")` names an export path THROUGH instance $i.
+externidx = {
+    "(" ~ "core" ~ core_sort ~ index ~ string* ~ ")"
+  | "(" ~ comp_sort_kw ~ index ~ string* ~ ")"
+  | index
+}
+
+comp_sort_kw = @{ ("component" | "instance" | "func" | "type" | "value") ~ !name_char }
+sort_c       = { "core" ~ core_sort | comp_sort_kw }
+
+// ── §5 alias ─────────────────────────────────────────────────────────────────
+
+comp_alias = {
+    "(" ~ "alias" ~ "core" ~ "export" ~ index ~ string        ~ "(" ~ "core" ~ core_sort ~ id? ~ ")" ~ ")"
+  | "(" ~ "alias" ~ "export" ~ index ~ externnamelit          ~ "(" ~ sort_c ~ id? ~ ")" ~ ")"
+  | "(" ~ "alias" ~ "outer"  ~ index ~ index                  ~ "(" ~ outeraliassort ~ id? ~ ")" ~ ")"
+}
+
+outeraliassort = { "core" ~ ("module" | "type") | "component" | "type" }
+
+// ── §7 core:moduletype ───────────────────────────────────────────────────────
+
+core_moduletype  = { "(" ~ "module" ~ core_moduledecl* ~ ")" }
+core_moduledecl  = { core_importdecl | core_exportdecl | core_alias_outer | type_field }
+core_importdecl  = { "(" ~ "import" ~ string ~ string ~ import_desc ~ ")" }
+// strip-id: an exportdecl's externtype carries NO binder.
+core_exportdecl  = { "(" ~ "export" ~ string ~ import_desc ~ ")" }
+core_alias_outer = { "(" ~ "alias" ~ "outer" ~ index ~ index ~ "(" ~ "type" ~ id? ~ ")" ~ ")" }
+
+// ── §8 type / deftype / defvaltype / functype / componenttype / instancetype ─
+
+comp_type = { "(" ~ "type" ~ id? ~ deftype ~ ")" }
+
+deftype = { resourcetype | functype_c | componenttype | instancetype | defvaltype }
+
+defvaltype = {
+    prim_valtype
+  | "(" ~ "record"  ~ record_field+ ~ ")"
+  | "(" ~ "variant" ~ variant_case+ ~ ")"
+  // 🔧 fixed-length list: `(list <valtype> <u32>)`.
+  | "(" ~ "list"    ~ valtype ~ integer? ~ ")"
+  | "(" ~ "tuple"   ~ valtype+ ~ ")"
+  | "(" ~ "flags"   ~ labellit+ ~ ")"
+  | "(" ~ "enum"    ~ labellit+ ~ ")"
+  | "(" ~ "option"  ~ valtype ~ ")"
+  | "(" ~ "result"  ~ valtype? ~ result_err? ~ ")"
+  | "(" ~ "map"     ~ keytype ~ valtype ~ ")"     // 🗺️
+  | "(" ~ "own"     ~ index ~ ")"
+  | "(" ~ "borrow"  ~ index ~ ")"
+  | "(" ~ "stream"  ~ valtype? ~ ")"              // 🔀
+  | "(" ~ "future"  ~ valtype? ~ ")"              // 🔀
+}
+
+// The boundary guard is load-bearing: without it `s8` matches the head of a
+// user label and `string` matches the head of nothing useful at all.
+prim_valtype = @{
+    ("bool" | "s8" | "s16" | "s32" | "s64" | "u8" | "u16" | "u32" | "u64"
+   | "f32" | "f64" | "char" | "string" | "error-context") ~ !name_char
+}
+
+// 🗺️ keytype — the primitives a map key may take (no float, no error-context).
+keytype = @{
+    ("bool" | "s8" | "s16" | "s32" | "s64" | "u8" | "u16" | "u32" | "u64"
+   | "char" | "string") ~ !name_char
+}
+
+// valtype ::= <typeidx> | <defvaltype>. `defvaltype` first — a primitive name
+// is neither an integer nor a `$id`, so the two can never both match.
+valtype      = { defvaltype | index }
+record_field = { "(" ~ "field" ~ labellit ~ valtype ~ ")" }
+variant_case = { "(" ~ "case" ~ labellit ~ valtype? ~ ")" }
+result_err   = { "(" ~ "error" ~ valtype ~ ")" }
+
+// 🐘 the `(rep i64)` form.
+resourcetype  = { "(" ~ "resource" ~ "(" ~ "rep" ~ resource_rep ~ ")" ~ resource_dtor? ~ ")" }
+resource_rep  = @{ ("i32" | "i64") ~ !name_char }
+resource_dtor = { "(" ~ "dtor" ~ core_funcidx_ref ~ ")" }
+
+functype_c    = { "(" ~ "func" ~ id? ~ async_kw? ~ func_param_c* ~ func_result_c? ~ ")" }
+func_param_c  = { "(" ~ "param"  ~ labellit ~ valtype ~ ")" }
+func_result_c = { "(" ~ "result" ~ valtype ~ ")" }
+async_kw      = @{ "async" ~ !name_char }
+
+componenttype = { "(" ~ "component" ~ id? ~ componentdecl* ~ ")" }
+instancetype  = { "(" ~ "instance"  ~ id? ~ instancedecl*  ~ ")" }
+componentdecl = { importdecl | instancedecl }
+instancedecl  = { core_type_def | comp_type | comp_alias | exportdecl }
+importdecl    = { "(" ~ "import" ~ externnamelit ~ attribute* ~ externtype ~ ")" }
+exportdecl    = { "(" ~ "export" ~ externnamelit ~ attribute* ~ externtype ~ ")" }
+
+// The `id?`s below are `bind-id(X)`: "bind-id(X) parses '(' sort <id>? Y ')'
+// when X parses '(' sort Y ')'". Every spec use of externtype — importdecl,
+// exportdecl, comp_import, and `canon lift` — is a bind-id use.
+//
+// The binder is not decoration. `canon lift`'s `(func $f (type $ft))` is what
+// DEFINES `$f` in the component's FUNCTION index space, and `canon lower`'s
+// callee is a component funcidx. Without it the lift -> lower round trip
+// cannot be spelled at all, which is why `canon lift` was unreachable: not a
+// missing walk, a missing binder.
+//
+// functype_c / componenttype / instancetype already carry their own `id?`.
+externtype = {
+    "(" ~ "core" ~ "module" ~ id? ~ core_moduledecl* ~ ")"
+  | "(" ~ "value" ~ id? ~ valuebound ~ ")"                 // 🪙
+  | "(" ~ "type"  ~ id? ~ typebound  ~ ")"
+  | "(" ~ comp_sort_kw ~ id? ~ "(" ~ "type" ~ index ~ ")" ~ ")"
+  | functype_c
+  | componenttype
+  | instancetype
+}
+
+typebound  = { "(" ~ "eq" ~ index ~ ")" | "(" ~ "sub" ~ "resource" ~ ")" }
+valuebound = { "(" ~ "eq" ~ index ~ ")" | valtype }         // 🪙
+
+// ── §9/§10 canon ─────────────────────────────────────────────────────────────
+//
+// The canon section. Each row is a DEFINITION with immediates, not an opcode —
+// which is exactly what `CanonDef` in the runtime records. Rows are spelled out
+// by SHAPE rather than collapsed into one permissive `<name> <arg>* (core func)`
+// rule, because the per-row arity IS the fidelity: a generic rule would happily
+// accept `(canon thread.index 5 (core func))`.
+
+canon      = { "(" ~ "canon" ~ canon_body ~ ")" }
+canon_body = { canon_lift | canon_lower | canon_builtin }
+
+canon_lift  = { "lift"  ~ core_funcidx_ref ~ canonopt* ~ externtype }
+canon_lower = { "lower" ~ funcidx_ref ~ canonopt* ~ core_func_bind }
+
+core_func_bind   = { "(" ~ "core" ~ "func" ~ id? ~ ")" }
+
+// The trailing `string*` is block 6's sortidx sugar — `(core func $i "run")`
+// addresses an export named "run" THROUGH core instance `$i`. It is not an
+// optional flourish: it is how a `canon lift` names the core function it
+// wraps, because the callee lives inside an instance, not in the component's
+// own core function space.
+funcidx_ref      = { "(" ~ "func" ~ index ~ string* ~ ")" | index }
+core_funcidx_ref = { "(" ~ "core" ~ "func"   ~ index ~ string* ~ ")" | index }
+core_memidx_ref  = { "(" ~ "core" ~ "memory" ~ index ~ string* ~ ")" | index }
+core_tableidx_ref= { "(" ~ "core" ~ "table"  ~ index ~ string* ~ ")" | index }
+core_typeidx_ref = { "(" ~ "core" ~ "type"   ~ index ~ string* ~ ")" | index }
+
+canonopt = {
+    string_encoding_opt
+  | "(" ~ "memory"      ~ core_memidx_ref  ~ ")"
+  | "(" ~ "realloc"     ~ core_funcidx_ref ~ ")"
+  | "(" ~ "post-return" ~ core_funcidx_ref ~ ")"
+  | "(" ~ "callback"    ~ core_funcidx_ref ~ ")"   // 🔀
+  | async_kw                                        // 🔀
+}
+
+// latin1+utf16 FIRST — `utf16` is not a prefix of it, but `string-encoding=`
+// is shared, and ordering by descending length is the habit that keeps a later
+// edit from introducing the bug rather than merely avoiding it today.
+string_encoding_opt = @{ "string-encoding=" ~ ("latin1+utf16" | "utf16" | "utf8") ~ !name_char }
+
+cancellable_kw = @{ "cancellable" ~ !name_char }
+shared_kw      = @{ "shared" ~ !name_char }
+
+canon_builtin = {
+    canon_thread_new_indirect
+  | canon_spawn_indirect
+  | canon_spawn_ref
+  | canon_avail_par
+  | canon_ctx
+  | canon_task_return
+  | canon_ws_mem
+  | canon_ty_opts
+  | canon_ty_async
+  | canon_ty
+  | canon_async_only
+  | canon_cancellable
+  | canon_errctx_opts
+  | canon_nullary
+}
+
+// `<name> (core func $id?)`
+canon_nullary = { canon_nullary_op ~ core_func_bind }
+canon_nullary_op = @{
+    ("backpressure.inc" | "backpressure.dec" | "task.cancel"
+   | "waitable-set.new" | "waitable-set.drop" | "waitable.join"
+   | "subtask.drop" | "thread.index" | "thread.resume-later"
+   | "error-context.drop") ~ !name_char
+}
+
+// `<name> <typeidx> (core func $id?)`
+canon_ty = { canon_ty_op ~ index ~ core_func_bind }
+canon_ty_op = @{
+    ("resource.new" | "resource.drop" | "resource.rep"
+   | "stream.drop-readable" | "stream.drop-writable" | "stream.new"
+   | "future.drop-readable" | "future.drop-writable" | "future.new") ~ !name_char
+}
+
+// `<name> <typeidx> <canonopt>* (core func $id?)`
+canon_ty_opts = { canon_ty_opts_op ~ index ~ canonopt* ~ core_func_bind }
+canon_ty_opts_op = @{
+    ("stream.read" | "stream.write" | "future.read" | "future.write") ~ !name_char
+}
+
+// `<name> <typeidx> async? (core func $id?)`
+canon_ty_async = { canon_ty_async_op ~ index ~ async_kw? ~ core_func_bind }
+canon_ty_async_op = @{
+    ("stream.cancel-read" | "stream.cancel-write"
+   | "future.cancel-read" | "future.cancel-write") ~ !name_char
+}
+
+// `<name> <valtype> <u32> (core func $id?)`
+canon_ctx = { canon_ctx_op ~ valtype ~ integer ~ core_func_bind }
+canon_ctx_op = @{ ("context.get" | "context.set") ~ !name_char }
+
+// `task.return (result <valtype>)? <canonopt>* (core func $id?)`
+canon_task_return    = { canon_task_return_op ~ func_result_c? ~ canonopt* ~ core_func_bind }
+canon_task_return_op = @{ "task.return" ~ !name_char }
+
+// `<name> cancellable? (memory …) (core func $id?)`
+canon_ws_mem = { canon_ws_mem_op ~ cancellable_kw? ~ "(" ~ "memory" ~ core_memidx_ref ~ ")" ~ core_func_bind }
+canon_ws_mem_op = @{ ("waitable-set.wait" | "waitable-set.poll") ~ !name_char }
+
+// `subtask.cancel async? (core func $id?)`
+canon_async_only    = { canon_async_only_op ~ async_kw? ~ core_func_bind }
+canon_async_only_op = @{ "subtask.cancel" ~ !name_char }
+
+// `<name> cancellable? (core func $id?)` — the 🧵 handoff family. Ordered
+// LONGEST FIRST: `thread.suspend` is a proper prefix of
+// `thread.suspend-then-resume`, so a shortest-first list would match the head
+// of the compound row and then fail on the tail.
+canon_cancellable = { canon_cancellable_op ~ cancellable_kw? ~ core_func_bind }
+canon_cancellable_op = @{
+    ("thread.suspend-then-resume" | "thread.suspend-then-promote"
+   | "thread.yield-then-resume"   | "thread.yield-then-promote"
+   | "thread.suspend" | "thread.yield") ~ !name_char
+}
+
+// `<name> <canonopt>* (core func $id?)` — 📝
+canon_errctx_opts = { canon_errctx_op ~ canonopt* ~ core_func_bind }
+canon_errctx_op = @{ ("error-context.new" | "error-context.debug-message") ~ !name_char }
+
+// 🧵 `thread.new-indirect <core:typeidx> <core:tableidx> (core func $id?)`
+canon_thread_new_indirect    = { canon_thread_new_indirect_op ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind }
+canon_thread_new_indirect_op = @{ "thread.new-indirect" ~ !name_char }
+
+// 🧵② the spawn family — `shared?` comes BEFORE the type immediate.
+canon_spawn_ref      = { canon_spawn_ref_op ~ shared_kw? ~ core_typeidx_ref ~ core_func_bind }
+canon_spawn_ref_op   = @{ "thread.spawn-ref" ~ !name_char }
+canon_spawn_indirect = { canon_spawn_indirect_op ~ shared_kw? ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind }
+canon_spawn_indirect_op = @{ "thread.spawn-indirect" ~ !name_char }
+canon_avail_par      = { canon_avail_par_op ~ shared_kw? ~ core_func_bind }
+canon_avail_par_op   = @{ "thread.available-parallelism" ~ !name_char }
+
+// ── §11 value 🪙 ─────────────────────────────────────────────────────────────
+
+comp_value = { "(" ~ "value" ~ id? ~ valtype ~ comp_val ~ ")" }
+
+comp_val = {
+    comp_val_kw
+  | "(" ~ "some"    ~ comp_val ~ ")"
+  | "(" ~ "ok"      ~ comp_val ~ ")"
+  | "(" ~ "error"   ~ comp_val ~ ")"
+  | "(" ~ "record"  ~ comp_val+ ~ ")"
+  | "(" ~ "variant" ~ labellit ~ comp_val? ~ ")"
+  | "(" ~ "list"    ~ comp_val* ~ ")"
+  | "(" ~ "tuple"   ~ comp_val+ ~ ")"
+  | "(" ~ "flags"   ~ labellit* ~ ")"
+  | "(" ~ "enum"    ~ labellit ~ ")"
+  | "(" ~ "binary"  ~ string+ ~ ")"
+  | char_lit
+  | float
+  | integer
+  | string
+}
+
+// `nan` is a <f64canon> spelling, not an identifier — the guard keeps it from
+// eating the head of a `none`-like label.
+comp_val_kw = @{ ("false" | "true" | "none" | "nan" | "ok" | "error") ~ !name_char }
+char_lit    = @{ "'" ~ ("\\" ~ ANY | !"'" ~ ANY) ~ "'" }
+
+// ── §12 start 🪙 ─────────────────────────────────────────────────────────────
+
+comp_start   = { "(" ~ "start" ~ index ~ start_value* ~ start_result* ~ ")" }
+start_value  = { "(" ~ "value" ~ index ~ ")" }
+start_result = { "(" ~ "result" ~ "(" ~ "value" ~ id? ~ ")" ~ ")" }
+
+// ── §13 import / export / attribute ──────────────────────────────────────────
+
+comp_import = { "(" ~ "import" ~ externnamelit ~ attribute* ~ externtype ~ ")" }
+comp_export = { "(" ~ "export" ~ id? ~ externnamelit ~ attribute* ~ externidx ~ externtype? ~ ")" }
+
+attribute       = { versionsuffix | implements_attr | externid_attr }
+versionsuffix   = { "(" ~ "versionsuffix" ~ string ~ ")" }   // 🔗
+implements_attr = { "(" ~ "implements" ~ externnamelit ~ ")" }  // 🏷️
+externid_attr   = { "(" ~ "external-id" ~ string ~ ")" }        // 🏷️
+
+// ── §14 names ────────────────────────────────────────────────────────────────
+//
+// An externname is NOT an arbitrary string. `label` is kebab-case with a
+// same-case rule per fragment, and `interfacename` carries the namespace and
+// the OPTIONAL VERSION. That version is why this block matters here: the spec
+// spells it `'@' <valid semver>`, and this tree has been using `@N` as a
+// canonidx smuggled through an import name. Once the canon section is real,
+// `@` means a version and nothing else.
+
+externnamelit = ${ "\"" ~ externname ~ "\"" }
+externname    = { interfacename | plainname }
+
+plainname = {
+    "[constructor]" ~ label
+  | "[method]" ~ label ~ "." ~ label
+  | "[static]" ~ label ~ "." ~ label
+  | label
+}
+
+labellit = ${ "\"" ~ label ~ "\"" }
+label    = @{ first_fragment ~ ("-" ~ fragment)* }
+
+first_fragment = _{ first_acronym | first_word }
+first_word     = _{ ASCII_ALPHA_LOWER ~ (ASCII_DIGIT | ASCII_ALPHA_LOWER)* }
+first_acronym  = _{ ASCII_ALPHA_UPPER ~ (ASCII_DIGIT | ASCII_ALPHA_UPPER)* }
+fragment       = _{ acronym | word }
+word           = _{ (ASCII_DIGIT | ASCII_ALPHA_LOWER)+ }
+acronym        = _{ (ASCII_DIGIT | ASCII_ALPHA_UPPER)+ }
+
+// 🪺 the nested form is `<namespace>+ <words> <projection>+`; the unnested one
+// is the same shape with exactly one of each, so one rule with `+` covers both.
+interfacename    = @{ namespace+ ~ words ~ projection+ ~ interfaceversion? }
+namespace        = _{ words ~ ":" }
+words            = _{ first_word ~ ("-" ~ word)* }
+projection       = _{ "/" ~ label }
+interfaceversion = _{ "@" ~ (ASCII_DIGIT | ASCII_ALPHA | "." | "-" | "+")+ }
+
+// ⚠ `!name_char` must be applied INSIDE an atomic (`@`) rule. In a normal rule
+// pest inserts implicit whitespace between `"lit"` and the lookahead, so the
+// guard ends up testing the FIRST CHARACTER OF THE NEXT TOKEN instead of the
+// character after the keyword — `(canon subtask.cancel async …)` then fails
+// because `a` is a name char. Every keyword guard above is therefore its own
+// `@{ "…" ~ !name_char }` rule, never an inline literal.
+//
+// The identifier-continuation set shared by every `!name_char` boundary guard
+// above. `-` and `.` are IN it: `thread.suspend` must not match the head of
+// `thread.suspend-then-resume`, and `s8` must not match the head of `s8-foo`.
+name_char = _{ ASCII_ALPHANUMERIC | "-" | "." | "_" | "+" }

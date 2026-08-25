@@ -7,9 +7,6 @@ use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 /// Declare a `wasi:clocks/*` function.
 ///
 /// No resource: a clock is not a handle. 0.2 had one — the `pollable` that
-/// `subscribe-*` minted, declared by `wasi:io/poll` — but 0.3.1 deletes the
-/// `wasi:io` package and the `subscribe-*` functions with it, so there is now
-/// no handle anywhere in `wasi:clocks`.
 fn clock_fn(
     vm: &mut VM,
     module: &str,
@@ -84,18 +81,6 @@ pub fn register(vm: &mut VM) {
     // Both are gone from `wasi:clocks@0.3.1` — `monotonic-clock` declares
     // exactly `now`, `get-resolution`, `wait-until` and `wait-for`
     // (`proposals/WASI/proposals/clocks/wit/monotonic-clock.wit`). They existed
-    // to mint a `pollable`, and `pollable` lived in `wasi:io`, a package 0.3
-    // deleted outright — there is no `io` proposal in the umbrella at all.
-    //
-    // Removed rather than deprecated, deliberately. Every sleep-shaped surface
-    // in the tree (Thread.Sleep, usleep, SDL_Delay, the JVM semaphore backoff)
-    // spliced `subscribe-duration` + `pollable.block` until 2026-08-20, and the
-    // reason nobody noticed was that the pair still RESOLVED. A non-conformant
-    // call that works is more dangerous than one that fails: it also silently
-    // truncated every sleep over a second, because the host's
-    // `block_until_ready` spins `while !ready && elapsed < 1s`.
-    //
-    // The replacement is `wait-for(ns)` below — one call for the two.
 
     // `get-resolution: func() -> duration` — the 0.3 name for what 0.2 called
     // `resolution`. It is the only spelling bound; see the note above.
@@ -276,8 +261,6 @@ pub fn register(vm: &mut VM) {
     );
 
     // Thread.Sleep → thread_adapter.rs → wasi:clocks/monotonic-clock.subscribe-duration
-    //                                   + wasi:io/poll.[method]pollable.block
-    // No `vybe:clocks.sleep` host fn needed — blocking sleep is fully covered by WASI.
 }
 
 /// `{ seconds, nanoseconds }` for the current moment — 0.2 `datetime`, 0.3

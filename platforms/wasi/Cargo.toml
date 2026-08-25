@@ -24,6 +24,10 @@ blake2 = { workspace = true }
 ripemd = { workspace = true }
 getrandom = { workspace = true }
 socket2 = { workspace = true }
+# TLS provider. Without one `wasi:http` could not fetch `https://` and
+# `wasi:tls/client.connect` had to refuse — the surface was registered but the
+# capability behind it was absent.
+native-tls = { workspace = true }
 # `udp-socket.disconnect` is a `connect(2)` to an AF_UNSPEC address — the only
 # way POSIX dissolves a datagram association, and neither `std::net` nor
 # `socket2` can express it. Already in the lockfile.

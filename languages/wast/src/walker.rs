@@ -52,6 +52,18 @@ struct WastWalker {
     struct_types: Vec<(String, Option<String>, usize)>,
     struct_field_types: HashMap<String, Vec<String>>,
     type_func_params: HashMap<String, usize>,
+    /// Call Tags proposal: `(func … (call_tag $t+))` — func name → the tags
+    /// its funcref handles. Collected while walking func fields and emitted as
+    /// declarations once the module is complete, because the statement names
+    /// the func and the func is what is being walked.
+    func_call_tag_decls: Vec<(String, Vec<String>)>,
+    /// Call Tags proposal: tag name → (params, results). The folder needs the
+    /// tag's arity to know how many stack operands `call_with_tag` consumes,
+    /// exactly as `call_ref` needs its `$sig`'s param count.
+    call_tag_params: HashMap<String, (usize, usize)>,
+    /// Local alias → external `module:name` for IMPORTED call tags, so a
+    /// `call_with_tag $local` names the exporter's entity.
+    call_tag_alias: HashMap<String, String>,
     /// Declared func type name → (param val types, result val types). A
     /// function type's identity is structural (`Comptype_sub/func`), so this
     /// is what `ref.test`/`ref.cast` against a concrete `(ref $t)` compares —
@@ -105,6 +117,170 @@ struct WastWalker {
     /// `Profile::lookup_builtin` synthesises the definition for a `host:`
     /// callee, so nothing has to be declared anywhere.
     host_import_alias: HashMap<String, String>,
+
+    /// The component's TYPE space — `$id -> typeidx`, plus its length, so an
+    /// unnamed `(type …)` still advances the index every later row counts on.
+    /// Separate from `core_type_space` for the reason `CalleeRef` keeps `Core`
+    /// and `Component` apart: they are different index spaces, and one integer
+    /// serving both is how a mis-wired definition ends up looking correct.
+    comp_type_index: HashMap<String, u32>,
+    comp_type_space: u32,
+    /// Where THIS component's type index 0 sits in the shared `comp_types`
+    /// payload vector.
+    ///
+    /// ⛔ `comp_type_space` is a per-component COUNT (the spec gives every
+    /// component its own type index space starting at 0) while `comp_types` is
+    /// one flat vector for the whole program, because `VM::canon_types` is one
+    /// table. Those two cannot both be right without an offset: a nested
+    /// component that declared a type after the outer had declared one reset
+    /// the counter to 0 while the vector kept growing, so the inner's
+    /// `(type $t)` got index 0 and its declaration sat at index 1.
+    ///
+    /// In a debug build that tripped the `debug_assert_eq!` below. In a release
+    /// build it was SILENT: `canon lift (type $t)` read the OUTER component's
+    /// type and lifted with a signature the source never wrote.
+    comp_type_base: u32,
+    /// The component's FUNCTION space — what `canon lower` indexes. Not the
+    /// type space: `(type $t)` and `(func $t)` are different entities.
+    comp_func_index: HashMap<String, u32>,
+    /// That space itself. `canon lift` is its producer: the spec says a lift
+    /// DEFINES a component function, and `canon lower`'s callee indexes here.
+    /// Until it existed `lower` could not name a callee and could not learn
+    /// its type — `Binary.md:297` gives the lower row NO `ft` immediate,
+    /// because `canon_lower(callee, ft, opts, …)` takes `ft` FROM THE CALLEE.
+    comp_func_space: Vec<CompFunc>,
+    /// The component's INSTANCE index space, in declaration order, plus its
+    /// names. `(alias export <instanceidx> …)` resolves against this the way
+    /// `(alias core export …)` resolves against `core_instances`; the two are
+    /// deliberately separate spaces, because `(instance 0)` at component level
+    /// and `(core instance 0)` name different entities.
+    comp_instances: Vec<CompInstance>,
+    comp_instance_index: HashMap<String, u32>,
+    /// The component's own EXPORT table — `(export "name" (func $f))`.
+    ///
+    /// `Explainer.md:889`: a component type "contains *two* lists of named
+    /// definitions for the imports and exports of a component". Instantiating
+    /// a component yields an instance whose exports are exactly this list, so
+    /// this is the same shape as `CompInstance::funcs` on purpose — it IS the
+    /// export table of the instance `(instance (instantiate <componentidx>))`
+    /// produces.
+    ///
+    /// ⛔ That instantiation does not exist yet, so nothing reads this today.
+    /// It is recorded rather than dropped because the alternative is to walk
+    /// an `(export …)` for its index-space effect and silently lose the name,
+    /// and because the consumer is the very next item on the list — not an
+    /// indefinite park. Say so if it is still unread by the time anything else
+    /// lands.
+    comp_exports: HashMap<String, u32>,
+    /// The names each scope has taken, for the STRONGLY-UNIQUE rule. Two
+    /// tables because `Explainer.md:2837` scopes the rule to imports OR
+    /// exports, not both together.
+    export_names: ExternNames,
+    import_names: ExternNames,
+    /// The component's CORE index spaces. Each is its OWN map, never one map
+    /// consulted for several sorts: `(core type $t)` and `(core func $t)` may
+    /// both be bound, to different entities, and a shared map would silently
+    /// answer one for the other. They stay empty until `(core instance …)` and
+    /// `(alias …)` are walked, and an unbound `$id` in one of them refuses.
+    core_type_index: HashMap<String, u32>,
+    core_type_space: u32,
+    core_func_index: HashMap<String, u32>,
+    core_memory_index: HashMap<String, u32>,
+    core_table_index: HashMap<String, u32>,
+    /// The core function index space ITSELF. `core_func_index` names entries
+    /// in here; a positional `(core func 0)` indexes it directly. Both
+    /// spellings had a name map and no space to name, which is why every one
+    /// of them refused: the maps were read in six places and written in none.
+    core_func_space: Vec<CoreFunc>,
+    /// The core INSTANCE index space, in declaration order, plus its names.
+    /// `(alias core export <instanceidx> …)` is the only way a component
+    /// reaches inside an instantiated module, so without this space there is
+    /// nothing for an alias to resolve against.
+    core_instances: Vec<CoreInstance>,
+    core_instance_index: HashMap<String, u32>,
+    /// The component's CANON SECTION, in canonidx order.
+    canon_section: Vec<vybe_ast::canon::CanonDecl>,
+    /// The component's TYPE index space, in typeidx order. `walk_comp_type`
+    /// used to advance a bare counter; the entries themselves had nowhere to
+    /// go, which is why `VM::canon_functypes` was empty and `canon lift`
+    /// trapped on `$ft` even when the source declared the type.
+    comp_types: Vec<vybe_ast::canon::TypeDecl>,
+    /// A canon row's `(core func $id)` binder → `(spec name, canonidx)`.
+    ///
+    /// This is what makes a canon definition REACHABLE. Without it a core
+    /// module could only address a built-in by hand-writing the canonidx into
+    /// the import name (`"thread.spawn-ref@0"`), which is the addressing
+    /// deviation the canon section exists to remove.
+    canon_binder: HashMap<String, (String, u32)>,
+    /// `(import <module> <name>)` → the callee an INSTANTIATION supplies for
+    /// it, from a `(with <module> (instance (export <name> (func $b))))`
+    /// clause. Populated for the duration of one `(core instance …)` walk and
+    /// cleared after, because it is that instantiation's wiring and not the
+    /// module's — the same module instantiated twice may be given different
+    /// imports, which is the entire point of `instantiate`.
+    component_imports: HashMap<(String, String), CoreFunc>,
+}
+
+/// One entry in a component's CORE FUNCTION index space.
+///
+/// A component's core function is not always a module's function: a canonical
+/// definition defines one too (`canon lower`, and every canonical built-in).
+/// Both live in ONE space because `canon lift`'s `<core:funcidx>` and a `with`
+/// clause's `(core func <idx>)` index it positionally and cannot tell which
+/// kind they are naming — so the discriminant has to travel with the entry
+/// rather than with the reference.
+#[derive(Clone, Debug, PartialEq)]
+enum CoreFunc {
+    /// A canon row's core function: `(spec name, canonidx)`.
+    Canon(String, u32),
+    /// A function exported by an instantiated core module: `(class, method)`.
+    Module(String, String),
+}
+
+/// One entry in a component's FUNCTION index space.
+///
+/// `canonidx` is the row that DEFINES this function — a `canon lift`, or the
+/// entry an `(alias export …)` / `(export …)` copies. `functype` is that row's
+/// `$ft`, carried here so a `canon lower` naming this function takes its type
+/// rather than re-deriving it: the two must agree by construction, not by both
+/// looking it up.
+///
+/// ⛔ `canonidx` is an `Option` because of `(import "x" (func $x (type $ft)))`.
+/// An IMPORTED component function occupies an index in declaration order and
+/// has no defining row anywhere in this component — so the slot must exist and
+/// must be empty. Skipping the slot instead would renumber every function
+/// declared after the import, which reads as correct until two of them share a
+/// signature.
+#[derive(Clone, Debug)]
+struct CompFunc {
+    canonidx: Option<u32>,
+    functype: Option<u32>,
+}
+
+/// What a `(core instance …)` published: its export table.
+///
+/// The values are `CoreFunc` rather than method names because an instance
+/// assembled from `<core:inlineexport>*` may export a CANON row, which has no
+/// method — and an alias into it must get back the same kind of item a `with`
+/// clause would.
+#[derive(Clone, Debug, Default)]
+struct CoreInstance {
+    funcs: HashMap<String, CoreFunc>,
+}
+
+/// What an `(instance …)` published: its export table, at COMPONENT level.
+///
+/// A component instance exports component items, so the values are indices
+/// into `comp_func_space` rather than `CoreFunc`s — a component instance
+/// cannot export a core function, and conflating the two is exactly the
+/// index-space confusion the separate spaces exist to prevent.
+///
+/// Only the function sort is present because only the function sort has a
+/// producer today. A `(export "t" (type 0))` refuses rather than being
+/// dropped, so the export table can never be quietly incomplete.
+#[derive(Clone, Debug, Default)]
+struct CompInstance {
+    funcs: HashMap<String, u32>,
 }
 
 
@@ -1740,6 +1916,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(Module {
+        // The canon section this walk built, in canonidx order. Empty unless
+        // the source declared a `(component …)`.
+        canon: vybe_ast::canon::ComponentSection {
+            defs: std::mem::take(&mut __w_owned.canon_section),
+            types: std::mem::take(&mut __w_owned.comp_types),
+            funcs: std::mem::take(&mut __w_owned.comp_func_space)
+                .into_iter()
+                .map(|f| f.canonidx)
+                .collect(),
+        },
         name: "main".into(),
         language: Lang::Unknown,
         body,
@@ -1763,6 +1949,10 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
             body.extend(walk_module(__w, pair)?);
             Ok(())
         }
+        // `(component …)` — the Component Model's OUTER text format
+        // (`Explainer.md` §2). Not a module field and not core WASM: it WRAPS
+        // core modules and adds the spaces core WASM has no syntax for.
+        Rule::component => walk_component(__w, pair, body).map(|_| ()),
         // `(module quote "…")` defers a module given as WAT *text*: unquote the
         // string pieces, concatenate, and parse them as a real module.
         Rule::module_quote_cmd => {
@@ -1834,6 +2024,1807 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
     }
 }
 
+// ── Component Model ───────────────────────────────────────────────────────────
+
+/// The spec spelling of a component definition, for error messages.
+///
+/// The grammar rule names are prefixed (`comp_`/`core_`) to keep the two index
+/// spaces apart; an error must quote what the SOURCE says, not what the parser
+/// calls it.
+fn component_definition_kind(rule: Rule) -> &'static str {
+    match rule {
+        Rule::core_module_def   => "(core module …)",
+        Rule::core_instance_def => "(core instance …)",
+        Rule::core_type_def     => "(core type …)",
+        Rule::component         => "(component …)",
+        Rule::comp_instance     => "(instance …)",
+        Rule::comp_alias        => "(alias …)",
+        Rule::canon             => "(canon …)",
+        Rule::comp_start        => "(start …)",
+        Rule::comp_import       => "(import …)",
+        Rule::comp_export       => "(export …)",
+        Rule::comp_value        => "(value …)",
+        Rule::comp_type         => "(type …)",
+        _                       => "definition",
+    }
+}
+
+/// Walk `(component <id>? <definition>*)`.
+///
+/// The spine only. A component's core modules walk through exactly the path a
+/// top-level `(module …)` takes — `walk_module` dispatches on INNER pairs and
+/// never inspects its own rule, so `(core module …)` and `(module …)` are the
+/// same walk — and a nested component recurses.
+///
+/// Every other definition kind REFUSES, naming itself. It would be far easier
+/// to skip them: the grammar accepts the whole format, so a component with a
+/// `canon` section parses clean and walking nothing yields a program that
+/// links and runs. That is precisely the failure worth avoiding — a canon
+/// section that silently evaporates leaves a `stream.read` with no element
+/// type and a `thread.suspend` with no `cancellable?`, and nothing downstream
+/// can tell the difference between "not declared" and "dropped on the floor".
+/// A component's CORE MODULE index space.
+///
+/// A core module inside a component is DECLARED, not instantiated — nothing
+/// runs until a `(core instance (instantiate …))` says so. That is the spec's
+/// semantics and it is also what makes the `with` clause work at all: a
+/// module's imports cannot be resolved until the instantiation that supplies
+/// them has been read, and the instantiation comes after the module.
+struct CoreModules<'i> {
+    defs: Vec<Pair<'i, Rule>>,
+    names: HashMap<String, u32>,
+}
+
+/// A component's COMPONENT index space.
+///
+/// ⛔ Exactly the `CoreModules` treatment, one level up, and for the same
+/// reason: a nested `(component …)` is DECLARED, not run. Nothing inside it
+/// executes until an `(instance (instantiate …))` says so, and its imports
+/// cannot be resolved before the instantiation that supplies them has been
+/// read — which comes after the component.
+///
+/// Walking a nested component inline, as this used to, runs its core modules
+/// where they are written. That is wrong twice over: the modules execute
+/// whether or not anything instantiates them, and a component instantiated
+/// TWICE would only ever run once.
+struct Components<'i> {
+    defs: Vec<Pair<'i, Rule>>,
+    names: HashMap<String, u32>,
+}
+
+fn walk_component(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+) -> Result<HashMap<String, u32>, String> {
+    // Per component, never shared with a nested one: each has its own spaces.
+    let mut modules = CoreModules {
+        defs: Vec::new(),
+        names: HashMap::new(),
+    };
+    let mut components = Components {
+        defs: Vec::new(),
+        names: HashMap::new(),
+    };
+    // …and so does every OTHER index space, which is what this line used to
+    // claim while only `modules` was actually scoped. The rest lived on the
+    // walker and were shared with nested components, so an inner `(type …)`
+    // renumbered the outer's type space and an inner alias stayed visible
+    // outside it — silently, because both sides are small integers.
+    //
+    // `canon_section`/`canon_binder` stay SHARED on purpose: there is one
+    // VM-level canon section (`VM::canon_defs`), so canonidx has to keep
+    // counting across nested components. A name collision between an inner and
+    // an outer binder therefore refuses, which is conservative rather than
+    // wrong.
+    //
+    // `comp_func_space` and `comp_types` are shared for the same reason and a
+    // sharper one: they are the AST PAYLOAD this walk produces, not scratch for
+    // resolving names. Scoping them here restores the EMPTY outer copies on the
+    // way out and discards everything the top-level component built — which is
+    // what `canon lower: $callee 0 is not in the component function index space
+    // (have 0)` was reporting. Only the NAME maps are per-component.
+    let saved = ComponentSpaces::take(__w);
+    for def in pair.into_inner() {
+        match def.as_rule() {
+            // The component's own `$id`. Components are not yet addressable as
+            // instantiation targets, so nothing binds it.
+            Rule::id => {}
+            Rule::component_definition => {
+                let inner = def
+                    .into_inner()
+                    .next()
+                    .ok_or("component: empty definition")?;
+                if let Err(e) = walk_component_definition(
+                    __w,
+                    inner,
+                    body,
+                    &mut modules,
+                    &mut components,
+                ) {
+                    saved.restore(__w);
+                    return Err(e);
+                }
+            }
+            other => {
+                saved.restore(__w);
+                return Err(format!(
+                    "component: unexpected {other:?} in a component body"
+                ));
+            }
+        }
+    }
+    // This component's EXPORT TABLE, captured before the scopes unwind.
+    // Instantiating a component yields an instance whose exports are exactly
+    // this list (`Explainer.md:889`), so it is the return value rather than
+    // something the caller digs out of the walker.
+    //
+    // ⛔ The funcidx values index `comp_func_space`, which is PAYLOAD and
+    // therefore shared across nesting — so an inner component's export names an
+    // index that is still valid out here. Scoping that space would have made
+    // every returned index dangle.
+    let exports = std::mem::take(&mut __w.comp_exports);
+    saved.restore(__w);
+    Ok(exports)
+}
+
+/// The index spaces a component owns, lifted out so a nested `(component …)`
+/// gets fresh ones and the enclosing component gets its own back.
+#[derive(Default)]
+struct ComponentSpaces {
+    core_func_space: Vec<CoreFunc>,
+    core_func_index: HashMap<String, u32>,
+    core_instances: Vec<CoreInstance>,
+    core_instance_index: HashMap<String, u32>,
+    comp_type_index: HashMap<String, u32>,
+    comp_type_space: u32,
+    comp_type_base: u32,
+    core_type_index: HashMap<String, u32>,
+    core_type_space: u32,
+    comp_func_index: HashMap<String, u32>,
+    comp_instances: Vec<CompInstance>,
+    comp_instance_index: HashMap<String, u32>,
+    comp_exports: HashMap<String, u32>,
+    export_names: ExternNames,
+    import_names: ExternNames,
+}
+
+impl ComponentSpaces {
+    /// Move the walker's spaces out, leaving it with empty ones.
+    fn take(__w: &mut WastWalker) -> Self {
+        ComponentSpaces {
+            core_func_space: std::mem::take(&mut __w.core_func_space),
+            core_func_index: std::mem::take(&mut __w.core_func_index),
+            core_instances: std::mem::take(&mut __w.core_instances),
+            core_instance_index: std::mem::take(&mut __w.core_instance_index),
+            comp_type_index: std::mem::take(&mut __w.comp_type_index),
+            comp_type_space: std::mem::take(&mut __w.comp_type_space),
+            // The nested component's own index space starts at 0 and its
+            // declarations are appended, so its base is the vector's length AT
+            // ENTRY. `take` leaves 0 behind, which is wrong here — the base has
+            // to be SET, not cleared, which is why this is not a `take`.
+            comp_type_base: std::mem::replace(
+                &mut __w.comp_type_base,
+                __w.comp_types.len() as u32,
+            ),
+            core_type_index: std::mem::take(&mut __w.core_type_index),
+            core_type_space: std::mem::take(&mut __w.core_type_space),
+            comp_func_index: std::mem::take(&mut __w.comp_func_index),
+            comp_instances: std::mem::take(&mut __w.comp_instances),
+            comp_instance_index: std::mem::take(&mut __w.comp_instance_index),
+            comp_exports: std::mem::take(&mut __w.comp_exports),
+            export_names: std::mem::take(&mut __w.export_names),
+            import_names: std::mem::take(&mut __w.import_names),
+        }
+    }
+
+    /// Put them back, discarding whatever the nested component built.
+    fn restore(self, __w: &mut WastWalker) {
+        __w.core_func_space = self.core_func_space;
+        __w.core_func_index = self.core_func_index;
+        __w.core_instances = self.core_instances;
+        __w.core_instance_index = self.core_instance_index;
+        __w.comp_type_index = self.comp_type_index;
+        __w.comp_type_space = self.comp_type_space;
+        __w.comp_type_base = self.comp_type_base;
+        __w.core_type_index = self.core_type_index;
+        __w.core_type_space = self.core_type_space;
+        __w.comp_func_index = self.comp_func_index;
+        __w.comp_instances = self.comp_instances;
+        __w.comp_instance_index = self.comp_instance_index;
+        __w.comp_exports = self.comp_exports;
+        __w.export_names = self.export_names;
+        __w.import_names = self.import_names;
+    }
+}
+
+fn walk_component_definition<'i>(
+    __w: &mut WastWalker,
+    pair: Pair<'i, Rule>,
+    body: &mut Vec<Statement>,
+    modules: &mut CoreModules<'i>,
+    components: &mut Components<'i>,
+) -> Result<(), String> {
+    match pair.as_rule() {
+        Rule::core_module_def => {
+            // DECLARED, not walked. See `CoreModules`.
+            let idx = modules.defs.len() as u32;
+            if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                modules.names.insert(id.as_str()[1..].to_string(), idx);
+            }
+            modules.defs.push(pair);
+            Ok(())
+        }
+        Rule::core_instance_def => walk_core_instance(__w, pair, body, modules),
+        Rule::component => {
+            // DECLARED, not walked — see `Components`. A nested component runs
+            // only when an `(instance (instantiate …))` asks for it, which is
+            // both the spec's ordering and what lets one be instantiated twice.
+            let idx = components.defs.len() as u32;
+            if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                components.names.insert(id.as_str()[1..].to_string(), idx);
+            }
+            components.defs.push(pair);
+            Ok(())
+        }
+        Rule::comp_instance => walk_comp_instance(__w, pair, body, components),
+        Rule::comp_export => walk_comp_export(__w, pair),
+        Rule::comp_import => walk_comp_import(__w, pair),
+        Rule::comp_alias => walk_comp_alias(__w, pair),
+        Rule::comp_type => walk_comp_type(__w, pair),
+        Rule::core_type_def => walk_core_type(__w, pair),
+        Rule::canon => walk_canon(__w, pair),
+        other => Err(format!(
+            "component: {} parses but has no walk yet",
+            component_definition_kind(other)
+        )),
+    }
+}
+
+/// `(core instance <id>? (instantiate <moduleidx> <arg>*))`, and the
+/// `<core:inlineexport>*` form.
+///
+/// This is where a core module actually runs, where its imports are decided,
+/// and where the component's CORE INSTANCE index space gets its entries. Each
+/// `(with <module> (instance (export <name> (core func $b))))` binds one of
+/// the module's import slots to something the COMPONENT supplies.
+fn walk_core_instance<'i>(
+    __w: &mut WastWalker,
+    pair: Pair<'i, Rule>,
+    body: &mut Vec<Statement>,
+    modules: &mut CoreModules<'i>,
+) -> Result<(), String> {
+    let inst_name = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string());
+    let expr = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_instanceexpr)
+        .ok_or("core instance: no instance expression")?;
+    let Some(inst) = expr
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_instantiate)
+    else {
+        // `<core:inlineexport>*` — an instance assembled from items that
+        // already exist rather than instantiated from a module. It runs no
+        // code; it only names things, so all it contributes is an export
+        // table.
+        let mut funcs: HashMap<String, CoreFunc> = HashMap::new();
+        for exp in expr.into_inner() {
+            if exp.as_rule() != Rule::core_inlineexport {
+                continue;
+            }
+            let (name, item) = core_inlineexport_item(__w, &exp)?;
+            funcs.insert(name, item);
+        }
+        publish_core_instance(__w, inst_name, CoreInstance { funcs });
+        return Ok(());
+    };
+
+    let target = inst
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
+        .ok_or("core instance: (instantiate …) names no module")?;
+    let midx = resolve_idx(&target, "core module", &modules.names)?;
+    let module = modules
+        .defs
+        .get(midx as usize)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "core instance: core module {midx} is not declared (have {})",
+                modules.defs.len()
+            )
+        })?;
+
+    // The class `walk_module` will publish this instance's exports under.
+    // Computed BEFORE the walk, because `walk_module` advances `module_seq`.
+    //
+    // A module carrying an `$id` is published under that id, so instantiating
+    // it twice republishes ONE class and the second instance shadows the
+    // first. That is a real fidelity limit of the class-per-module model, not
+    // something this function can paper over — an alias into either instance
+    // resolves to the same class.
+    let class = module
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+        .unwrap_or_else(|| {
+            if __w.module_seq == 0 {
+                "__wasm_module".to_string()
+            } else {
+                format!("__wasm_module_{}", __w.module_seq)
+            }
+        });
+
+    // Build this instantiation's import wiring, then walk the module under it.
+    let mut supplied: HashMap<(String, String), CoreFunc> = HashMap::new();
+    for arg in inst.into_inner() {
+        if arg.as_rule() != Rule::core_instantiatearg {
+            continue;
+        }
+        let import_module = arg
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::string)
+            .map(|c| unquote(c.as_str()))
+            .ok_or("core instance: (with …) names no import module")?;
+        let mut any = false;
+        for exp in arg.clone().into_inner() {
+            if exp.as_rule() != Rule::core_inlineexport {
+                continue;
+            }
+            any = true;
+            let (name, item) = core_inlineexport_item(__w, &exp)?;
+            supplied.insert((import_module.clone(), name), item);
+        }
+        if !any {
+            // `(with "m" (instance <idx>))` — every export of that instance
+            // fills the slot, under its own name. Whole-instance wiring, which
+            // is what a module importing several names from one namespace
+            // needs.
+            let iref = arg
+                .clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::index)
+                .ok_or("core instance: (with … (instance …)) names no instance")?;
+            let iidx = resolve_idx(&iref, "core instance", &__w.core_instance_index)?;
+            let src = __w.core_instances.get(iidx as usize).cloned().ok_or_else(|| {
+                format!(
+                    "core instance: core instance {iidx} is not declared (have {})",
+                    __w.core_instances.len()
+                )
+            })?;
+            for (ename, item) in src.funcs {
+                supplied.insert((import_module.clone(), ename), item);
+            }
+        }
+    }
+
+    let saved = std::mem::replace(&mut __w.component_imports, supplied);
+    let walked = walk_module(__w, module);
+    __w.component_imports = saved;
+    body.extend(walked?);
+
+    // Publish the instance's export table. `module_exports` is keyed by class
+    // and was just written by `walk_module`.
+    let funcs = __w
+        .module_exports
+        .get(&class)
+        .map(|ex| {
+            ex.iter()
+                .map(|(e, m)| (e.clone(), CoreFunc::Module(class.clone(), m.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    publish_core_instance(__w, inst_name, CoreInstance { funcs });
+    Ok(())
+}
+
+/// Append to the core instance index space, binding `$id` if one was written.
+/// Unnamed instances still advance the space — the index is positional, and
+/// skipping one would silently renumber every alias after it.
+fn publish_core_instance(__w: &mut WastWalker, name: Option<String>, inst: CoreInstance) {
+    let idx = __w.core_instances.len() as u32;
+    __w.core_instances.push(inst);
+    if let Some(n) = name {
+        __w.core_instance_index.insert(n, idx);
+    }
+}
+
+/// `(export <name> <core:externidx>)` → the name it publishes and the item.
+fn core_inlineexport_item(
+    __w: &WastWalker,
+    exp: &Pair<Rule>,
+) -> Result<(String, CoreFunc), String> {
+    let name = exp
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::string)
+        .map(|c| unquote(c.as_str()))
+        .ok_or("core instance: (export …) has no name")?;
+    let target = exp
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_externidx)
+        .ok_or("core instance: (export …) names nothing")?;
+    Ok((name, core_externidx_item(__w, &target)?))
+}
+
+/// `(core func $b)` / `(core func 0)` → the core function it names.
+///
+/// Both spellings resolve through the SAME space: `$b` through the name map,
+/// a bare integer positionally. They used to be two different refusals because
+/// the space did not exist — the name map was read and never written, so every
+/// `$b` was "not bound" and every integer had nothing to index.
+fn core_externidx_item(__w: &WastWalker, target: &Pair<Rule>) -> Result<CoreFunc, String> {
+    let sort = target
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_sort)
+        .map(|c| c.as_str().trim().to_string())
+        .unwrap_or_default();
+    if sort != "func" {
+        return Err(format!(
+            "core instance: `(core {sort} …)` — only a core FUNCTION can be supplied \
+             to an import so far; the {sort} index space has no producer"
+        ));
+    }
+    let idx = target
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
+        .ok_or("core instance: exported item names no index")?;
+    let fidx = resolve_idx(&idx, "core func", &__w.core_func_index)?;
+    __w.core_func_space.get(fidx as usize).cloned().ok_or_else(|| {
+        format!(
+            "core instance: core func {fidx} is not defined (have {})",
+            __w.core_func_space.len()
+        )
+    })
+}
+
+/// `(alias core export <instanceidx> <name> (core <sort> <id>?))` — §5.
+///
+/// This is the only way a component reaches inside an instantiated core
+/// module, and it is what gives the core function index space its second
+/// producer (the first being a canon row's binder).
+/// The names an import or export scope has already taken.
+///
+/// ⛔ **THE KEY IS FOLDED; THE VALUE IS THE NAME AS WRITTEN.** The exported
+/// name is an identifier a host matches on, so it must survive byte-for-byte —
+/// only the COLLISION KEY folds. Storing the folded form as the name would be
+/// the same mistake the namespace tree makes with its lowercase-canonical keys.
+///
+/// Imports and exports are SEPARATE scopes: `Explainer.md:2837` says a set of
+/// names "can thus all be imports (or exports) of the same component", so one
+/// table each.
+#[derive(Default)]
+struct ExternNames {
+    /// folded key → the names as the source wrote them
+    ///
+    /// ⛔ A **LIST**, not one name. `foo` and `[constructor]foo` fold to the
+    /// same key and are legitimately both present (clause 1), so a key can hold
+    /// two. With one slot the constructor OVERWRITES the label, and a second
+    /// `foo` then compares only against `[constructor]foo`, is exempted by
+    /// clause 1, and is ACCEPTED — while the spec lists adding `foo` twice as a
+    /// validation error. A new name must be exempt against EVERY name already
+    /// under its key, not just the last one written.
+    by_key: HashMap<String, Vec<String>>,
+    /// folded MEMBER label of an `[annotation]a.b` name → the name as written
+    by_member: HashMap<String, String>,
+}
+
+/// The collision key of an extern name — `Explainer.md:2832`, clause 3:
+/// "Lowercase all the acronyms … Strip any `[...]` annotation prefix".
+///
+/// Lowercasing the whole string is equivalent to lowercasing the acronyms: a
+/// `label` is fragments that are each entirely lower-case (`word`) or entirely
+/// upper-case (`acronym`), so no mixed-case fragment exists to preserve. ASCII,
+/// because the `label` grammar is ASCII.
+fn extern_name_key(name: &str) -> String {
+    extern_name_body(name).to_ascii_lowercase()
+}
+
+/// `name` with any `[...]` annotation prefix removed.
+fn extern_name_body(name: &str) -> &str {
+    match name.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((_, body)) => body,
+            None => name,
+        },
+        None => name,
+    }
+}
+
+/// The label AFTER the dot in an `[annotation]a.b` name.
+///
+/// ⛔ Clause 2 is written `[*]l.l` and reads as though both dotted labels must
+/// equal the bare name. THE EXAMPLES SAY OTHERWISE, and they are decisive:
+/// adding `bar` to a set containing `[method]foo.bar` is listed as a validation
+/// error, and NOTHING ELSE in that set collides with `bar` under clause 3. So
+/// the rule is that a bare `l` collides with any `[*]x.l` — the SECOND label.
+///
+/// The stated rationale confirms it: the point is "pathological cases where two
+/// unique-in-the-component names get mapped to the same source-language
+/// identifier". A method `bar` and a free function `bar` both become `bar` in a
+/// generated binding; `[method]foo.bar` alongside `foo` does not.
+fn extern_name_member(name: &str) -> Option<&str> {
+    let body = extern_name_body(name);
+    if body.len() == name.len() {
+        // No annotation — a plain dotted name is not the `[*]a.b` shape.
+        return None;
+    }
+    body.split_once('.').map(|(_, member)| member)
+}
+
+impl ExternNames {
+    /// Record `name`, or refuse if it is not STRONGLY-UNIQUE against what is
+    /// already here — `Explainer.md:2826`.
+    fn insert(&mut self, what: &str, name: &str) -> Result<(), String> {
+        let key = extern_name_key(name);
+        // Clause 1: `l` and `[constructor]l` ARE strongly-unique, for the SAME
+        // label — compared RAW, before folding, or `foo-bar` and
+        // `[constructor]foo-BAR` would be let through when the spec's own
+        // example lists that pair as an error.
+        let ctor_pair =
+            |a: &str, b: &str| b.strip_prefix("[constructor]").is_some_and(|l| l == a);
+        for prev in self.by_key.get(&key).into_iter().flatten() {
+            if !ctor_pair(prev, name) && !ctor_pair(name, prev) {
+                return Err(format!(
+                    "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
+                     (Explainer.md:2826 — annotations stripped and acronyms lowercased, \
+                     both are `{key}`)"
+                ));
+            }
+        }
+        // Clause 2, both directions.
+        if let Some(member) = extern_name_member(name) {
+            let mk = member.to_ascii_lowercase();
+            if let Some(prev) = self.by_key.get(&mk).and_then(|v| v.first()) {
+                return Err(format!(
+                    "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
+                     (Explainer.md:2829 — a bare `{member}` and an annotated `….{member}` \
+                     generate the same binding name)"
+                ));
+            }
+        } else if let Some(prev) = self.by_member.get(&key) {
+            return Err(format!(
+                "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
+                 (Explainer.md:2829 — a bare `{name}` and an annotated `….{name}` \
+                 generate the same binding name)"
+            ));
+        }
+        if let Some(member) = extern_name_member(name) {
+            self.by_member
+                .insert(member.to_ascii_lowercase(), name.to_string());
+        }
+        self.by_key.entry(key).or_default().push(name.to_string());
+        Ok(())
+    }
+}
+
+/// `(import <externnamelit> <attribute>* bind-id(<externtype>))`.
+///
+/// The FOURTH producer of the component function index space, and the only one
+/// that supplies no definition. `Explainer.md:2601` puts imports and exports on
+/// the same footing — both "append a new element to the index space of the
+/// imported/exported `sort`" — and `bind-id(<externtype>)` is where the name
+/// goes: `(import "x" (func $x (type $ft)))` binds `$x` "just like Core
+/// WebAssembly, as part of the `externtype`".
+///
+/// So the slot is created and left EMPTY, and `canon lower` naming it walks,
+/// compiles and then refuses at the CALL with the linker named. That ordering
+/// is the point: a component may legitimately declare an import it never calls,
+/// and refusing at the declaration would reject a valid component.
+fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let text = pair.as_str().trim();
+    if let Some(a) = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::attribute)
+    {
+        return Err(format!(
+            "import: `{}` — an attribute changes the imported name or makes a claim \
+             about it, and nothing carries either yet",
+            a.as_str().trim()
+        ));
+    }
+    // The import NAME. It was not recorded at all before, so nothing checked
+    // two imports for a collision — and `Explainer.md:2837` requires the same
+    // STRONGLY-UNIQUE rule here as for exports, in its own scope.
+    let name = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::externnamelit)
+        .map(|c| unquote(c.as_str()))
+        .ok_or("import: no import name")?;
+    __w.import_names.insert("import", &name)?;
+    let ty = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::externtype)
+        .ok_or("import: no external type")?;
+    let tytext = ty.as_str().trim();
+    // Only the `(func $x (type $ft))` shape has a producer. The rest name
+    // index spaces nothing fills — refuse each by what it would need, not with
+    // one blanket "unsupported".
+    let head = tytext.trim_start_matches('(').trim_start();
+    let sort = ty
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::comp_sort_kw)
+        .map(|c| c.as_str().trim().to_string())
+        .unwrap_or_default();
+    if sort != "func" {
+        return Err(format!(
+            "import: `{text}` — {}",
+            if head.starts_with("core") {
+                "a `(core module …)` import needs the core module index space, which has \
+                 no producer"
+                    .to_string()
+            } else if sort.is_empty() {
+                "an inline `functype`/`componenttype`/`instancetype` has no index to \
+                 record; spell it as `(func (type $ft))` naming a declared `(type …)`"
+                    .to_string()
+            } else {
+                format!(
+                    "the {sort} index space has no producer, so an imported {sort} has \
+                     nowhere to be recorded"
+                )
+            }
+        ));
+    }
+    let i = ty
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
+        .ok_or_else(|| {
+            format!("import: `{tytext}` — a `(func …)` import must name its `(type $ft)`")
+        })?;
+    let ft = resolve_comp_type(__w, &i)?;
+    let fidx = __w.comp_func_space.len() as u32;
+    __w.comp_func_space.push(CompFunc {
+        // EMPTY on purpose — see `CompFunc`. Nothing in this component defines
+        // an imported function.
+        canonidx: None,
+        functype: Some(ft),
+    });
+    if let Some(id) = ty.into_inner().find(|c| c.as_rule() == Rule::id) {
+        __w.comp_func_index.insert(id.as_str()[1..].to_string(), fidx);
+    }
+    Ok(())
+}
+
+/// `(export <id>? <externnamelit> <attribute>* <externidx> <externtype>?)`.
+///
+/// ⛔ **AN EXPORT APPENDS TO THE INDEX SPACE.** `Explainer.md:2601`:
+///
+/// > not only import definitions, but also export definitions append a new
+/// > element to the index space of the imported/exported `sort` … In the case
+/// > of exports, the `<id>?` right after the `export` is bound while the
+/// > `<id>` inside the `<externidx>` is a reference to the preceding
+/// > definition being exported.
+///
+/// So the two `$id`s in `(export $x "x" (func $f))` are opposites: `$f` READS
+/// the function space and `$x` names the NEW entry this line adds to it.
+/// Treating `$x` as a second name for `$f` would look right until something
+/// indexed positionally past the export, at which point every later index is
+/// off by one — the `GLOBAL_GET` shape again.
+fn walk_comp_export(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let text = pair.as_str().trim();
+    // The leading `id?` is a DIRECT child; the one inside `<externidx>` is a
+    // great-grandchild (externidx → index → id), so this cannot confuse them.
+    let bind = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string());
+    if let Some(a) = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::attribute)
+    {
+        // 🔗 `versionsuffix` changes the exported NAME; 🏷️ `implements` and
+        // `external-id` are claims about what this export satisfies. Ignoring
+        // any of them would publish a name or a guarantee the source did not
+        // write.
+        return Err(format!(
+            "export: `{}` — an attribute changes the exported name or makes a claim \
+             about it, and nothing carries either yet",
+            a.as_str().trim()
+        ));
+    }
+    if pair
+        .clone()
+        .into_inner()
+        .any(|c| c.as_rule() == Rule::externtype)
+    {
+        // The trailing ascription narrows the exported item's type. Accepting
+        // it without checking would report a type the export was never proven
+        // to have.
+        return Err(format!(
+            "export: `{text}` — the trailing `<externtype>` ascribes a type to the \
+             export, and nothing checks it against the item being exported"
+        ));
+    }
+    let name = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::externnamelit)
+        .map(|c| unquote(c.as_str()))
+        .ok_or("export: no export name")?;
+    let target = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::externidx)
+        .ok_or("export: names nothing")?;
+    // `Explainer.md:2826` — STRONGLY-UNIQUE, not exact-string equality. The
+    // table folds only the KEY; the value keeps the name as written, because
+    // the exported name is what a host matches on.
+    __w.export_names.insert("export", &name)?;
+    let src = comp_externidx_func(__w, "export", &target)?;
+    let entry = __w.comp_func_space.get(src as usize).cloned().ok_or_else(|| {
+        format!("export: `{text}` names component func {src}, which is gone")
+    })?;
+    let fidx = __w.comp_func_space.len() as u32;
+    __w.comp_func_space.push(entry);
+    if let Some(n) = bind {
+        __w.comp_func_index.insert(n, fidx);
+    }
+    __w.comp_exports.insert(name, fidx);
+    Ok(())
+}
+
+/// `(alias export <instanceidx> <name> (<sort> <id>?))`.
+///
+/// An alias DEFINES a new index in the target space — it does not merely give
+/// the aliased entity a second name — so this pushes a fresh entry. That
+/// matters as soon as anything indexes positionally: `(func 1)` after an alias
+/// must reach the alias, not the thing it aliases.
+fn alias_component_export(
+    __w: &mut WastWalker,
+    pair: &Pair<Rule>,
+    text: &str,
+) -> Result<(), String> {
+    let mut inner = pair.clone().into_inner();
+    let iref = inner.next().ok_or("alias export: no instance index")?;
+    let iidx = resolve_idx(&iref, "component instance", &__w.comp_instance_index)?;
+    let inst = __w.comp_instances.get(iidx as usize).cloned().ok_or_else(|| {
+        format!(
+            "alias export: instance {iidx} is not declared (have {})",
+            __w.comp_instances.len()
+        )
+    })?;
+    let name = inner
+        .next()
+        .filter(|c| c.as_rule() == Rule::externnamelit)
+        .map(|c| unquote(c.as_str()))
+        .ok_or("alias export: no export name")?;
+    let sort = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::sort_c)
+        .map(|c| c.as_str().trim().to_string())
+        .unwrap_or_default();
+    if sort != "func" {
+        return Err(format!(
+            "alias export: `({sort} …)` — only a component FUNCTION can be aliased so \
+             far; the {sort} index space has no producer"
+        ));
+    }
+    let src = *inst.funcs.get(&name).ok_or_else(|| {
+        let mut have: Vec<&str> = inst.funcs.keys().map(|s| s.as_str()).collect();
+        have.sort_unstable();
+        format!(
+            "alias export: instance {iidx} exports no \"{name}\" (exports: {})",
+            if have.is_empty() { "none".to_string() } else { have.join(", ") }
+        )
+    })?;
+    let entry = __w.comp_func_space.get(src as usize).cloned().ok_or_else(|| {
+        format!("alias export: `{}` names component func {src}, which is gone", text.trim())
+    })?;
+    let fidx = __w.comp_func_space.len() as u32;
+    __w.comp_func_space.push(entry);
+    if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+        __w.comp_func_index.insert(id.as_str()[1..].to_string(), fidx);
+    }
+    Ok(())
+}
+
+/// `(instance <id>? <instanceexpr>)` — the COMPONENT instance space.
+///
+/// `<instanceexpr>` is a rule of its own, not a silent one, so the
+/// `<inlineexport>*` pairs are GRANDCHILDREN. Reading them as direct children
+/// finds none and publishes an empty instance, and the alias that follows then
+/// reports `exports no "…"` — a walk bug wearing a source error's clothes.
+/// `walk_core_instance` descends through `core_instanceexpr` for the same
+/// reason; this follows it.
+/// `(instance <id>? (instantiate <componentidx> <arg>*))`.
+///
+/// ⛔ **THIS IS WHERE A NESTED COMPONENT RUNS.** It was declared, not walked
+/// (`Components`), so nothing inside it has executed yet — its core modules,
+/// its canon rows and its instantiations all happen here, when something asks
+/// for an instance. That ordering is the spec's, and it is also what makes a
+/// component instantiable TWICE: walking it inline ran it once, at its
+/// declaration, whether or not anyone wanted it.
+///
+/// The result is an instance whose exports are the component's export list
+/// (`Explainer.md:889` — a component type carries two named lists, imports and
+/// exports), which is exactly what `walk_component` returns.
+fn instantiate_component<'i>(
+    __w: &mut WastWalker,
+    inst: &Pair<'i, Rule>,
+    name: Option<String>,
+    body: &mut Vec<Statement>,
+    components: &mut Components<'i>,
+) -> Result<(), String> {
+    let target = inst
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
+        .ok_or("instance: (instantiate …) names no component")?;
+    let cidx = resolve_idx(&target, "component", &components.names)?;
+    let def = components.defs.get(cidx as usize).cloned().ok_or_else(|| {
+        format!(
+            "instance: component {cidx} is not declared (have {})",
+            components.defs.len()
+        )
+    })?;
+    // ⛔ A `(with …)` supplies one of the component's IMPORTS, and an imported
+    // component function has no defining row anywhere — the one case that
+    // genuinely needs the component linker. Accepting the clause and ignoring
+    // it would instantiate with the import unsupplied and then fail at the
+    // CALL, naming the wrong thing.
+    if let Some(arg) = inst
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::instantiatearg)
+    {
+        return Err(format!(
+            "instance: `{}` supplies an IMPORT to a component instantiation, which needs \
+             the component linker (see cmplan.md §Deferred to export). A component with \
+             no imports instantiates without any `(with …)`",
+            arg.as_str().trim()
+        ));
+    }
+    // Run it. `walk_component` installs its own scopes, so the inner
+    // component's names cannot leak out here and the outer's are invisible
+    // inside.
+    let exports = walk_component(__w, def, body)?;
+    let idx = __w.comp_instances.len() as u32;
+    __w.comp_instances.push(CompInstance { funcs: exports });
+    if let Some(n) = name {
+        __w.comp_instance_index.insert(n, idx);
+    }
+    Ok(())
+}
+
+fn walk_comp_instance<'i>(
+    __w: &mut WastWalker,
+    pair: Pair<'i, Rule>,
+    body: &mut Vec<Statement>,
+    components: &mut Components<'i>,
+) -> Result<(), String> {
+    let name = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string());
+    let expr = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::instanceexpr)
+        .ok_or("instance: no instance expression")?;
+    if let Some(inst) = expr
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::comp_instantiate)
+    {
+        return instantiate_component(__w, &inst, name, body, components);
+    }
+
+    // `<inlineexport>*` — an instance assembled from items that already exist.
+    // It runs no code; all it contributes is an export table.
+    let mut funcs: HashMap<String, u32> = HashMap::new();
+    for exp in expr.into_inner() {
+        if exp.as_rule() != Rule::inlineexport {
+            continue;
+        }
+        if exp
+            .clone()
+            .into_inner()
+            .any(|c| c.as_rule() == Rule::versionsuffix)
+        {
+            // 🔗 The suffix is part of the exported NAME, so dropping it would
+            // make the alias below match on a name the component never
+            // exported.
+            return Err(format!(
+                "instance: `{}` — a `(versionsuffix …)` changes the exported name and \
+                 nothing carries it yet",
+                exp.as_str().trim()
+            ));
+        }
+        let ename = exp
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::externnamelit)
+            .map(|c| unquote(c.as_str()))
+            .ok_or("instance: (export …) has no name")?;
+        let target = exp
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::externidx)
+            .ok_or("instance: (export …) names nothing")?;
+        funcs.insert(ename, comp_externidx_func(__w, "instance", &target)?);
+    }
+    let idx = __w.comp_instances.len() as u32;
+    __w.comp_instances.push(CompInstance { funcs });
+    if let Some(n) = name {
+        __w.comp_instance_index.insert(n, idx);
+    }
+    Ok(())
+}
+
+/// Resolve an `<externidx>` to a COMPONENT function index.
+///
+/// The grammar's three alternatives are `(core <sort> …)`, `(<sort> …)` and a
+/// bare index. Only the middle one naming `func` can be honoured: a component
+/// instance cannot export a core item, and a bare index does not say which
+/// index space it means — resolving it as a function would be a guess that
+/// looks right whenever the two spaces happen to line up.
+fn comp_externidx_func(
+    __w: &WastWalker,
+    what: &str,
+    target: &Pair<Rule>,
+) -> Result<u32, String> {
+    let text = target.as_str().trim();
+    if text.trim_start_matches('(').trim_start().starts_with("core") {
+        return Err(format!(
+            "{what}: `{text}` — a component names COMPONENT items here; a core item has \
+             to be lifted first"
+        ));
+    }
+    let Some(sort) = target
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::comp_sort_kw)
+    else {
+        return Err(format!(
+            "{what}: `{text}` — the item must name its sort, as `(func {text})`; a bare \
+             index does not say which index space it indexes"
+        ));
+    };
+    let sort = sort.as_str().trim();
+    if sort != "func" {
+        return Err(format!(
+            "{what}: `({sort} …)` — only a component FUNCTION is reachable so far; the \
+             {sort} index space has no producer"
+        ));
+    }
+    if target.clone().into_inner().any(|c| c.as_rule() == Rule::string) {
+        return Err(format!(
+            "{what}: `{text}` — the trailing name form addresses an export PATH through \
+             an instance, which needs the same resolution `(alias export …)` does; spell \
+             it as an alias instead"
+        ));
+    }
+    let idx = target
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
+        .ok_or_else(|| format!("{what}: the item names no index"))?;
+    let fidx = resolve_idx(&idx, "component func", &__w.comp_func_index)?;
+    if fidx as usize >= __w.comp_func_space.len() {
+        return Err(format!(
+            "{what}: component func {fidx} is not defined (have {})",
+            __w.comp_func_space.len()
+        ));
+    }
+    Ok(fidx)
+}
+
+fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let text = pair.as_str();
+    let mut inner = pair.clone().into_inner();
+    let Some(iref) = inner.next() else {
+        return Err("alias: empty".to_string());
+    };
+    // Only the `core export` form has `(index, string)` leading its children;
+    // `alias export` leads with an externnamelit and `alias outer` with two
+    // indices. Discriminate on the source text, which is what distinguishes
+    // them in the grammar's three alternatives.
+    let trimmed = text.trim_start_matches('(').trim_start();
+    if !trimmed.starts_with("alias") {
+        return Err(format!("alias: unexpected `{}`", text.trim()));
+    }
+    let rest = trimmed["alias".len()..].trim_start();
+    if rest.starts_with("export") {
+        return alias_component_export(__w, &pair, text);
+    }
+    if !rest.starts_with("core") {
+        return Err(format!(
+            "component: `{}` — `alias outer` needs enclosing-component scopes, which \
+             no space carries yet",
+            text.trim()
+        ));
+    }
+    let iidx = resolve_idx(&iref, "core instance", &__w.core_instance_index)?;
+    let inst = __w.core_instances.get(iidx as usize).cloned().ok_or_else(|| {
+        format!(
+            "alias core export: core instance {iidx} is not declared (have {})",
+            __w.core_instances.len()
+        )
+    })?;
+    let name = inner
+        .next()
+        .filter(|c| c.as_rule() == Rule::string)
+        .map(|c| unquote(c.as_str()))
+        .ok_or("alias core export: no export name")?;
+    let item = inst.funcs.get(&name).cloned().ok_or_else(|| {
+        let mut have: Vec<&str> = inst.funcs.keys().map(|s| s.as_str()).collect();
+        have.sort_unstable();
+        format!(
+            "alias core export: core instance {iidx} exports no \"{name}\" (exports: {})",
+            if have.is_empty() { "none".to_string() } else { have.join(", ") }
+        )
+    })?;
+    let sort = inner
+        .clone()
+        .find(|c| c.as_rule() == Rule::core_sort)
+        .map(|c| c.as_str().trim().to_string())
+        .unwrap_or_default();
+    if sort != "func" {
+        return Err(format!(
+            "alias core export: `(core {sort} …)` — only a core FUNCTION can be \
+             aliased so far; the {sort} index space has no producer"
+        ));
+    }
+    let fidx = __w.core_func_space.len() as u32;
+    __w.core_func_space.push(item);
+    if let Some(id) = inner.find(|c| c.as_rule() == Rule::id) {
+        __w.core_func_index.insert(id.as_str()[1..].to_string(), fidx);
+    }
+    Ok(())
+}
+
+
+/// `(type <id>? <deftype>)` — one entry in the component's TYPE space.
+///
+/// The body is not walked. What a later `canon` row needs from a type
+/// declaration is its INDEX, and the index is positional: every `(type …)`
+/// advances the space whether or not it is named. Skipping an unnamed one
+/// would silently renumber every row after it.
+fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    // LOCAL for the source's own numbering, GLOBAL for the payload vector the
+    // VM indexes. The name map stores the GLOBAL one so nothing has to
+    // remember to add the base at every lookup.
+    let idx = __w.comp_type_base + __w.comp_type_space;
+    __w.comp_type_space += 1;
+    if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+        __w.comp_type_index.insert(id.as_str()[1..].to_string(), idx);
+    }
+    // The body IS walked now. It used to advance a bare counter and drop the
+    // declaration, which is why `VM::canon_functypes` was empty and
+    // `canon lift` trapped on `$ft` even when the source declared the type.
+    // The binder is what NAMES a resource. `component::ValType::Own` holds a
+    // STRING and the source writes an INDEX, so this is the only place the two
+    // can be connected — `(type $file (resource (rep i32)))` makes
+    // `(own $file)` mean the resource named `file`. Read BEFORE `into_inner()`
+    // consumes the pair.
+    let bound = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string());
+    let body = pair
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::deftype)
+        .and_then(|d| d.into_inner().next());
+    let decl = match body {
+        Some(b) => match type_decl(__w, &b)? {
+            vybe_ast::canon::TypeDecl::Resource(_) => {
+                vybe_ast::canon::TypeDecl::Resource(bound)
+            }
+            other => other,
+        },
+        None => vybe_ast::canon::TypeDecl::Opaque("type".to_string()),
+    };
+    __w.comp_types.push(decl);
+    debug_assert_eq!(
+        __w.comp_types.len() as u32,
+        __w.comp_type_base + __w.comp_type_space
+    );
+    Ok(())
+}
+
+/// One `<deftype>` alternative → the AST's record of it.
+fn type_decl(
+    __w: &WastWalker,
+    b: &Pair<Rule>,
+) -> Result<vybe_ast::canon::TypeDecl, String> {
+    use vybe_ast::canon::TypeDecl;
+    Ok(match b.as_rule() {
+        Rule::functype_c => {
+            let mut params = Vec::new();
+            let mut result = None;
+            for c in b.clone().into_inner() {
+                match c.as_rule() {
+                    Rule::func_param_c => {
+                        let mut it = c.into_inner();
+                        let name = it
+                            .next()
+                            .filter(|x| x.as_rule() == Rule::labellit)
+                            .map(|x| unquote(x.as_str()))
+                            .ok_or("component functype: (param …) has no label")?;
+                        let ty = it
+                            .find(|x| x.as_rule() == Rule::valtype)
+                            .ok_or("component functype: (param …) has no type")?;
+                        params.push((name, val_spec(__w, &ty)?));
+                    }
+                    Rule::func_result_c => {
+                        let ty = c
+                            .into_inner()
+                            .find(|x| x.as_rule() == Rule::valtype)
+                            .ok_or("component functype: (result …) has no type")?;
+                        result = Some(val_spec(__w, &ty)?);
+                    }
+                    _ => {}
+                }
+            }
+            TypeDecl::Func { params, result }
+        }
+        // `resourcetype`, `componenttype`, `instancetype` occupy their index and
+        // nothing reads their shape yet. Recorded rather than skipped: skipping
+        // one renumbers every later typeidx.
+        // The NAME is filled in by `walk_comp_type`, which is where the
+        // binder is in scope.
+        Rule::resourcetype => TypeDecl::Resource(None),
+        Rule::componenttype => TypeDecl::Opaque("component".to_string()),
+        Rule::instancetype => TypeDecl::Opaque("instance".to_string()),
+        Rule::defvaltype => TypeDecl::Value(val_spec_inner(__w, b)?),
+        other => TypeDecl::Opaque(format!("{other:?}")),
+    })
+}
+
+/// Resolve a `<typeidx>` in the COMPONENT type space.
+///
+/// ⛔ A bare integer is the component's OWN index — the spec gives every
+/// component a type index space starting at 0 — while `comp_types` is one flat
+/// vector for the whole program because `VM::canon_types` is one table. So a
+/// positional reference has to be rebased and a `$name` must not be: the name
+/// map already stores the global index.
+///
+/// One function so the base is applied in exactly one place. Adding it at each
+/// call site is how `case_sensitive` went wrong — 33 sites, 23 forgot.
+fn resolve_comp_type(__w: &WastWalker, pair: &Pair<Rule>) -> Result<u32, String> {
+    let raw = pair.as_str().trim();
+    if raw.starts_with('$') {
+        return resolve_idx(pair, "component type", &__w.comp_type_index);
+    }
+    let local = resolve_idx(pair, "component type", &__w.comp_type_index)?;
+    Ok(__w.comp_type_base + local)
+}
+
+/// `<valtype>` → the AST's spelling of it. `valtype ::= <typeidx> | <defvaltype>`.
+fn val_spec(__w: &WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
+    use vybe_ast::canon::ValSpec;
+    let inner = v
+        .clone()
+        .into_inner()
+        .next()
+        .ok_or("component type: empty valtype")?;
+    match inner.as_rule() {
+        Rule::defvaltype => val_spec_inner(__w, &inner),
+        // A typeidx used as a value type.
+        Rule::index => Ok(ValSpec::Ref(resolve_comp_type(__w, &inner)?)),
+        other => Err(format!("component type: unexpected {other:?} in a valtype")),
+    }
+}
+
+/// The `<defvaltype>` alternatives.
+fn val_spec_inner(
+    __w: &WastWalker,
+    d: &Pair<Rule>,
+) -> Result<vybe_ast::canon::ValSpec, String> {
+    use vybe_ast::canon::ValSpec;
+    let text = d.as_str().trim();
+    let mut children = d.clone().into_inner().peekable();
+    // A primitive is an ATOMIC rule with no children — the whole alternative is
+    // the token. Every composite opens with `(`.
+    if !text.starts_with('(') {
+        return Ok(ValSpec::Prim(text.to_string()));
+    }
+    // Which composite it is, is not in the pair's rule (they all share
+    // `defvaltype`), so it comes from the keyword after the paren — the same
+    // discrimination the grammar's alternatives make.
+    let head: String = text[1..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    let vals = |w: &WastWalker, it: &mut dyn Iterator<Item = Pair<Rule>>| -> Result<Vec<ValSpec>, String> {
+        let mut out = Vec::new();
+        for c in it {
+            if c.as_rule() == Rule::valtype {
+                out.push(val_spec(w, &c)?);
+            }
+        }
+        Ok(out)
+    };
+    Ok(match head.as_str() {
+        "record" => {
+            let mut fields = Vec::new();
+            for c in children {
+                if c.as_rule() != Rule::record_field {
+                    continue;
+                }
+                let mut it = c.into_inner();
+                let name = it
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::labellit)
+                    .map(|x| unquote(x.as_str()))
+                    .ok_or("record: (field …) has no label")?;
+                let ty = it
+                    .find(|x| x.as_rule() == Rule::valtype)
+                    .ok_or("record: (field …) has no type")?;
+                fields.push((name, val_spec(__w, &ty)?));
+            }
+            ValSpec::Record(fields)
+        }
+        "variant" => {
+            let mut cases = Vec::new();
+            for c in children {
+                if c.as_rule() != Rule::variant_case {
+                    continue;
+                }
+                let mut it = c.into_inner();
+                let name = it
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::labellit)
+                    .map(|x| unquote(x.as_str()))
+                    .ok_or("variant: (case …) has no label")?;
+                let payload = match it.find(|x| x.as_rule() == Rule::valtype) {
+                    Some(t) => Some(val_spec(__w, &t)?),
+                    None => None,
+                };
+                cases.push((name, payload));
+            }
+            ValSpec::Variant(cases)
+        }
+        "list" => {
+            let mut it = d.clone().into_inner();
+            let elem = it
+                .find(|x| x.as_rule() == Rule::valtype)
+                .ok_or("list: no element type")?;
+            let elem = Box::new(val_spec(__w, &elem)?);
+            // 🔧 the fixed-length form carries a trailing count.
+            match it.find(|x| x.as_rule() == Rule::integer) {
+                Some(n) => ValSpec::ListFixed(
+                    elem,
+                    n.as_str()
+                        .replace('_', "")
+                        .parse::<u32>()
+                        .map_err(|_| format!("list: `{}` is not a length", n.as_str()))?,
+                ),
+                None => ValSpec::List(elem),
+            }
+        }
+        "tuple" => ValSpec::Tuple(vals(__w, &mut children)?),
+        "option" => ValSpec::Option(Box::new(
+            vals(__w, &mut children)?
+                .into_iter()
+                .next()
+                .ok_or("option: no element type")?,
+        )),
+        "result" => {
+            // `(result <valtype>? (error <valtype>)?)` — each side independent.
+            let mut ok = None;
+            let mut err = None;
+            for c in children {
+                match c.as_rule() {
+                    Rule::valtype => ok = Some(Box::new(val_spec(__w, &c)?)),
+                    Rule::result_err => {
+                        let t = c
+                            .into_inner()
+                            .find(|x| x.as_rule() == Rule::valtype)
+                            .ok_or("result: (error …) has no type")?;
+                        err = Some(Box::new(val_spec(__w, &t)?));
+                    }
+                    _ => {}
+                }
+            }
+            ValSpec::Result(ok, err)
+        }
+        // 🗺️ `(map <keytype> <valtype>)`. The KEY is its own atomic rule, not a
+        // `valtype` — the spec restricts a map key to the primitives that have
+        // a total ordering, so no float and no `error-context`.
+        //
+        // ⛔ That is why this cannot go through `vals`, which collects
+        // `Rule::valtype` children and nothing else. It used to, and so it
+        // skipped the key entirely: `it.next()` returned the VALUE type and
+        // called it the key, then found nothing left and refused with
+        // "map: no value type" — a message that pointed at the half of the
+        // source that was present.
+        "map" => {
+            let mut k = None;
+            let mut v = None;
+            for c in children {
+                match c.as_rule() {
+                    // Atomic, so the whole primitive name is the text.
+                    Rule::keytype => k = Some(ValSpec::Prim(c.as_str().trim().to_string())),
+                    Rule::valtype => v = Some(val_spec(__w, &c)?),
+                    _ => {}
+                }
+            }
+            ValSpec::Map(
+                Box::new(k.ok_or("map: no key type")?),
+                Box::new(v.ok_or("map: no value type")?),
+            )
+        }
+        "stream" | "future" => {
+            let elem = vals(__w, &mut children)?.into_iter().next().map(Box::new);
+            if head == "stream" {
+                ValSpec::Stream(elem)
+            } else {
+                ValSpec::Future(elem)
+            }
+        }
+        "flags" | "enum" => {
+            let labels: Vec<String> = children
+                .filter(|c| c.as_rule() == Rule::labellit)
+                .map(|c| unquote(c.as_str()))
+                .collect();
+            if head == "flags" {
+                ValSpec::Flags(labels)
+            } else {
+                ValSpec::Enum(labels)
+            }
+        }
+        "own" | "borrow" => {
+            let i = children
+                .find(|c| c.as_rule() == Rule::index)
+                .ok_or_else(|| format!("{head}: no resource type index"))?;
+            let n = resolve_comp_type(__w, &i)?;
+            if head == "own" {
+                ValSpec::Own(n)
+            } else {
+                ValSpec::Borrow(n)
+            }
+        }
+        // `keytype` is an atomic primitive inside `(map …)`; it reaches here
+        // only if the grammar gains an alternative this match has not learned.
+        other => {
+            let _ = children.peek();
+            return Err(format!(
+                "component type: `{other}` is not a defvaltype this walker knows"
+            ));
+        }
+    })
+}
+
+/// `(core type <id>? …)` — the CORE type space, which `thread.new-indirect`
+/// and the spawn rows index. A different space from `walk_comp_type`'s.
+fn walk_core_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let idx = __w.core_type_space;
+    __w.core_type_space += 1;
+    if let Some(id) = pair.into_inner().find(|c| c.as_rule() == Rule::id) {
+        __w.core_type_index.insert(id.as_str()[1..].to_string(), idx);
+    }
+    Ok(())
+}
+
+// ── The canon section ────────────────────────────────────────────────────────
+
+/// Resolve an `index` against a named index space.
+///
+/// A bare integer is the index. A `$id` must already be bound — an unbound one
+/// REFUSES rather than defaulting to 0. Substituting a plausible index is the
+/// `GLOBAL_GET` defect exactly: it links, it runs, and it addresses the wrong
+/// entity with nothing to detect it.
+fn resolve_idx(
+    pair: &Pair<Rule>,
+    space_name: &str,
+    names: &HashMap<String, u32>,
+) -> Result<u32, String> {
+    let raw = pair.as_str().trim();
+    match raw.strip_prefix('$') {
+        Some(name) => names.get(name).copied().ok_or_else(|| {
+            format!("canon: `${name}` is not bound in the {space_name} index space")
+        }),
+        None => raw
+            .replace('_', "")
+            .parse::<u32>()
+            .map_err(|_| format!("canon: `{raw}` is not a {space_name} index")),
+    }
+}
+
+/// The `index` inside a `(core func $i "name")`-style reference, or a bare one.
+fn idx_child<'a>(pair: &'a Pair<Rule>) -> Option<Pair<'a, Rule>> {
+    if pair.as_rule() == Rule::index {
+        return Some(pair.clone());
+    }
+    pair.clone().into_inner().find(|c| c.as_rule() == Rule::index)
+}
+
+/// Is this rule one of the atomic keyword rules that names a canon row?
+fn is_canon_op(rule: Rule) -> bool {
+    matches!(
+        rule,
+        Rule::canon_nullary_op
+            | Rule::canon_ty_op
+            | Rule::canon_ty_opts_op
+            | Rule::canon_ty_async_op
+            | Rule::canon_ctx_op
+            | Rule::canon_task_return_op
+            | Rule::canon_ws_mem_op
+            | Rule::canon_async_only_op
+            | Rule::canon_cancellable_op
+            | Rule::canon_errctx_op
+            | Rule::canon_thread_new_indirect_op
+            | Rule::canon_spawn_ref_op
+            | Rule::canon_spawn_indirect_op
+            | Rule::canon_avail_par_op
+    )
+}
+
+/// `(core func <id>?)` — the binder a canon row publishes.
+fn canon_binder_name(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+}
+
+/// One `<canonopt>` onto the row's options.
+fn apply_canonopt(
+    __w: &WastWalker,
+    opts: &mut vybe_ast::canon::CanonOptions,
+    pair: Pair<Rule>,
+) -> Result<(), String> {
+    let text = pair.as_str();
+    // Each option resolves against ITS OWN space. `(memory m)` is a core
+    // memidx and `(realloc f)` a core funcidx; consulting one map for both is
+    // the one-integer-two-index-spaces defect, and it fails silently — the
+    // name resolves, to the wrong entity.
+    let idx = |p: &Pair<Rule>,
+               space: &str,
+               names: &HashMap<String, u32>|
+     -> Result<u32, String> {
+        idx_child(p)
+            .ok_or_else(|| format!("canon: {space} option carries no index"))
+            .and_then(|i| resolve_idx(&i, space, names))
+    };
+    for child in pair.clone().into_inner() {
+        match child.as_rule() {
+            Rule::string_encoding_opt => {
+                let enc = child.as_str().trim_start_matches("string-encoding=");
+                opts.string_encoding = Some(enc.to_string());
+                return Ok(());
+            }
+            Rule::async_kw => {
+                opts.is_async = true;
+                return Ok(());
+            }
+            Rule::core_memidx_ref => {
+                opts.memory = Some(idx(&child, "core memory", &__w.core_memory_index)?);
+                return Ok(());
+            }
+            Rule::core_funcidx_ref => {
+                // Which option this is is decided by the KEYWORD, not the
+                // operand shape — `realloc`, `post-return` and `callback` all
+                // take a core funcidx.
+                let v = Some(idx(&child, "core func", &__w.core_func_index)?);
+                if text.starts_with("(realloc") {
+                    opts.realloc = v;
+                } else if text.starts_with("(post-return") {
+                    opts.post_return = v;
+                } else if text.starts_with("(callback") {
+                    opts.callback = v;
+                } else {
+                    return Err(format!("canon: unrecognised option `{text}`"));
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    Err(format!("canon: unrecognised option `{text}`"))
+}
+
+/// `(canon …)` — one row of the canon section.
+fn walk_canon(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let body = pair
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::canon_body)
+        .ok_or("canon: empty definition")?;
+    let row = body.into_inner().next().ok_or("canon: empty body")?;
+    let decl = match row.as_rule() {
+        Rule::canon_lift => walk_canon_lift(__w, row)?,
+        Rule::canon_lower => walk_canon_lower(__w, row)?,
+        Rule::canon_builtin => walk_canon_builtin(__w, row)?,
+        other => return Err(format!("canon: unexpected {other:?}")),
+    };
+    // A row's binder is how a core module reaches it. Recorded BEFORE the push
+    // so the canonidx is this row's own index.
+    if let Some(binder) = decl.binder.clone() {
+        let canonidx = __w.canon_section.len() as u32;
+        if let Some((prev, at)) = __w
+            .canon_binder
+            .insert(binder.clone(), (decl.builtin.clone(), canonidx))
+        {
+            return Err(format!(
+                "canon: `${binder}` is already bound by `{prev}` at canonidx {at}; \
+                 a core function binder names one definition"
+            ));
+        }
+        // A canon definition DEFINES a core function — `canon lower` and every
+        // canonical built-in do. Recording it in the core function index space
+        // is what makes `(core func $b)` and a positional `(core func 0)` name
+        // the same entity, and what a later `(alias core export …)` entry sits
+        // beside. Until this existed the space was read in six places and
+        // written in none, so every `$id` in it was "not bound" no matter what
+        // the source declared.
+        let fidx = __w.core_func_space.len() as u32;
+        __w.core_func_space
+            .push(CoreFunc::Canon(decl.builtin.clone(), canonidx));
+        __w.core_func_index.insert(binder, fidx);
+    }
+    __w.canon_section.push(decl);
+    Ok(())
+}
+
+fn walk_canon_lift(
+    __w: &mut WastWalker,
+    row: Pair<Rule>,
+) -> Result<vybe_ast::canon::CanonDecl, String> {
+    use vybe_ast::canon::{CanonCallee, CanonDecl};
+    let mut decl = CanonDecl::new("lift", None);
+    let mut bind: Option<String> = None;
+    for child in row.into_inner() {
+        match child.as_rule() {
+            Rule::core_funcidx_ref => {
+                let i = idx_child(&child).ok_or("canon lift: $callee carries no index")?;
+                let raw = i.as_str().trim().to_string();
+                // A NAMED callee resolves through the component's core function
+                // index space. The canon section records `$callee` as a plain
+                // number, and `call_canon_callee` reads that number as a CHUNK
+                // index — a different space, assigned by the compiler. Writing
+                // this space's position there would call whichever chunk happens
+                // to sit at it: two small integers meaning different things
+                // depending on who reads them, which is the exact defect the
+                // canon section exists to remove.
+                //
+                // So it refuses, and names the dependency rather than the
+                // source. A BARE integer is left alone — under the VM's current
+                // contract that number IS a chunk index, and every canon test
+                // that works today writes one.
+                if raw.starts_with('$') {
+                    let fidx = resolve_idx(&i, "core func", &__w.core_func_index)?;
+                    let item = __w.core_func_space.get(fidx as usize).ok_or_else(|| {
+                        format!(
+                            "canon lift: core func {fidx} is not defined (have {})",
+                            __w.core_func_space.len()
+                        )
+                    })?;
+                    decl.callee = Some(match item {
+                        // Hand over the NAMES. The number the runtime wants is a
+                        // chunk index only the compiler assigns, so writing this
+                        // space's position here would call whichever chunk
+                        // happened to sit at it.
+                        CoreFunc::Module(class, method) => CanonCallee::CoreExport {
+                            class: class.clone(),
+                            method: method.clone(),
+                        },
+                        // Lifting a canonical definition's core function is
+                        // spec-legal (a `canon lower` result can be lifted
+                        // again), but a canon row compiles to no chunk, so
+                        // there is nothing for `$callee` to name.
+                        CoreFunc::Canon(builtin, canonidx) => {
+                            return Err(format!(
+                                "canon lift: `{raw}` names the core function defined by \
+                                 `canon {builtin}` at canonidx {canonidx}. A canonical \
+                                 definition compiles to no chunk, so there is nothing \
+                                 for `$callee` to name"
+                            ))
+                        }
+                    });
+                    continue;
+                }
+                decl.callee = Some(CanonCallee::Core(resolve_idx(
+                    &i,
+                    "core func",
+                    &__w.core_func_index,
+                )?));
+            }
+            Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
+            Rule::externtype => {
+                // `bind-id(<externtype>)` — `(func $lifted (type $ft))`. The
+                // binder names the COMPONENT function this row defines, which
+                // is a different space from the `(core func $b)` binder every
+                // other row carries.
+                bind = child
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::id)
+                    .map(|c| c.as_str()[1..].to_string());
+                // `(func (type $ft))` names the lifted signature by INDEX,
+                // which is what the canon section records. The inline
+                // `(func (param …) (result …))` form states the type in place
+                // and has no index to record, so it refuses rather than
+                // recording `None` and letting a downstream `require_type`
+                // report a missing immediate the source did in fact supply.
+                let named = child
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::index);
+                match named {
+                    Some(i) => {
+                        decl.functype =
+                            Some(resolve_comp_type(__w, &i)?)
+                    }
+                    None => {
+                        return Err(format!(
+                            "canon lift: the lifted type is written inline (`{}`); \
+                             name it with `(type $t …)` and lift `(func (type $t))` \
+                             so the canon section can record its index",
+                            child.as_str().trim()
+                        ))
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // A `canon lift` DEFINES a component function whether or not it is named,
+    // so the space advances either way — skipping the unnamed ones would
+    // silently renumber every `canon lower` after them. The canonidx is this
+    // row's own: `walk_canon` pushes it immediately after we return.
+    let fidx = __w.comp_func_space.len() as u32;
+    __w.comp_func_space.push(CompFunc {
+        canonidx: Some(__w.canon_section.len() as u32),
+        functype: decl.functype,
+    });
+    if let Some(name) = bind {
+        if let Some(prev) = __w.comp_func_index.insert(name.clone(), fidx) {
+            return Err(format!(
+                "canon lift: `${name}` is already bound to component func {prev}; \
+                 a binder names one function"
+            ));
+        }
+    }
+    Ok(decl)
+}
+
+fn walk_canon_lower(
+    __w: &mut WastWalker,
+    row: Pair<Rule>,
+) -> Result<vybe_ast::canon::CanonDecl, String> {
+    use vybe_ast::canon::{CanonCallee, CanonDecl};
+    let mut decl = CanonDecl::new("lower", None);
+    for child in row.into_inner() {
+        match child.as_rule() {
+            Rule::funcidx_ref => {
+                let i = idx_child(&child).ok_or("canon lower: $callee carries no index")?;
+                // A COMPONENT funcidx — a different space from `lift`'s.
+                let fidx = resolve_idx(&i, "component func", &__w.comp_func_index)?;
+                let f = __w.comp_func_space.get(fidx as usize).ok_or_else(|| {
+                    format!(
+                        "canon lower: component func {fidx} is not in the component \
+                         function index space (have {}); `canon lift`, \
+                         `(alias export …)`, `(export …)` and `(import …)` each add \
+                         one — an import adds the SLOT without filling it",
+                        __w.comp_func_space.len()
+                    )
+                })?;
+                // ⛔ `ft` comes FROM THE CALLEE. `Binary.md:297` is
+                // `0x01 0x00 f:<funcidx> opts:<opts>` — the lower row carries
+                // no `ft` immediate at all, because `canon_lower(callee, ft,
+                // opts, flat_args)` receives it from the function being
+                // lowered. Re-deriving it here instead of taking the lift
+                // row's own would let the two disagree.
+                decl.functype = f.functype;
+                decl.callee = Some(CanonCallee::Component(fidx));
+            }
+            Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
+            Rule::core_func_bind => decl.binder = canon_binder_name(&child),
+            _ => {}
+        }
+    }
+    Ok(decl)
+}
+
+fn walk_canon_builtin(
+    __w: &mut WastWalker,
+    row: Pair<Rule>,
+) -> Result<vybe_ast::canon::CanonDecl, String> {
+    use vybe_ast::canon::CanonDecl;
+    let shape = row.into_inner().next().ok_or("canon: empty builtin")?;
+    let kind = shape.as_rule();
+    let mut decl = CanonDecl::default();
+    // Index immediates in SOURCE ORDER. Which space each belongs to is decided
+    // by the row, below — that is the whole point of spelling the rows out by
+    // shape instead of accepting `<name> <arg>*`.
+    let mut idxs: Vec<u32> = Vec::new();
+    let mut ctx_valtype: Option<String> = None;
+    let mut ctx_slot: Option<u32> = None;
+
+    for child in shape.into_inner() {
+        let r = child.as_rule();
+        if is_canon_op(r) {
+            decl.builtin = child.as_str().trim().to_string();
+            continue;
+        }
+        match r {
+            Rule::cancellable_kw => decl.cancellable = true,
+            Rule::shared_kw => decl.shared = true,
+            // A row-level `async?`. An `async` inside `<canonopt>` is nested in
+            // a `canonopt` pair and never reaches here.
+            Rule::async_kw => decl.is_async = true,
+            Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
+            Rule::core_func_bind => decl.binder = canon_binder_name(&child),
+            Rule::core_memidx_ref => {
+                let i = idx_child(&child).ok_or("canon: (memory …) carries no index")?;
+                decl.opts.memory = Some(resolve_idx(&i, "core memory", &__w.core_memory_index)?);
+            }
+            Rule::index => {
+                idxs.push(resolve_comp_type(__w, &child)?)
+            }
+            Rule::core_typeidx_ref => {
+                let i = idx_child(&child).ok_or("canon: core type ref carries no index")?;
+                idxs.push(resolve_idx(&i, "core type", &__w.core_type_index)?);
+            }
+            Rule::core_tableidx_ref => {
+                let i = idx_child(&child).ok_or("canon: core table ref carries no index")?;
+                idxs.push(resolve_idx(&i, "core table", &__w.core_table_index)?);
+            }
+            Rule::valtype => ctx_valtype = Some(child.as_str().trim().to_string()),
+            Rule::integer => {
+                ctx_slot = Some(
+                    child
+                        .as_str()
+                        .replace('_', "")
+                        .parse::<u32>()
+                        .map_err(|_| format!("canon: `{}` is not a u32", child.as_str()))?,
+                )
+            }
+            Rule::func_result_c => {
+                // `task.return (result <valtype>)?` — the result list. Only an
+                // indexed valtype has a number to record here.
+                if let Some(i) = child.clone().into_inner().find(|c| c.as_rule() == Rule::index) {
+                    decl.results
+                        .push(resolve_comp_type(__w, &i)?);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Assign the positional immediates to their fields, per row.
+    match kind {
+        Rule::canon_ty | Rule::canon_ty_opts | Rule::canon_ty_async | Rule::canon_spawn_ref => {
+            decl.ty = idxs.first().copied();
+        }
+        Rule::canon_thread_new_indirect | Rule::canon_spawn_indirect => {
+            decl.ty = idxs.first().copied();
+            decl.table = idxs.get(1).copied();
+        }
+        Rule::canon_ctx => {
+            let v = ctx_valtype.ok_or("canon context.*: no valtype immediate")?;
+            let i = ctx_slot.ok_or("canon context.*: no slot immediate")?;
+            decl.context = Some((v, i));
+        }
+        _ => {}
+    }
+    Ok(decl)
+}
+
 // ── Module ────────────────────────────────────────────────────────────────────
 
 /// Recursively collect the `$id` targets of every `global.set` instruction in
@@ -1864,10 +3855,30 @@ fn collect_global_set_targets(pair: Pair<Rule>, out: &mut Vec<String>) {
 /// `parse_err` spec tests): duplicate export names, a `start` referencing an
 /// undefined function, and a `global.set` on an immutable global. Returns the
 /// first violation found.
+fn find_first_id(pair: &Pair<Rule>) -> Option<String> {
+    let direct = |p: &Pair<Rule>| {
+        p.clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+            .map(|c| c.as_str().to_string())
+    };
+    if let Some(id) = direct(pair) {
+        return Some(id);
+    }
+    if pair.as_rule() == Rule::import_field {
+        // `(import "mod" "name" (memory $foo 1))` — the id belongs to the
+        // descriptor, exactly one level in.
+        return pair.clone().into_inner().find_map(|c| direct(&c));
+    }
+    None
+}
+
 fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
     use std::collections::HashSet;
     let mut export_names: HashSet<String> = HashSet::new();
     let mut func_names: HashSet<String> = HashSet::new();
+    let mut ids_by_space: std::collections::HashMap<&'static str, HashSet<String>> =
+        std::collections::HashMap::new();
     let mut func_count: usize = 0;
     let mut immut_globals: HashSet<String> = HashSet::new();
     let mut start_target: Option<String> = None;
@@ -1899,6 +3910,37 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
         }
         if is_def_kind && !is_inline_import {
             def_seen = true;
+        }
+        // The id, when the field declares one, belongs to that space alone.
+        // An import claims a name in the same space as a definition of its
+        // kind, so both are recorded here.
+        let space = match inner.as_rule() {
+            Rule::func_field => Some("func"),
+            Rule::table_field => Some("table"),
+            Rule::memory_field => Some("memory"),
+            Rule::global_field => Some("global"),
+            Rule::tag_field => Some("tag"),
+            Rule::import_field => {
+                let text = inner.as_str();
+                // The imported kind is the inner descriptor.
+                ["func", "table", "memory", "global", "tag"]
+                    .iter()
+                    .find(|kind| text.contains(&format!("({kind}")))
+                    .copied()
+            }
+            _ => None,
+        };
+        if let Some(space) = space {
+            if let Some(id) = find_first_id(&inner) {
+                // `$""` names nothing: an identifier's characters are its
+                // name, and the empty name is not one (`id.wast`).
+                if id == "$\"\"" || id == "$" {
+                    return Err("empty identifier".to_string());
+                }
+                if !ids_by_space.entry(space).or_default().insert(id.clone()) {
+                    return Err(format!("duplicate {space}: {id}"));
+                }
+            }
         }
         match inner.as_rule() {
             Rule::export_field => {
@@ -2065,8 +4107,31 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     if let (Some(alias), Some((m, n))) =
                         (scan_func_signature(inner.clone()).0, scan_import_names(&inner))
                     {
-                        __w.host_import_alias
-                            .insert(alias, format!("host:{m}:{n}"));
+                        // An instantiation's `with` clause wins over the
+                        // import's own (module, name) pair. That is what
+                        // `instantiate` MEANS: the module names a slot, the
+                        // instantiation says what fills it. Without this a
+                        // core module inside a component could only reach a
+                        // canon built-in by spelling the canonidx into the
+                        // import name itself.
+                        //
+                        // A `with` clause may supply either a CANON row or
+                        // another instance's export. Only the first is a host
+                        // callee; the second is an ordinary module-to-module
+                        // link and is bound in step 3c against `import_alias`.
+                        // Falling through to `host:{m}:{n}` for it would send
+                        // the call to a host function that may well exist,
+                        // which is a wrong answer rather than a missing one.
+                        match __w.component_imports.get(&(m.clone(), n.clone())) {
+                            Some(CoreFunc::Canon(builtin, canonidx)) => {
+                                __w.host_import_alias
+                                    .insert(alias, format!("host:canon:{builtin}@{canonidx}"));
+                            }
+                            Some(CoreFunc::Module(..)) => {}
+                            None => {
+                                __w.host_import_alias.insert(alias, format!("host:{m}:{n}"));
+                            }
+                        }
                     }
                     let (name, params_count, results_count) = scan_func_signature(inner);
                     index_arities.push(params_count);
@@ -2341,6 +4406,83 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     __w.struct_field_types = struct_field_types_map;
     __w.struct_field_counts = struct_counts;
     __w.type_func_params = func_param_counts;
+
+    // Call Tags proposal: record every `(call_tag …)`'s arity BEFORE any body
+    // is folded. A tag may be referenced before its declaration appears — wat
+    // permits forward references — and the folder needs the arity to know how
+    // many operands `call_with_tag` takes. Scanned here for the same reason
+    // `type_func_params` is: by the time instructions fold, it must be known.
+    {
+        let mut scanned: Vec<(String, (usize, usize))> = Vec::new();
+        for field in pair.clone().into_inner() {
+            for inner in field.into_inner() {
+                if inner.as_rule() != Rule::call_tag_field {
+                    continue;
+                }
+                let mut name: Option<String> = None;
+                let mut shape = (0usize, 0usize);
+                for child in inner.into_inner() {
+                    match child.as_rule() {
+                        Rule::id => name = Some(child.as_str().to_string()),
+                        Rule::typeuse => shape = count_typeuse_params_results(__w, &child),
+                        _ => {}
+                    }
+                }
+                if let Some(n) = name {
+                    scanned.push((n, shape));
+                }
+            }
+        }
+        for (n, shape) in scanned {
+            __w.call_tag_params.insert(n, shape);
+        }
+        // An IMPORTED call tag's local alias must be known before any body is
+        // walked, or a `call_with_tag $local` inside a func is folded before
+        // the import statement registers the alias and names a tag that does
+        // not exist.
+        let mut aliases: Vec<(String, String, (usize, usize))> = Vec::new();
+        for field in pair.clone().into_inner() {
+            for inner in field.into_inner() {
+                if inner.as_rule() != Rule::import_field {
+                    continue;
+                }
+                let strings: Vec<String> = inner
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::string)
+                    .map(|c| unquote(c.as_str()))
+                    .collect();
+                let Some(desc) = inner
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::import_desc)
+                else {
+                    continue;
+                };
+                if !desc.as_str().trim_start().starts_with("(call_tag") {
+                    continue;
+                }
+                let mut local = String::new();
+                let mut shape = (0usize, 0usize);
+                for child in desc.into_inner() {
+                    match child.as_rule() {
+                        Rule::id => {
+                            local = child.as_str().trim_start_matches('$').to_string()
+                        }
+                        Rule::typeuse => shape = count_typeuse_params_results(__w, &child),
+                        _ => {}
+                    }
+                }
+                if strings.len() >= 2 && !local.is_empty() {
+                    aliases.push((local, strings[1].clone(), shape));
+                }
+            }
+        }
+        for (local, external, shape) in aliases {
+            __w.call_tag_params.insert(local.clone(), shape);
+            __w.call_tag_params.insert(external.clone(), shape);
+            __w.call_tag_alias.insert(local, external);
+        }
+    }
     __w.type_func_results = func_result_counts;
     __w.type_func_sigs = func_sigs;
     // Each DEFINED function's own signature, collected here because `pair` is
@@ -2617,11 +4759,21 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         let (Some(local), Some((m, e))) = (local, target) else {
             continue;
         };
-        let resolved = __w.registered_module_class.get(&m).cloned()
-            .and_then(|class| {
-                __w.module_exports.get(&class).and_then(|ex| ex.get(&e).cloned())
+        // An instantiation's `with` clause wins over the registered-module
+        // table: the module names a slot, the instantiation says what fills
+        // it. `(register "m")` is the script-level fallback for a module that
+        // was NOT instantiated by a component.
+        let resolved = match __w.component_imports.get(&(m.clone(), e.clone())) {
+            Some(CoreFunc::Module(class, method)) => Some((class.clone(), method.clone())),
+            // A canon row is a host callee, already bound above.
+            Some(CoreFunc::Canon(..)) => None,
+            None => __w.registered_module_class.get(&m).cloned().and_then(|class| {
+                __w.module_exports
+                    .get(&class)
+                    .and_then(|ex| ex.get(&e).cloned())
                     .map(|method| (class, method))
-            });
+            }),
+        };
         // An unresolved import is left alone: it may be a host function the
         // profile's builtin table answers, which is how the WASI tests import.
         if let Some(t) = resolved {
@@ -2716,6 +4868,35 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         defined_func_seq += 1;
                         members.push(ClassMember::Method(Box::new(walk_func_field(__w, inner, idx)?)))
                     }
+                    // A `func_switch` "has no type and cannot be directly
+                    // called", but `ref.func` must still yield a funcref for
+                    // it — and in this front end a func IS a member of the
+                    // module class, which is what `ref.func` resolves against.
+                    // So it gets an empty member to be referenced by; the
+                    // dispatch never enters that body, because `call_with_tag`
+                    // recognises the chunk as a switch and picks an arm.
+                    Rule::func_switch_field => {
+                        let sw_name = inner
+                            .clone()
+                            .into_inner()
+                            .find(|c| c.as_rule() == Rule::id)
+                            .map(|c| c.as_str().trim_start_matches('$').to_string())
+                            .unwrap_or_default();
+                        pre_stmts.push(walk_func_switch_field(__w, inner.clone())?);
+                        members.push(ClassMember::Method(Box::new(Statement::new(
+                            StmtKind::FunctionDecl {
+                                name: sw_name,
+                                params: Vec::new(),
+                                return_type: None,
+                                body: Vec::new(),
+                                modifiers: Default::default(),
+                                handles: Vec::new(),
+                                is_async: false,
+                                is_generator: false,
+                                is_sub: false,
+                            },
+                        ))));
+                    }
                     Rule::import_field => {
                         // An imported tag takes the next slot in the tag index
                         // space, so it must advance the same ordinal counter a
@@ -2800,6 +4981,25 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // allocation. instance.wast:7 declares one inside
                     // `(module definition $M …)` and throws it at :44.
                     Rule::tag_field => pre_stmts.push(walk_tag_field(__w, inner)?),
+                    // Call Tags proposal: a call tag and a func_switch are
+                    // module ENTITIES, like a tag or a global, so they are
+                    // declarations that must exist before any body references
+                    // them.
+                    Rule::call_tag_field => pre_stmts.push(walk_call_tag_field(__w, inner)?),
+                    // `(import "m" "e" (call_tag $t …))` — the outer-import
+                    // spelling of the same declaration. Both spellings key on
+                    // the external name so an import and its export are ONE
+                    // tag; identity crossing the boundary is the point.
+                    Rule::import_field
+                        if inner
+                            .clone()
+                            .into_inner()
+                            .any(|c| c.as_rule() == Rule::import_desc
+                                && c.as_str().trim_start().starts_with("(call_tag")) =>
+                    {
+                        pre_stmts.push(walk_imported_call_tag(__w, inner)?);
+                    }
+
                     // Active element segment: populate the funcref table so
                     // call_indirect can dispatch through it. Emitted AFTER the
                     // class (a post-stmt) so the `ref.func` tear-off can resolve
@@ -2852,6 +5052,15 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // function with its own, so `ref.test`/`ref.cast` against a concrete
     // `(ref $t)` can match structurally — `Comptype_sub/func` compares the
     // parameter and result TYPES, and no name appears in the rule.
+    // Call Tags proposal: emit the `(func … (call_tag $t+))` declarations
+    // collected while walking the func fields. They are declarations, so they
+    // precede any body that calls through them.
+    result.extend(
+        std::mem::take(&mut __w.func_call_tag_decls)
+            .into_iter()
+            .map(|(func, tags)| Statement::new(StmtKind::WasmFuncCallTags { func, tags })),
+    );
+
     result.extend({
         __w.type_func_sigs
             .iter()
@@ -2997,6 +5206,38 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
                 }
             }
             Rule::import_inline => {}
+            // `(func … (call_tag $t+))` — which tags this func's funcref
+            // handles. Declaring ANY replaces the default of its own canonical
+            // tag, so dropping this on the floor (which is what happened before
+            // it was walked) silently left every func universally callable.
+            Rule::func_call_tags => {
+                let tags: Vec<String> = child
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::index)
+                    .map(|c| {
+                        let n = c.as_str().trim_start_matches('$').to_string();
+                        // An IMPORTED tag's local alias names the exporter's
+                        // entity — the same substitution `call_with_tag` does,
+                        // and it has to happen here too or the func declares it
+                        // handles a different tag than the one callers name.
+                        __w.call_tag_alias.get(&n).cloned().unwrap_or(n)
+                    })
+                    .collect();
+                if !tags.is_empty() {
+                    // An unnamed `(func (export "e") …)` has no `$id`; its
+                    // identity is the export name, which is also what it is
+                    // called as a member of the module class. `export_inline`
+                    // precedes `func_call_tags` in the grammar, so it is known.
+                    let owner = if func_name.is_empty() {
+                        export_names.first().cloned().unwrap_or_default()
+                    } else {
+                        func_name.clone()
+                    };
+                    if !owner.is_empty() {
+                        __w.func_call_tag_decls.push((owner, tags));
+                    }
+                }
+            }
             Rule::typeuse => {
                 params = walk_typeuse_params(child.clone())?;
                 // Inline `(result …)` count.
@@ -3919,6 +6160,19 @@ fn float_const_operand(args: Vec<Expression>, span: Span) -> Expression {
     }
 }
 
+/// How an integer-const rejection names what it was actually handed.
+///
+/// The message has to quote the FORM, because the two cases that reach it look
+/// nothing alike in source: `nan:arithmetic` (a float NaN spelling) and `1.5`.
+fn describe_const_operand(v: &Expression) -> String {
+    match &v.kind {
+        ExprKind::Lit(Literal::Float(f)) if f.is_nan() => "a NaN".to_string(),
+        ExprKind::Lit(Literal::Float(f)) => format!("the float {f}"),
+        ExprKind::Lit(Literal::Str(s)) => format!("the string {s:?}"),
+        _ => "a non-integer operand".to_string(),
+    }
+}
+
 fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
     // A memory op with NO explicit selector targets ITS module's memory 0 —
     // which, in a multi-module script, is program memory <base>. Explicit
@@ -4053,14 +6307,22 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // exactly representable and the i32 opcodes read the right bits.
         "i32.const" => {
             let v = args.into_iter().next().unwrap_or(Expression::int(0));
-            if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
-                let reinterp = (*n as u32) as i32 as i64;
-                Ok(Expression::with_span(
-                    ExprKind::Lit(Literal::Int(reinterp)),
+            match &v.kind {
+                ExprKind::Lit(Literal::Int(n)) => {
+                    let reinterp = (*n as u32) as i32 as i64;
+                    Ok(Expression::with_span(
+                        ExprKind::Lit(Literal::Int(reinterp)),
+                        span,
+                    ))
+                }
+                ExprKind::Lit(Literal::BigInt(n)) => Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Int((*n as u32) as i32 as i64)),
                     span,
-                ))
-            } else {
-                Ok(v)
+                )),
+                _ => Err(format!(
+                    "i32.const takes an integer literal, not {}",
+                    describe_const_operand(&v)
+                )),
             }
         }
         // i64.const needs an exact 64-bit value; a plain Int literal compiles to
@@ -4068,13 +6330,16 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // the i64 opcodes read via `as_i64`.
         "i64.const" => {
             let v = args.into_iter().next().unwrap_or(Expression::int(0));
-            if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
-                Ok(Expression::with_span(
+            match &v.kind {
+                ExprKind::Lit(Literal::Int(n)) => Ok(Expression::with_span(
                     ExprKind::Lit(Literal::BigInt(*n)),
                     span,
-                ))
-            } else {
-                Ok(v)
+                )),
+                ExprKind::Lit(Literal::BigInt(_)) => Ok(v),
+                _ => Err(format!(
+                    "i64.const takes an integer literal, not {}",
+                    describe_const_operand(&v)
+                )),
             }
         }
         "f64.const" => Ok(float_const_operand(args, span)),
@@ -4370,6 +6635,64 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // call_ref $sig: call a funcref value. args = [$sig, ...operands]; the
         // funcref is on top of the stack (last operand), the sig's params
         // precede it. Lower to a Call on the funcref value (compiler → CALL_REF).
+        // ── Call Tags proposal ────────────────────────────────────────────
+        // `call_with_tag $tag : [ti* funcref] -> [to*]` — same operand layout
+        // as `call_ref` (funcref on top), plus the tag immediate that says
+        // which CONVENTION the call is made under.
+        "call_with_tag" | "call_return_with_tag" => {
+            let mut rest = args;
+            let tag = if rest.is_empty() {
+                String::new()
+            } else {
+                wasm_type_ref_name(&rest.remove(0))
+            };
+            let callee = rest.pop().unwrap_or_else(Expression::null);
+            let tag = __w.call_tag_alias.get(&tag).cloned().unwrap_or(tag);
+            Ok(Expression::with_span(
+                ExprKind::WasmCallWithTag {
+                    tag,
+                    callee: Box::new(callee),
+                    args: rest,
+                    tail: name == "call_return_with_tag",
+                    table: None,
+                },
+                span,
+            ))
+        }
+        // "`call_indirect_with_tag $table $call_tag` is shorthand for
+        // `(call_with_tag $call_tag (table.get $table))`" — so it desugars to
+        // exactly that, and there is one path rather than two to keep in step.
+        "call_indirect_with_tag" => {
+            let mut rest = args;
+            let table = if rest.is_empty() {
+                Expression::float(0.0)
+            } else {
+                rest.remove(0)
+            };
+            let tag = if rest.is_empty() {
+                String::new()
+            } else {
+                wasm_type_ref_name(&rest.remove(0))
+            };
+            let elem_index = rest.pop().unwrap_or_else(Expression::null);
+            let table_idx = match &table.kind {
+                ExprKind::Lit(Literal::Int(i)) => *i as u32,
+                ExprKind::Ident(n) => resolve_table_index(__w, n) as u32,
+                _ => 0,
+            };
+            Ok(Expression::with_span(
+                ExprKind::WasmCallWithTag {
+                    tag,
+                    // The element index, not a funcref — `table` says so.
+                    callee: Box::new(elem_index),
+                    args: rest,
+                    tail: false,
+                    table: Some(table_idx),
+                },
+                span,
+            ))
+        }
+
         "call_ref" => {
             let mut rest = args;
             if !rest.is_empty() {
@@ -4805,7 +7128,224 @@ fn scan_import_names(pair: &Pair<Rule>) -> Option<(String, String)> {
 /// declares nothing — it names someone else's tag) has to be told apart from a
 /// definition here, not at the reference sites.
 #[allow(clippy::type_complexity)]
-fn scan_tag_decl(__w: &mut WastWalker, 
+/// `(call_tag $t (param …) (result …) (fallback $f)?)` — Call Tags proposal.
+///
+/// Records the tag's arity in `call_tag_params` as it goes: the folder needs it
+/// to know how many operands `call_with_tag` consumes, and a tag can be used
+/// before its declaration is walked.
+fn walk_call_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut name: Option<String> = None;
+    let mut params = 0usize;
+    let mut results = 0usize;
+    let mut fallback: Option<String> = None;
+    let mut canonical = false;
+    let mut imported: Option<String> = None;
+    let mut exported: Vec<String> = Vec::new();
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            // Strip the `$`: an instruction's `$t` arrives as `Ident("t")`, so
+            // keeping the sigil here would make the declaration and its uses
+            // two different names — and the call site would mint a second,
+            // empty tag rather than finding this one.
+            Rule::id => name = Some(child.as_str().trim_start_matches('$').to_string()),
+            Rule::typeuse => {
+                let (p, r) = count_typeuse_params_results(__w, &child);
+                params = p;
+                results = r;
+            }
+            Rule::call_tag_canon => canonical = true,
+            Rule::call_tag_fallback => {
+                if let Some(idx) = child.into_inner().find(|c| c.as_rule() == Rule::index) {
+                    fallback = Some(idx.as_str().trim_start_matches('$').to_string());
+                }
+            }
+            // "Similarly, one can import and export call tags." An IMPORTED tag
+            // keeps the exporter's identity, which is what makes the proposal's
+            // security property meaningful: a module that exports none of its
+            // tags cannot have its funcs reached indirectly from outside.
+            // Resolution is by NAME, exactly as exception-tag imports resolve,
+            // so the two modules meet at one entity.
+            Rule::import_inline => {
+                let names: Vec<String> = child
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::string)
+                    .map(|c| unquote(c.as_str()))
+                    .collect();
+                if names.len() == 2 {
+                    imported = Some(format!("{}:{}", names[0], names[1]));
+                }
+            }
+            Rule::export_inline => {
+                if let Some(sp) = child.into_inner().find(|c| c.as_rule() == Rule::string) {
+                    exported.push(unquote(sp.as_str()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let name = name.unwrap_or_else(|| format!("#call_tag{}", __w.call_tag_params.len()));
+    __w.call_tag_params.insert(name.clone(), (params, results));
+    // Both directions key the SAME entity name so an import and the export it
+    // resolves to are one tag — identity is the whole contract.
+    if let Some(ref ext) = imported {
+        __w.call_tag_params.insert(ext.clone(), (params, results));
+    }
+    for e in &exported {
+        __w.call_tag_params.insert(e.clone(), (params, results));
+        // Register the tag under its export name as well, so an importing
+        // module naming that export resolves to THIS entity.
+        __w.call_tag_alias.insert(name.clone(), e.clone());
+    }
+    Ok(Statement::with_span(
+        StmtKind::WasmCallTagDecl {
+            // An imported tag is the EXPORTER's entity: key by the external
+            // name so both modules resolve to one id.
+            // The declared `$id` stays the key either way — the call site
+            // names the tag by it. `canonical` only changes which ENTITY that
+            // name resolves to: the signature-interned one, or a fresh one.
+            // Entity name, in priority order: an IMPORT takes the exporter's
+            // identity; an EXPORT publishes under the export name so an
+            // importer naming it finds this entity; otherwise the local `$id`.
+            name: imported
+                .or_else(|| exported.first().cloned())
+                .unwrap_or(name),
+            params: params as u8,
+            results: results as u8,
+            canonical,
+            fallback,
+        },
+        span,
+    ))
+}
+
+/// `(import "m" "e" (call_tag $t (param …) (result …)))` — the outer spelling.
+///
+/// Keyed by `m:e`, the EXTERNAL name, exactly as the inline
+/// `(call_tag $t (import "m" "e") …)` form is, so the two spellings and the
+/// exporting module's declaration all resolve to one entity.
+fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let strings: Vec<String> = pair
+        .clone()
+        .into_inner()
+        .filter(|c| c.as_rule() == Rule::string)
+        .map(|c| unquote(c.as_str()))
+        .collect();
+    // The EXPORT NAME is the shared identity: a wast script publishes exports
+    // by name, so the importing module's tag and the exporting module's are the
+    // same entity precisely when they agree on it.
+    let external = strings.get(1).cloned().unwrap_or_default();
+    let mut local = String::new();
+    let mut params = 0usize;
+    let mut results = 0usize;
+    if let Some(desc) = pair
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::import_desc)
+    {
+        for child in desc.into_inner() {
+            match child.as_rule() {
+                Rule::id => local = child.as_str().trim_start_matches('$').to_string(),
+                Rule::typeuse => {
+                    let (p, r) = count_typeuse_params_results(__w, &child);
+                    params = p;
+                    results = r;
+                }
+                _ => {}
+            }
+        }
+    }
+    // The LOCAL alias is what this module's `call_with_tag` names, so it must
+    // resolve to the imported entity — register both spellings.
+    if !local.is_empty() {
+        __w.call_tag_params.insert(local.clone(), (params, results));
+        __w.call_tag_alias.insert(local, external.clone());
+    }
+    __w.call_tag_params.insert(external.clone(), (params, results));
+    Ok(Statement::with_span(
+        StmtKind::WasmCallTagDecl {
+            name: external,
+            params: params as u8,
+            results: results as u8,
+            canonical: false,
+            fallback: None,
+        },
+        span,
+    ))
+}
+
+/// `(func_switch $s (case $tag $func)* (forward $other)?)`.
+fn walk_func_switch_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut name: Option<String> = None;
+    let mut arms: Vec<(String, String)> = Vec::new();
+    let mut forward: Option<String> = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::id => name = Some(child.as_str().trim_start_matches('$').to_string()),
+            Rule::func_switch_arm => {
+                let idxs: Vec<String> = child
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::index)
+                    .map(|c| c.as_str().trim_start_matches('$').to_string())
+                    .collect();
+                if idxs.len() == 2 {
+                    arms.push((idxs[0].clone(), idxs[1].clone()));
+                }
+            }
+            Rule::func_switch_forward => {
+                if let Some(idx) = child.into_inner().find(|c| c.as_rule() == Rule::index) {
+                    forward = Some(idx.as_str().trim_start_matches('$').to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let _ = &__w;
+    Ok(Statement::with_span(
+        StmtKind::WasmFuncSwitchDecl {
+            name: name.unwrap_or_default(),
+            arms,
+            forward,
+        },
+        span,
+    ))
+}
+
+/// Parameter and result counts of a `typeuse`, for a call tag's signature.
+fn count_typeuse_params_results(__w: &mut WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
+    let mut params = 0usize;
+    let mut results = 0usize;
+    for child in pair.clone().into_inner() {
+        match child.as_rule() {
+            Rule::param => {
+                params += child
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                    .count()
+                    .max(1);
+            }
+            Rule::result => {
+                results += child
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                    .count()
+                    .max(1);
+            }
+            // `(type $t)` — take the referenced type's shape.
+            Rule::index => {
+                let n = child.as_str().to_string();
+                if let Some(p) = __w.type_func_params.get(&n).copied() {
+                    params = p;
+                }
+            }
+            _ => {}
+        }
+    }
+    (params, results)
+}
+
+fn scan_tag_decl(__w: &mut WastWalker,
     pair: &Pair<Rule>,
 ) -> (Option<String>, u8, Vec<String>, Option<(String, String)>) {
     let (name, arity) = scan_tag_signature(__w, pair.clone());
@@ -5805,13 +8345,16 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
         if pair.as_rule() == Rule::plain_instr || pair.as_rule() == Rule::folded_instr {
             let mut name: Option<String> = None;
             let mut first_int: Option<String> = None;
+            let mut first_float: Option<String> = None;
             for c in pair.clone().into_inner() {
                 match c.as_rule() {
                     Rule::instr_name if name.is_none() => name = Some(c.as_str().to_string()),
-                    Rule::instr_arg if first_int.is_none() => {
+                    Rule::instr_arg if first_int.is_none() && first_float.is_none() => {
                         if let Some(inner) = c.into_inner().next() {
-                            if inner.as_rule() == Rule::integer {
-                                first_int = Some(inner.as_str().to_string());
+                            match inner.as_rule() {
+                                Rule::integer => first_int = Some(inner.as_str().to_string()),
+                                Rule::float => first_float = Some(inner.as_str().to_string()),
+                                _ => {}
                             }
                         }
                     }
@@ -5826,6 +8369,14 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
                     if const_literal_out_of_range(n, lit) {
                         return true;
                     }
+                }
+                // An INTEGER const takes an integer literal. The grammar's
+                // `float` rule matches `nan`, `nan:arithmetic`, `inf` and any
+                // decimal-point form, and the generic operand rule lets one
+                // reach `i32.const` — which the spec calls malformed
+                // (`i32.wast`, `i64.wast`: "unexpected token").
+                if first_float.is_some() && matches!(n, "i32.const" | "i64.const") {
+                    return true;
                 }
             }
         }
@@ -5993,6 +8544,14 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
     let Some(source) = quoted else {
         return Ok(Statement::with_span(StmtKind::Empty, span));
     };
+    let source = {
+        let trimmed = source.trim();
+        if trimmed.starts_with("(module") {
+            trimmed.to_string()
+        } else {
+            format!("(module {trimmed})")
+        }
+    };
     let parsed = match WastParser::parse(Rule::program, &source) {
         // Rejected by the grammar, as the spec requires: discharged.
         Err(_) => return Ok(Statement::with_span(StmtKind::Empty, span)),
@@ -6002,7 +8561,16 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
     // they are checked over the parse tree instead of by tightening rules that
     // every well-formed file also goes through. Both are confined to this
     // assertion: nothing here runs during ordinary compilation.
-    if quoted_module_is_malformed(parsed) {
+    if quoted_module_is_malformed(parsed.clone()) {
+        return Ok(Statement::with_span(StmtKind::Empty, span));
+    }
+    fn any_module_invalid(pair: Pair<Rule>) -> bool {
+        if pair.as_rule() == Rule::module && validate_module(&pair).is_err() {
+            return true;
+        }
+        pair.into_inner().any(any_module_invalid)
+    }
+    if parsed.into_iter().any(any_module_invalid) {
         return Ok(Statement::with_span(StmtKind::Empty, span));
     }
     Ok(Statement::with_span(
@@ -7943,6 +10511,27 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
             } else {
                 1
             }
+        }
+
+        // A tagged call pops the funcref plus the TAG's params — the tag
+        // carries the signature here, not a `$sig` immediate.
+        "call_with_tag" | "call_return_with_tag" => {
+            let params = args
+                .first()
+                .map(wasm_type_ref_name)
+                .and_then(|n| __w.call_tag_params.get(&n).map(|(p, _)| *p))
+                .unwrap_or(0);
+            1 + params
+        }
+        // `$table $call_tag` are both immediates; the element index is the one
+        // stack operand, plus the tag's params.
+        "call_indirect_with_tag" => {
+            let params = args
+                .get(1)
+                .map(wasm_type_ref_name)
+                .and_then(|n| __w.call_tag_params.get(&n).map(|(p, _)| *p))
+                .unwrap_or(0);
+            1 + params
         }
 
         "call_indirect" | "return_call_indirect" => 2,

@@ -304,11 +304,17 @@ const PACKAGES: &[(&str, &[(&str, &[&str])])] = &[
 
 /// `wasi:*` packages that are NOT part of 0.3.1 and are not violations.
 ///
-/// Each is a separate WASI proposal at its own phase with no WIT vendored in
-/// this tree, so there is nothing here to check them against. Listing them is
-/// the honest position: they are out of scope for 0.3.1, rather than either
-/// silently tolerated or wrongly failed.
-const SEPARATE_PROPOSALS: &[&str] = &["wasi:crypto", "wasi:sql", "wasi:logging"];
+/// `wasi:crypto`, `wasi:sql` and `wasi:logging` are each at their own phase
+/// with no WIT vendored in this tree, so there is nothing here to check them
+/// against. Listing them is the honest position: they are out of scope for
+/// 0.3.1, rather than either silently tolerated or wrongly failed.
+///
+/// `wasi:tls` is different and worth the distinction: its WIT IS vendored
+/// (`proposals/wasi-tls/wit-0.3.0-draft/`) and its surface IS checked, by
+/// `tls.rs`, against the five functions that draft declares. It appears here
+/// only because it is not one of the six — not because nothing verifies it.
+const SEPARATE_PROPOSALS: &[&str] =
+    &["wasi:crypto", "wasi:sql", "wasi:logging", "wasi:tls"];
 
 /// Packages 0.3.1 DELETED that this tree still registers.
 ///
@@ -320,16 +326,13 @@ const SEPARATE_PROPOSALS: &[&str] = &["wasi:crypto", "wasi:sql", "wasi:logging"]
 /// `stream<u8>` directly where 0.2 handed back an `input-stream` resource.
 ///
 /// It is named here rather than omitted so the debt is structural: DELETING
-/// this entry, and watching the test stay green, is the definition of done for
-/// that work. An exception no test mentions is indistinguishable from an
-/// oversight.
 /// EMPTY, and that is the point.
 ///
-/// `wasi:io` was the only entry. It is now registered nowhere — `io::register`
-/// is not called from `lib.rs`, `register_wasi_io` is not called from
-/// `sockets.rs`, and `register_io_streams` is not called from `filesystem.rs`.
-/// Deleting the entry and watching this file stay green was the stated
-/// definition of done, so the entry is deleted.
+/// `wasi:io` was the only entry, and it is now gone from the tree outright:
+/// `platforms/wasi/src/io.rs` is DELETED, along with `register_wasi_io`, the
+/// 0.2 `register_wasi_sockets`, `register_wasi_sockets_method_forms` and
+/// `register_io_streams`. Deleting the entry and watching this file stay green
+/// was the stated definition of done.
 ///
 /// Keep the list rather than the concept: the next deleted-but-still-live
 /// package needs somewhere to be NAMED, and an exemption no test mentions is
@@ -339,6 +342,10 @@ const SEPARATE_PROPOSALS: &[&str] = &["wasi:crypto", "wasi:sql", "wasi:logging"]
 const RETIRING: &[&str] = &[];
 
 /// Every registered host function whose module starts `wasi:`.
+pub(crate) fn registered_wasi_names_for_test() -> std::collections::BTreeSet<(String, String)> {
+    registered_wasi_names().into_iter().collect()
+}
+
 fn registered_wasi_names() -> Vec<(String, String)> {
     let mut vm = VM::new();
     register_platforms(&mut vm, &Capabilities::all());

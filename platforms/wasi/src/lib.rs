@@ -16,9 +16,7 @@
 
 pub mod crypto;
 pub mod filesystem;
-pub mod fsops;
 pub mod http;
-pub mod io;
 pub mod plugin;
 pub mod sql;
 pub use plugin::Plugin;
@@ -26,9 +24,9 @@ pub use plugin::Plugin;
 pub mod clock;
 pub mod console;
 pub mod env;
-pub mod fs;
 pub mod random;
 pub mod sockets;
+pub mod tls;
 
 use vybe_runtime::VM;
 
@@ -37,21 +35,7 @@ use vybe_runtime::VM;
 pub fn register(vm: &mut VM) {
     crypto::register(vm);
     filesystem::register(vm);
-    // `io::register` is NOT called. `wasi:io` does not exist in WASI 0.3.1 —
-    // streams and futures became Component Model built-ins, reached through
-    // `canon stream.*` / `canon future.*`, which is why `read-via-stream` and
-    // `tcp-socket.receive` answer a `stream<u8>` rather than an
-    // `input-stream` resource.
-    //
-    // The 23 functions in `io.rs` (17 `streams`, 4 `poll`, 2 `error`) are a
-    // deleted package's surface. They were exempted from the coverage gate via
-    // `interface_coverage.rs`'s `RETIRING` list, which is how the gate stayed
-    // GREEN while a whole non-existent package was live — the same blind spot
-    // as a `#[ignore]`. Registering nothing is what makes the exemption
-    // unnecessary.
-    //
-    // The file stays, like `fs.rs`: deleting source is not what makes an
-    // interface absent from the component's imports — not registering it is.
+    tls::register(vm);
 }
 
 /// VM hot-reset: the state this platform still clears BY HAND, because clearing

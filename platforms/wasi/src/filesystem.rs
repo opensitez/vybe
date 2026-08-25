@@ -11,27 +11,9 @@
 //!   - `wasi:filesystem/types` — `[method]descriptor.<op>` and
 //!     `[method]directory-entry-stream.read-directory-entry`
 //!   - `wasi:filesystem/preopens` — `get-directories`
-//!   - `wasi:io/streams` — `[method]input-stream.blocking-read`
-//!     (and friends) for reading file streams returned by
-//!     `read-via-stream`. Socket streams already live there;
-//!     this module extends the same registry to file streams.
-//!
-//! Resources (descriptors, directory-entry-streams, input-streams,
-//! output-streams) are returned to the guest as Vybe `Object`s
-//! carrying internal `__wasi_kind` + `__wasi_id` properties; the
-//! actual `std::fs` handles live in a host-side registry indexed by
-//! that id. This mirrors how `wasi:sockets` already represents its
-//! resources in the host.
-//!
-//! Errors are returned as Vybe Objects with a `__wasi_error` field
-//! carrying the WIT `error-code` enum value as a string
-//! (`"no-entry"`, `"is-directory"`, `"not-empty"`, etc.). Real
-//! Component-Model bindings would marshal these as exceptions; the
-//! Vybe VM doesn't have a host-fn exception channel yet, so the
-//! object-with-error-field is the carrier.
 
 use std::collections::HashMap;
-use std::fs::{File, FileTimes, OpenOptions, ReadDir};
+use std::fs::{File, FileTimes, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -53,24 +35,9 @@ pub(super) enum DescriptorKind {
     Directory(PathBuf),
 }
 
-#[derive(Debug)]
-pub(super) enum InputStreamKind {
-    File { file: File, position: u64 },
-    Buffer { data: Vec<u8>, position: usize },
-}
-
-#[derive(Debug)]
-pub(super) enum OutputStreamKind {
-    File { file: File },
-    Append(PathBuf),
-}
-
 #[derive(Default)]
 pub(super) struct Registry {
     pub(super) descriptors: HashMap<u32, DescriptorKind>,
-    pub(super) dir_streams: HashMap<u32, ReadDir>,
-    pub(super) input_streams: HashMap<u32, InputStreamKind>,
-    pub(super) output_streams: HashMap<u32, OutputStreamKind>,
 }
 
 /// Descriptor/stream ids, deliberately OUTSIDE the registry: this counter must
@@ -98,24 +65,9 @@ pub(super) fn registry() -> &'static Mutex<Registry> {
     vybe_runtime::resources::get::<Registry>()
 }
 
-/// Register an in-memory byte buffer as a readable `input-stream` resource.
-/// Returns the stream id; callers should wrap it as `make_resource(KIND_INPUT_STREAM, id)`.
-/// Used by `wasi:http/types.[method]incoming-body.stream` to expose response body bytes
-/// through the standard `[method]input-stream.blocking-read` interface.
-pub fn register_buffer_stream(data: Vec<u8>) -> u32 {
-    let mut reg = registry().lock().unwrap();
-    let id = alloc_id();
-    reg.input_streams
-        .insert(id, InputStreamKind::Buffer { data, position: 0 });
-    id
-}
-
 // ── Resource <-> Value marshalling ────────────────────────────────
 
 const KIND_DESCRIPTOR: &str = "descriptor";
-const KIND_DIR_STREAM: &str = "directory-entry-stream";
-pub(super) const KIND_INPUT_STREAM: &str = "input-stream";
-pub(super) const KIND_OUTPUT_STREAM: &str = "output-stream";
 
 fn make_resource(kind: &str, id: u32) -> Value {
     let mut o = Object::new();
@@ -407,11 +359,6 @@ fn u64_arg(args: &[Value], idx: usize, default: u64) -> u64 {
 pub fn register(vm: &mut VM) {
     register_preopens(vm);
     register_types(vm);
-    // `register_io_streams` is NOT called: it registered `wasi:io/streams`
-    // entries scoped to file streams, and 0.3.1 has no `wasi:io`. A file is
-    // read through `read-via-stream`, which answers a `stream<u8>` the guest
-    // drains with `canon stream.read` — the resource these methods hung off
-    // does not exist any more.
 }
 
 fn register_preopens(vm: &mut VM) {
@@ -793,27 +740,6 @@ fn register_types(vm: &mut VM) {
     // A TUPLE, and element 0 is the readable end — the same shape every 0.3.1
     // stream producer answers with (`wasi:cli/stdin.read-via-stream`,
     // `[static]request.consume-body`). It used to answer a bare registry
-    // object readable only through the `wasi:io/streams` methods below, which
-    // is a package 0.3.1 deleted: a guest doing the conformant thing
-    // (`canon stream.read`) got a value that arm cannot accept, while the
-    // non-conformant path worked. That is the failure mode this whole
-    // migration exists to remove.
-    //
-    // The bytes are pushed EAGERLY, from `offset` to EOF, and the stream is
-    // then closed. Two reasons, and the second is the load-bearing one:
-    //
-    //   - A file's bytes are available synchronously, exactly as a piped
-    //     stdin's are, so there is nothing to wait for.
-    //   - `canon stream.read` on an open-but-empty end answers BLOCKED and
-    //     leaves the end COPYING, where the NEXT read traps. Closing is what
-    //     makes the guest's drain loop terminate.
-    //
-    // The cost is real and stated rather than hidden: this is O(bytes from
-    // offset) per call, so a positioned record read materialises the tail of
-    // the file. The fix is a refill hook on the event loop that tops an open
-    // stream up on demand; a bounded chunk that then closed would instead
-    // SILENTLY TRUNCATE, and answering less than was asked for without saying
-    // so is worse than answering slowly.
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.read-via-stream",
@@ -862,13 +788,6 @@ fn register_types(vm: &mut VM) {
     // The DATA STREAM IS AN ARGUMENT and the answer is a future — the same
     // shape as `wasi:cli/stdout.write-via-stream(data)`. It used to be the 0.2
     // form, `write-via-stream(offset) -> output-stream`: a writable resource
-    // the guest then fed through `wasi:io/streams`, a package 0.3 deleted. So
-    // the direction inverted — the guest now produces the bytes and this
-    // consumes them, rather than handing back an end to push into.
-    //
-    // `ctx.stream_drain` takes either form the guest can hand over: an
-    // `ObjectKind::Stream` marker, or the i32 readable-end handle a conforming
-    // component lowers (CanonicalABI §HandleTable).
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.write-via-stream",
@@ -938,13 +857,39 @@ fn register_types(vm: &mut VM) {
         }),
     );
 
-    // advise(offset, length, advice) → result — advisory access hint, best-effort stub
+    // §advise(offset, length, advice) -> result<_, error-code>
+    //
+    // Advisory: "similar to `posix_fadvise`", which POSIX allows to be a no-op,
+    // and macOS provides no `posix_fadvise` to forward to. Doing no I/O is the
+    // conformant answer. The ENUM still has to be honoured — an undeclared
+    // discriminant is `invalid-argument`, not `ok`.
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.advise",
         Box::new(|_ctx, args| {
             if resource_id(&args[0].clone(), KIND_DESCRIPTOR).is_none() {
                 return err("bad-descriptor");
+            }
+            // `enum advice` declares SIX cases, in this order.
+            const ADVICE: &[&str] = &[
+                "normal",
+                "sequential",
+                "random",
+                "will-need",
+                "dont-need",
+                "no-reuse",
+            ];
+            let ok = match args.get(3) {
+                // Absent is treated as `normal`, the enum's zero case.
+                None | Some(Value::Null) => true,
+                Some(Value::String(name)) => ADVICE.contains(&name.as_ref()),
+                Some(value) => {
+                    let n = value.as_f64();
+                    n >= 0.0 && n < ADVICE.len() as f64 && n.fract() == 0.0
+                }
+            };
+            if !ok {
+                return err("invalid-argument");
             }
             Value::Null
         }),
@@ -1294,11 +1239,6 @@ fn register_types(vm: &mut VM) {
     // `filesystem-error-code` is NOT registered: WASI 0.3.1 deleted it.
     //
     // Its whole job was `func(err: borrow<io-error>) -> option<error-code>` —
-    // downcasting a `wasi:io/error` to a filesystem code. 0.3.1 deletes the
-    // `wasi:io` package outright (streams and futures became Component Model
-    // built-ins), so its ARGUMENT TYPE no longer exists and every 0.3.1
-    // filesystem operation returns `result<_, error-code>` directly. There is
-    // nothing left for it to convert.
 }
 
 /// `variant descriptor-type` — `types.wit:50`, in DECLARATION ORDER.
@@ -1363,228 +1303,7 @@ fn path_of(kind: &DescriptorKind) -> PathBuf {
     }
 }
 
-// ── wasi:io/streams (file streams) ────────────────────────────────
-//
-// `wasi:sockets` already registers `wasi:io/streams.read` etc. for
-// socket streams. Those handlers don't recognise our file-stream
-// resource shape (they look for socket-specific properties), so we
-// register additional `wasi:io/streams` entries scoped to the
-// `[method]input-stream.<op>` canonical names. Calls flow to
-// whichever handler matches the resource shape — in our case, file
-// streams returned by `read-via-stream`.
 
-fn register_io_streams(vm: &mut VM) {
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]input-stream.blocking-read",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_INPUT_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let max = u64_arg(args, 1, u64::MAX);
-            let mut reg = registry().lock().unwrap();
-            let Some(stream) = reg.input_streams.get_mut(&id) else {
-                return err("bad-descriptor");
-            };
-            match stream {
-                InputStreamKind::File { file, position } => {
-                    let cap = max.min(64 * 1024) as usize;
-                    let mut buf = vec![0u8; cap];
-                    match file.read(&mut buf) {
-                        Ok(n) => {
-                            buf.truncate(n);
-                            *position += n as u64;
-                            let elements: Vec<Value> =
-                                buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
-                        }
-                        Err(e) => err(map_io_error(&e)),
-                    }
-                }
-                InputStreamKind::Buffer { data, position } => {
-                    let remaining = data.len().saturating_sub(*position);
-                    let cap = (max as usize).min(remaining).min(64 * 1024);
-                    let slice = &data[*position..*position + cap];
-                    let elements: Vec<Value> =
-                        slice.iter().map(|b| Value::I32(*b as i32)).collect();
-                    *position += cap;
-                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
-                }
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_INPUT_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let max = u64_arg(args, 1, u64::MAX);
-            let mut reg = registry().lock().unwrap();
-            let Some(stream) = reg.input_streams.get_mut(&id) else {
-                return err("bad-descriptor");
-            };
-            match stream {
-                InputStreamKind::File { file, position } => {
-                    let cap = max.min(64 * 1024) as usize;
-                    let mut buf = vec![0u8; cap];
-                    match file.read(&mut buf) {
-                        Ok(n) => {
-                            buf.truncate(n);
-                            *position += n as u64;
-                            let elements: Vec<Value> =
-                                buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
-                        }
-                        Err(e) => err(map_io_error(&e)),
-                    }
-                }
-                InputStreamKind::Buffer { data, position } => {
-                    let remaining = data.len().saturating_sub(*position);
-                    let cap = (max as usize).min(remaining).min(64 * 1024);
-                    let slice = &data[*position..*position + cap];
-                    let elements: Vec<Value> =
-                        slice.iter().map(|b| Value::I32(*b as i32)).collect();
-                    *position += cap;
-                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
-                }
-            }
-        }),
-    );
-
-    // output-stream write/flush/check-write/subscribe
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]output-stream.write",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
-            let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
-                let inner = arr.lock().unwrap();
-                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
-                    elems.iter().map(|v| v.as_f64() as u8).collect()
-                } else {
-                    return err("invalid");
-                }
-            } else {
-                return err("invalid");
-            };
-            let mut reg = registry().lock().unwrap();
-            match reg.output_streams.get_mut(&id) {
-                Some(OutputStreamKind::File { file }) => match file.write_all(&bytes) {
-                    Ok(_) => Value::F64(bytes.len() as f64),
-                    Err(e) => err(map_io_error(&e)),
-                },
-                Some(OutputStreamKind::Append(path)) => {
-                    let path = path.clone();
-                    match OpenOptions::new()
-                        .append(true)
-                        .open(&path)
-                        .and_then(|mut f| f.write_all(&bytes))
-                    {
-                        Ok(_) => Value::F64(bytes.len() as f64),
-                        Err(e) => err(map_io_error(&e)),
-                    }
-                }
-                None => err("bad-descriptor"),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]output-stream.blocking-write-and-flush",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
-            let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
-                let inner = arr.lock().unwrap();
-                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
-                    elems.iter().map(|v| v.as_f64() as u8).collect()
-                } else {
-                    return err("invalid");
-                }
-            } else {
-                return err("invalid");
-            };
-            let mut reg = registry().lock().unwrap();
-            match reg.output_streams.get_mut(&id) {
-                Some(OutputStreamKind::File { file }) => {
-                    if file.write_all(&bytes).is_err() || file.flush().is_err() {
-                        return err("io");
-                    }
-                    Value::Null
-                }
-                Some(OutputStreamKind::Append(path)) => {
-                    let path = path.clone();
-                    match OpenOptions::new()
-                        .append(true)
-                        .open(&path)
-                        .and_then(|mut f| {
-                            f.write_all(&bytes)?;
-                            f.flush()
-                        }) {
-                        Ok(_) => Value::Null,
-                        Err(e) => err(map_io_error(&e)),
-                    }
-                }
-                None => err("bad-descriptor"),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]output-stream.check-write",
-        Box::new(|_ctx, args| {
-            if resource_id(&args[0].clone(), KIND_OUTPUT_STREAM).is_none() {
-                return err("bad-descriptor");
-            }
-            Value::F64(65536.0) // always-ready: 64 KiB budget
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]output-stream.flush",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_OUTPUT_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let mut reg = registry().lock().unwrap();
-            match reg.output_streams.get_mut(&id) {
-                Some(OutputStreamKind::File { file }) => {
-                    let _ = file.flush();
-                    Value::Null
-                }
-                Some(OutputStreamKind::Append(_)) => Value::Null,
-                None => err("bad-descriptor"),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:io/streams",
-        "[method]output-stream.subscribe",
-        Box::new(|_ctx, args| {
-            if resource_id(&args[0].clone(), KIND_OUTPUT_STREAM).is_none() {
-                return err("bad-descriptor");
-            }
-            // Output streams are always ready in our sync model — return a pre-resolved pollable.
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("Pollable")));
-            obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
-}
 
 // ── No test-only helpers ──────────────────────────────────────────
 //

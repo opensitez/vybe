@@ -354,6 +354,142 @@ fn a_connection_opened_through_types_reaches_the_shared_listener() {
     );
 }
 
+/// Keep-alive is FOUR independent options, and each one round-trips.
+///
+/// These eight functions were registered and never exercised by any test —
+/// found by diffing the vendored WIT's declared surface against the names the
+/// behavioural tests actually call, rather than against the coverage list
+/// (which only proves a name is REGISTERED, not that it works).
+///
+/// `enabled` is asserted exactly, because a bool cannot be adjusted by the
+/// kernel. The three durations and the count are asserted as "the get
+/// succeeds and answers something of the right shape" — the same reasoning
+/// `buffer_size_options_reach_the_real_socket` documents: these are real
+/// socket options, so the value that comes back is the KERNEL's and may
+/// legitimately differ from the one that went in.
+#[test]
+fn keep_alive_enabled_round_trips() {
+    let mut vm = socket_vm();
+    let socket = create_tcp(&mut vm);
+
+    // Default is off, per §set-keep-alive-enabled's "equivalent to SO_KEEPALIVE".
+    assert_eq!(
+        call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.get-keep-alive-enabled",
+            vec![socket.clone()],
+        ),
+        Value::Bool(false),
+        "a fresh socket has keep-alive disabled"
+    );
+
+    assert_ok(
+        &call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.set-keep-alive-enabled",
+            vec![socket.clone(), Value::Bool(true)],
+        ),
+        "set-keep-alive-enabled",
+    );
+    assert_eq!(
+        call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.get-keep-alive-enabled",
+            vec![socket.clone()],
+        ),
+        Value::Bool(true),
+        "keep-alive reads back as enabled after being set"
+    );
+
+    // And OFF again — a setter that only ever latches one way would pass a
+    // test that just turned it on.
+    assert_ok(
+        &call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.set-keep-alive-enabled",
+            vec![socket.clone(), Value::Bool(false)],
+        ),
+        "set-keep-alive-enabled(false)",
+    );
+    assert_eq!(
+        call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.get-keep-alive-enabled",
+            vec![socket],
+        ),
+        Value::Bool(false),
+        "keep-alive reads back as disabled after being cleared"
+    );
+}
+
+#[test]
+fn keep_alive_timings_and_count_are_settable_and_readable() {
+    // (setter, getter, value to request)
+    let options: &[(&str, &str, f64)] = &[
+        (
+            "[method]tcp-socket.set-keep-alive-idle-time",
+            "[method]tcp-socket.get-keep-alive-idle-time",
+            // A `duration` is NANOSECONDS in `wasi:clocks`; 30s.
+            30_000_000_000.0,
+        ),
+        (
+            "[method]tcp-socket.set-keep-alive-interval",
+            "[method]tcp-socket.get-keep-alive-interval",
+            10_000_000_000.0,
+        ),
+        (
+            "[method]tcp-socket.set-keep-alive-count",
+            "[method]tcp-socket.get-keep-alive-count",
+            5.0,
+        ),
+    ];
+
+    for (setter, getter, requested) in options {
+        let mut vm = socket_vm();
+        let socket = create_tcp(&mut vm);
+
+        assert_ok(
+            &call_on(
+                &mut vm,
+                "wasi:sockets/types",
+                getter,
+                vec![socket.clone()],
+            ),
+            getter,
+        );
+        assert_ok(
+            &call_on(
+                &mut vm,
+                "wasi:sockets/types",
+                setter,
+                vec![socket.clone(), Value::F64(*requested)],
+            ),
+            setter,
+        );
+        let after = call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            getter,
+            vec![socket],
+        );
+        assert_ok(&after, getter);
+        // Whatever the kernel settled on, it must be a POSITIVE number — a
+        // getter that answered 0 or a non-number would pass `assert_ok` while
+        // reporting nothing usable.
+        let n = after.as_f64();
+        assert!(
+            n > 0.0,
+            "{getter} answered {n}, which is not a usable {}",
+            if setter.ends_with("count") { "count" } else { "duration" }
+        );
+    }
+}
+
 /// Buffer sizes are real socket options, not values parked on the handle.
 ///
 /// The size that comes back is the KERNEL's, which is the whole point of the
