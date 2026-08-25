@@ -296,10 +296,22 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
         "div;display:flex;justify-content:center;align-items:center",
         CENTER_FIELDS,
     ),
+    // **`Padding` passes its constraints THROUGH to its child**, deflated by
+    // the padding — that is the whole of what the widget does in Flutter, and
+    // a bare `div` does not say it. A block container leaves an inline-level
+    // child (`<button>` is `inline-flex` in the UA sheet) at its own content
+    // size, so an `ElevatedButton` inside `Expanded > Padding` came out 23px
+    // tall in a cell 700px tall — measured, not guessed.
+    //
+    // A single-cell grid IS "stretch my child to my content box" in CSS: the
+    // child becomes a grid item, is blockified (CSS Display §2.7, so
+    // `inline-flex` becomes `flex`), and `justify-self`/`align-self` default to
+    // `stretch`. Same shape `Expanded` already uses, and unlike `width:100%`
+    // on the child it needs nothing from the child's own declarations.
     FlutterClass::widget(
         "Padding",
         "SingleChildRenderObjectWidget",
-        "div",
+        "div;display:grid;grid-template-columns:1fr;grid-template-rows:1fr",
         PADDING_FIELDS,
     ),
     FlutterClass::widget(

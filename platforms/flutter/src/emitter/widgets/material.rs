@@ -350,7 +350,14 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget(
         "AppBar",
         "StatefulWidget",
-        "header;display:flex;align-items:center;flex:0;height:56px;\
+        // ⚠ `flex: 0 0 auto`, NOT `flex: 0`. The shorthand's one-value form sets
+        // `flex-basis: 0%`, and a basis is the MAIN SIZE — so on a column it
+        // overrides `height: 56px` and the bar collapses to nothing. That is
+        // what a browser does with `flex: 0` too; the toolkit's layout is the
+        // lenient one, which is why this only showed up under a CSS engine.
+        // `0 0 auto` says what the bar means: don't grow, don't shrink, take
+        // the height I declared.
+        "header;display:flex;align-items:center;flex:0 0 auto;height:56px;\
          padding-left:16px;padding-right:16px;\
          background-color:#1976d2;color:#ffffff;font-size:20px;font-weight:bold",
         APPBAR_FIELDS,
@@ -427,13 +434,19 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     // ⚠ No HTML counterpart: a DECLARED custom element. `control_kind` strips
     // `vybe-` and looks the remainder up against the widget list, and
     // `tabcontrol` is a real kind — so the tag carries it.
-    FlutterClass::widget("TabBar", "StatefulWidget", "vybe-tabcontrol", F_TABBAR),
+    FlutterClass::widget(
+        "TabBar",
+        "StatefulWidget",
+        "div;display:flex;flex-direction:row",
+        F_TABBAR,
+    ),
     FlutterClass::widget("TabBarView", "StatefulWidget", "div", F_TABBARVIEW),
-    // `Tab` contributes a LABEL to the tabcontrol's own header — it must not
-    // realize a widget of its own, or each tab renders a second time on top of
-    // the strip the tabcontrol already drew. Same idiom as `DropdownMenuItem`,
-    // which maps to `Panel` so its text becomes an item rather than a control.
-    FlutterClass::widget("Tab", "StatelessWidget", "vybe-tabpage", F_TAB),
+    // A tab IS a button in the strip. It used to be a pseudo-tag precisely so
+    // it would NOT realize anything — the `tabcontrol` widget drew the header
+    // from its children's captions, so a tab that also became a control was
+    // painted twice. With the strip an ordinary flex container, its children
+    // are simply its children and there is no second drawing to collide with.
+    FlutterClass::widget("Tab", "StatelessWidget", "button", F_TAB),
     FlutterClass::widget("FlexibleSpaceBar", "StatefulWidget", "div", F_FLEXSPACEBAR),
     // HTML announces progress natively.
     FlutterClass::widget(

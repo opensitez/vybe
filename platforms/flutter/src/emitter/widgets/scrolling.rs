@@ -176,8 +176,15 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
         "div;display:flex;flex-direction:row;overflow:auto",
         F_PAGEVIEW,
     ),
-    // No HTML counterpart; the tag names the widget kind that exists.
-    FlutterClass::widget("Scrollbar", "StatelessWidget", "vybe-vscrollbar", F_SCROLLBAR),
+    // A scrollbar is a value in a range, which `<input type=range>` IS — the
+    // same element dotnet's `HScrollBar`/`VScrollBar` resolve to, turned onto
+    // its side in CSS rather than by a second tag.
+    FlutterClass::widget(
+        "Scrollbar",
+        "StatelessWidget",
+        "input:range;writing-mode:vertical-lr",
+        F_SCROLLBAR,
+    ),
     FlutterClass::widget(
         "SliverGrid",
         "StatelessWidget",

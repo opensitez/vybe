@@ -1,3 +1,8 @@
+//! ⛔ KEYS KEEP THE DECLARED SPELLING. They used to be lowercased here, which
+//! only worked because every tree lookup lowercased its query too. Lookups now
+//! match EXACT first and fold only on a miss, so a case-sensitive language
+//! resolves by the real name and a case-insensitive one still resolves by the
+//! fold. See `documentation/casesensitivityplan.md`.
 //! `flutter.*` namespace-tree registration.
 //!
 //! The Flutter platform contributes DATA — its widget catalog — to the shared
@@ -75,11 +80,24 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
             if f.children {
                 FieldGui::Children
             } else if is_callback_field(f.name) {
-                // Every user callback (`onPressed`/`onChanged`/`onTap`/…) wires
-                // to the control's event; the host routes control events
-                // (ButtonClicked/CheckboxToggled/TextChanged/SelectChanged) to
-                // the "Click" handler.
-                FieldGui::Event("Click".to_string())
+                // **The DOM event the control actually fires**, not `click` for
+                // everything. Choosing an option in a `<select>` fires `change`
+                // — both engines agree, and neither has ever fired `click` for
+                // it — so a `DropdownButton.onChanged` wired to `click` simply
+                // never ran: picking an item changed the selection in the DOM
+                // and the program was never told.
+                //
+                // The claim this replaced was that "the host routes control
+                // events … to the Click handler". It does not: `drain_events`
+                // maps `SelectChanged`/`DropdownSelected`/`ListBoxSelected` to
+                // `change`, and htmlbox's form-event bridge does the same.
+                //
+                // A field may name its own event through `role` — a text field
+                // wants `input`, which fires per keystroke as Flutter's
+                // `onChanged` does, rather than `change` on commit.
+                FieldGui::Event(
+                    f.role.unwrap_or_else(|| dom_event_for(f.name)).to_string(),
+                )
             } else if f.name == "data" {
                 // `Text('x').data` is the control's caption.
                 FieldGui::NestOrProp("Text".to_string())
@@ -98,6 +116,10 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
         fields: names,
         ancestry,
         control_fn: class.widget_host_fn.map(str::to_string),
+        // No default chrome: a Flutter widget's children arrive as constructor
+        // ARGUMENTS, so there is nothing a widget is born with that the call
+        // site has not already said.
+        inner_html: None,
         // A Flutter widget argument may be a COMPOSITE — `home: CalculatorPage()`
         // is a `StatefulWidget`, a description with no element until `build()`
         // has run. `_vfConcrete` is that build, and it is the identity for
@@ -116,6 +138,20 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
 /// Flutter names all handlers `on…`: `onPressed`/`onChanged`/`onTap`/
 /// `onLongPress`/`onDoubleTap`/`onSelected`/`onDeleted`/`onDismissed`/
 /// `onPageChanged`/`onClosing`/`onSaved`.
+/// The DOM event a Flutter callback field corresponds to.
+///
+/// Flutter names the INTENT (`onChanged`) and HTML names the EVENT (`change`),
+/// and the two only coincide for a press. Anything not listed is a press:
+/// `onPressed`, `onTap`, `onLongPress` are all `click`.
+fn dom_event_for(field: &str) -> &'static str {
+    match field {
+        // A value the user picked or committed: `<select>`, `<input>` and
+        // `<textarea>` all fire `change` for it.
+        "onChanged" | "onSubmitted" | "onFieldSubmitted" | "onEditingComplete" => "change",
+        _ => "click",
+    }
+}
+
 fn is_callback_field(name: &str) -> bool {
     name.starts_with("on") && name.len() > 2 && name.as_bytes()[2].is_ascii_uppercase()
 }
@@ -152,7 +188,7 @@ pub fn register_namespace_tree() {
         let mut classes = Subtree::new();
         for class in catalog::flutter_classes() {
             classes.insert(
-                class.name.to_lowercase(),
+                class.name.to_string(),
                 NamespaceNode::Type {
                     ctor: Some(ctor_spec(class)),
                     ctor_call: None,

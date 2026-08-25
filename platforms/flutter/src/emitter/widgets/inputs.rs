@@ -10,7 +10,11 @@ const F_TEXTFIELD: &[FlutterField] = &[
     FlutterField::named("keyboardType"),
     FlutterField::named("obscureText"),
     FlutterField::named("maxLines"),
-    FlutterField::named("onChanged"),
+    // Flutter's `TextField.onChanged` fires on EVERY keystroke, which is the
+    // DOM's `input` — `change` fires when the field is COMMITTED. Declared
+    // here rather than assumed by `dom_event_for`, because the same field name
+    // means the commit event on a `<select>`.
+    FlutterField::named_role("onChanged", "input"),
 ];
 
 const F_TEXTFORMFIELD: &[FlutterField] = &[
@@ -31,7 +35,16 @@ const F_FORM: &[FlutterField] = &[
 ];
 
 const F_CHECKBOX: &[FlutterField] = &[
-    FlutterField::named("value"),
+    // **A checkbox's `value` is its CHECKED state, not its `value`.** HTML
+    // draws that line and Flutter does not: `input.value` is the string a form
+    // submits and `input.checked` is whether the box is ticked, so forwarding
+    // this field under its own name wrote `value="true"` onto a box that stayed
+    // empty. Exactly what `role` exists for — see `MaterialApp.title`, the
+    // window title rather than a `title=""` tooltip.
+    //
+    // The toolkit coerced a boolean written to `value` into the tick, which is
+    // why this only surfaced under a CSS engine that means what HTML says.
+    FlutterField::named_role("value", "checked"),
     FlutterField::named("onChanged"),
     FlutterField::named("tristate"),
     FlutterField::named("activeColor"),
@@ -50,7 +63,9 @@ const RADIO_FIELDS: &[FlutterField] = &[
 ];
 
 const F_SWITCH: &[FlutterField] = &[
-    FlutterField::named("value"),
+    // A `Switch` is an `input:checkbox` that draws as a toggle, so its `value`
+    // is the same checked state a `Checkbox`'s is — see `F_CHECKBOX`.
+    FlutterField::named_role("value", "checked"),
     FlutterField::named("onChanged"),
     FlutterField::named("activeColor"),
     FlutterField::named("activeTrackColor"),
