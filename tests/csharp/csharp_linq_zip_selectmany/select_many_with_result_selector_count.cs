@@ -20,6 +20,6 @@ void __Check(string want) {
     }
 }
 
-var flat=new[]{new[]{1,2},new[]{3}}.SelectMany(x=>x,y=>y*10);
+var flat=new[]{new[]{1,2},new[]{3}}.SelectMany(x=>x,(a,y)=>y*10);
 __P((flat.Count()).ToString());
 __Check("3");

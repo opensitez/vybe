@@ -22,4 +22,4 @@ void __Check(string want) {
 
 var z=new[]{1,2}.Zip(new[]{3,4},(a,b)=>a*10+b);
 __P((z.Sum()).ToString());
-__Check("47");
+__Check("37");

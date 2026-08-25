@@ -20,5 +20,9 @@ void __Check(string want) {
     }
 }
 
-__P((new[]{1,2}.SingleOrDefault()).ToString());
-__Check("0");
+// `SingleOrDefault` forgives only the EMPTY case; more than one element
+// THROWS `InvalidOperationException` ("Sequence contains more than one
+// element"), which is what real .NET does with this exact source.
+try { __P((new[]{1,2}.SingleOrDefault()).ToString()); }
+catch (InvalidOperationException) { __P("threw"); }
+__Check("threw");

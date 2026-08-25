@@ -20,5 +20,7 @@ void __Check(string want) {
     }
 }
 
-__P((new[]{1,2,3}.SingleOrDefault(55,x=>x>10)).ToString());
+// `SingleOrDefault(predicate, defaultValue)`, not the reverse — the other
+// order is `CS1660: Cannot convert lambda expression to type 'int'`.
+__P((new[]{1,2,3}.SingleOrDefault(x=>x>10, 55)).ToString());
 __Check("55");

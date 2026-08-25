@@ -20,5 +20,6 @@ void __Check(string want) {
     }
 }
 
-__P((new[]{"a","b"}.SingleOrDefault("z")).ToString());
-__Check("z");
+try { __P((new[]{"a","b"}.SingleOrDefault("z")).ToString()); }
+catch (InvalidOperationException) { __P("threw"); }
+__Check("threw");

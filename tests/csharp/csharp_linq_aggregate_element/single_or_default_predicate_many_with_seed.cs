@@ -20,5 +20,8 @@ void __Check(string want) {
     }
 }
 
-__P((new[]{2,2,3}.SingleOrDefault(77,x=>x==2)).ToString());
-__Check("77");
+// Signature is `SingleOrDefault(predicate, defaultValue)` — the other order
+// does not compile (`CS1660`). Two elements match, so this throws.
+try { __P((new[]{2,2,3}.SingleOrDefault(x=>x==2, 77)).ToString()); }
+catch (InvalidOperationException) { __P("threw"); }
+__Check("threw");

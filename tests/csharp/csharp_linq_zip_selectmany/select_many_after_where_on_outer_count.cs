@@ -22,4 +22,4 @@ void __Check(string want) {
 
 var flat=new[]{new[]{1,2},new[]{3,4}}.Where(a=>a.Length>1).SelectMany(x=>x);
 __P((flat.Count()).ToString());
-__Check("2");
+__Check("4");

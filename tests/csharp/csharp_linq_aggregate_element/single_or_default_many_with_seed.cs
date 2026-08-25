@@ -20,5 +20,8 @@ void __Check(string want) {
     }
 }
 
-__P((new[]{1,2}.SingleOrDefault(88)).ToString());
-__Check("88");
+// The .NET 6 `defaultValue` overload changes what an EMPTY sequence
+// answers; it does not stop "more than one" from throwing.
+try { __P((new[]{1,2}.SingleOrDefault(88)).ToString()); }
+catch (InvalidOperationException) { __P("threw"); }
+__Check("threw");
