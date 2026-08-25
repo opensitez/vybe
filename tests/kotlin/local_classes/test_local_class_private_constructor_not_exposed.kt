@@ -25,13 +25,19 @@ fun __check(want: String) {
     }
 }
 
-fun main() {
-            class C private constructor(val v: Int) {
+// Damaged spelling repaired: the class lived inside `fun main()` with a
+// companion, and kotlinc 2.4.10 rejects that — "modifier 'companion' is not
+// applicable inside 'local class'". Hoisted to top level, which keeps the
+// test's point (a private constructor is reachable only through the factory);
+// measured under kotlinc 2.4.10 it prints the expected 2.
+class C private constructor(val v: Int) {
                 companion object {
                     fun make(v: Int) = C(v)
                 }
             }
+
+fun main() {
             __p((C.make(2).v).toString())
-        
+
 __check("2")
 }

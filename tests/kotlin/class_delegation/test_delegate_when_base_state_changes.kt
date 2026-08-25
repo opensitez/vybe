@@ -3,7 +3,11 @@
 
 interface MutableCounter { var value: Int }
 
-        class Counter(var value: Int) : MutableCounter
+        // Damaged spelling repaired: kotlinc 2.4.10 rejects the original
+        // `class Counter(var value: Int) : MutableCounter` — "'value' hides
+        // member of supertype 'MutableCounter' and needs an 'override'
+        // modifier". Measured: with `override` it compiles clean.
+        class Counter(override var value: Int) : MutableCounter
 
         class Proxy(delegate: MutableCounter) : MutableCounter by delegate
 

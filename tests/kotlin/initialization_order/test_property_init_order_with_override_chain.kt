@@ -41,6 +41,10 @@ fun __check(want: String) {
 
 fun main() {
             Child()
-        
-__check("4\n4")
+
+// Damaged expectation repaired: the original wanted "4\n4", but Base's init
+// block reads the OVERRIDDEN getter while Child's backing field still holds
+// the Int default — measured under kotlinc 2.4.10 this program prints 0
+// then 4 (the classic leaking-`this` initialization-order gotcha).
+__check("0\n4")
 }

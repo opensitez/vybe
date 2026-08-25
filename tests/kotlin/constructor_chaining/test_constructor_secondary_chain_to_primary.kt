@@ -1,9 +1,13 @@
 // vybe-test: kotlin/constructor_chaining/test_constructor_secondary_chain_to_primary
 // origin: languages/kotlin/tests/kotlin/test_constructor_chaining.rs
 
+// Damaged spelling repaired: `constructor() { this(7) }` does not compile
+// under real Kotlin (kotlinc 2.4.10: "unresolved reference 'invoke'" on the
+// body `this(7)`) — secondary-constructor delegation is spelled `: this(7)`.
+// Measured: the form below compiles clean and prints 7.
 class Chain {
             val v: Int
-            constructor() { this(7) }
+            constructor() : this(7)
             constructor(v: Int) { this.v = v }
         }
         var __buf: String = ""

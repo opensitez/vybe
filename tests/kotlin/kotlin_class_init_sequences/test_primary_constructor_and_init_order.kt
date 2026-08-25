@@ -1,7 +1,11 @@
 // vybe-test: kotlin/kotlin_class_init_sequences/test_primary_constructor_and_init_order
 // origin: languages/kotlin/tests/kotlin/test_kotlin_class_init_sequences.rs
 
-class Counter start {
+// Damaged spelling repaired: the original opened with `class Counter start {`,
+// which no Kotlin accepts — the primary-constructor parameter lost its parens
+// and type. Measured under kotlinc 2.4.10: `class Counter(start: Int)` with
+// the same body compiles clean and `Counter()` prints 5.
+class Counter(start: Int) {
             val value: Int = start
             init {
                 __p((value).toString())

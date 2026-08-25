@@ -25,9 +25,14 @@ fun __check(want: String) {
     }
 }
 
+// Damaged spelling repaired: the enum was declared inside `fun main()`, and
+// kotlinc 2.4.10 rejects that — "modifier 'enum' is not applicable to 'local
+// class'". Hoisted to top level; measured under kotlinc 2.4.10 it prints the
+// expected B.
+enum class Mode { A, B, C }
+
 fun main() {
-            enum class Mode { A, B, C }
             __p((Mode.B.name).toString())
-        
+
 __check("B")
 }

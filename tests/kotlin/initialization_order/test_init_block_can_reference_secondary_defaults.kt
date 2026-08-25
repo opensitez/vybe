@@ -9,9 +9,13 @@ class Holder {
                 __p(("init").toString())
             }
 
-            constructor() {
-                this()
-            }
+            // Damaged spelling repaired: the original body was
+            // `constructor() { this() }` — kotlinc 2.4.10 rejects the body
+            // call ("unresolved reference 'invoke'"), and a no-arg ctor
+            // delegating to itself is unconstructible anyway. A body-less
+            // `constructor()` runs the init block and, measured under
+            // kotlinc 2.4.10, prints exactly the expected init, 7.
+            constructor()
 
             fun out(): Int = value
         }

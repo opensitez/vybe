@@ -1,10 +1,15 @@
 // vybe-test: kotlin/initialization_order/test_initialization_of_multiple_properties_order_by_appearance
 // origin: languages/kotlin/tests/kotlin/test_initialization_order.rs
 
+// Damaged spelling repaired: the original declared `val b = a + c` BEFORE
+// `c`, and kotlinc 2.4.10 rejects the forward reference — "variable 'c' must
+// be initialized". Declaring `c` before `b` keeps the test's point (properties
+// initialize in order of appearance) and, measured under kotlinc 2.4.10,
+// prints exactly the expected 1, 4, 3.
 class Holder {
             val a = 1
-            val b = a + c
             val c = 3
+            val b = a + c
 
             init {
                 __p((a).toString())
