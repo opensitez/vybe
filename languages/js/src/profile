@@ -375,7 +375,7 @@ queueMicrotask       = { emit = "host:ecma:promise:queueMicrotask", min_args = 1
 # implementation sat in `platforms/node/src/fs.rs` unreachable from JS.
 #
 # `node:*` is the Node compatibility layer and `fs` IS a Node module, so this
-# is where it belongs; `node:fs` composes `vybe_platform_wasi::fsops`
+# is where it belongs; `node:fs` composes `vybe_platform_node::fsops`
 # underneath, so there is still ONE implementation below both surfaces.
 "fs.readFileSync"    = { emit = "host:node:fs:readFileSync",  min_args = 1, max_args = 2 }
 "fs.writeFileSync"   = { emit = "host:node:fs:writeFileSync", min_args = 2, max_args = 3 }
@@ -850,17 +850,17 @@ module = "web:fetch"
 [[esm_default]]
 kind = "namespace"
 alias = "net"
-module = "wasi:sockets/tcp"
+module = "wasi:sockets/types"
 
 [[esm_default]]
 kind = "namespace"
 alias = "tls"
-module = "wasi:sockets/tcp"
+module = "wasi:tls/client"
 
 [[esm_default]]
 kind = "namespace"
 alias = "dgram"
-module = "wasi:sockets/udp"
+module = "wasi:sockets/types"
 
 [[esm_default]]
 kind = "namespace"

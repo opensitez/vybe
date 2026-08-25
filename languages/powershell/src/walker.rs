@@ -37,11 +37,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::Unknown,
         body: apply_aliases(apply_traps(body)),
         imports: Vec::new(),
-        directives: Default::default(),
+        directives: vybe_ast::Directives {
+            // PowerShell is case-insensitive throughout, ASCII — `$Path` and
+            // `$path` are one variable, `Get-Item` and `get-item` one command.
+            variable_case: Some(vybe_ast::CaseMatch::Folded),
+            callable_case: Some(vybe_ast::CaseMatch::Folded),
+            case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
+            ..Default::default()
+        },
     })
 }
 

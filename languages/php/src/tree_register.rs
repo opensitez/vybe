@@ -29,7 +29,13 @@ pub fn register_namespace_tree() {
         };
         let mut root = Subtree::new();
         for (name, def) in &profile.builtins {
-            let key = name.to_lowercase();
+            // The builtin's declared spelling. ⛔ PHP folds its CALLABLE names
+            // (`strlen` == `StrLen`) but not its variables, and that fold is a
+            // property of the LOOKUP, not of storage: `fold_get` matches exact
+            // first and folds on a miss, so registering the real name serves
+            // both. Folding here would instead discard the declared spelling
+            // for everyone, including anything that emits from the key.
+            let key = name.to_string();
             // Dotted builtin keys are member-shaped (receiver dispatch),
             // not free-function surface — the php.* package holds the
             // flat stdlib names only.

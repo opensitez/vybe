@@ -70,7 +70,7 @@ FLOOR               = { emit = "opcode:f64_floor",           min_args = 1, max_a
 CEILING             = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
 MOD                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
 REM                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
-POWER               = { emit = "host:ecma:math:pow",         min_args = 2, max_args = 2 }
+POWER               = { emit = "opcode:pow",         min_args = 2, max_args = 2 }
 LOG                 = { emit = "host:ecma:math:log",         min_args = 1, max_args = 1 }
 LOG10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
 EXP                 = { emit = "host:ecma:math:exp",         min_args = 1, max_args = 1 }

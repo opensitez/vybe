@@ -89,22 +89,9 @@ __ps_array     = { emit = "common:powershell.ensure_array", min_args = 0, max_ar
 ToString = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 
-# .NET method spellings, routed to the SAME shared emitters C#/VB use. The
-# language is case-insensitive, so `case_sensitive = false` in [compiler] makes
-# one canonical spelling cover `ToUpper` / `toupper` / `TOUPPER`.
-ToUpper       = { emit = "common:strings.to_upper",    min_args = 0, max_args = 0 }
-ToLower       = { emit = "common:strings.to_lower",    min_args = 0, max_args = 0 }
-Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 1 }
-TrimStart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 1 }
-TrimEnd       = { emit = "common:str_trim_end",        min_args = 0, max_args = 1 }
-StartsWith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
-EndsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
-Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
-Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
-Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
-PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
-PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
-ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
+# `System.String` members are NOT declared here — they are leaves on the dotnet
+# tree (`component_classes_system.rs`, class `String`), and a `[value_methods]`
+# row SHADOWS the leaf rather than backing it up.
 Equals        = { emit = "common:object.equals",       min_args = 1, max_args = 2 }
 # NO `Insert` / `Remove`. `str_insert` does not exist, and `str_splice` — the
 # nearest primitive — takes FOUR operands (string, index, count, insert), so a
@@ -143,22 +130,6 @@ __ps_ht_values   = { emit = "host:ecma:object:values", min_args = 0, max_args = 
 # DateTime instance surface. Every one of these already exists in
 # `platforms/dotnet` — the same emitters C# and VB reach — so `(Get-Date).AddDays(1)`
 # needs a binding, not an implementation.
-AddDays       = { emit = "common:dotnet.datetime_add_days",   min_args = 1, max_args = 1 }
-adddays       = { emit = "common:dotnet.datetime_add_days",   min_args = 1, max_args = 1 }
-AddHours      = { emit = "common:dotnet.datetime_add_hours",  min_args = 1, max_args = 1 }
-addhours      = { emit = "common:dotnet.datetime_add_hours",  min_args = 1, max_args = 1 }
-AddMonths     = { emit = "common:dotnet.datetime_add_months", min_args = 1, max_args = 1 }
-addmonths     = { emit = "common:dotnet.datetime_add_months", min_args = 1, max_args = 1 }
-AddYears      = { emit = "common:dotnet.datetime_add_years",  min_args = 1, max_args = 1 }
-addyears      = { emit = "common:dotnet.datetime_add_years",  min_args = 1, max_args = 1 }
-AddTicks      = { emit = "common:dotnet.datetime_add_ticks",  min_args = 1, max_args = 1 }
-addticks      = { emit = "common:dotnet.datetime_add_ticks",  min_args = 1, max_args = 1 }
-ToShortDateString = { emit = "common:dotnet.datetime_to_short_date_string", min_args = 0, max_args = 0 }
-toshortdatestring = { emit = "common:dotnet.datetime_to_short_date_string", min_args = 0, max_args = 0 }
-ToUniversalTime = { emit = "common:dotnet.datetime_to_universal_time", min_args = 0, max_args = 0 }
-touniversaltime = { emit = "common:dotnet.datetime_to_universal_time", min_args = 0, max_args = 0 }
-ToLocalTime   = { emit = "common:dotnet.datetime_to_local_time", min_args = 0, max_args = 0 }
-tolocaltime   = { emit = "common:dotnet.datetime_to_local_time", min_args = 0, max_args = 0 }
 
 # Collection surface.
 Add           = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
@@ -182,9 +153,6 @@ concat        = { emit = "common:collections.concat",  min_args = 1, max_args = 
 # needs runtime dispatch, which means an emitter. The operator is the far more
 # common construct in this corpus, so the slot keeps the name and `.Contains()`
 # stays wrong — visibly, not silently.
-Contains      = { emit = "common:str_contains",        min_args = 1, max_args = 1 }
-IndexOf       = { emit = "common:str_index_of",        min_args = 1, max_args = 2 }
-LastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
 
 [array_methods]
 # PowerShell's .ForEach() yields the results, so it maps rather than iterates.
@@ -257,7 +225,7 @@ source_imports_are_namespaces = true
 # on a .NET collection must reach the collection's own method, not an array
 # builtin that happens to share the name. A PATH, not a language switch: the
 # answer depends on where the declaring type lives.
-runtime_collection_scope = ["dotnet", "system", "collections"]
+runtime_collection_scope = ["dotnet", "System", "Collections"]
 
 # Namespace-tree roots this language resolves platform types against. `Button`
 # / `Form` / `Dictionary` are .NET catalog entries, so member access on a
@@ -267,76 +235,76 @@ type_scopes = ["dotnet"]
 [[esm_default]]
 kind = "tree-mount"
 prefix = "System"
-path = "dotnet.system"
+path = "dotnet.System"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system"
+path = "dotnet.System"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.windows.forms"
+path = "dotnet.System.Windows.Forms"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.text"
+path = "dotnet.System.Text"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.io"
+path = "dotnet.System.IO"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.diagnostics"
+path = "dotnet.System.Diagnostics"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.threading"
+path = "dotnet.System.Threading"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections"
+path = "dotnet.System.Collections"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.generic"
+path = "dotnet.System.Collections.Generic"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.collections.concurrent"
+path = "dotnet.System.Collections.Concurrent"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net"
+path = "dotnet.System.Net"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.http"
+path = "dotnet.System.Net.Http"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.net.sockets"
+path = "dotnet.System.Net.Sockets"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data"
+path = "dotnet.System.Data"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.sqlclient"
+path = "dotnet.System.Data.SqlClient"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.data.oledb"
+path = "dotnet.System.Data.OleDb"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.drawing"
+path = "dotnet.System.Drawing"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml"
+path = "dotnet.System.Xml"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "dotnet.system.xml.linq"
+path = "dotnet.System.Xml.Linq"

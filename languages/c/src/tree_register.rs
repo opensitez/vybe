@@ -53,11 +53,10 @@ pub fn register_namespace_tree() {
                     }
                 }
                 BuiltinEmit::HostCall(module, func) => {
-                    insert_path(
-                        &mut root,
-                        &name.to_lowercase(),
-                        namespaces::host_fn(module, func),
-                    );
+                    // C is case-sensitive; the builtin's declared spelling is
+                    // the key. Tree lookups match exact first and fold only on
+                    // a miss, so nothing needs folding at registration.
+                    insert_path(&mut root, name, namespaces::host_fn(module, func));
                 }
                 _ => {}
             }

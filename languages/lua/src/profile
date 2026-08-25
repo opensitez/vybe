@@ -111,7 +111,7 @@ __lua_truthy = { emit = "common:lua.truthy", min_args = 1, max_args = 1 }
 "math.tan" = { emit = "host:ecma:math:tan", min_args = 1, max_args = 1 }
 "math.log" = { emit = "common:lua.math_log", min_args = 1, max_args = 2 }
 "math.exp" = { emit = "host:ecma:math:exp", min_args = 1, max_args = 1 }
-"math.pow" = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+"math.pow" = { emit = "opcode:pow", min_args = 2, max_args = 2 }
 "math.max" = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
 "math.min" = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
 "math.pi" = { emit = "intrinsic:math_pi", min_args = 0, max_args = 0 }

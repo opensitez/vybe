@@ -2371,6 +2371,7 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
     normalize_consecutive_prints(&mut body);
 
     Ok(Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::Ruby,
         body,

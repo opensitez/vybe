@@ -302,8 +302,8 @@ ln            = { emit = "host:ecma:math:log",             min_args = 1, max_arg
 log10         = { emit = "host:ecma:math:log10",           min_args = 1, max_args = 1 }
 log2          = { emit = "host:ecma:math:log2",            min_args = 1, max_args = 1 }
 hypot         = { emit = "host:ecma:math:hypot",           min_args = 2, max_args = 2 }
-power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
-intpower      = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+power         = { emit = "opcode:pow",             min_args = 2, max_args = 2 }
+intpower      = { emit = "opcode:pow",             min_args = 2, max_args = 2 }
 random        = { emit = "common:pascal.random",           min_args = 0, max_args = 1 }
 randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
 

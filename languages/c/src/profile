@@ -79,45 +79,38 @@ uses_common_resolver = true
 # exec* replaces the process image: at top level the run ENDS with the
 # child's status (WASI's exit arm), same as `exit(code)`.
 "__c_exit_with_code" = { emit = "host:wasi:cli/exit:exit-with-code", min_args = 1, max_args = 1 }
-# ── sockets: REAL wasi:sockets, the same rows python's socket class uses ─────
-# The start-*/finish-* pairs are two calls because the proposal is poll-based;
-# a C socket call is blocking, so the runtime helpers do both — exactly the
-# sequencing python's VybeSocketImpl performs. `read` is the NON-blocking arm
-# on purpose: a poll-shaped `accept` answers nothing when the queue is empty,
-# and `blocking-read` would hang the process instead of failing.
-"__c_wasi_network"     = { emit = "host:wasi:sockets/instance-network:instance-network", min_args = 0, max_args = 0 }
-"__c_wasi_tcp_new"     = { emit = "host:wasi:sockets/tcp-create-socket:create-tcp-socket", min_args = 0, max_args = 1 }
-"__c_wasi_udp_new"     = { emit = "host:wasi:sockets/udp-create-socket:create-udp-socket", min_args = 0, max_args = 1 }
-"__c_wasi_start_bind"  = { emit = "host:wasi:sockets/tcp:start-bind",     min_args = 3, max_args = 3 }
-"__c_wasi_finish_bind" = { emit = "host:wasi:sockets/tcp:finish-bind",    min_args = 1, max_args = 1 }
-"__c_wasi_backlog"     = { emit = "host:wasi:sockets/tcp:set-listen-backlog-size", min_args = 2, max_args = 2 }
-"__c_wasi_start_listen" = { emit = "host:wasi:sockets/tcp:start-listen",  min_args = 1, max_args = 1 }
-"__c_wasi_finish_listen" = { emit = "host:wasi:sockets/tcp:finish-listen", min_args = 1, max_args = 1 }
-"__c_wasi_start_conn"  = { emit = "host:wasi:sockets/tcp:start-connect",  min_args = 3, max_args = 3 }
-"__c_wasi_finish_conn" = { emit = "host:wasi:sockets/tcp:finish-connect", min_args = 1, max_args = 1 }
-"__c_wasi_accept"      = { emit = "host:wasi:sockets/tcp:accept",         min_args = 1, max_args = 1 }
-"__c_wasi_local_addr"  = { emit = "host:wasi:sockets/tcp:local-address",  min_args = 1, max_args = 1 }
-"__c_wasi_remote_addr" = { emit = "host:wasi:sockets/tcp:remote-address", min_args = 1, max_args = 1 }
-"__c_wasi_sock_shutdown" = { emit = "host:wasi:sockets/tcp:shutdown",    min_args = 1, max_args = 2 }
-"__c_wasi_udp_start_bind"  = { emit = "host:wasi:sockets/udp:start-bind",     min_args = 3, max_args = 3 }
-"__c_wasi_udp_finish_bind" = { emit = "host:wasi:sockets/udp:finish-bind",    min_args = 1, max_args = 1 }
-# UDP datagrams flow through the socket's datagram STREAMS, not through
-# connect/send on the socket itself (wasi:sockets/udp `stream` hands back
-# the incoming/outgoing pair).
-"__c_wasi_udp_stream"      = { emit = "host:wasi:sockets/udp:stream",         min_args = 1, max_args = 2 }
-"__c_wasi_dgram_send"      = { emit = "host:wasi:sockets/udp:[method]outgoing-datagram-stream.send",   min_args = 2, max_args = 2 }
-"__c_wasi_dgram_recv"      = { emit = "host:wasi:sockets/udp:[method]incoming-datagram-stream.receive", min_args = 1, max_args = 2 }
-"__c_wasi_stream_read" = { emit = "host:wasi:io/streams:read",            min_args = 2, max_args = 2 }
-# Readiness, not a stopwatch. A blocking `recv`/`accept` waits on the
-# POLLABLE FOR THE THING — the datagram stream, the input stream, the
-# listening socket — so it wakes when the data lands instead of after the
-# next tick of a sleep. Already registered host-side; these are rows, not
-# new host functions.
-"__c_wasi_dgram_ready"  = { emit = "host:wasi:sockets/udp:[method]incoming-datagram-stream.subscribe", min_args = 1, max_args = 1 }
-"__c_wasi_stream_ready" = { emit = "host:wasi:io/streams:[method]input-stream.subscribe", min_args = 1, max_args = 1 }
-"__c_wasi_tcp_ready"    = { emit = "host:wasi:sockets/tcp:[method]tcp-socket.subscribe", min_args = 1, max_args = 1 }
-"__c_pollable_block"    = { emit = "host:wasi:io/poll:[method]pollable.block", min_args = 1, max_args = 1 }
-"__c_wasi_stream_write" = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
+# ── sockets: wasi:sockets@0.3.1 ─────────────────────────────────────────────
+# 0.3.1 collapsed `instance-network`, `tcp`, `udp`, `tcp-create-socket` and
+# `udp-create-socket` into ONE `wasi:sockets/types`. There is no network handle
+# to pass, no start-*/finish-* pair (bind/listen/connect are single calls), and
+# no `accept`, `shutdown` or `udp:stream` at all.
+#
+# Nothing here polls. `subscribe` + `pollable.block` existed so a blocking C
+# call would not hang the process; a synchronous `canon stream.read` suspends
+# the fiber until the data lands, which is the same wait with no interface to
+"__c_wasi_tcp_new"     = { emit = "host:wasi:sockets/types:[static]tcp-socket.create", min_args = 0, max_args = 1 }
+"__c_wasi_udp_new"     = { emit = "host:wasi:sockets/types:[static]udp-socket.create", min_args = 0, max_args = 1 }
+"__c_wasi_bind"        = { emit = "host:wasi:sockets/types:[method]tcp-socket.bind",    min_args = 2, max_args = 2 }
+"__c_wasi_backlog"     = { emit = "host:wasi:sockets/types:[method]tcp-socket.set-listen-backlog-size", min_args = 2, max_args = 2 }
+"__c_wasi_listen"      = { emit = "host:wasi:sockets/types:[method]tcp-socket.listen",  min_args = 1, max_args = 1 }
+"__c_wasi_connect"     = { emit = "host:wasi:sockets/types:[method]tcp-socket.connect", min_args = 2, max_args = 2 }
+"__c_wasi_sock_send"   = { emit = "host:wasi:sockets/types:[method]tcp-socket.send",    min_args = 2, max_args = 2 }
+"__c_wasi_sock_recv"   = { emit = "host:wasi:sockets/types:[method]tcp-socket.receive", min_args = 1, max_args = 1 }
+"__c_wasi_local_addr"  = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-local-address",  min_args = 1, max_args = 1 }
+"__c_wasi_remote_addr" = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-remote-address", min_args = 1, max_args = 1 }
+"__c_wasi_udp_bind"    = { emit = "host:wasi:sockets/types:[method]udp-socket.bind",    min_args = 2, max_args = 2 }
+"__c_wasi_udp_connect" = { emit = "host:wasi:sockets/types:[method]udp-socket.connect", min_args = 2, max_args = 2 }
+"__c_wasi_udp_local_addr"  = { emit = "host:wasi:sockets/types:[method]udp-socket.get-local-address",  min_args = 1, max_args = 1 }
+"__c_wasi_udp_remote_addr" = { emit = "host:wasi:sockets/types:[method]udp-socket.get-remote-address", min_args = 1, max_args = 1 }
+"__c_wasi_dgram_send"  = { emit = "host:wasi:sockets/types:[method]udp-socket.send",    min_args = 2, max_args = 3 }
+"__c_wasi_dgram_recv"  = { emit = "host:wasi:sockets/types:[method]udp-socket.receive", min_args = 1, max_args = 1 }
+"__c_stream_read"      = { emit = "common:stream.read_bytes",  min_args = 2, max_args = 2 }
+"__c_stream_from_bytes" = { emit = "common:stream.from_bytes", min_args = 1, max_args = 1 }
+"__c_stream_accept"    = { emit = "common:stream.read_handle", min_args = 1, max_args = 1 }
+# `O_NONBLOCK` accept: the ASYNC `canon stream.read`, which answers BLOCKED
+# rather than suspending. Cancels the in-flight copy on BLOCKED so the stream
+# is IDLE for the next call.
+"__c_stream_try_accept" = { emit = "common:stream.try_read_handle", min_args = 1, max_args = 1 }
 "__c_fs_rename" = { emit = "host:node:fs:renameSync", min_args = 2, max_args = 2 }
 # Code-point boundary ops for wide (wchar_t/char32_t) buffers: whole code
 # points, not UTF-16 units — the unit ops above are for char/char16_t.
@@ -150,9 +143,6 @@ uses_common_resolver = true
 # shared across languages via platforms/libc/stdio_adapter.rs.
 "__libc_readline" = { emit = "intrinsic:readline", min_args = 0, max_args = 0 }
 
-# stdout write primitive → wasi:io DIRECTLY (wasi:cli/stdout.get-stdout +
-# wasi:io/streams.blocking-write-and-flush). Byte-faithful, no implicit newline.
-# libc output must NOT route through the `print`/wasi:logging vybelib builtin.
 "__c_write_stdout" = { emit = "intrinsic:write_stdout", min_args = 1, max_args = 1 }
 "__c_write_stderr" = { emit = "intrinsic:write_stderr", min_args = 1, max_args = 1 }
 
@@ -238,8 +228,8 @@ __c_rint    = { emit = "common:math.round_half_even", min_args = 1, max_args = 1
 "fmaxf"     = { emit = "common:math.max_num", min_args = 2, max_args = 2 }
 "copysignf" = { emit = "common:math.copysign", min_args = 2, max_args = 2 }
 "roundf"   = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
-"pow"      = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
-"powf"     = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
+"pow"      = { emit = "opcode:pow", min_args = 2, max_args = 2 }
+"powf"     = { emit = "opcode:pow", min_args = 2, max_args = 2 }
 "fmod"     = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
 "fmodf"    = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
 "sin"      = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }

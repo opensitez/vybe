@@ -5416,6 +5416,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     let imports = std::mem::take(&mut __php_w.php_use_imports);
     Ok(Module {
+        canon: Default::default(),
         name: String::new(),
         language: Lang::PHP,
         body,
@@ -5432,6 +5433,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
             array_storage: Some(ValueStorage::Value),
             reference_binding: Some(PassBy::Alias),
             set_semantics: None,
+            // ⛔ PHP SPLITS, and it is the reason these are two fields rather
+            // than one boolean: `$Foo` and `$foo` are DIFFERENT variables,
+            // while `strlen` and `StrLen` are the SAME function. The previous
+            // carrier for this was a `self.name == "php"` check inside the VM
+            // crate's `lookup_builtin`.
+            variable_case: Some(CaseMatch::Exact),
+            callable_case: Some(CaseMatch::Folded),
+            case_alphabet: Some(CaseAlphabet::Ascii),
             // `$this` arrives in slot 0 like every non-ambient language, which
             // is the default — spread rather than listed so the next field
             // added here does not break this literal again.

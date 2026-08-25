@@ -1285,11 +1285,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut ctx = CobolWalkerContext::new();
 
     let mut module = Module {
+        canon: Default::default(),
         name: String::new(),
         language: Lang::Cobol,
         body: Vec::new(),
         imports: Vec::new(),
-        directives: Default::default(),
+        directives: vybe_ast::Directives {
+            // COBOL identifiers are case-insensitive, ASCII. `MOVE` and `move` are
+            // one word, and `WS-COUNT` and `ws-count` are one item.
+            variable_case: Some(vybe_ast::CaseMatch::Folded),
+            callable_case: Some(vybe_ast::CaseMatch::Folded),
+            case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
+            ..Default::default()
+        },
     };
 
     // A COBOL source file may hold SEVERAL `PROGRAM-ID` units. The grammar's

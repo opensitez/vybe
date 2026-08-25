@@ -380,9 +380,14 @@ shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
 additive = { multiplicative ~ (additive_op ~ op_nl ~ multiplicative)* }
 additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
 
-// Multiplicative and exponentiation in one level.
-multiplicative = { unary ~ (multiplicative_op ~ op_nl ~ unary)* }
-multiplicative_op = { exp_op | mul_op }
+// §13.6/§13.7: `**` is its OWN level — it binds TIGHTER than `*`/`/`/`%` and
+// is RIGHT-associative, where every other binary operator here is left-
+// associative. Both lived in one left-associative level, which got
+// `2 ** 3 ** 2` = 64 (node: 512) and `2 * 3 ** 2` = 36 (node: 18).
+// Right-associativity is the rule recursing on its own RIGHT side.
+multiplicative = { exponentiation ~ (multiplicative_op ~ op_nl ~ exponentiation)* }
+multiplicative_op = { mul_op }
+exponentiation = { unary ~ (exp_op ~ op_nl ~ exponentiation)? }
 mul_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
 exp_op = { "**" ~ !"=" }
 

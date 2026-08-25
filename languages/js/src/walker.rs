@@ -106,6 +106,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let presents_ui = references_document(&body);
 
     Ok(Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::JavaScript,
         body,
@@ -114,6 +115,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // method's declared parameters never include it.
         directives: vybe_ast::Directives {
             receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            // §6.1.6.1.3: `1 ** ±∞` and `1 ** NaN` are NaN, which the standard
+            // itself flags as a deliberate divergence from IEEE 754-2019 kept
+            // "for compatibility reasons". Every other language in the tree
+            // wants the IEEE answer, so this is declared, not assumed.
+            pow_semantics: Some(vybe_ast::PowSemantics::Ecma),
             // A program that touches `document` presents a UI, and says so.
             //
             // Without this the AST states nothing and the runtime falls back to
@@ -417,6 +423,13 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
 
 fn validate_private_expr(expr: &Expression) -> Result<(), String> {
     match &expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            validate_private_expr(callee)?;
+            for a in args {
+                validate_private_expr(a)?;
+            }
+            Ok(())
+        }
         ExprKind::Async(op) => {
             for child in op.children() {
                 validate_private_expr(child)?;
@@ -799,6 +812,9 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
 
 fn expr_contains_await(expr: &Expression) -> bool {
     match &expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            expr_contains_await(callee) || args.iter().any(expr_contains_await)
+        }
         ExprKind::Async(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Chan(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Atomic(op) => op.children().into_iter().any(expr_contains_await),
@@ -1711,6 +1727,12 @@ fn rewrite_expression_keys(
     consts: &std::collections::HashMap<String, String>,
 ) {
     match &mut expr.kind {
+        ExprKind::WasmCallWithTag { callee, args, .. } => {
+            rewrite_expression_keys(callee, consts);
+            for a in args {
+                rewrite_expression_keys(a, consts);
+            }
+        }
         ExprKind::Async(op) => {
             for child in op.children_mut() {
                 rewrite_expression_keys(child, consts);
@@ -3878,6 +3900,7 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
             | Rule::comparison
             | Rule::additive
             | Rule::multiplicative
+            | Rule::exponentiation
             | Rule::call_chain
             | Rule::property_name
             | Rule::computed_property_name => {
@@ -4124,6 +4147,28 @@ fn walk_expr_kind(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
         // Binary chains
         Rule::logical_expr | Rule::comparison | Rule::additive | Rule::multiplicative => {
             walk_binary_chain(__w, pair)
+        }
+
+        // §13.6: `**` is RIGHT-associative, so it cannot use the left-folding
+        // chain walker — `2 ** 3 ** 2` is `2 ** (3 ** 2)` = 512, not
+        // `(2 ** 3) ** 2` = 64. The grammar recurses on its own right side, so
+        // the recursion here already carries the associativity and this arm
+        // only has to join the two halves.
+        Rule::exponentiation => {
+            let mut inner: Vec<_> = pair
+                .into_inner()
+                .filter(|p| !matches!(p.as_rule(), Rule::NEWLINE | Rule::exp_op))
+                .collect();
+            if inner.len() == 1 {
+                return walk_expr_kind(__w, inner.remove(0));
+            }
+            let left = walk_expression(__w, inner.remove(0))?;
+            let right = walk_expression(__w, inner.remove(0))?;
+            Ok(ExprKind::Binary {
+                op: BinOp::Pow,
+                left: Box::new(left),
+                right: Box::new(right),
+            })
         }
 
         // Unary

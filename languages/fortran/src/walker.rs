@@ -171,6 +171,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     );
 
     Ok(Module {
+        canon: Default::default(),
         name,
         language: Lang::Fortran,
         body,
@@ -182,6 +183,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // where gfortran answers 0. Nothing in the operands says which rule
             // applies; the language does.
             shift_overflow: Some(vybe_ast::ShiftOverflow::Zero),
+            // Fortran identifiers are case-insensitive, ASCII — `PRINT`,
+            // `Print` and `print` are one keyword and `myVar`/`MYVAR` one
+            // variable. gfortran is the ground truth.
+            variable_case: Some(vybe_ast::CaseMatch::Folded),
+            callable_case: Some(vybe_ast::CaseMatch::Folded),
+            case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
             ..Default::default()
         },
     })

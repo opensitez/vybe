@@ -1006,11 +1006,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     install_pascal_except_proc(&mut body, &source);
 
     Ok(Module {
+        canon: Default::default(),
         name,
         language: Lang::Pascal,
         body,
         imports,
-        directives: Default::default(),
+        directives: language_directives(),
     })
 }
 
@@ -5464,8 +5465,36 @@ fn pascal_member_expr_type(
     if let Some(ty) = pascal_declared_member_type(return_types, recv, field) {
         return Some(ty);
     }
-    vybe_runtime::namespaces::lookup_type_member_return(&["plib".to_string()], recv, field)
+    vybe_runtime::namespaces::lookup_type_member_return(
+        &["plib".to_string()],
+        recv,
+        field,
+        pascal_tree_fold(),
+    )
         .map(|ty| bare_type_name(&ty).to_lowercase())
+}
+
+/// What Pascal declares about itself.
+///
+/// Lives in ONE function because two readers need it: the `Module` this walker
+/// emits, and `pascal_tree_fold` below — the namespace tree's case policy. A
+/// second spelling of the same fact is how the compiler and the tree came to
+/// disagree about whether `WriteLn` and `writeln` are one name.
+fn language_directives() -> vybe_ast::Directives {
+    vybe_ast::Directives {
+        // Pascal identifiers are case-insensitive, ASCII — `WriteLn`, `writeln`
+        // and `WRITELN` are one identifier. fpc is the ground truth.
+        variable_case: Some(vybe_ast::CaseMatch::Folded),
+        callable_case: Some(vybe_ast::CaseMatch::Folded),
+        case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
+        ..Default::default()
+    }
+}
+
+/// The case policy the namespace tree must use for Pascal lookups — read off
+/// the declaration above, never restated.
+fn pascal_tree_fold() -> vybe_runtime::namespaces::Fold {
+    language_directives().callable_fold()
 }
 
 fn pascal_overload_is_assignable(expr: &Expression) -> bool {

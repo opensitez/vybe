@@ -29,6 +29,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
     let mut module = Module {
+        canon: Default::default(),
         name: "main".to_string(),
         language: Lang::Lua,
         body,

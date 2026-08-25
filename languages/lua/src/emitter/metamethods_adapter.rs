@@ -2009,7 +2009,9 @@ fn raw_mod(chunk: &mut Chunk, line: u32) {
 }
 
 fn raw_pow(chunk: &mut Chunk, line: u32) {
-    vybe_compiler::primitives::math::emit_pow(chunk, line);
+    // Lua is IEEE — `1 ^ math.huge` is `1.0`. `emit_pow` is the ECMA host and
+    // answers NaN there.
+    vybe_compiler::primitives::math::emit_pow_ieee(chunk, line);
 }
 
 fn raw_idiv(chunk: &mut Chunk, line: u32) {

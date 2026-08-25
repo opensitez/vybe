@@ -170,6 +170,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     Ok(normalize_go_module(Module {
+        canon: Default::default(),
         name: package_name,
         language: Lang::Go,
         body,
@@ -20461,7 +20462,14 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             declarations.push(VarDeclarator {
                 pattern: BindingPattern::Ident(name),
                 init: Some(value.clone()),
-                type_hint: None,
+                // The type go's own inference GUARANTEES for a literal
+                // initializer — `i := 0` IS an `int`, `x := 1.5` IS a
+                // `float64` (spec: untyped constant defaults), and any later
+                // assignment of another type would not have compiled. Stamped
+                // so the shared provably-numeric operator fold can see what
+                // the go compiler already proved. `Checked`: statically
+                // enforced, never converting.
+                type_hint: go_literal_init_type_hint(&value).map(vybe_ast::TypeHint::checked),
                 array_bounds: None,
                 with_events: false,
             });
@@ -20472,6 +20480,20 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         declarations,
         kind: VarDeclKind::Let,
     })
+}
+
+/// The go type of a LITERAL `:=` initializer, or None when the initializer
+/// is anything but a numeric literal (possibly signed).
+fn go_literal_init_type_hint(expr: &Expression) -> Option<&'static str> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => Some("int"),
+        ExprKind::Lit(Literal::Float(_)) => Some("float64"),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => go_literal_init_type_hint(expr),
+        _ => None,
+    }
 }
 
 fn walk_inc_dec(pair: Pair<Rule>) -> Result<StmtKind, String> {

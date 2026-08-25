@@ -379,7 +379,7 @@ base_convert        = { emit = "common:php.base_convert",   min_args = 3, max_ar
 "Math.round"        = { emit = "host:ecma:math:round", min_args = 1, max_args = 1 }
 "Math.abs"          = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 "Math.sqrt"         = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
-"Math.pow"          = { emit = "host:ecma:math:pow",         min_args = 2, max_args = 2 }
+"Math.pow"          = { emit = "opcode:pow",         min_args = 2, max_args = 2 }
 "Math.sign"         = { emit = "host:ecma:math:sign",        min_args = 1, max_args = 1 }
 "Math.log"          = { emit = "host:ecma:math:log",         min_args = 1, max_args = 1 }
 "Math.log2"         = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }

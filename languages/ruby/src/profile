@@ -97,7 +97,7 @@ method          = { emit = "common:ruby.method",            min_args = 1, max_ar
 "__ruby_complex_math_tanh"  = { emit = "host:ecma:math:tanh",  min_args = 1, max_args = 1 }
 "__ruby_complex_math_exp"   = { emit = "host:ecma:math:exp",   min_args = 1, max_args = 1 }
 "__ruby_complex_math_log"   = { emit = "host:ecma:math:log",   min_args = 1, max_args = 1 }
-"__ruby_complex_math_pow"   = { emit = "host:ecma:math:pow",   min_args = 2, max_args = 2 }
+"__ruby_complex_math_pow"   = { emit = "opcode:pow",   min_args = 2, max_args = 2 }
 "__ruby_exception" = { emit = "common:ruby.exception",       min_args = 2, max_args = 2 }
 "__ruby_exception_exception" = { emit = "common:ruby.exception.exception", min_args = 0, max_args = 1 }
 "__ruby_exception_runtime_error" = { emit = "common:ruby.exception.runtime_error", min_args = 0, max_args = 1 }

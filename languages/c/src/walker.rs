@@ -151,7 +151,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .any(|path| path == "sdl" || path.ends_with(".sdl"))
         .then_some(vybe_ast::AppShell::Windowed);
 
+    let mut canon = vybe_ast::canon::ComponentSection::default();
+    canon.defs.push(vybe_ast::canon::CanonDecl {
+        builtin: "stream.read".into(),
+        opts: vybe_ast::canon::CanonOptions {
+            is_async: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
     Ok(Module {
+        canon,
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
@@ -237,6 +248,14 @@ struct Walker {
     char_pointer_struct_bases: HashMap<String, String>,
     /// identifiers declared as non-char pointer to array (int*, double*, etc.)
     /// These are PLAIN arrays (int arr[N]) — direct JS array indexing.
+    /// `char buf[N]` — a char ARRAY, not a string.
+    ///
+    /// A `char *p = buf` must alias `buf`, exactly as `unsigned char *` and
+    /// `int *` already do. Without this the declaration fell into the
+    /// string-surgery branch below, which COPIES the value: `p[0] = 'X'` then
+    /// wrote to a detached string and `buf` never changed. `unsigned char` was
+    /// only correct because it is explicitly excluded from that branch.
+    char_array_vars: HashSet<String>,
     array_ptr_vars: HashSet<String>,
     /// identifiers declared as pointer variables, even when their current value is NULL.
     pointer_vars: HashSet<String>,
@@ -3077,6 +3096,9 @@ impl Walker {
                         if array_bounds.is_some() {
                             was_array_decl = true;
                         }
+                        if was_array_decl && !is_pointer_decl && type_text.contains("char") {
+                            self.char_array_vars.insert(name.clone());
+                        }
                     }
                     Rule::initializer => {
                         // Check before walking if init is address-of (&x) form
@@ -3294,6 +3316,14 @@ impl Walker {
             // classification below would hit the heap-allocation arm and
             // replace the array init with an empty string. Claim them as
             // array-backed pointers instead.
+            if !is_pointer_decl
+                && was_array_decl
+                && array_bounds.is_some()
+                && normalized_c_type_name(&type_text) == "char"
+                && init.as_ref().map(is_all_zero_init).unwrap_or(false)
+            {
+                init = None;
+            }
             let is_wide_char_pointer_family = matches!(
                 normalized_type_text.as_str(),
                 "char16_t" | "char32_t" | "wchar_t"
@@ -3301,9 +3331,16 @@ impl Walker {
             if is_wide_char_pointer_family && is_pointer_decl {
                 self.array_ptr_vars.insert(name.clone());
             }
+            let init_names_char_array = is_pointer_decl
+                && init
+                    .as_ref()
+                    .and_then(base_ident_name)
+                    .map(|n| self.char_array_vars.contains(&n))
+                    .unwrap_or(false);
             if (type_text.contains("char") || type_is_char_pointer_alias)
                 && !is_wide_char_pointer_family
                 && !init_is_member
+                && !init_names_char_array
                 && !is_unsigned_char_pointer_type
                 && !is_function_pointer_decl
                 && !is_multi_level_char_pointer
@@ -3514,7 +3551,11 @@ impl Walker {
                         if init_is_carray_pointer_var(&init, &self.carray_ptr_vars) {
                             self.carray_ptr_vars.insert(name.clone());
                         } else if !was_array_decl
-                            && should_wrap_pointer_init_as_carray(&init, &self.array_ptr_vars)
+                            && (should_wrap_pointer_init_as_carray(&init, &self.array_ptr_vars)
+                                || should_wrap_pointer_init_as_carray(
+                                    &init,
+                                    &self.char_array_vars,
+                                ))
                         {
                             // int *p = arr → wrap as carray
                             self.carray_ptr_vars.insert(name.clone());
@@ -16004,7 +16045,10 @@ impl Walker {
                     let mut it = args.into_iter();
                     if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next())
                     {
-                        return self.rewrite_memset(dst.value, fill.value, bytes.value);
+                        return call_expr(
+                            ident("__libc_memset"),
+                            vec![dst.value, fill.value, bytes.value],
+                        );
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -16013,7 +16057,10 @@ impl Walker {
                 "bzero" | "explicit_bzero" => {
                     let mut it = args.into_iter();
                     if let (Some(dst), Some(bytes)) = (it.next(), it.next()) {
-                        return self.rewrite_memset(dst.value, int_lit(0), bytes.value);
+                        return call_expr(
+                            ident("__libc_memset"),
+                            vec![dst.value, int_lit(0), bytes.value],
+                        );
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }

@@ -132,7 +132,7 @@ materialize_bool_results = true
 "math.Round"      = { emit = "common:math.round_half_away",    min_args = 1, max_args = 1 }
 "math.Min"        = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
 "math.Max"        = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
-"math.Pow"        = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+"math.Pow"        = { emit = "opcode:pow",             min_args = 2, max_args = 2 }
 "math.Sin"        = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
 "math.Cos"        = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
 "math.Tan"        = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
@@ -392,6 +392,18 @@ SetBool     = { emit = "common:go.reflect_set_bool",  min_args = 1, max_args = 1
 
 [known_types]
 "error"         = ["ecma:error", "Error"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTIN TYPE SPELLINGS — go names the platform table cannot
+# ────────────────────────────────────────────────────────────────────────────
+# The platform table (`vybe_ast::builtin_types::PLATFORM_SPELLINGS`) already
+# carries `int`/`int8..64`/`uint*`/`byte`/`float`; go's own floating spellings
+# and the `rune` alias are declared here so a declared local classifies as a
+# number and the shared provably-numeric operator fold can fire (§3c: the
+# language declares its spellings, the shared compiler never names one).
+[builtin_types]
+double = ["float64", "float32"]
+int    = ["rune", "uintptr"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES
