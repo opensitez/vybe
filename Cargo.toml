@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["crates/webcore"]
 members = [
     "crates/code_editor",
     "crates/vybe_runtime",
