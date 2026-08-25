@@ -20,7 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
-Imports <xmlns
+Imports <xmlns:ns="http://example.com/ns">
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +41,13 @@ Module VybeCheck
         End If
     End Sub
 End Module
-ns="http://example.com/ns">
 
 
 Module M
     Sub Main()
-        Dim xml = <ns
-        Root>
-        <ns
-        Child>Value</ns
-        Child>
-        </ns
-        Root>
+        Dim xml = <ns:Root>
+        <ns:Child>Value</ns:Child>
+        </ns:Root>
 
         __P(CStr(xml.Name.NamespaceName))
         __Check("http://example.com/ns")

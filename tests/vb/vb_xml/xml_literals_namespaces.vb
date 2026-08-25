@@ -1,5 +1,5 @@
-' vybe-test: vb/vb_xml_literal_xmlns/xml_literal_xmlns
-' origin: languages/vb/tests/vb/test_vb_xml_literal_xmlns.rs
+' vybe-test: vb/vb_xml_literals_namespaces/xml_literals_namespaces
+' origin: languages/vb/tests/vb/test_vb_xml_literals_namespaces.rs
 
 ' Vybe test harness — Visual Basic.
 '
@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports <xmlns:ns="http://example.com/ns">
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,17 +42,16 @@ Module VybeCheck
     End Sub
 End Module
 
+
 Module M
     Sub Main()
-        ' XML literal with inline xmlns
-        Dim xml = <Root xmlns
-        ns="http://test.com">
-        <ns
-        Child>Val</ns
-        Child>
-        </Root>
+        Dim xml = <ns:Root>
+        <ns:Child>Value</ns:Child>
+        </ns:Root>
 
-        __P(CStr(xml.Name.LocalName))
-        __Check("Root")
+        ' Need to use GetNamespace to query with namespaces
+        Dim ns = GetXmlNamespace(ns)
+        __P(CStr(xml.Element(ns + "Child").Value))
+        __Check("Value")
     End Sub
 End Module

@@ -45,7 +45,12 @@ End Module
 
 Module M
     Sub Main()
-        Dim a As New DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.FromHours(1))
+        ' The two must denote the SAME INSTANT for the assertions below.
+        ' As written (`0,0,0` at +01:00 vs `1,0,0` at +00:00) they were
+        ' 2023-12-31T23:00Z and 2024-01-01T01:00Z — two hours apart — and real
+        ' VB.NET answers `False`/`-1`, not `True`/`0` (checked with
+        ' `tools/vbrun`). `a` moved to 02:00+01:00, which IS 01:00Z.
+        Dim a As New DateTimeOffset(2024, 1, 1, 2, 0, 0, TimeSpan.FromHours(1))
         Dim b As New DateTimeOffset(2024, 1, 1, 1, 0, 0, TimeSpan.Zero)
         __P(CStr(a = b))
         __P(CStr(a.CompareTo(b)))

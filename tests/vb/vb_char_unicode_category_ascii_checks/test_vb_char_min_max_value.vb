@@ -46,6 +46,6 @@ End Module
 Module Program
     Sub Main()
         __P(CStr(AscW(Char.MinValue) & "|" & AscW(Char.MaxValue)))
-        __Check("0|-1")
+        __Check("0|65535")
     End Sub
 End Module

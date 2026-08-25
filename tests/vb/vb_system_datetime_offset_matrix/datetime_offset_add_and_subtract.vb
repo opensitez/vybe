@@ -47,7 +47,11 @@ Module M
     Sub Main()
         Dim base As New DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero)
         Dim later As DateTimeOffset = base.AddDays(1).AddHours(3)
-        Dim earlier As DateTimeOffset = later.AddHours(-3)
+        ' The category is add_and_SUBTRACT and the assertion below is that the
+        ' two are inverses, so `earlier` has to undo BOTH steps. Undoing only
+        ' the hours left `earlier` a whole day after `base`, and real VB.NET
+        ' prints `True/False` for this source (checked with `tools/vbrun`).
+        Dim earlier As DateTimeOffset = later.AddHours(-3).AddDays(-1)
         __P(CStr(later > base))
         __P(CStr(earlier = base))
         __Check("True

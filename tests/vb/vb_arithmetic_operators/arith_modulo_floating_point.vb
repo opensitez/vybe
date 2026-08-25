@@ -44,6 +44,6 @@ End Module
 Module M
 Sub Main()
 __P(CStr(5.5 Mod 2.1))
-    __Check("1.3")
+    __Check("1.2999999999999998")
 End Sub
 End Module

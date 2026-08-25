@@ -21,6 +21,9 @@
 ' rather than inside the helper.
 
 Imports System.Globalization
+' `Thread.CurrentThread` needs this — real VB rejects the file without it
+' (`BC30451: 'Thread' is not declared`, checked with `tools/vbrun`).
+Imports System.Threading
 Module VybeCheck
     Public __buf As String = ""
 
@@ -53,12 +56,11 @@ Module M
         __P(CStr(d.ToString("yyyy-MM-dd")))
         __P(CStr(d.ToString("HH:mm:ss")))
         __P(CStr(d.ToString("yyyy-MM-dd HH:mm:ss")))
+        ' The `:` → NEWLINE damage, in the EXPECTATION only — the format
+        ' strings above kept their colons, so `HH:mm:ss` can only ever print
+        ' `15:30:00`. Restored.
         __Check("2024-01-01
-15
-30
-00
-2024-01-01 15
-30
-00")
+15:30:00
+2024-01-01 15:30:00")
     End Sub
 End Module

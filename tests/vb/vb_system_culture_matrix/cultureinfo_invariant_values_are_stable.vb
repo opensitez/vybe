@@ -52,9 +52,9 @@ Module M
         __P(CStr(invariant.IsNeutralCulture))
         __P(CStr(invariant.NumberFormat.NumberDecimalSeparator))
         __P(CStr(invariant.NumberFormat.CurrencySymbol))
-        __Check("en-US
+        __Check("
 False
 .
-$")
+¤")
     End Sub
 End Module

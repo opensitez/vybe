@@ -48,7 +48,10 @@ Module Program
         Using ms As New MemoryStream(2)
             Dim initialCap = ms.Capacity
             ms.Write({1, 2, 3, 4, 5}, 0, 5)
-            __P(CStr(initialCap < ms.Capacity & "|" & ms.Length))
+            ' `&` binds TIGHTER than a relational operator in VB, so the unbracketed
+    ' form compared a number with the string `256|5`. Real VB.NET throws
+    ' `Conversions.ToDouble(String)` on this exact source (`tools/vbrun`).
+    __P(CStr((initialCap < ms.Capacity) & "|" & ms.Length))
         End Using
         __Check("True|5")
     End Sub

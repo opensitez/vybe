@@ -50,7 +50,7 @@ Module M
         Dim parsed As Double = Double.Parse("1.25", us)
         __P(CStr(parsed))
         __P(CStr(parsed.ToString("F2", CultureInfo.InvariantCulture)))
-        __Check("1.5
+        __Check("1.25
 1.25")
     End Sub
 End Module

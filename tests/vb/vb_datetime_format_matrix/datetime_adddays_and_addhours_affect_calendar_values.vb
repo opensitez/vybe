@@ -44,9 +44,12 @@ End Module
 Module M
     Sub Main()
         Dim d As Date = New Date(2024, 2, 27)
-        Dim next As Date = d.AddDays(1)
-        __P(CStr(next.Day))
-        __P(CStr(next.Month))
+        ' `next` is a VB KEYWORD — real VB rejects this source outright
+        ' (`BC30201: Expression expected`, checked with `tools/vbrun`), so the
+        ' test could never have run. Renamed; the assertion is unchanged.
+        Dim nextDay As Date = d.AddDays(1)
+        __P(CStr(nextDay.Day))
+        __P(CStr(nextDay.Month))
 
         Dim adjusted As Date = d.AddHours(3.5)
         __P(CStr(adjusted.Hour))

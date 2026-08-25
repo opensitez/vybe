@@ -46,17 +46,13 @@ End Module
 Module M
     Sub Main()
         ' XML namespaces in literals
-        Dim ns = <xml xmlns
-        ns1="http://example.com/ns1">
-        <ns1
-        Item>Value</ns1
-        Item>
+        Dim ns = <xml xmlns:ns1="http://example.com/ns1">
+        <ns1:Item>Value</ns1:Item>
         </xml>
 
         __P(CStr(ns.Elements().First().Name.LocalName))
         __P(CStr(ns.Elements().First().Name.NamespaceName))
         __Check("Item
-http
-//example.com/ns1")
+http://example.com/ns1")
     End Sub
 End Module

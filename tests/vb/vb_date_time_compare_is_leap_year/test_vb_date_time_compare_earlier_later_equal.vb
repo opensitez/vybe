@@ -47,7 +47,12 @@ Module Program
     Sub Main()
         Dim d1 As New DateTime(2025, 1, 1)
         Dim d2 As New DateTime(2025, 1, 2)
-        __P(CStr(DateTime.Compare(d1, d2) < 0 & "|" & DateTime.Compare(d2, d1) > 0 & "|" & DateTime.Compare(d1, d1) = 0))
+        ' `&` binds TIGHTER than a relational operator in VB, so the unbracketed
+        ' form built the string `0|1|0` first and then compared a number with
+        ' it — real VB.NET throws `Conversions.ToDouble(String)` on this exact
+        ' source (checked with `tools/vbrun`), so the expectation below could
+        ' never have been produced. Bracketed to say what it always meant.
+        __P(CStr((DateTime.Compare(d1, d2) < 0) & "|" & (DateTime.Compare(d2, d1) > 0) & "|" & (DateTime.Compare(d1, d1) = 0)))
         __Check("True|True|True")
     End Sub
 End Module

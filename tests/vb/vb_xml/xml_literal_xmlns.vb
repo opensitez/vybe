@@ -1,5 +1,5 @@
-' vybe-test: vb/vb_xml_serialization_deserialization/test_vb_xml_serializer_roundtrip
-' origin: languages/vb/tests/vb/test_vb_xml_serialization_deserialization.rs
+' vybe-test: vb/vb_xml_literal_xmlns/xml_literal_xmlns
+' origin: languages/vb/tests/vb/test_vb_xml_literal_xmlns.rs
 
 ' Vybe test harness — Visual Basic.
 '
@@ -20,8 +20,6 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
-Imports System.IO
-Imports System.Xml.Serialization
 Module VybeCheck
     Public __buf As String = ""
 
@@ -43,24 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-
-Public Class BookDto
-    Public Property Title As String
-    Public Property Price As Double
-End Class
-
-Module Program
+Module M
     Sub Main()
-        Dim book As New BookDto() With {.Title = "VB Guide", .Price = 49.99}
-        Dim serializer As New XmlSerializer(GetType(BookDto))
+        ' XML literal with inline xmlns
+        Dim xml = <Root xmlns:ns="http://test.com">
+        <ns:Child>Val</ns:Child>
+        </Root>
 
-        Using ms As New MemoryStream()
-            serializer.Serialize(ms, book)
-            ms.Position = 0
-
-            Dim deserialized As BookDto = CType(serializer.Deserialize(ms), BookDto)
-            __P(CStr(deserialized.Title & ":" & deserialized.Price))
-        End Using
-        __Check("VB Guide:49.99")
+        __P(CStr(xml.Name.LocalName))
+        __Check("Root")
     End Sub
 End Module
