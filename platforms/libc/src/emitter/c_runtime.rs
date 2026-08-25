@@ -998,9 +998,24 @@ fn build_prelude() -> Vec<Statement> {
             }],
             kind: VarDeclKind::Var,
         }),
-        // Socket state, keyed by fd: the `wasi:sockets` resource and the two
-        // `wasi:io` streams it hands back. Python keeps these on a socket
-        // OBJECT; C has integer descriptors, so they live in tables.
+        // Socket state, keyed by fd: the `wasi:sockets` resource and the
+        // streams it hands back. Python keeps these on a socket OBJECT; C has
+        // integer descriptors, so they live in tables.
+        //
+        // `__c_sock_listener` holds `listen()`'s `stream<tcp-socket>`. 0.3.1
+        // has no `accept` verb — the stream IS the accept queue, and every
+        // accepted connection is one element read from it, so the stream has
+        // to outlive the `listen()` call that produced it.
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_sock_listener".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(Vec::new()))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_sock_res".to_string()),

@@ -69,6 +69,8 @@ pub type HeaderStruct = (&'static str, &'static [(&'static str, &'static str)]);
 
 pub fn runtime_helpers() -> Vec<Statement> {
     let mut out = vec![
+        addr_fill_helper(),
+        write_into_helper(),
         str_to_codes_helper(),
         exec_helper(),
         poll_helper(),
@@ -235,16 +237,11 @@ fn socket_helpers() -> Vec<Statement> {
                 ),
                 vec![
                     stmt(StmtKind::Expr(call_expr(
-                        ident("__c_wasi_udp_start_bind"),
+                        ident("__c_wasi_udp_bind"),
                         vec![
                             index_expr(ident("__c_sock_res"), ident("fd")),
-                            call_expr(ident("__c_wasi_network"), vec![]),
                             call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
                         ],
-                    ))),
-                    stmt(StmtKind::Expr(call_expr(
-                        ident("__c_wasi_udp_finish_bind"),
-                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_sock_bound"), ident("fd")),
@@ -262,16 +259,11 @@ fn socket_helpers() -> Vec<Statement> {
                 None,
             ),
             stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_start_bind"),
+                ident("__c_wasi_bind"),
                 vec![
                     index_expr(ident("__c_sock_res"), ident("fd")),
-                    call_expr(ident("__c_wasi_network"), vec![]),
                     call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
                 ],
-            ))),
-            stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_finish_bind"),
-                vec![index_expr(ident("__c_sock_res"), ident("fd"))],
             ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
@@ -298,9 +290,12 @@ fn socket_helpers() -> Vec<Statement> {
                     ident("backlog"),
                 ],
             ))),
-            stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_start_listen"),
-                vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_listener"), ident("fd")),
+                call_expr(
+                    ident("__c_wasi_listen"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
             ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
@@ -397,28 +392,29 @@ fn socket_helpers() -> Vec<Statement> {
                     ))),
                     var_decl_stmt(
                         "ds",
-                        call_expr(
-                            ident("__c_wasi_udp_stream"),
-                            vec![
-                                index_expr(ident("__c_sock_res"), ident("fd")),
-                                call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
-                            ],
-                        ),
+                        index_expr(ident("__c_sock_res"), ident("fd")),
                     ),
                     if_stmt(
                         bin(BinOp::NotEq, ident("ds"), null_lit()),
                         vec![
                             stmt(StmtKind::Expr(assign_expr(
                                 index_expr(ident("__c_sock_rx"), ident("fd")),
-                                index_expr(ident("ds"), int_lit(0)),
+                                ident("ds"),
                             ))),
                             stmt(StmtKind::Expr(assign_expr(
                                 index_expr(ident("__c_sock_tx"), ident("fd")),
-                                index_expr(ident("ds"), int_lit(1)),
+                                ident("ds"),
                             ))),
                         ],
                         None,
                     ),
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_wasi_udp_connect"),
+                        vec![
+                            index_expr(ident("__c_sock_res"), ident("fd")),
+                            call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                        ],
+                    ))),
                     // The peer is what makes a later `send` legal — see
                     // `__c_send_h`'s EDESTADDRREQ arm.
                     stmt(StmtKind::Expr(assign_expr(
@@ -429,18 +425,29 @@ fn socket_helpers() -> Vec<Statement> {
                 ],
                 None,
             ),
-            stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_start_conn"),
-                vec![
-                    index_expr(ident("__c_sock_res"), ident("fd")),
-                    call_expr(ident("__c_wasi_network"), vec![]),
-                    call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
-                ],
-            ))),
+            var_decl_stmt(
+                "cr",
+                call_expr(
+                    ident("__c_wasi_connect"),
+                    vec![
+                        index_expr(ident("__c_sock_res"), ident("fd")),
+                        call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                    ],
+                ),
+            ),
+            if_stmt(
+                bin(
+                    BinOp::NotEq,
+                    member(ident("cr"), "__wasi_error"),
+                    null_lit(),
+                ),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
             var_decl_stmt(
                 "streams",
                 call_expr(
-                    ident("__c_wasi_finish_conn"),
+                    ident("__c_wasi_sock_recv"),
                     vec![index_expr(ident("__c_sock_res"), ident("fd"))],
                 ),
             ),
@@ -455,7 +462,7 @@ fn socket_helpers() -> Vec<Statement> {
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_sock_tx"), ident("fd")),
-                index_expr(ident("streams"), int_lit(1)),
+                index_expr(ident("__c_sock_res"), ident("fd")),
             ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
@@ -524,60 +531,25 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "r",
-                call_expr(
-                    ident("__c_wasi_accept"),
-                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
-                ),
-            ),
-            var_decl_stmt("waited", int_lit(0)),
-            // …unless the descriptor is O_NONBLOCK, which is the caller
-            // saying "answer EAGAIN, do not wait".
-            var_decl_stmt(
-                "nb",
-                nullish(
-                    index_expr(ident("__c_fd_nonblock"), ident("fd")),
-                    int_lit(0),
-                ),
-            ),
-            stmt(StmtKind::While {
-                cond: bin(
-                    BinOp::And,
-                    bin(BinOp::Eq, ident("nb"), int_lit(0)),
+                ternary(
                     bin(
-                        BinOp::And,
-                        bin(BinOp::Eq, ident("r"), null_lit()),
-                        // Iterations, not milliseconds: each one BLOCKS on the
-                        // socket's pollable (host ceiling ~1s) instead of
-                        // sleeping 5ms, so 8 rounds is the same wall-clock
-                        // budget the 1000×5ms loop had — and it returns the
-                        // instant a connection arrives.
-                        bin(BinOp::Lt, ident("waited"), int_lit(8)),
+                        BinOp::NotEq,
+                        nullish(
+                            index_expr(ident("__c_fd_nonblock"), ident("fd")),
+                            int_lit(0),
+                        ),
+                        int_lit(0),
+                    ),
+                    call_expr(
+                        ident("__c_stream_try_accept"),
+                        vec![index_expr(ident("__c_sock_listener"), ident("fd"))],
+                    ),
+                    call_expr(
+                        ident("__c_stream_accept"),
+                        vec![index_expr(ident("__c_sock_listener"), ident("fd"))],
                     ),
                 ),
-                body: vec![
-                    // The listening socket's own pollable — ready means a
-                    // connection is queued, so the wait ends on the connect.
-                    stmt(StmtKind::Expr(call_expr(
-                        ident("__c_pollable_block"),
-                        vec![call_expr(
-                            ident("__c_wasi_tcp_ready"),
-                            vec![index_expr(ident("__c_sock_res"), ident("fd"))],
-                        )],
-                    ))),
-                    stmt(StmtKind::Expr(assign_expr(
-                        ident("waited"),
-                        bin(BinOp::Add, ident("waited"), int_lit(1)),
-                    ))),
-                    stmt(StmtKind::Expr(assign_expr(
-                        ident("r"),
-                        call_expr(
-                            ident("__c_wasi_accept"),
-                            vec![index_expr(ident("__c_sock_res"), ident("fd"))],
-                        ),
-                    ))),
-                ],
-                else_body: None,
-            }),
+            ),
             if_stmt(
                 bin(BinOp::Eq, ident("r"), null_lit()),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
@@ -594,15 +566,18 @@ fn socket_helpers() -> Vec<Statement> {
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_sock_res"), ident("cfd")),
-                index_expr(ident("r"), int_lit(0)),
+                ident("r"),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_sock_rx"), ident("cfd")),
-                index_expr(ident("r"), int_lit(1)),
+                index_expr(
+                    call_expr(ident("__c_wasi_sock_recv"), vec![ident("r")]),
+                    int_lit(0),
+                ),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_sock_tx"), ident("cfd")),
-                index_expr(ident("r"), int_lit(2)),
+                ident("r"),
             ))),
             stmt(StmtKind::Return(Some(ident("cfd")))),
         ],
@@ -637,16 +612,11 @@ fn socket_helpers() -> Vec<Statement> {
                 ),
                 vec![
                     stmt(StmtKind::Expr(call_expr(
-                        ident("__c_wasi_udp_start_bind"),
+                        ident("__c_wasi_udp_bind"),
                         vec![
                             index_expr(ident("__c_sock_res"), ident("fd")),
-                            call_expr(ident("__c_wasi_network"), vec![]),
                             str_lit("127.0.0.1:0"),
                         ],
-                    ))),
-                    stmt(StmtKind::Expr(call_expr(
-                        ident("__c_wasi_udp_finish_bind"),
-                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_sock_bound"), ident("fd")),
@@ -657,21 +627,18 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "ds",
-                call_expr(
-                    ident("__c_wasi_udp_stream"),
-                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
-                ),
+                index_expr(ident("__c_sock_res"), ident("fd")),
             ),
             if_stmt(
                 bin(BinOp::NotEq, ident("ds"), null_lit()),
                 vec![
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_sock_rx"), ident("fd")),
-                        index_expr(ident("ds"), int_lit(0)),
+                        ident("ds"),
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_sock_tx"), ident("fd")),
-                        index_expr(ident("ds"), int_lit(1)),
+                        ident("ds"),
                     ))),
                 ],
                 None,
@@ -759,42 +726,18 @@ fn socket_helpers() -> Vec<Statement> {
                         vec![stmt(StmtKind::Expr(call_expr(
                             ident("__c_wasi_dgram_send"),
                             vec![
-                                index_expr(ident("__c_sock_tx"), ident("fd")),
-                                expr(ExprKind::Array(vec![ArrayElement {
-                                    key: None,
-                                    value: expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
-                                        key: str_lit("data"),
-                                        value: ident("text"),
-                                    }])),
-                                    spread: false,
-                                    by_ref: false,
-                                }])),
+                                index_expr(ident("__c_sock_res"), ident("fd")),
+                                ident("text"),
                             ],
                         )))],
                         Some(vec![stmt(StmtKind::Expr(call_expr(
                             ident("__c_wasi_dgram_send"),
                             vec![
-                                index_expr(ident("__c_sock_tx"), ident("fd")),
-                                expr(ExprKind::Array(vec![ArrayElement {
-                                    key: None,
-                                    value: expr(ExprKind::Object(vec![
-                                        ObjectProperty::KeyValue {
-                                            key: str_lit("data"),
-                                            value: ident("text"),
-                                        },
-                                        // "host:port" is one of the shapes the
-                                        // host parses.
-                                        ObjectProperty::KeyValue {
-                                            key: str_lit("remote-address"),
-                                            value: call_expr(
-                                                ident("__c_sock_addr_text"),
-                                                vec![ident("dest")],
-                                            ),
-                                        },
-                                    ])),
-                                    spread: false,
-                                    by_ref: false,
-                                }])),
+                                index_expr(ident("__c_sock_res"), ident("fd")),
+                                ident("text"),
+                                // "host:port" is one of the shapes the host
+                                // parses into an `ip-socket-address`.
+                                call_expr(ident("__c_sock_addr_text"), vec![ident("dest")]),
                             ],
                         )))]),
                     ),
@@ -803,8 +746,14 @@ fn socket_helpers() -> Vec<Statement> {
                 None,
             ),
             stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_stream_write"),
-                vec![index_expr(ident("__c_sock_tx"), ident("fd")), ident("text")],
+                ident("__c_wasi_sock_send"),
+                vec![
+                    index_expr(ident("__c_sock_res"), ident("fd")),
+                    call_expr(
+                        ident("__c_stream_from_bytes"),
+                        vec![call_expr(ident("__c_str_to_codes"), vec![ident("text")])],
+                    ),
+                ],
             ))),
             stmt(StmtKind::Return(Some(ident("count")))),
         ],
@@ -924,10 +873,10 @@ fn socket_helpers() -> Vec<Statement> {
                     ),
                     call_expr(
                         ident("__c_wasi_dgram_recv"),
-                        vec![index_expr(ident("__c_sock_rx"), ident("fd")), int_lit(1)],
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
                     ),
                     call_expr(
-                        ident("__c_wasi_stream_read"),
+                        ident("__c_stream_read"),
                         vec![
                             index_expr(ident("__c_sock_rx"), ident("fd")),
                             ident("count"),
@@ -963,33 +912,13 @@ fn socket_helpers() -> Vec<Statement> {
                                 int_lit(0),
                             ),
                         ),
-                        // Same change of unit as `__c_accept_h`: 4 blocking
-                        // rounds, not 400 sleeps.
-                        bin(BinOp::Lt, ident("waited"), int_lit(4)),
+                        bin(BinOp::Lt, ident("waited"), int_lit(100)),
                     ),
                 ),
                 body: vec![
-                    // Block on the stream's OWN pollable rather than on a
-                    // duration: the wait ends when bytes arrive, not on the
-                    // next tick. `pollable.block` has its own ceiling, so the
-                    // surrounding loop is the deadline, not the wait.
                     stmt(StmtKind::Expr(call_expr(
-                        ident("__c_pollable_block"),
-                        vec![ternary(
-                            bin(
-                                BinOp::Eq,
-                                index_expr(ident("__c_sock_kind"), ident("fd")),
-                                int_lit(2),
-                            ),
-                            call_expr(
-                                ident("__c_wasi_dgram_ready"),
-                                vec![index_expr(ident("__c_sock_rx"), ident("fd"))],
-                            ),
-                            call_expr(
-                                ident("__c_wasi_stream_ready"),
-                                vec![index_expr(ident("__c_sock_rx"), ident("fd"))],
-                            ),
-                        )],
+                        ident("__c_sleep_ms"),
+                        vec![int_lit(5)],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("waited"),
@@ -1005,10 +934,10 @@ fn socket_helpers() -> Vec<Statement> {
                             ),
                             call_expr(
                                 ident("__c_wasi_dgram_recv"),
-                                vec![index_expr(ident("__c_sock_rx"), ident("fd")), int_lit(1)],
+                                vec![index_expr(ident("__c_sock_res"), ident("fd"))],
                             ),
                             call_expr(
-                                ident("__c_wasi_stream_read"),
+                                ident("__c_stream_read"),
                                 vec![
                                     index_expr(ident("__c_sock_rx"), ident("fd")),
                                     ident("count"),
@@ -1041,9 +970,10 @@ fn socket_helpers() -> Vec<Statement> {
                 vec![stmt(StmtKind::Return(Some(null_lit())))],
                 None,
             ),
-            // A datagram stream answers a LIST OF RECORDS (each `data` +
-            // `remote-address`), not bytes: take the first datagram's
-            // payload. An empty list means nothing arrived.
+            // 0.3.1 `udp-socket.receive()` answers
+            // `tuple<list<u8>, ip-socket-address>`: element 0 IS the payload.
+            // A `length` of 0 is the error object a timeout returns, which
+            // the checks above have already turned into "" or EAGAIN.
             if_stmt(
                 bin(
                     BinOp::Eq,
@@ -1062,7 +992,7 @@ fn socket_helpers() -> Vec<Statement> {
                     ),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("data"),
-                        member(index_expr(ident("data"), int_lit(0)), "data"),
+                        index_expr(ident("data"), int_lit(0)),
                     ))),
                 ],
                 None,
@@ -1125,19 +1055,26 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "rec",
-                call_expr(
-                    ident("__c_wasi_local_addr"),
-                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ternary(
+                    bin(
+                        BinOp::Eq,
+                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        int_lit(2),
+                    ),
+                    call_expr(
+                        ident("__c_wasi_udp_local_addr"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ),
+                    call_expr(
+                        ident("__c_wasi_local_addr"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ),
                 ),
             ),
-            if_stmt(
-                bin(BinOp::NotEq, ident("rec"), null_lit()),
-                vec![stmt(StmtKind::Expr(assign_expr(
-                    member(ident("addr"), "sin_port"),
-                    nullish(member(ident("rec"), "port"), int_lit(0)),
-                )))],
-                None,
-            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_addr_fill_h"),
+                vec![ident("addr"), ident("rec")],
+            ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
     );
@@ -1174,19 +1111,38 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "rec",
-                call_expr(
-                    ident("__c_wasi_remote_addr"),
-                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ternary(
+                    bin(
+                        BinOp::Eq,
+                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        int_lit(2),
+                    ),
+                    call_expr(
+                        ident("__c_wasi_udp_remote_addr"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ),
+                    call_expr(
+                        ident("__c_wasi_remote_addr"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ),
                 ),
             ),
             if_stmt(
-                bin(BinOp::Eq, ident("rec"), null_lit()),
+                bin(
+                    BinOp::Or,
+                    bin(BinOp::Eq, ident("rec"), null_lit()),
+                    bin(
+                        BinOp::NotEq,
+                        member(ident("rec"), "__wasi_error"),
+                        null_lit(),
+                    ),
+                ),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
-            stmt(StmtKind::Expr(assign_expr(
-                member(ident("addr"), "sin_port"),
-                nullish(member(ident("rec"), "port"), int_lit(0)),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_addr_fill_h"),
+                vec![ident("addr"), ident("rec")],
             ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
@@ -1465,6 +1421,87 @@ fn exec_helper() -> Statement {
                 ident("__c_exit_with_code"),
                 vec![ident("st")],
             ))),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    )
+}
+
+/// Fill a `sockaddr_in` from a WIT `ip-socket-address` record.
+///
+/// `sin_family`, `sin_port` AND `sin_addr.s_addr` — writing only the port left
+/// callers that check the family seeing 0. `address` is a list of octets for
+/// ipv4 and a string for ipv6, so `s_addr` is only computed for the former.
+fn addr_fill_helper() -> Statement {
+    function_stmt(
+        "__c_addr_fill_h",
+        vec!["addr", "rec"],
+        vec![
+            if_stmt(
+                bin(
+                    BinOp::Or,
+                    bin(BinOp::Eq, ident("rec"), null_lit()),
+                    bin(
+                        BinOp::NotEq,
+                        member(ident("rec"), "__wasi_error"),
+                        null_lit(),
+                    ),
+                ),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                member(ident("addr"), "sin_family"),
+                ternary(
+                    bin(
+                        BinOp::Eq,
+                        member(ident("rec"), "family"),
+                        str_lit("ipv6"),
+                    ),
+                    int_lit(30),
+                    int_lit(2),
+                ),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                member(ident("addr"), "sin_port"),
+                nullish(member(ident("rec"), "port"), int_lit(0)),
+            ))),
+            var_decl_stmt("o", member(ident("rec"), "address")),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    nullish(member(ident("o"), "length"), int_lit(0)),
+                    int_lit(4),
+                ),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    member(member(ident("addr"), "sin_addr"), "s_addr"),
+                    bin(
+                        BinOp::Add,
+                        bin(
+                            BinOp::Add,
+                            bin(
+                                BinOp::Mul,
+                                index_expr(ident("o"), int_lit(0)),
+                                int_lit(16777216),
+                            ),
+                            bin(
+                                BinOp::Mul,
+                                index_expr(ident("o"), int_lit(1)),
+                                int_lit(65536),
+                            ),
+                        ),
+                        bin(
+                            BinOp::Add,
+                            bin(
+                                BinOp::Mul,
+                                index_expr(ident("o"), int_lit(2)),
+                                int_lit(256),
+                            ),
+                            index_expr(ident("o"), int_lit(3)),
+                        ),
+                    ),
+                )))],
+                None,
+            ),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
     )
@@ -3025,6 +3062,39 @@ pub fn sendmsg(fd: Expression, msg: Expression) -> Expression {
 
 /// `recvmsg` is `recv` scattering into the first iovec. Same helper, so
 /// MSG_PEEK and the blocking retry behave identically to a plain `recv`.
+/// Copy `text` into the buffer `dst` points at, one element at a time.
+///
+/// `dst = text` would only REBIND the field; the caller's buffer is reached by
+/// INDEXING through it. Answers the number of elements written.
+fn write_into_helper() -> Statement {
+    function_stmt(
+        "__c_write_into_h",
+        vec!["dst", "text"],
+        vec![
+            var_decl_stmt("i", int_lit(0)),
+            stmt(StmtKind::While {
+                cond: bin(
+                    BinOp::Lt,
+                    ident("i"),
+                    nullish(member(ident("text"), "length"), int_lit(0)),
+                ),
+                body: vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("dst"), ident("i")),
+                        index_expr(ident("text"), ident("i")),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("i"),
+                        bin(BinOp::Add, ident("i"), int_lit(1)),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Return(Some(ident("i")))),
+        ],
+    )
+}
+
 pub fn recvmsg(fd: Expression, msg: Expression, flags: Expression) -> Expression {
     let msg = arg_target(msg);
     let iov = index_expr(member(msg, "msg_iov"), int_lit(0));
@@ -3040,7 +3110,10 @@ pub fn recvmsg(fd: Expression, msg: Expression, flags: Expression) -> Expression
             eq(ident("__c_recv_tmp"), null_lit()),
             int_lit(-1),
             expr(ExprKind::Sequence(vec![
-                assign_expr(member(iov, "iov_base"), ident("__c_recv_tmp")),
+                call_expr(
+                    ident("__c_write_into_h"),
+                    vec![member(iov, "iov_base"), ident("__c_recv_tmp")],
+                ),
                 member(ident("__c_recv_tmp"), "length"),
             ])),
         ),

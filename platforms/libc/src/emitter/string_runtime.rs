@@ -10,6 +10,36 @@ use vybe_ast::{BinOp, ExprKind, Statement, StmtKind};
 pub fn runtime_helpers() -> Vec<Statement> {
     let mut out: Vec<Statement> = Vec::new();
     out.push(function_stmt(
+        "__libc_memset",
+        vec!["dst", "ch", "n"],
+        vec![
+            var_decl_stmt("i", int_lit(0)),
+            stmt(StmtKind::While {
+                cond: expr(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(ident("i")),
+                    right: Box::new(ident("n")),
+                }),
+                body: vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("dst"), ident("i")),
+                        ident("ch"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("i"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("i")),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Return(Some(ident("dst")))),
+        ],
+    ));
+    out.push(function_stmt(
         "__c_mem_index_of_h",
         vec!["buf", "needle", "n", "reverse"],
         vec![
