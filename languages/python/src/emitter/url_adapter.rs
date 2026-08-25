@@ -174,7 +174,7 @@ pub fn emit_urlsplit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         Some("query".to_string()),
         Some("fragment".to_string()),
     ];
-    tuples::emit_named_tuple(chunks, current, &fields, Some("SplitResult"), line);
+    tuples::emit_named_tuple(chunks, current, &fields, Some("SplitResult"), None, line);
 }
 
 /// `urlunsplit(parts)` / `urlunparse(parts)` — reassemble, and it must

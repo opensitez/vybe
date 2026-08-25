@@ -200,6 +200,21 @@ pub fn emit_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     chunks[current].emit_f64_const(1.0, line);
     set_field(chunks, current, "__fclosed", line);
+    chunks[current].emit_else(line);
+    // `close` is keyed by NAME alone (`[value_methods]`), so a generator's
+    // `close()` landed here and fell out of the `if` doing nothing at all —
+    // silently. It belongs to the generator protocol: hand it to the same
+    // `gen_close` that drives `generators::emit_resume` with a `GeneratorExit`,
+    // which is what `g.close()` means.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
+    let is_generator = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_generator, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
+    crate::emitter::collections_adapter::emit_gen_close(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

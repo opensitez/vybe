@@ -54,6 +54,420 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     base
 }
 
+// ─── the socket OBJECT ───────────────────────────────────────────────────────
+//
+// `wasi:sockets/types@0.3.1`, emitted directly. This used to be
+// `VybeSocketImpl`, a python class in `SOCKET_PRELUDE`, and moving it here is
+// not tidying: a prelude is compiled as ORDINARY USER PYTHON, so it inherits
+// every walker defect. `_addr_tuple` built its host string with
+// `".".join(pieces)` and that call resolved to UNDEFINED the moment a program
+// said `import threading`, because type-directed dispatch preferred the
+// prelude's own `Thread.join` over the string built-in. Bytecode cannot be
+// hijacked that way.
+//
+// The receiver is the host socket handle itself — there is no wrapper object.
+// `__type` on that handle ("tcp-socket" / "udp-socket") is what the tcp/udp
+// branches below read, so the adapter never has to guess which resource it is
+// holding.
+
+/// The interface every 0.3.1 socket method lives on. 0.3.1 collapsed `tcp`,
+/// `udp`, `tcp-create-socket`, `udp-create-socket` and `instance-network` into
+/// this one.
+const SOCK: &str = "wasi:sockets/types";
+
+fn get_prop(chunks: &mut [Chunk], current: usize, obj: u16, key: &str, line: u32) {
+    lget(chunks, current, obj, line);
+    chunks[current].emit_string_const(key, line);
+    call_import(chunks, current, "ecma:object", "get", 2, line);
+}
+
+fn set_prop(chunks: &mut [Chunk], current: usize, obj: u16, key: &str, line: u32) {
+    // Stack on entry: [value]. Object and key go under it via a scratch hop.
+    let value = chunks[current].alloc_scratch(1);
+    lset(chunks, current, value, line);
+    lget(chunks, current, obj, line);
+    chunks[current].emit_string_const(key, line);
+    lget(chunks, current, value, line);
+    call_import(chunks, current, "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// Leaves `true` when the handle in `obj` is a `udp-socket`.
+fn emit_is_udp(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
+    get_prop(chunks, current, obj, "__type", line);
+    chunks[current].emit_string_const("udp-socket", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+}
+
+/// A python address `(host, port)` → the `"host:port"` text the host parses as
+/// an `ip-socket-address`.
+///
+/// A LOOP, not `":".join(...)` — see the module note above.
+fn emit_addr_text(chunks: &mut [Chunk], current: usize, addr: u16, line: u32) {
+    lget(chunks, current, addr, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_string_const(":", line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    lget(chunks, current, addr, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+}
+
+/// A WIT `ip-socket-address` record → python's `(host, port)`.
+///
+/// `address` is a list of octets for ipv4 and a string for ipv6, which is why
+/// the shape is tested rather than assumed. A record that carries no address
+/// at all — what `get-local-address` answers on an unbound socket, as an
+/// `error-code` rather than a null — degrades to `("0.0.0.0", 0)`, the same
+/// answer CPython gives for an unbound socket.
+fn emit_addr_tuple(chunks: &mut [Chunk], current: usize, rec: u16, line: u32) {
+    let parts = chunks[current].alloc_scratch(1);
+    let host = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+
+    get_prop(chunks, current, rec, "address", line);
+    lset(chunks, current, parts, line);
+
+    lget(chunks, current, parts, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    chunks[current].emit_if_value(line);
+    {
+        // ipv4: dotted quad, built by hand.
+        chunks[current].emit_string_const("", line);
+        lset(chunks, current, host, line);
+        chunks[current].emit_i32_const(0, line);
+        lset(chunks, current, idx, line);
+
+        let done = chunks[current].emit_block(line);
+        let (loop_id, _) = chunks[current].emit_loop_s(line);
+        lget(chunks, current, idx, line);
+        lget(chunks, current, parts, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        chunks[current].emit_br_if(1, line);
+
+        lget(chunks, current, host, line);
+        lget(chunks, current, idx, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::I32_GT_S, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(".", line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_end(line);
+        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+        lget(chunks, current, parts, line);
+        lget(chunks, current, idx, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        call_import(chunks, current, "ecma:string", "String", 1, line);
+        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+        lset(chunks, current, host, line);
+
+        lget(chunks, current, idx, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        lset(chunks, current, idx, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].patch_loop(loop_id);
+        chunks[current].emit_end(line);
+        chunks[current].patch_block(done);
+
+        lget(chunks, current, host, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        // ipv6 gives the address as text already; a missing address gives the
+        // unspecified one rather than a crash inside the caller's format.
+        lget(chunks, current, parts, line);
+        call_import(chunks, current, "ecma:value", "typeof", 1, line);
+        chunks[current].emit_string_const("string", line);
+        call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+        chunks[current].emit_if_value(line);
+        lget(chunks, current, parts, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_string_const("0.0.0.0", line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
+
+    get_prop(chunks, current, rec, "port", line);
+    tuples::emit_tuple(chunks, current, 2, line);
+}
+
+/// `socket.socket(family, kind, proto)` → a real `tcp-socket`/`udp-socket`.
+/// Stack: `[family, kind, proto?] -> [handle]`.
+pub fn emit_sock_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    // `SOCK_DGRAM` is 2. Defaulting to STREAM matches CPython's own default.
+    if argc >= 2 {
+        lget(chunks, current, base + 1, line);
+        chunks[current].emit_f64_const(2.0, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("ipv4", line);
+    call_import(chunks, current, SOCK, "[static]udp-socket.create", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("ipv4", line);
+    call_import(chunks, current, SOCK, "[static]tcp-socket.create", 1, line);
+    chunks[current].emit_end(line);
+}
+
+/// `sock.bind((host, port))`. Stack: `[sock, addr] -> [None]`.
+pub fn emit_sock_bind(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let (sock, addr) = (base, base + 1);
+    emit_is_udp(chunks, current, sock, line);
+    chunks[current].emit_if_value(line);
+    lget(chunks, current, sock, line);
+    emit_addr_text(chunks, current, addr, line);
+    call_import(chunks, current, SOCK, "[method]udp-socket.bind", 2, line);
+    chunks[current].emit_else(line);
+    lget(chunks, current, sock, line);
+    emit_addr_text(chunks, current, addr, line);
+    call_import(chunks, current, SOCK, "[method]tcp-socket.bind", 2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `sock.listen(backlog)`.
+///
+/// The returned `stream<tcp-socket>` is STASHED on the handle rather than
+/// returned: python's `listen()` answers None and it is `accept()` that needs
+/// the stream. 0.3.1 has no `accept` — the stream IS the accept queue.
+pub fn emit_sock_listen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let sock = base;
+    if argc >= 2 {
+        lget(chunks, current, sock, line);
+        lget(chunks, current, base + 1, line);
+        call_import(
+            chunks,
+            current,
+            SOCK,
+            "[method]tcp-socket.set-listen-backlog-size",
+            2,
+            line,
+        );
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    lget(chunks, current, sock, line);
+    call_import(chunks, current, SOCK, "[method]tcp-socket.listen", 1, line);
+    set_prop(chunks, current, sock, "__listener", line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `sock.accept()` → `(conn, addr)`.
+///
+/// One element read off the listen stream. `common:stream.read_handle` does
+/// the `canon stream.read` + `canon resource.rep`; the rep is the socket id,
+/// which every method here accepts as its receiver.
+pub fn emit_sock_accept(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let sock = base;
+    let conn = chunks[current].alloc_scratch(1);
+
+    // A bare `accept()` on a socket nobody called `listen()` on still has to
+    // work: python allows it after `bind`, and the stream is what makes the
+    // connection reachable at all.
+    get_prop(chunks, current, sock, "__listener", line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    lget(chunks, current, sock, line);
+    call_import(chunks, current, SOCK, "[method]tcp-socket.listen", 1, line);
+    set_prop(chunks, current, sock, "__listener", line);
+    chunks[current].emit_end(line);
+
+    get_prop(chunks, current, sock, "__listener", line);
+    vybe_compiler::primitives::io::emit_read_stream_handle(&mut chunks[current], line);
+    lset(chunks, current, conn, line);
+
+    lget(chunks, current, conn, line);
+    lget(chunks, current, conn, line);
+    call_import(
+        chunks,
+        current,
+        SOCK,
+        "[method]tcp-socket.get-remote-address",
+        1,
+        line,
+    );
+    let rec = chunks[current].alloc_scratch(1);
+    lset(chunks, current, rec, line);
+    emit_addr_tuple(chunks, current, rec, line);
+    tuples::emit_tuple(chunks, current, 2, line);
+}
+
+/// `sock.connect((host, port))`.
+pub fn emit_sock_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let (sock, addr) = (base, base + 1);
+    emit_is_udp(chunks, current, sock, line);
+    chunks[current].emit_if_value(line);
+    lget(chunks, current, sock, line);
+    emit_addr_text(chunks, current, addr, line);
+    call_import(chunks, current, SOCK, "[method]udp-socket.connect", 2, line);
+    chunks[current].emit_else(line);
+    lget(chunks, current, sock, line);
+    emit_addr_text(chunks, current, addr, line);
+    call_import(chunks, current, SOCK, "[method]tcp-socket.connect", 2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `sock.send(data)` / `sendall(data)`.
+///
+/// 0.3.1's `send` takes `data: stream<u8>`, not a `list<u8>` — bytes are no
+/// longer handed to a sink, a stream is produced and passed.
+/// `common:stream.from_bytes` mints it.
+pub fn emit_sock_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, count: bool) {
+    let base = stash_args(chunks, current, argc, line);
+    let (sock, data) = (base, base + 1);
+    emit_is_udp(chunks, current, sock, line);
+    chunks[current].emit_if_value(line);
+    {
+        // UDP still takes the bytes directly: a datagram is one message, so
+        // there is nothing for a stream to express.
+        lget(chunks, current, sock, line);
+        lget(chunks, current, data, line);
+        call_import(chunks, current, SOCK, "[method]udp-socket.send", 2, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        lget(chunks, current, sock, line);
+        lget(chunks, current, data, line);
+        vybe_compiler::primitives::io::emit_bytes_to_stream(&mut chunks[current], line);
+        call_import(chunks, current, SOCK, "[method]tcp-socket.send", 2, line);
+    }
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    if count {
+        lget(chunks, current, data, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+}
+
+/// `sock.recv(bufsize)`.
+///
+/// `receive()` is called ONCE per socket and its `stream<u8>` cached on the
+/// handle — the WIT says "may be called at most once". Each `recv` is then one
+/// bounded `canon stream.read`, which is what makes it return as soon as
+/// anything arrives instead of at disconnect.
+pub fn emit_sock_recv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let sock = base;
+
+    emit_is_udp(chunks, current, sock, line);
+    chunks[current].emit_if_value(line);
+    {
+        lget(chunks, current, sock, line);
+        call_import(chunks, current, SOCK, "[method]udp-socket.receive", 1, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        get_prop(chunks, current, sock, "__rx", line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if(line);
+        lget(chunks, current, sock, line);
+        call_import(chunks, current, SOCK, "[method]tcp-socket.receive", 1, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        set_prop(chunks, current, sock, "__rx", line);
+        chunks[current].emit_end(line);
+
+        get_prop(chunks, current, sock, "__rx", line);
+        if argc >= 2 {
+            lget(chunks, current, base + 1, line);
+        } else {
+            chunks[current].emit_i32_const(1024, line);
+        }
+        vybe_compiler::primitives::io::emit_read_stream_chunk(&mut chunks[current], line);
+    }
+    chunks[current].emit_end(line);
+}
+
+/// `sock.getsockname()` / `getpeername()`.
+pub fn emit_sock_addr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, local: bool) {
+    let base = stash_args(chunks, current, argc, line);
+    let rec = chunks[current].alloc_scratch(1);
+    lget(chunks, current, base, line);
+    call_import(
+        chunks,
+        current,
+        SOCK,
+        if local {
+            "[method]tcp-socket.get-local-address"
+        } else {
+            "[method]tcp-socket.get-remote-address"
+        },
+        1,
+        line,
+    );
+    lset(chunks, current, rec, line);
+    emit_addr_tuple(chunks, current, rec, line);
+}
+
+/// `sock.close()` / `shutdown()`.
+///
+/// 0.3.1 deleted `shutdown`, and closing a resource is `canon resource.drop`,
+/// not an interface call. Releasing the cached receive stream is what actually
+/// ends the conversation here.
+pub fn emit_sock_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    set_prop(chunks, current, base, "__rx", line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    set_prop(chunks, current, base, "__listener", line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// Bookkeeping that never reaches the network: `settimeout`, `setblocking`,
+/// `setsockopt` and their readers. Stored ON the handle so a `dup()` and the
+/// original agree, which is what CPython does (they share a descriptor).
+pub fn emit_sock_setopt(chunks: &mut [Chunk], current: usize, argc: u8, key: &str, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    if argc >= 2 {
+        lget(chunks, current, base + argc as u16 - 1, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+    set_prop(chunks, current, base, key, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_sock_getopt(chunks: &mut [Chunk], current: usize, argc: u8, key: &str, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    get_prop(chunks, current, base, key, line);
+}
+
+/// `sock.fileno()` — the socket id, which is this component's chosen
+/// representation for the resource and the only integer that names it.
+pub fn emit_sock_fileno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    get_prop(chunks, current, base, "__socket_id", line);
+}
+
+/// `sock.dup()` / `makefile()` / `__enter__` — all answer the handle itself.
+/// A dup shares the descriptor, and `makefile` on this surface reads and
+/// writes the same socket.
+pub fn emit_sock_self(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    lget(chunks, current, base, line);
+}
+
 /// `inet_aton("192.168.1.1")` → the 4 packed bytes, as Python `bytes`
 /// (a `Uint8Array`, the shape `bytes` uses everywhere else here).
 /// Stack: `[str] -> [bytes]`.

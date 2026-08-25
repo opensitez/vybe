@@ -27,8 +27,6 @@ global_namespace_is_call = true
 # `|`/`&`/`-`/`^` on sets are set algebra (Pascal spells the same algebra
 # `+`/`*`/`-`, declared as set_arithmetic_operators).
 set_bitwise_operators = true
-# Empty collections, "" and 0 are falsy; `__bool__`/`__len__` override.
-truthiness_via_dunder_or_length = true
 # `gen.send(v)` / `gen.throw(e)` / `gen.close()`.
 generator_send_throw_close = true
 # `a[i:j] = v` and `del a[i:j]` splice the sequence.
@@ -318,6 +316,12 @@ oct             = { emit = "common:python.oct",                  min_args = 1, m
 bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
 repr            = { emit = "common:python.repr",             min_args = 1, max_args = 1, slot = "to_string" }
 bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
+# `bytearray` was declared as a TYPE NAME (`[builtin_types] bytes`) but never as
+# a CALLABLE, so `bytearray()` was `undefined is not callable` while
+# `bytearray`-typed values type-checked fine. Same lowering as `bytes` — under
+# the hood both are the one byte-array shape, and Python's immutability of
+# `bytes` is a front-end quirk, not a second representation.
+bytearray       = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
@@ -385,7 +389,7 @@ next            = { emit = "common:python.next",                 min_args = 1, m
 
 abs             = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
 round           = { emit = "opcode:f64_nearest",            min_args = 1, max_args = 2 }
-pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 3 }
+pow             = { emit = "opcode:pow",            min_args = 2, max_args = 3 }
 # Internal names emitted by the shared complex primitive. Python source still
 # owns its language surface in the walker; these keep common complex AST math
 # calls wired to the same ECMA math implementation as `math.*`.
@@ -410,7 +414,7 @@ isinf           = { emit = "common:python.math_isinf",      min_args = 1, max_ar
 "math.ceil"     = { emit = "opcode:f64_ceil",               min_args = 1, max_args = 1 }
 "math.trunc"    = { emit = "opcode:f64_trunc",              min_args = 1, max_args = 1 }
 "math.fabs"     = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
-"math.pow"      = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 2 }
+"math.pow"      = { emit = "opcode:pow",            min_args = 2, max_args = 2 }
 "math.sin"      = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
 "math.cos"      = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
 "math.tan"      = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
@@ -743,6 +747,27 @@ _vybe_ip4_mask      = { emit = "common:python.ip4_mask",      min_args = 1, max_
 _vybe_ip4_count     = { emit = "common:python.ip4_count",     min_args = 1, max_args = 1 }
 _vybe_ip4_net_parts = { emit = "common:python.ip4_net_parts", min_args = 1, max_args = 1 }
 
+# The socket OBJECT, emitted by socket_adapter.rs. The walker rewrites
+# `sock.method(...)` into `__sock_method(sock, ...)` the same way it rewrites
+# sqlite3 cursors, so these are ordinary calls by the time they reach here.
+"socket.socket"    = { emit = "common:python.sock_new",        min_args = 0, max_args = 4 }
+__sock_bind        = { emit = "common:python.sock_bind",       min_args = 2, max_args = 2 }
+__sock_connect     = { emit = "common:python.sock_connect",    min_args = 2, max_args = 2 }
+__sock_getsockname = { emit = "common:python.sock_getsockname", min_args = 1, max_args = 1 }
+__sock_getpeername = { emit = "common:python.sock_getpeername", min_args = 1, max_args = 1 }
+__sock_listen      = { emit = "common:python.sock_listen",     min_args = 1, max_args = 2 }
+__sock_close       = { emit = "common:python.sock_close",      min_args = 1, max_args = 2 }
+__sock_settimeout  = { emit = "common:python.sock_settimeout", min_args = 1, max_args = 2 }
+__sock_gettimeout  = { emit = "common:python.sock_gettimeout", min_args = 1, max_args = 1 }
+__sock_setsockopt  = { emit = "common:python.sock_setsockopt", min_args = 1, max_args = 4 }
+__sock_getsockopt  = { emit = "common:python.sock_getsockopt", min_args = 1, max_args = 4 }
+__sock_fileno      = { emit = "common:python.sock_fileno",     min_args = 1, max_args = 1 }
+__sock_self        = { emit = "common:python.sock_self",       min_args = 1, max_args = 3 }
+__sock_accept      = { emit = "common:python.sock_accept",     min_args = 1, max_args = 1 }
+__sock_send        = { emit = "common:python.sock_send",       min_args = 2, max_args = 3 }
+__sock_sendall     = { emit = "common:python.sock_sendall",    min_args = 2, max_args = 3 }
+__sock_recv        = { emit = "common:python.sock_recv",       min_args = 1, max_args = 3 }
+
 _wasi_tcp_new      = { emit = "host:wasi:sockets/types:[static]tcp-socket.create", min_args = 0, max_args = 1 }
 _wasi_udp_new      = { emit = "host:wasi:sockets/types:[static]udp-socket.create", min_args = 0, max_args = 1 }
 _wasi_bind         = { emit = "host:wasi:sockets/types:[method]tcp-socket.bind",    min_args = 2, max_args = 2 }
@@ -757,12 +782,6 @@ _wasi_udp_bind     = { emit = "host:wasi:sockets/types:[method]udp-socket.bind",
 _wasi_udp_connect  = { emit = "host:wasi:sockets/types:[method]udp-socket.connect", min_args = 2, max_args = 2 }
 _wasi_dgram_send   = { emit = "host:wasi:sockets/types:[method]udp-socket.send",    min_args = 2, max_args = 3 }
 _wasi_dgram_recv   = { emit = "host:wasi:sockets/types:[method]udp-socket.receive", min_args = 1, max_args = 1 }
-# The Component Model stream ops that replaced `wasi:io`, which 0.3.1 deleted.
-# A stream is a TYPE now, so these are `canon stream.{read,write}` — built-ins
-# the compiler emits, not host imports. `read_bytes` is bounded on purpose:
-# `receive`'s stream stays OPEN so "nothing sent yet" is distinguishable from
-# "peer gone", and a drain of an open socket would answer the whole
-# conversation once, at disconnect, instead of what `recv` asked for.
 _stream_read_bytes = { emit = "common:stream.read_bytes",  min_args = 2, max_args = 2 }
 _stream_from_bytes = { emit = "common:stream.from_bytes",  min_args = 1, max_args = 1 }
 _stream_read_handle = { emit = "common:stream.read_handle", min_args = 1, max_args = 1 }
@@ -962,6 +981,147 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "binascii.b2a_hex"          = { emit = "common:python.binascii_hexlify",          min_args = 1, max_args = 2 }
 "binascii.a2b_hex"          = { emit = "common:python.binascii_unhexlify",        min_args = 1, max_args = 1 }
 "binascii.crc32"            = { emit = "common:python.binascii_crc32",            min_args = 1, max_args = 2 }
+
+# ── zlib / gzip (RFC 1950 / 1951 / 1952) ────────────────────────────────────
+# Backed by the existing `node:zlib` host surface (flate2), which takes the
+# same (data, level) shape Python does. `zlib.crc32` is NOT restated here: it
+# is the SAME checksum as `binascii.crc32`, registered in the tree as an
+# `Alias` leaf (namespaceplan.md §"Source-name ≠ canonical-name").
+"zlib.compress"     = { emit = "common:python.zlib_compress",    min_args = 1, max_args = 3 }
+"zlib.decompress"   = { emit = "common:python.zlib_decompress",  min_args = 1, max_args = 3 }
+"zlib.adler32"      = { emit = "common:python.zlib_adler32",     min_args = 1, max_args = 2 }
+"gzip.compress"     = { emit = "common:python.gzip_compress",    min_args = 1, max_args = 3 }
+"gzip.decompress"   = { emit = "common:python.gzip_decompress",  min_args = 1, max_args = 2 }
+
+# ── glob / linecache / inspect ──────────────────────────────────────────────
+"glob.glob"            = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
+"glob.iglob"           = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
+"glob.escape"          = { emit = "common:python.glob_escape",         min_args = 1, max_args = 1 }
+"linecache.getline"    = { emit = "common:python.linecache_getline",   min_args = 2, max_args = 4 }
+"linecache.getlines"   = { emit = "common:python.linecache_getlines",  min_args = 1, max_args = 2 }
+"linecache.clearcache"  = { emit = "common:python.linecache_none",     min_args = 0, max_args = 0 }
+"linecache.checkcache"  = { emit = "common:python.linecache_none",     min_args = 0, max_args = 1 }
+"linecache.updatecache" = { emit = "common:python.linecache_getlines", min_args = 1, max_args = 3 }
+"inspect.isclass"      = { emit = "common:python.inspect_isclass",     min_args = 1, max_args = 1 }
+"inspect.isfunction"   = { emit = "common:python.inspect_isfunction",  min_args = 1, max_args = 1 }
+"inspect.isroutine"    = { emit = "common:python.inspect_iscallable",  min_args = 1, max_args = 1 }
+"inspect.getmembers"   = { emit = "common:python.inspect_getmembers",  min_args = 1, max_args = 2 }
+
+# ── Partly-implemented surface ──────────────────────────────────────────────
+# These names EXIST in CPython and Vybe cannot yet honour what they do, so
+# they are declared rather than missing: reading one yields the type object
+# (or the callable), and USING it raises `NotImplementedError` naming the
+# module. Nothing here silently returns something that looks like it worked.
+# See `emitter/surface_adapter.rs`; a name graduates out of this block the
+# moment it gets a real implementation.
+"types.FunctionType"        = { emit = "common:python.typeobj.types.FunctionType",        min_args = 0, max_args = 3 }
+"types.LambdaType"          = { emit = "common:python.typeobj.types.LambdaType",          min_args = 0, max_args = 3 }
+"types.MethodType"          = { emit = "common:python.typeobj.types.MethodType",          min_args = 0, max_args = 2 }
+"types.GeneratorType"       = { emit = "common:python.typeobj.types.GeneratorType",       min_args = 0, max_args = 1 }
+"types.CoroutineType"       = { emit = "common:python.typeobj.types.CoroutineType",       min_args = 0, max_args = 1 }
+"types.AsyncGeneratorType"  = { emit = "common:python.typeobj.types.AsyncGeneratorType",  min_args = 0, max_args = 1 }
+"types.UnionType"           = { emit = "common:python.typeobj.types.UnionType",           min_args = 0, max_args = 2 }
+"types.GenericAlias"        = { emit = "common:python.typeobj.types.GenericAlias",        min_args = 0, max_args = 2 }
+"types.TracebackType"       = { emit = "common:python.typeobj.types.TracebackType",       min_args = 0, max_args = 4 }
+"types.FrameType"           = { emit = "common:python.typeobj.types.FrameType",           min_args = 0, max_args = 1 }
+"types.CellType"            = { emit = "common:python.typeobj.types.CellType",            min_args = 0, max_args = 1 }
+"types.BuiltinFunctionType" = { emit = "common:python.typeobj.types.BuiltinFunctionType", min_args = 0, max_args = 1 }
+"numbers.Number"            = { emit = "common:python.typeobj.numbers.Number",            min_args = 0, max_args = 1 }
+"numbers.Complex"           = { emit = "common:python.typeobj.numbers.Complex",           min_args = 0, max_args = 1 }
+"numbers.Real"              = { emit = "common:python.typeobj.numbers.Real",              min_args = 0, max_args = 1 }
+"numbers.Rational"          = { emit = "common:python.typeobj.numbers.Rational",          min_args = 0, max_args = 1 }
+"numbers.Integral"          = { emit = "common:python.typeobj.numbers.Integral",          min_args = 0, max_args = 1 }
+"cmd.Cmd"                   = { emit = "common:python.typeobj.cmd.Cmd",                   min_args = 0, max_args = 2 }
+"ctypes.CDLL"               = { emit = "common:python.typeobj.ctypes.CDLL",               min_args = 0, max_args = 4 }
+"ctypes.Structure"          = { emit = "common:python.typeobj.ctypes.Structure",          min_args = 0, max_args = 4 }
+"pdb.Pdb"                   = { emit = "common:python.typeobj.pdb.Pdb",                   min_args = 0, max_args = 4 }
+"cProfile.Profile"          = { emit = "common:python.typeobj.cProfile.Profile",          min_args = 0, max_args = 4 }
+"profile.Profile"           = { emit = "common:python.typeobj.profile.Profile",           min_args = 0, max_args = 4 }
+"venv.EnvBuilder"           = { emit = "common:python.typeobj.venv.EnvBuilder",           min_args = 0, max_args = 9 }
+"zipfile.ZipFile"           = { emit = "common:python.typeobj.zipfile.ZipFile",           min_args = 0, max_args = 5 }
+"zipfile.ZipInfo"           = { emit = "common:python.typeobj.zipfile.ZipInfo",           min_args = 0, max_args = 3 }
+"tarfile.TarFile"           = { emit = "common:python.typeobj.tarfile.TarFile",           min_args = 0, max_args = 9 }
+"mmap.mmap"                 = { emit = "common:python.typeobj.mmap.mmap",                 min_args = 0, max_args = 6 }
+"netrc.netrc"               = { emit = "common:python.typeobj.netrc.netrc",               min_args = 0, max_args = 1 }
+"dbm.open"                  = { emit = "common:python.surface.dbm.open",                  min_args = 0, max_args = 3 }
+"shelve.open"               = { emit = "common:python.surface.shelve.open",               min_args = 0, max_args = 4 }
+"tarfile.open"              = { emit = "common:python.surface.tarfile.open",              min_args = 0, max_args = 5 }
+"doctest.testmod"           = { emit = "common:python.surface.doctest.testmod",           min_args = 0, max_args = 6 }
+"gettext.gettext"           = { emit = "common:python.surface.gettext.gettext",           min_args = 0, max_args = 1 }
+
+# ── enum ────────────────────────────────────────────────────────────────────
+# `auto()` never reaches runtime: it is resolved against the members declared
+# before it while the class body is still a class body (`resolve_enum_auto` in
+# the walker), which is the only place that information exists.
+# `@unique` validates that no two members share a value and returns the class
+# unchanged — with distinct values, which is the only shape the compiler can
+# see, that IS the identity.
+"enum.unique" = { emit = "common:python.first_arg", min_args = 1, max_args = 1 }
+
+# ── quopri (RFC 1521 §5.1) / locale ─────────────────────────────────────────
+"quopri.encodestring"  = { emit = "common:python.quopri_encodestring", min_args = 1, max_args = 3 }
+"quopri.encode"        = { emit = "common:python.quopri_encodestring", min_args = 1, max_args = 3 }
+"quopri.decodestring"  = { emit = "common:python.quopri_decodestring", min_args = 1, max_args = 2 }
+"quopri.decode"        = { emit = "common:python.quopri_decodestring", min_args = 1, max_args = 2 }
+"locale.getlocale"     = { emit = "common:python.locale_getlocale",    min_args = 0, max_args = 1 }
+"locale.getdefaultlocale" = { emit = "common:python.locale_getlocale", min_args = 0, max_args = 1 }
+"locale.getpreferredencoding" = { emit = "common:python.locale_getpreferredencoding", min_args = 0, max_args = 1 }
+
+# ── typing (PEP 484/612/646) ────────────────────────────────────────────────
+# An annotation is never evaluated, so only the CALLS need lowering.
+"typing.cast"              = { emit = "common:python.typing_cast",              min_args = 2, max_args = 2 }
+"typing.final"             = { emit = "common:python.typing_final",             min_args = 1, max_args = 1 }
+"typing.no_type_check"     = { emit = "common:python.typing_no_type_check",     min_args = 1, max_args = 1 }
+"typing.runtime_checkable" = { emit = "common:python.typing_runtime_checkable", min_args = 1, max_args = 1 }
+"typing.TypeVar"           = { emit = "common:python.typing_typevar",           min_args = 1, max_args = 9 }
+"typing.ParamSpec"         = { emit = "common:python.typing_paramspec",         min_args = 1, max_args = 4 }
+"typing.TypeVarTuple"      = { emit = "common:python.typing_typevartuple",      min_args = 1, max_args = 2 }
+"typing.NewType"           = { emit = "common:python.typing_newtype",           min_args = 2, max_args = 2 }
+"typing.get_type_hints"    = { emit = "common:python.typing_get_type_hints",    min_args = 1, max_args = 3 }
+
+# ── weakref / gc ────────────────────────────────────────────────────────────
+"weakref.ref"              = { emit = "common:python.weakref_ref",              min_args = 1, max_args = 2 }
+"weakref.proxy"            = { emit = "common:python.weakref_proxy",            min_args = 1, max_args = 2 }
+"weakref.finalize"         = { emit = "common:python.weakref_finalize",         min_args = 2, max_args = 9 }
+"weakref.getweakrefcount"  = { emit = "common:python.weakref_getweakrefcount",  min_args = 1, max_args = 1 }
+"gc.collect"               = { emit = "common:python.gc_collect",               min_args = 0, max_args = 1 }
+"gc.get_count"             = { emit = "common:python.gc_get_count",             min_args = 0, max_args = 0 }
+"gc.get_threshold"         = { emit = "common:python.gc_get_threshold",         min_args = 0, max_args = 0 }
+"gc.set_threshold"         = { emit = "common:python.gc_none",                  min_args = 0, max_args = 3 }
+"gc.get_stats"             = { emit = "common:python.gc_get_stats",             min_args = 0, max_args = 0 }
+"gc.is_tracked"            = { emit = "common:python.gc_is_tracked",            min_args = 1, max_args = 1 }
+"gc.is_finalized"          = { emit = "common:python.gc_is_tracked",            min_args = 1, max_args = 1 }
+"gc.get_debug"             = { emit = "common:python.gc_zero",                  min_args = 0, max_args = 0 }
+"gc.set_debug"             = { emit = "common:python.gc_none",                  min_args = 0, max_args = 1 }
+"gc.callbacks"             = { emit = "common:python.gc_empty_list",            min_args = 0, max_args = 0 }
+"weakref.getweakrefs"      = { emit = "common:python.weakref_getweakrefs",      min_args = 1, max_args = 1 }
+"gc.get_objects"           = { emit = "common:python.gc_empty_list",            min_args = 0, max_args = 1 }
+"gc.get_referrers"         = { emit = "common:python.gc_empty_list",            min_args = 0, max_args = 9 }
+"gc.get_referents"         = { emit = "common:python.gc_empty_list",            min_args = 0, max_args = 9 }
+"gc.garbage"               = { emit = "common:python.gc_empty_list",            min_args = 0, max_args = 0 }
+"gc.isenabled"             = { emit = "common:python.gc_isenabled",             min_args = 0, max_args = 0 }
+"gc.enable"                = { emit = "common:python.gc_none",                  min_args = 0, max_args = 0 }
+"gc.disable"               = { emit = "common:python.gc_none",                  min_args = 0, max_args = 0 }
+"gc.freeze"                = { emit = "common:python.gc_none",                  min_args = 0, max_args = 0 }
+"gc.unfreeze"              = { emit = "common:python.gc_none",                  min_args = 0, max_args = 0 }
+
+# ── uuid / secrets — both randomness, both on `web:crypto` ──────────────────
+"uuid.uuid4"               = { emit = "common:python.uuid4",                    min_args = 0, max_args = 0 }
+"uuid.UUID"                = { emit = "common:python.uuid_new",                 min_args = 1, max_args = 2 }
+"secrets.token_bytes"      = { emit = "common:python.secrets_token_bytes",      min_args = 0, max_args = 1 }
+"secrets.token_hex"        = { emit = "common:python.secrets_token_hex",        min_args = 0, max_args = 1 }
+"secrets.token_urlsafe"    = { emit = "common:python.secrets_token_urlsafe",    min_args = 0, max_args = 1 }
+"secrets.randbelow"        = { emit = "common:python.secrets_randbelow",        min_args = 1, max_args = 1 }
+"secrets.choice"           = { emit = "common:python.secrets_choice",           min_args = 1, max_args = 1 }
+"secrets.compare_digest"   = { emit = "common:python.hmac_compare_digest",      min_args = 2, max_args = 2 }
+
+# colorsys — pure arithmetic, CPython's `Lib/colorsys.py` formulae.
+"colorsys.rgb_to_yiq" = { emit = "common:python.colorsys_rgb_to_yiq", min_args = 3, max_args = 3 }
+"colorsys.yiq_to_rgb" = { emit = "common:python.colorsys_yiq_to_rgb", min_args = 3, max_args = 3 }
+"colorsys.rgb_to_hls" = { emit = "common:python.colorsys_rgb_to_hls", min_args = 3, max_args = 3 }
+"colorsys.hls_to_rgb" = { emit = "common:python.colorsys_hls_to_rgb", min_args = 3, max_args = 3 }
+"colorsys.rgb_to_hsv" = { emit = "common:python.colorsys_rgb_to_hsv", min_args = 3, max_args = 3 }
+"colorsys.hsv_to_rgb" = { emit = "common:python.colorsys_hsv_to_rgb", min_args = 3, max_args = 3 }
 "codecs.encode"             = { emit = "common:python.codecs_encode",             min_args = 2, max_args = 3 }
 "codecs.decode"             = { emit = "common:python.codecs_decode",             min_args = 2, max_args = 3 }
 "codecs.lookup"             = { emit = "common:python.codecs_lookup",             min_args = 1, max_args = 1 }
@@ -1107,6 +1267,13 @@ clear           = { emit = "common:python.clear",             min_args = 0, max_
 # Generator protocol — drive the shared generators.rs resume machinery.
 send            = { emit = "common:python.gen_send",          min_args = 0, max_args = 1 }
 throw           = { emit = "common:python.gen_throw",         min_args = 0, max_args = 3 }
+# An async generator is the SAME continuation object — the VM attaches the
+# §27.6 async driver (`__vybe_async_generator_next`) to it — so Python's async
+# spellings are the same three operations, not a second implementation.
+asend           = { emit = "common:python.gen_send",          min_args = 0, max_args = 1 }
+athrow          = { emit = "common:python.gen_throw",         min_args = 0, max_args = 3 }
+aclose          = { emit = "common:python.gen_close",         min_args = 0, max_args = 0 }
+__anext__       = { emit = "common:python.gen_send",          min_args = 0, max_args = 0 }
 sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "common:python.copy",            min_args = 0, max_args = 0 }
@@ -1224,6 +1391,180 @@ __name__ = "__main__"
 "socket.SHUT_WR"      = 1
 "socket.SHUT_RDWR"    = 2
 
+# errno (POSIX) — the values CPython reports on the corpus ground-truth
+# runtime (/opt/homebrew/bin/python3.14). errno numbers are a platform ABI,
+# so these follow the runtime the differential harness compares against.
+"errno.E2BIG"                  = 7
+"errno.EACCES"                 = 13
+"errno.EADDRINUSE"             = 48
+"errno.EADDRNOTAVAIL"          = 49
+"errno.EAFNOSUPPORT"           = 47
+"errno.EAGAIN"                 = 35
+"errno.EALREADY"               = 37
+"errno.EAUTH"                  = 80
+"errno.EBADARCH"               = 86
+"errno.EBADEXEC"               = 85
+"errno.EBADF"                  = 9
+"errno.EBADMACHO"              = 88
+"errno.EBADMSG"                = 94
+"errno.EBADRPC"                = 72
+"errno.EBUSY"                  = 16
+"errno.ECANCELED"              = 89
+"errno.ECHILD"                 = 10
+"errno.ECONNABORTED"           = 53
+"errno.ECONNREFUSED"           = 61
+"errno.ECONNRESET"             = 54
+"errno.EDEADLK"                = 11
+"errno.EDESTADDRREQ"           = 39
+"errno.EDEVERR"                = 83
+"errno.EDOM"                   = 33
+"errno.EDQUOT"                 = 69
+"errno.EEXIST"                 = 17
+"errno.EFAULT"                 = 14
+"errno.EFBIG"                  = 27
+"errno.EFTYPE"                 = 79
+"errno.EHOSTDOWN"              = 64
+"errno.EHOSTUNREACH"           = 65
+"errno.EIDRM"                  = 90
+"errno.EILSEQ"                 = 92
+"errno.EINPROGRESS"            = 36
+"errno.EINTR"                  = 4
+"errno.EINVAL"                 = 22
+"errno.EIO"                    = 5
+"errno.EISCONN"                = 56
+"errno.EISDIR"                 = 21
+"errno.ELOOP"                  = 62
+"errno.EMFILE"                 = 24
+"errno.EMLINK"                 = 31
+"errno.EMSGSIZE"               = 40
+"errno.EMULTIHOP"              = 95
+"errno.ENAMETOOLONG"           = 63
+"errno.ENEEDAUTH"              = 81
+"errno.ENETDOWN"               = 50
+"errno.ENETRESET"              = 52
+"errno.ENETUNREACH"            = 51
+"errno.ENFILE"                 = 23
+"errno.ENOATTR"                = 93
+"errno.ENOBUFS"                = 55
+"errno.ENODATA"                = 96
+"errno.ENODEV"                 = 19
+"errno.ENOENT"                 = 2
+"errno.ENOEXEC"                = 8
+"errno.ENOLCK"                 = 77
+"errno.ENOLINK"                = 97
+"errno.ENOMEM"                 = 12
+"errno.ENOMSG"                 = 91
+"errno.ENOPOLICY"              = 103
+"errno.ENOPROTOOPT"            = 42
+"errno.ENOSPC"                 = 28
+"errno.ENOSR"                  = 98
+"errno.ENOSTR"                 = 99
+"errno.ENOSYS"                 = 78
+"errno.ENOTBLK"                = 15
+"errno.ENOTCAPABLE"            = 107
+"errno.ENOTCONN"               = 57
+"errno.ENOTDIR"                = 20
+"errno.ENOTEMPTY"              = 66
+"errno.ENOTRECOVERABLE"        = 104
+"errno.ENOTSOCK"               = 38
+"errno.ENOTSUP"                = 45
+"errno.ENOTTY"                 = 25
+"errno.ENXIO"                  = 6
+"errno.EOPNOTSUPP"             = 102
+"errno.EOVERFLOW"              = 84
+"errno.EOWNERDEAD"             = 105
+"errno.EPERM"                  = 1
+"errno.EPFNOSUPPORT"           = 46
+"errno.EPIPE"                  = 32
+"errno.EPROCLIM"               = 67
+"errno.EPROCUNAVAIL"           = 76
+"errno.EPROGMISMATCH"          = 75
+"errno.EPROGUNAVAIL"           = 74
+"errno.EPROTO"                 = 100
+"errno.EPROTONOSUPPORT"        = 43
+"errno.EPROTOTYPE"             = 41
+"errno.EPWROFF"                = 82
+"errno.EQFULL"                 = 106
+"errno.ERANGE"                 = 34
+"errno.EREMOTE"                = 71
+"errno.EROFS"                  = 30
+"errno.ERPCMISMATCH"           = 73
+"errno.ESHLIBVERS"             = 87
+"errno.ESHUTDOWN"              = 58
+"errno.ESOCKTNOSUPPORT"        = 44
+"errno.ESPIPE"                 = 29
+"errno.ESRCH"                  = 3
+"errno.ESTALE"                 = 70
+"errno.ETIME"                  = 101
+"errno.ETIMEDOUT"              = 60
+"errno.ETOOMANYREFS"           = 59
+"errno.ETXTBSY"                = 26
+"errno.EUSERS"                 = 68
+"errno.EXDEV"                  = 18
+
+# signal numbers — POSIX, as CPython reports them on the ground-truth
+# runtime. WASI delivers no signals, so these are readable constants (what
+# `signal.SIGTERM` IS) and nothing here installs a handler.
+"signal.SIGHUP"           = 1
+"signal.SIGINT"           = 2
+"signal.SIGQUIT"          = 3
+"signal.SIGILL"           = 4
+"signal.SIGTRAP"          = 5
+"signal.SIGABRT"          = 6
+"signal.SIGEMT"           = 7
+"signal.SIGFPE"           = 8
+"signal.SIGKILL"          = 9
+"signal.SIGBUS"           = 10
+"signal.SIGSEGV"          = 11
+"signal.SIGSYS"           = 12
+"signal.SIGPIPE"          = 13
+"signal.SIGALRM"          = 14
+"signal.SIGTERM"          = 15
+"signal.SIGURG"           = 16
+"signal.SIGSTOP"          = 17
+"signal.SIGTSTP"          = 18
+"signal.SIGCONT"          = 19
+"signal.SIGCHLD"          = 20
+"signal.SIGTTIN"          = 21
+"signal.SIGTTOU"          = 22
+"signal.SIGIO"            = 23
+"signal.SIGXCPU"          = 24
+"signal.SIGXFSZ"          = 25
+"signal.SIGVTALRM"        = 26
+"signal.SIGPROF"          = 27
+"signal.SIGWINCH"         = 28
+"signal.SIGINFO"          = 29
+"signal.SIGUSR1"          = 30
+"signal.SIGUSR2"          = 31
+"signal.SIG_DFL"      = 0
+"signal.SIG_IGN"      = 1
+
+# zlib constants (RFC 1950/1951 + zlib.h). The compressor behind them is
+# flate2/miniz via `node:zlib`, which implements the same format, so the
+# version string reports the zlib API level that backend is compatible with.
+"zlib.MAX_WBITS"                = 15
+"zlib.DEFLATED"                 = 8
+"zlib.DEF_MEM_LEVEL"            = 8
+"zlib.DEF_BUF_SIZE"             = 16384
+"zlib.Z_NO_COMPRESSION"         = 0
+"zlib.Z_BEST_SPEED"             = 1
+"zlib.Z_BEST_COMPRESSION"       = 9
+"zlib.Z_DEFAULT_COMPRESSION"    = -1
+"zlib.Z_FILTERED"               = 1
+"zlib.Z_HUFFMAN_ONLY"           = 2
+"zlib.Z_RLE"                    = 3
+"zlib.Z_FIXED"                  = 4
+"zlib.Z_DEFAULT_STRATEGY"       = 0
+"zlib.Z_NO_FLUSH"               = 0
+"zlib.Z_PARTIAL_FLUSH"          = 1
+"zlib.Z_SYNC_FLUSH"             = 2
+"zlib.Z_FULL_FLUSH"             = 3
+"zlib.Z_FINISH"                 = 4
+"zlib.Z_BLOCK"                  = 5
+"zlib.Z_TREES"                  = 6
+"zlib.ZLIB_VERSION"         = "1.2.11"
+"zlib.ZLIB_RUNTIME_VERSION" = "1.2.11"
+
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
@@ -1267,6 +1608,11 @@ path = "python.bisect"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "cProfile"
+path = "python.cProfile"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "calendar"
 path = "python.calendar"
 
@@ -1274,6 +1620,11 @@ path = "python.calendar"
 kind = "tree-mount"
 prefix = "cmath"
 path = "python.cmath"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "cmd"
+path = "python.cmd"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1287,13 +1638,63 @@ path = "python.collections"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "colorsys"
+path = "python.colorsys"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "ctypes"
+path = "python.ctypes"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "datetime"
 path = "python.datetime"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "dbm"
+path = "python.dbm"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "doctest"
+path = "python.doctest"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "enum"
+path = "python.enum"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "errno"
+path = "python.errno"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "functools"
 path = "python.functools"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "gc"
+path = "python.gc"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "gettext"
+path = "python.gettext"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "glob"
+path = "python.glob"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "gzip"
+path = "python.gzip"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1312,6 +1713,11 @@ path = "python.hmac"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "inspect"
+path = "python.inspect"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "itertools"
 path = "python.itertools"
 
@@ -1319,6 +1725,16 @@ path = "python.itertools"
 kind = "tree-mount"
 prefix = "json"
 path = "python.json"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "linecache"
+path = "python.linecache"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "locale"
+path = "python.locale"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1332,6 +1748,21 @@ path = "python.math"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "mmap"
+path = "python.mmap"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "netrc"
+path = "python.netrc"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "numbers"
+path = "python.numbers"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "operator"
 path = "python.operator"
 
@@ -1339,6 +1770,21 @@ path = "python.operator"
 kind = "tree-mount"
 prefix = "os"
 path = "python.os"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "pdb"
+path = "python.pdb"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "profile"
+path = "python.profile"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "quopri"
+path = "python.quopri"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1352,8 +1798,23 @@ path = "python.re"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "secrets"
+path = "python.secrets"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "shelve"
+path = "python.shelve"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "shutil"
 path = "python.shutil"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "signal"
+path = "python.signal"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1377,6 +1838,11 @@ path = "python.sys"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "tarfile"
+path = "python.tarfile"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "tempfile"
 path = "python.tempfile"
 
@@ -1387,8 +1853,43 @@ path = "python.time"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "types"
+path = "python.types"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "typing"
+path = "python.typing"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "unicodedata"
 path = "python.unicodedata"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "uuid"
+path = "python.uuid"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "venv"
+path = "python.venv"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "weakref"
+path = "python.weakref"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "zipfile"
+path = "python.zipfile"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "zlib"
+path = "python.zlib"
 
 # `str.maketrans` and `float.inf`/`float.nan` are module surface too — the
 # TYPE name is the module here, which is why they read oddly as mounts.

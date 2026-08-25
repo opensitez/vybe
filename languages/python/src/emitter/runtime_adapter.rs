@@ -733,6 +733,25 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
 
 /// A user `__neg__` when the operand is an object carrying one, else
 /// `fallback`. Mirrors `emit_object_binop_or` for the one-operand case.
+/// The struct key an operand's protocol method is stored under: its SLOT.
+///
+/// A class binds an implementation to a slot and the spelling stops at the
+/// frontend, so `STRUCT_GET "__mul__"` only ever found a PYTHON class — it could
+/// not see a PHP, Ruby or Java class that binds `Mul`, which is the whole point
+/// of having slots. Python's own classes publish both the spelling and the slot,
+/// so keying on the name is invisible within Python and decisive across
+/// languages.
+///
+/// `protocol.rs` owns spelling → slot, so it answers here rather than a second
+/// copy of the mapping living in the emitter. A spelling with no protocol role
+/// keeps its own name: that is an ordinary method, not a slot.
+fn protocol_key_for(dunder: &str) -> String {
+    match crate::protocol::canonical_method(dunder).1 {
+        Some(slot) => vybe_ast::protocol_slot_key(slot),
+        None => dunder.to_string(),
+    }
+}
+
 fn emit_unary_dunder_or(
     chunk: &mut Chunk,
     a_slot: u16,
@@ -741,7 +760,10 @@ fn emit_unary_dunder_or(
     line: u32,
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(dunder)));
+    let key_name = protocol_key_for(dunder);
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        key_name.as_str(),
+    )));
     let method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(typeof_fn, 1, line);
@@ -781,7 +803,10 @@ fn emit_object_binop_or(
     line: u32,
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(dunder)));
+    let key_name = protocol_key_for(dunder);
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        key_name.as_str(),
+    )));
     let method = chunk.alloc_scratch(1);
     // Only real objects (typeof == "object") can carry the dunder; STRUCT_GET on
     // a primitive traps, so gate the lookup behind the type check.
@@ -1226,7 +1251,10 @@ fn emit_zero_division_guard(chunk: &mut Chunk, divisor_slot: u16, line: u32) {
 
 /// Numeric `**` fallback (Python-profile `BinOp::Pow`).
 fn emit_py_pow(chunk: &mut Chunk, line: u32) {
-    vybe_compiler::primitives::math::emit_pow(chunk, line);
+    // Python is IEEE: `1 ** float('inf')` is `1.0`, not NaN. `emit_pow` is the
+    // ECMA host and answers NaN there, so the numeric fallback of `**` takes
+    // the IEEE primitive — the same contract `pow()` gets via `opcode:pow`.
+    vybe_compiler::primitives::math::emit_pow_ieee(chunk, line);
 }
 
 /// `issubclass(sub, base)` — true when `base` is in `sub.__mro__` (the ancestor
@@ -2148,10 +2176,29 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
-    // `callable(x)` → shared reflection callable probe as a real Bool.
+    // `callable(x)` → the shared reflection probe, OR a Call slot.
+    //
+    // A Python object is callable when its TYPE defines `__call__` — the
+    // profile says so with `callable_objects = true`, and the shared call path
+    // dispatches through the Call protocol slot. `emit_is_callable` only
+    // answers `typeof === "function"`, so without the second half every object
+    // that implements `__call__` (a `weakref.ref`, a class with `__call__`)
+    // reported False while `x()` worked.
     if name == "python.callable" {
+        let value = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         reflection::emit_is_callable(chunks, current, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        // `ecma:object.get` tolerates a primitive, where `struct.get` traps.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call);
+        chunks[current].emit_string_const(&slot_key, line);
+        let get = chunks[current].add_import("ecma:object", "get");
+        chunks[current].emit_call(get, 2, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_op(Op::I32_OR, line);
         vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }

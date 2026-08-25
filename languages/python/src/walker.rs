@@ -244,6 +244,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_namedtuple_defs.clear();
     __w.py_namedtuple_instances.clear();
     __w.py_sql_vars.clear();
+    __w.py_sock_vars.clear();
     __w.py_re_vars.clear();
     __w.py_counter_vars.clear();
     __w.py_defaultdict_vars.clear();
@@ -251,6 +252,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_chainmap_vars.clear();
     __w.py_iterator_vars.clear();
     __w.py_generator_funcs.clear();
+    __w.py_async_generator_funcs.clear();
+    __w.py_async_funcs.clear();
+    __w.py_coroutine_var_funcs.clear();
     __w.py_generator_vars.clear();
     __w.py_generator_func_float_yields.clear();
     __w.py_generator_var_funcs.clear();
@@ -529,6 +533,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         stmt.walk_exprs_mut(&mut normalize_asyncio_expr);
     }
     Ok(Module {
+        canon: Default::default(),
         name: "main".into(),
         language: Lang::Python,
         body,
@@ -555,6 +560,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // probe into the tree at every drop site instead — a second
             // mechanism for a slot that was already bound.
             name_drop: Some(NameDrop::Finalise),
+            // CPython §3.3.1: truth is asked of the OBJECT — `__bool__`, then
+            // `__len__` — so `[]`, `{}`, `set()` and a class returning 0 from
+            // `__len__` are all falsy for the SAME reason. Declared once here;
+            // the shared compiler runs the ladder against `ProtocolSlot::Bool`
+            // and `ProtocolSlot::Len`.
+            //
+            // This was `truthiness_via_dunder_or_length` in the profile, which
+            // the program could not see and which three shared sites read
+            // separately — so they drifted, and `assert []` passed.
+            truthiness: Some(Truthiness::Protocol),
             ..Default::default()
         },
     })
@@ -1097,13 +1112,25 @@ class VybeSocketImpl:
         if record is None:
             return ("0.0.0.0", 0)
         parts = record["address"]
+        if parts is None:
+            return ("0.0.0.0", 0)
         if isinstance(parts, str):
             host = parts
         else:
-            pieces = []
+            # A plain loop, NOT `".".join(pieces)`. `import threading` defines
+            # `Thread.join`/`Queue.join`, and type-directed dispatch then binds
+            # `join` on a list whose element type is not statically known to
+            # the USER method rather than the string built-in — the call
+            # resolves to undefined. A socket program that also uses threads is
+            # the ordinary case, not a corner, so this path cannot depend on
+            # it.
+            host = ""
+            first = True
             for octet in parts:
-                pieces.append(str(octet))
-            host = ".".join(pieces)
+                if not first:
+                    host += "."
+                host += str(octet)
+                first = False
         return (host, int(record["port"]))
     def bind(self, address):
         if self.sock_kind == 2:
@@ -5277,8 +5304,14 @@ fn walk_func_def(__w: &mut PyWalker,
     // generators and was semantically eager).
     let has_yield = body_has_yield(&body);
     note_defined_function(__w, &name, &params, &body);
+    if is_async {
+        note_async_func(__w, &name);
+    }
     if has_yield {
         note_generator_func(__w, &name);
+        if is_async {
+            note_async_generator_func(__w, &name);
+        }
         if body_yields_python_float(__w, &body) {
             note_generator_func_float_yield(__w, &name);
         }
@@ -7110,6 +7143,60 @@ fn normalize_exception_super_init(__w: &mut PyWalker, class_name: &str, body: &m
     }
 }
 
+/// Replace `auto()` in an enum body with the value CPython's `_auto_called`
+/// machinery would have produced.
+///
+/// `auto()` has no meaning on its own — it is resolved by the enum metaclass
+/// from the members declared BEFORE it, which is exactly the information a
+/// class body has here and nowhere else. `Enum` counts up from the last value
+/// (starting at 1); `Flag` takes the next power of two, so its members stay
+/// disjoint bits.
+fn resolve_enum_auto(parents: &[String], body: &mut [Statement]) {
+    let base = |suffix: &str| {
+        parents
+            .iter()
+            .any(|p| p == suffix || p.ends_with(&format!(".{suffix}")))
+    };
+    let is_flag = base("Flag") || base("IntFlag");
+    if !is_flag && !(base("Enum") || base("IntEnum") || base("StrEnum") || base("ReprEnum")) {
+        return;
+    }
+    let is_auto_call = |e: &Expression| match &e.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
+            ExprKind::Ident(n) => n == "auto",
+            ExprKind::Member { object, field, .. } => {
+                field == "auto" && matches!(&object.kind, ExprKind::Ident(m) if m == "enum")
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let mut last: i64 = 0;
+    for stmt in body.iter_mut() {
+        let StmtKind::Assign { targets, value, .. } = &mut stmt.kind else {
+            continue;
+        };
+        if targets.len() != 1 || !matches!(&targets[0].kind, ExprKind::Ident(_)) {
+            continue;
+        }
+        if let ExprKind::Lit(Literal::Int(n)) = &value.kind {
+            last = *n as i64;
+            continue;
+        }
+        if !is_auto_call(value) {
+            continue;
+        }
+        let next = if is_flag {
+            if last == 0 { 1 } else { last << 1 }
+        } else {
+            last + 1
+        };
+        last = next;
+        let span = value.span;
+        *value = Expression::with_span(ExprKind::Lit(Literal::Int(next)), span);
+    }
+}
+
 fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
@@ -7157,6 +7244,7 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
         }
     }
     note_class_parents(__w, &name, &parents);
+    resolve_enum_auto(&parents, &mut body_stmts);
 
     let has_call_method = body_stmts.iter().any(|stmt| {
         matches!(
@@ -10564,6 +10652,13 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                     {
                         note_generator_var_func(__w, target_name, n);
                     }
+                    if let ExprKind::Ident(n) = &callee.kind
+                        && is_async_func(__w, n)
+                        && !is_generator_func(__w, n)
+                    {
+                        let n = n.clone();
+                        note_coroutine_var_func(__w, target_name, &n);
+                    }
                     if let ExprKind::FunctionExpr(stmt) = &callee.kind
                         && matches!(
                             &stmt.kind,
@@ -11417,20 +11512,17 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
         Rule::or_expr => walk_binary_chain(__w, inner, |_| BinOp::Or),
         Rule::and_expr => walk_binary_chain(__w, inner, |_| BinOp::And),
         Rule::not_expr => {
-            // not_kw ~ not_expr — unary not. Lower to `False if bool(x) else True`
-            // so Python truthiness applies (empty list/dict/str are falsy) and we
-            // route through the working `bool()` / conditional path rather than
-            // `emit_dyn_not`, which uses JS truthiness (arrays are always truthy).
+            // `not x` is a `not`. It used to be lowered to
+            // `False if bool(x) else True` because `emit_dyn_not` applied ECMA
+            // truthiness and answered `not []` false — but a walker can only
+            // patch the spellings it BUILDS, and `walk_assert` builds its own
+            // `Unary{Not}`, so `assert []` never raised. The rule moved to the
+            // `truthiness` directive and `UnaryOp::Not` now folds like the
+            // condition it negates, which fixes both spellings at once.
             let operand = walk_expression(__w, inner.pop().ok_or("Empty not")?)?;
-            if matches!(operand.kind, ExprKind::Lit(Literal::Null)) {
-                return Ok(ExprKind::Lit(Literal::Bool(true)));
-            }
-            // The conditional's own condition already applies Python truthiness
-            // (`if []:` is falsy), so use the operand directly as the condition.
-            Ok(ExprKind::Ternary {
-                cond: Box::new(operand),
-                then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+            Ok(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(operand),
             })
         }
         Rule::comparison => {
@@ -12214,6 +12306,10 @@ pub(crate) struct PyWalker {
     py_mapping_proxy_vars: std::collections::HashMap<String, Expression>,
     py_simple_namespace_vars: std::collections::HashSet<String>,
     py_sql_vars: std::collections::HashSet<String>,
+    /// Variables holding a `wasi:sockets` handle. Same role as `py_sql_vars`:
+    /// it is what lets `sock.close()` be claimed without claiming every
+    /// `.close()` in the program.
+    py_sock_vars: std::collections::HashSet<String>,
     py_re_vars: std::collections::HashSet<String>,
     py_counter_vars: std::collections::HashSet<String>,
     py_defaultdict_vars: std::collections::HashMap<String, Expression>,
@@ -12222,6 +12318,18 @@ pub(crate) struct PyWalker {
     py_chainmap_vars: std::collections::HashSet<String>,
     py_iterator_vars: std::collections::HashSet<String>,
     py_generator_funcs: std::collections::HashSet<String>,
+    /// The subset of `py_generator_funcs` declared `async def`. An async
+    /// generator is a DIFFERENT object from a sync one: CPython gives it
+    /// `__aiter__`/`__anext__`/`asend`/`athrow`/`aclose` and gives it NO
+    /// `send`/`throw`/`close`/`__iter__`/`__next__`.
+    py_async_generator_funcs: std::collections::HashSet<String>,
+    /// Every `async def`, generator or not. A call to one produces a
+    /// COROUTINE, which answers a different attribute set and a different
+    /// `type().__name__` than either a plain call or a generator.
+    py_async_funcs: std::collections::HashSet<String>,
+    /// `c = f()` where `f` is an `async def` — var → the function it came
+    /// from, the coroutine counterpart of `py_generator_var_funcs`.
+    py_coroutine_var_funcs: std::collections::HashMap<String, String>,
     py_generator_vars: std::collections::HashSet<String>,
     py_generator_func_float_yields: std::collections::HashSet<String>,
     py_generator_var_funcs: std::collections::HashMap<String, String>,
@@ -12739,6 +12847,33 @@ fn is_generator_func(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_generator_funcs.contains(name)
 }
 
+fn note_async_func(__w: &mut PyWalker, name: &str) {
+    {
+        __w.py_async_funcs.insert(name.to_string());
+    };
+}
+
+fn is_async_func(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_async_funcs.contains(name)
+}
+
+fn note_coroutine_var_func(__w: &mut PyWalker, var: &str, func: &str) {
+    {
+        __w.py_coroutine_var_funcs
+            .insert(var.to_string(), func.to_string());
+    };
+}
+
+fn note_async_generator_func(__w: &mut PyWalker, name: &str) {
+    {
+        __w.py_async_generator_funcs.insert(name.to_string());
+    };
+}
+
+fn is_async_generator_func(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_async_generator_funcs.contains(name)
+}
+
 fn note_generator_var(__w: &mut PyWalker, name: &str) {
     {
         __w.py_generator_vars.insert(name.to_string());
@@ -12983,10 +13118,21 @@ fn note_sql_var_if_producer(__w: &mut PyWalker, target: &Expression, value: &Exp
         return;
     };
     if let ExprKind::Call { callee, .. } = &value.kind {
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if matches!(&object.kind, ExprKind::Ident(m) if m == "socket")
+                && matches!(field.as_str(), "socket" | "create_connection")
+            {
+                __w.py_sock_vars.insert(name.to_string());
+            }
+        }
         if let ExprKind::Ident(fname) = &callee.kind {
             if fname == "__sql_connect" || fname == "__sql_cursor" {
                 note_sql_var(__w, name);
             }
+            if fname == "__sock_new" || fname == "__sock_self" {
+                __w.py_sock_vars.insert(name.to_string());
+            }
+
             if fname == "__re_compile" {
                 __w.py_re_vars.insert(name.to_string());
             }
@@ -15193,6 +15339,126 @@ fn rewrite_sqlite_call(__w: &mut PyWalker,
     }))
 }
 
+/// Map a socket method name to its `__sock_*` builtin.
+///
+/// `shutdown` maps onto `close`: 0.3.1 has no `shutdown` verb at all — a
+/// half-close is not expressible on a `stream<u8>`, and dropping the receive
+/// stream is the honest equivalent of the direction python asks to shut.
+/// `dup`/`makefile`/`__enter__` answer the handle itself, because a dup shares
+/// the descriptor and this surface reads and writes the same socket.
+fn sock_method_builtin(field: &str) -> Option<&'static str> {
+    // ONLY the Component Model STREAM sequences.
+    //
+    // `bind`, `connect`, `listen`, `getsockname` and `getpeername` are NOT
+    // here: they are single host calls and now live on the `tcp-socket` /
+    // `udp-socket` vtable (`platforms/wasi/src/sockets.rs::register_socket_types`),
+    // so ordinary receiver dispatch finds them — for every language, not just
+    // this one. Claiming them here would SHADOW that vtable and put the table
+    // back.
+    //
+    // These four remain because 0.3.1 made them canon stream sequences and a
+    // canon built-in is a guest INSTRUCTION: there is no host function for a
+    // vtable entry to point at. `accept` is a `canon stream.read` off
+    // `listen`'s `stream<tcp-socket>`; `send` mints a `stream<u8>`; `recv`
+    // caches `receive()`'s stream and does one bounded read.
+    Some(match field {
+        // These four need VALUE SHAPING, not just a call, so a bare vtable
+        // entry cannot serve them: python hands `bind`/`connect` a
+        // `(host, port)` TUPLE where the WIT wants an `ip-socket-address`, and
+        // `getsockname`/`getpeername` answer that record where python wants the
+        // tuple back. Measured: with them on the vtable, `bind` silently failed
+        // and `getsockname()` printed `{}`.
+        "bind" => "__sock_bind",
+        "connect" | "connect_ex" => "__sock_connect",
+        "getsockname" => "__sock_getsockname",
+        "getpeername" => "__sock_getpeername",
+        // Pure LOCAL bookkeeping — 0.3.1 has no verb for any of these, so
+        // there is nothing for a vtable entry to point at. Removing them on the
+        // assumption the vtable covered them made every one resolve to
+        // undefined (measured: 14 passing -> 9).
+        "close" | "shutdown" | "detach" => "__sock_close",
+        "settimeout" => "__sock_settimeout",
+        "gettimeout" => "__sock_gettimeout",
+        "setsockopt" => "__sock_setsockopt",
+        "getsockopt" => "__sock_getsockopt",
+        "fileno" => "__sock_fileno",
+        "dup" | "makefile" | "__enter__" => "__sock_self",
+        // `listen` is a host call, but its `stream<tcp-socket>` has to be
+        // stashed on the handle for `accept` to read, so it is a sequence too.
+        "listen" => "__sock_listen",
+        "accept" => "__sock_accept",
+        "send" | "sendto" => "__sock_send",
+        "sendall" => "__sock_sendall",
+        "recv" | "recvfrom" => "__sock_recv",
+        _ => return None,
+    })
+}
+
+/// True when `e` is a socket handle: a tracked variable, or a call to a
+/// `__sock_*` builtin that produces one (so `socket.socket(...).bind(...)`
+/// chains).
+fn is_sock_handle_expr(__w: &mut PyWalker, e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => __w.py_sock_vars.contains(name),
+        ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Ident(f)
+        if matches!(f.as_str(), "__sock_new" | "__sock_self")),
+        _ => false,
+    }
+}
+
+/// `socket.socket(...)` → `__sock_new(...)`, and `<handle>.method(...)` →
+/// `__sock_method(<handle>, ...)`.
+///
+/// `None` when the receiver is not a socket, so an unrelated `.close()` or
+/// `.send()` on some other object falls through to ordinary method dispatch —
+/// the same guard `rewrite_sqlite_call` uses, and the reason a name as common
+/// as `close` can be claimed here at all.
+fn rewrite_socket_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: Vec<Argument>,
+    optional: bool,
+) -> Option<Expression> {
+    if let ExprKind::Ident(module) = &object.kind {
+        if module == "socket" && matches!(field, "create_connection") {
+            // `create_connection(addr)` is `socket()` + `connect(addr)`; it is
+            // spelled as the pair rather than a third builtin so there is one
+            // lowering of connect, not two.
+            if field == "create_connection" && !args.is_empty() {
+                let sock = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__sock_new")),
+                    args: Vec::new(),
+                    optional: false,
+                });
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__sock_connect")),
+                    args: vec![Argument::positional(sock), args.into_iter().next().unwrap()],
+                    optional,
+                }));
+            }
+            return Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__sock_new")),
+                args,
+                optional,
+            }));
+        }
+    }
+    let builtin = sock_method_builtin(field)?;
+    let recv = desugar_member_reads(__w, object.clone());
+    if !is_sock_handle_expr(__w, &recv) {
+        return None;
+    }
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(Argument::positional(recv));
+    call_args.extend(args);
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(builtin)),
+        args: call_args,
+        optional,
+    }))
+}
+
 fn note_from_imported_module(__w: &mut PyWalker, name: &str) {
     __w.py_from_imported_modules.insert(name.to_string());
 }
@@ -15242,11 +15508,6 @@ fn prelude_module_class(receiver: &ExprKind, field: &str) -> Option<String> {
         return None;
     };
     match (module.as_str(), field) {
-        // `socket.socket` is the one case where the class and its module share
-        // a name, so the global cannot be called `socket` — the walker already
-        // tracks that identifier as an imported module. Map it to a distinct
-        // global instead of reusing the field name.
-        ("socket", "socket") => Some("VybeSocketImpl".to_string()),
         ("io", "StringIO")
         | ("io", "BytesIO")
         | ("configparser", "ConfigParser")
@@ -15948,11 +16209,45 @@ fn normalize_python_module_facade_expr(__w: &mut PyWalker, expr: &mut Expression
     }
 }
 
+/// Every module name the PROFILE mounts — `[[esm_default]] kind =
+/// "tree-mount"` prefixes plus the roots of the dotted `[builtins]` and
+/// `[namespace_constants]` keys `tree_register.rs` turns into leaves.
+///
+/// namespaceplan.md §"What a frontend walker declares": the walker's job is
+/// syntax, not a stdlib inventory. Reading the mounts back means a module
+/// added as tree/profile DATA is importable with no walker edit at all — the
+/// hand-written lists below are what this replaces, one module at a time.
+fn py_profile_modules() -> &'static std::collections::HashSet<String> {
+    static MODULES: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    MODULES.get_or_init(|| {
+        let mut out = std::collections::HashSet::new();
+        let Ok(profile) = vybe_runtime::profile::parse_profile(crate::profile_source()) else {
+            return out;
+        };
+        for default in &profile.esm_defaults {
+            if let vybe_runtime::profile::EsmDefault::TreeMount { prefix, path } = default
+                && path.starts_with("python.")
+            {
+                out.insert(prefix.clone());
+            }
+        }
+        let dotted_roots = profile
+            .builtins
+            .keys()
+            .chain(profile.namespace_constants.keys())
+            .filter_map(|key| key.split_once('.').map(|(root, _)| root.to_string()));
+        out.extend(dotted_roots);
+        out
+    })
+}
+
 /// The stdlib universe this implementation can mount. `import X` for an
 /// X outside it raises ImportError at the import site (CPython behavior)
 /// instead of silently binding nothing.
 fn py_known_module(root: &str) -> bool {
     py_module_surface(root).is_some()
+        || py_profile_modules().contains(root)
         || matches!(
             root,
             "math"
@@ -16209,6 +16504,118 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
         "importlib.metadata" => &["version", "distributions", "metadata"],
         "importlib.abc" => &["MetaPathFinder", "Loader", "PathEntryFinder"],
         "runpy" => &["run_module", "run_path"],
+
+        // asyncio — CPython 3.14 `asyncio.__all__` plus its submodules. The
+        // CALLS that Vybe implements are normalized to the common async
+        // vocabulary by `normalize_asyncio_expr`; this is the SURFACE, which
+        // is what `hasattr`/`callable` ask about.
+        "asyncio" => &[
+            "ALL_COMPLETED",
+            "AbstractEventLoop",
+            "AbstractServer",
+            "Barrier",
+            "BaseEventLoop",
+            "BaseProtocol",
+            "BaseTransport",
+            "BoundedSemaphore",
+            "BrokenBarrierError",
+            "BufferedProtocol",
+            "CancelledError",
+            "Condition",
+            "DatagramProtocol",
+            "DatagramTransport",
+            "Event",
+            "EventLoop",
+            "FIRST_COMPLETED",
+            "FIRST_EXCEPTION",
+            "FrameCallGraphEntry",
+            "Future",
+            "FutureCallGraph",
+            "Handle",
+            "IncompleteReadError",
+            "InvalidStateError",
+            "LifoQueue",
+            "LimitOverrunError",
+            "Lock",
+            "PriorityQueue",
+            "Protocol",
+            "Queue",
+            "QueueEmpty",
+            "QueueFull",
+            "QueueShutDown",
+            "ReadTransport",
+            "Runner",
+            "SelectorEventLoop",
+            "Semaphore",
+            "SendfileNotAvailableError",
+            "Server",
+            "StreamReader",
+            "StreamReaderProtocol",
+            "StreamWriter",
+            "SubprocessProtocol",
+            "SubprocessTransport",
+            "Task",
+            "TaskGroup",
+            "Timeout",
+            "TimeoutError",
+            "TimerHandle",
+            "Transport",
+            "WriteTransport",
+            "all_tasks",
+            "as_completed",
+            "capture_call_graph",
+            "coroutines",
+            "create_eager_task_factory",
+            "create_subprocess_exec",
+            "create_subprocess_shell",
+            "create_task",
+            "current_task",
+            "eager_task_factory",
+            "ensure_future",
+            "events",
+            "exceptions",
+            "format_call_graph",
+            "future_add_to_awaited_by",
+            "future_discard_from_awaited_by",
+            "futures",
+            "gather",
+            "get_event_loop",
+            "get_event_loop_policy",
+            "get_running_loop",
+            "iscoroutine",
+            "iscoroutinefunction",
+            "isfuture",
+            "locks",
+            "new_event_loop",
+            "open_connection",
+            "open_unix_connection",
+            "print_call_graph",
+            "queues",
+            "run",
+            "run_coroutine_threadsafe",
+            "runners",
+            "set_event_loop",
+            "set_event_loop_policy",
+            "shield",
+            "sleep",
+            "start_server",
+            "start_unix_server",
+            "streams",
+            "subprocess",
+            "taskgroups",
+            "tasks",
+            "threads",
+            "timeout",
+            "timeout_at",
+            "timeouts",
+            "to_thread",
+            "wait",
+            "wait_for",
+            "wrap_future",
+        ],
+        "asyncio.coroutines" => &["iscoroutine", "iscoroutinefunction"],
+        "asyncio.subprocess" => &["create_subprocess_exec", "create_subprocess_shell", "Process", "PIPE", "STDOUT", "DEVNULL"],
+        "asyncio.streams" => &["StreamReader", "StreamWriter", "open_connection", "start_server"],
         "encodings" => &["utf_8", "ascii", "latin_1"],
         "pkgutil" => &["iter_modules", "walk_packages", "get_data"],
         "zipimport" => &["zipimporter", "ZipImportError"],
@@ -19003,6 +19410,15 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
             _ => None,
         };
     }
+    if py_known_coroutine_expr(__w, e) {
+        return Some("coroutine");
+    }
+    if py_known_async_generator_expr(__w, e) {
+        return Some("async_generator");
+    }
+    if py_known_generator_expr(__w, e) {
+        return Some("generator");
+    }
     match &e.kind {
         ExprKind::Lit(Literal::Bool(_)) => Some("bool"),
         ExprKind::Lit(Literal::Int(_)) => Some("int"),
@@ -19323,11 +19739,64 @@ fn py_static_callable(__w: &mut PyWalker, e: &Expression) -> Option<bool> {
                 None
             }
         }
+        // A member of a module whose export surface is known — `callable(
+        // asyncio.gather)`. A name the surface lists is a function or a class
+        // unless it is spelled like a constant (`asyncio.ALL_COMPLETED`,
+        // `socket.AF_INET`), which is the same SCREAMING_CASE rule the surface
+        // tables already encode.
+        ExprKind::Member { object, field, .. } => {
+            let ExprKind::Ident(module) = &object.kind else {
+                return None;
+            };
+            let surface = py_module_surface(module)?;
+            if !surface.contains(&field.as_str()) {
+                return None;
+            }
+            let constant_spelled = field
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            Some(!constant_spelled)
+        }
         _ => None,
     }
 }
 
 fn py_static_hasattr(__w: &mut PyWalker, obj: &Expression, attr: &str) -> Option<bool> {
+    // An async generator answers the ASYNC protocol and only that one: CPython
+    // gives it `asend`/`athrow`/`aclose` and no `send`/`throw`/`close`, so this
+    // has to be tested BEFORE the sync set (an async generator is in
+    // `py_generator_funcs` too).
+    if py_known_async_generator_expr(__w, obj) {
+        return Some(matches!(
+            attr,
+            "__aiter__"
+                | "__anext__"
+                | "asend"
+                | "athrow"
+                | "aclose"
+                | "ag_frame"
+                | "ag_running"
+                | "ag_await"
+                | "ag_code"
+                | "__code__"
+        ));
+    }
+    if py_known_coroutine_expr(__w, obj) {
+        return Some(matches!(
+            attr,
+            "__await__"
+                | "send"
+                | "throw"
+                | "close"
+                | "cr_frame"
+                | "cr_running"
+                | "cr_await"
+                | "cr_code"
+                | "cr_origin"
+                | "__name__"
+                | "__qualname__"
+        ));
+    }
     if py_known_generator_expr(__w, obj) {
         return Some(matches!(
             attr,
@@ -19581,11 +20050,19 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     null_safe,
                 });
             }
-            if field == "__name__"
-                && let ExprKind::Ident(name) = &object.kind
-                && is_generator_func(__w, name)
-            {
-                return Expression::string(name);
+            // `f.__name__` is the function object's NAME — the property the
+            // shared compiler already puts on every function in all sixteen
+            // languages (`foo.name` in JS, set through
+            // `ecma:function.setFunctionName`). Normalising the spelling is
+            // the whole job; folding it to a string literal per-case is what
+            // left a plain `def` and every `async def` raising AttributeError
+            // while only generators answered.
+            if field == "__name__" && py_is_function_valued(__w, &object) {
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(object),
+                    field: "name".to_string(),
+                    null_safe,
+                });
             }
             if py_known_generator_expr(__w, &object) {
                 match field.as_str() {
@@ -20259,6 +20736,26 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 if args.len() == 1 && field == "repr" && py_static_frozenset_expr(__w, &args[0].value) {
                     return Expression::string("frozenset({...})");
                 }
+                // `asyncio.iscoroutine(x)` / `iscoroutinefunction(f)` — the
+                // walker knows which `def`s are `async def`, so both fold to a
+                // literal instead of needing a runtime coroutine type.
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "asyncio")
+                    && args.len() == 1
+                {
+                    match field.as_str() {
+                        "iscoroutine" => {
+                            return Expression::bool(py_known_coroutine_expr(__w, &args[0].value));
+                        }
+                        "iscoroutinefunction" => {
+                            let is_async = matches!(
+                                &args[0].value.kind,
+                                ExprKind::Ident(name) if is_async_func(__w, name)
+                            );
+                            return Expression::bool(is_async);
+                        }
+                        _ => {}
+                    }
+                }
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "inspect") {
                     match field.as_str() {
                         "isgenerator" if args.len() == 1 => {
@@ -20520,6 +21017,11 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         args,
                         optional,
                     });
+                }
+                if let Some(rewritten) =
+                    rewrite_socket_call(__w, object, field, args.clone(), optional)
+                {
+                    return rewritten;
                 }
                 if let Some(path) = module_namespace_path(__w, object) {
                     if let Some(value) = dynamic_module_attr(__w, &path, field) {
@@ -23160,39 +23662,39 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                         continue;
                                     }
                                 }
-                                "bytes" if args.is_empty() => {
+                                // `bytes` and `bytearray` are ONE shape under the
+                                // hood — the same byte array — so they normalize
+                                // together. They used to diverge here: `bytes`
+                                // had the 0-arg, 1-arg and 2-arg forms while
+                                // `bytearray` had only `bytearray(<int literal>)`,
+                                // so `bytearray([1, 2])` fell through to the
+                                // generic call path and was STRINGIFIED to
+                                // `b'1,2'`, and `bytearray(b'ab')` to
+                                // `b'[object TypedArray]'`. Mutability is a
+                                // front-end quirk of the two names, not a second
+                                // representation.
+                                "bytes" | "bytearray" if args.is_empty() => {
                                     expr = wrap_bytes(Expression::new(ExprKind::Array(vec![])));
                                     continue;
                                 }
-                                "bytes" if args.len() == 1 && args[0].name.is_none() => {
-                                    // bytes(iterable_of_ints) → those octets.
+                                "bytes" | "bytearray"
+                                    if args.len() == 1 && args[0].name.is_none() =>
+                                {
+                                    // bytes(iterable_of_ints) → those octets;
+                                    // bytes(n) → n zero octets, which the byte
+                                    // conversion already does for an integer.
                                     expr = wrap_bytes(args[0].value.clone());
                                     continue;
                                 }
-                                "bytes" if args.len() == 2 && args[0].name.is_none() => {
+                                "bytes" | "bytearray"
+                                    if args.len() == 2 && args[0].name.is_none() =>
+                                {
                                     // bytes(str, encoding) → UTF-8 code units.
                                     expr = wrap_bytes(call_ident(
                                         "__vybe_str_encode",
                                         vec![args[0].value.clone()],
                                     ));
                                     continue;
-                                }
-                                "bytearray" if args.len() == 1 && args[0].name.is_none() => {
-                                    if let ExprKind::Lit(Literal::Int(n)) = args[0].value.kind {
-                                        let elements = (0..n.max(0))
-                                            .map(|_| ArrayElement {
-                                                key: None,
-                                                spread: false,
-                                                by_ref: false,
-                                                value: Expression::new(ExprKind::Lit(
-                                                    Literal::Int(0),
-                                                )),
-                                            })
-                                            .collect();
-                                        expr =
-                                            wrap_bytes(Expression::new(ExprKind::Array(elements)));
-                                        continue;
-                                    }
                                 }
                                 "sum" if !args.is_empty() && args[0].name.is_none() => {
                                     // sum(iterable[, start]) — drain the iterable
@@ -23969,6 +24471,76 @@ fn py_known_generator_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
     }
 }
 
+/// True when `expr` is a COROUTINE — the result of calling an `async def`
+/// that is not an async generator. `c = f()` resolves through the var map
+/// `note_coroutine_var_func` builds.
+/// True when `expr` denotes a FUNCTION object — a `def`, an `async def`, a
+/// generator, a lambda or a function expression. Classes are excluded: a class
+/// carries its own `__name__` metadata property (`class_metadata_stmt`), and
+/// modules answer through `py_module_metadata_attr`.
+fn py_is_function_valued(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::FuncRef(_) => true,
+        ExprKind::Ident(name) => {
+            !is_defined_class(__w, name)
+                && (is_defined_function(__w, name)
+                    || is_generator_func(__w, name)
+                    || is_async_func(__w, name))
+        }
+        _ => false,
+    }
+}
+
+fn py_known_coroutine_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            let func = __w.py_coroutine_var_funcs.get(name).cloned();
+            func.is_some_and(|func| is_async_func(__w, &func) && !is_generator_func(__w, &func))
+        }
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => {
+                is_async_func(__w, name) && !is_generator_func(__w, name)
+            }
+            ExprKind::FunctionExpr(stmt) => matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl {
+                    is_async: true,
+                    is_generator: false,
+                    ..
+                }
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// True when `expr` is an ASYNC generator object — `async def` + `yield`.
+/// A variable is resolved through the var → producing-function map that
+/// `note_generator_var_func` builds, so `g = ag()` is recognised the same way
+/// the direct call `ag()` is.
+fn py_known_async_generator_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            let func = __w.py_generator_var_funcs.get(name).cloned();
+            func.is_some_and(|func| is_async_generator_func(__w, &func))
+        }
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => is_async_generator_func(__w, name),
+            ExprKind::FunctionExpr(stmt) => matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl {
+                    is_generator: true,
+                    is_async: true,
+                    ..
+                }
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn py_generator_expr_name(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) if is_generator_func(__w, name) => Some(name.clone()),
@@ -24079,6 +24651,38 @@ fn is_py_arith_helper(n: &str) -> bool {
     )
 }
 
+/// Does either operand of `a / b` decide the result type itself, by belonging to
+/// a class that defines `__truediv__`?
+///
+/// `/` is float BETWEEN NUMBERS. A class carrying the dunder returns whatever
+/// its method returns, so the float tables must answer "unknown" rather than
+/// assert a type they do not own — the same defect as a walker table answering
+/// EMPTY where inference missed.
+fn operand_overloads_truediv(__w: &mut PyWalker, args: &[Argument]) -> bool {
+    args.iter().any(|a| {
+        let class_name = match &a.value.kind {
+            ExprKind::Ident(var) => instance_class(__w, var),
+            // `V() / x` — the construction names its own class. It arrives as
+            // `New`, NOT `Call`: the walker has already lowered the
+            // constructor, so matching only `Call` here saw nothing and
+            // `V() / V()` kept the float claim while `a / b` lost it.
+            ExprKind::New { class, .. } => match &class.kind {
+                ExprKind::Ident(n) => Some(n.clone()),
+                _ => None,
+            },
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Ident(n) => Some(n.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        // `class_has_attr` answers false for a name that is not a class, so no
+        // membership pre-check is needed — and the pre-check was what hid the
+        // `New` shape.
+        class_name.is_some_and(|c| class_has_attr(__w, &c, "__truediv__"))
+    })
+}
+
 /// True when an expression is *statically* a Python `float` — a float literal,
 /// true division (`/`), `float()`, a float-returning `math.*` call, unary minus
 /// of a float, or arithmetic where an operand is a float. Deliberately
@@ -24140,8 +24744,13 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
             }
             ExprKind::Ident(n) if FLOAT_MATH_FNS.contains(&n.as_str()) => true,
             ExprKind::Ident(n) if is_float_returning_import(__w, n) => true,
-            // `/` lowers to __pytruediv__ and is always float in Python.
-            ExprKind::Ident(n) if n == "__pytruediv__" => true,
+            // `/` is float BETWEEN NUMBERS. On an operand carrying
+            // `__truediv__` the result is whatever THAT method returns —
+            // CPython answers `42`, not `42.0` — so claiming float here is a
+            // claim about someone else's return type. When the dunder answers
+            // a string the claim becomes a hard trap in the CONSUMER
+            // (`wasm:js-number.toF64 — not a number`), nowhere near this table.
+            ExprKind::Ident(n) if n == "__pytruediv__" => !operand_overloads_truediv(__w, args),
             ExprKind::Ident(n) if n == "__py_attr_read" && args.len() == 2 => {
                 if let ExprKind::Ident(var) = &args[0].value.kind
                     && let Some(class_name) = instance_class(__w, var)
@@ -24365,8 +24974,9 @@ fn expr_is_float_ctx(__w: &mut PyWalker, e: &Expression, floats: &HashMap<String
             op: UnaryOp::Neg | UnaryOp::Pos,
             expr,
         } => expr_is_float_ctx(__w, expr, floats),
-        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") => {
-            true
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") => {
+            // Same claim, same limit — see `operand_overloads_truediv`.
+            !operand_overloads_truediv(__w, args)
         }
         ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if FLOAT_MATH_FNS.contains(&n.as_str())) => {
             true

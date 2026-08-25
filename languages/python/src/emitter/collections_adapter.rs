@@ -1032,20 +1032,45 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if_value(line);
 
     // generator: GEN_NEXT → [value, has_more]
-    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    vybe_compiler::primitives::generators::emit_next(&mut chunks[current], line);
     let started_key = chunks[current].add_constant(vybe_runtime::Value::String(
         std::sync::Arc::from("__vybe_gen_started"),
     ));
-    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
+    let closed_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__py_gen_closed"),
+    ));
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let value = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
+
+    // A generator that `close()` finished, or one the VM already drove to
+    // completion, must NOT be resumed: RESUME on a completed continuation is a
+    // VM trap, and CPython raises StopIteration there. `gen_send` already
+    // consults `__py_gen_closed`; `next()` did not, so `close()` followed by
+    // `next()` trapped instead of raising. Answering `has_more = false` here
+    // hands both cases to the exhausted path below — default or StopIteration,
+    // whichever the call asked for.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, closed_key, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_more, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    vybe_compiler::primitives::generators::emit_next(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_more, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_more, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);

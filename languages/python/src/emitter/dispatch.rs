@@ -19,6 +19,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         crate::emitter::runtime_adapter::emit_py_raise(chunks, current, argc, exc_name, line);
         return true;
     }
+    // Partly-implemented module surface. `argc == 0` is a bare `module.name`
+    // read (the value), anything else is a call — see `surface_adapter`.
+    if let Some(what) = name.strip_prefix("python.typeobj.") {
+        crate::emitter::surface_adapter::emit_type_surface(chunks, current, argc, what, line);
+        return true;
+    }
+    if let Some(what) = name.strip_prefix("python.surface.") {
+        crate::emitter::surface_adapter::emit_function_surface(chunks, current, argc, what, line);
+        return true;
+    }
     match name {
         // hashlib / hmac over node:crypto — see hash_adapter.rs
         "python.hash_sha256" => {
@@ -95,6 +105,200 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.binascii_crc32" => {
             crate::emitter::base64_adapter::emit_crc32(chunks, current, argc, line)
+        }
+        "python.zlib_adler32" => {
+            crate::emitter::compression_adapter::emit_adler32(chunks, current, argc, line)
+        }
+        "python.glob_glob" => {
+            crate::emitter::introspect_adapter::emit_glob(chunks, current, argc, line)
+        }
+        "python.quopri_encodestring" => {
+            crate::emitter::quopri_locale_adapter::emit_encodestring(chunks, current, argc, line)
+        }
+        "python.quopri_decodestring" => {
+            crate::emitter::quopri_locale_adapter::emit_decodestring(chunks, current, argc, line)
+        }
+        "python.locale_getlocale" => {
+            crate::emitter::quopri_locale_adapter::emit_getlocale(chunks, current, argc, line)
+        }
+        "python.locale_getpreferredencoding" => {
+            crate::emitter::quopri_locale_adapter::emit_getpreferredencoding(
+                chunks, current, argc, line,
+            )
+        }
+        "python.glob_escape" => {
+            crate::emitter::introspect_adapter::emit_glob_escape(chunks, current, argc, line)
+        }
+        "python.linecache_getline" => {
+            crate::emitter::introspect_adapter::emit_getline(chunks, current, argc, line)
+        }
+        "python.linecache_getlines" => {
+            crate::emitter::introspect_adapter::emit_getlines(chunks, current, argc, line)
+        }
+        "python.linecache_none" => {
+            crate::emitter::introspect_adapter::emit_linecache_none(chunks, current, argc, line)
+        }
+        "python.inspect_isclass" => {
+            crate::emitter::introspect_adapter::emit_isclass(chunks, current, argc, line)
+        }
+        "python.inspect_isfunction" => {
+            crate::emitter::introspect_adapter::emit_isfunction(chunks, current, argc, line)
+        }
+        "python.inspect_iscallable" => {
+            crate::emitter::introspect_adapter::emit_iscallable(chunks, current, argc, line)
+        }
+        "python.inspect_getmembers" => {
+            crate::emitter::introspect_adapter::emit_getmembers(chunks, current, argc, line)
+        }
+        "python.typing_cast" => {
+            crate::emitter::typing_adapter::emit_cast(chunks, current, argc, line)
+        }
+        "python.typing_final" => {
+            crate::emitter::typing_adapter::emit_marker_decorator(
+                chunks, current, argc, "__final__", line,
+            )
+        }
+        "python.typing_no_type_check" => {
+            crate::emitter::typing_adapter::emit_marker_decorator(
+                chunks,
+                current,
+                argc,
+                "__no_type_check__",
+                line,
+            )
+        }
+        "python.typing_runtime_checkable" => {
+            crate::emitter::typing_adapter::emit_marker_decorator(
+                chunks,
+                current,
+                argc,
+                "_is_runtime_protocol",
+                line,
+            )
+        }
+        "python.typing_typevar" => {
+            crate::emitter::typing_adapter::emit_type_marker(chunks, current, argc, "TypeVar", line)
+        }
+        "python.typing_paramspec" => {
+            crate::emitter::typing_adapter::emit_type_marker(
+                chunks, current, argc, "ParamSpec", line,
+            )
+        }
+        "python.typing_typevartuple" => {
+            crate::emitter::typing_adapter::emit_type_marker(
+                chunks,
+                current,
+                argc,
+                "TypeVarTuple",
+                line,
+            )
+        }
+        "python.typing_newtype" => {
+            crate::emitter::typing_adapter::emit_newtype(chunks, current, argc, line)
+        }
+        "python.typing_get_type_hints" => {
+            crate::emitter::typing_adapter::emit_get_type_hints(chunks, current, argc, line)
+        }
+        "python.weakref_ref" => {
+            crate::emitter::weakref_gc_adapter::emit_ref(chunks, current, argc, line)
+        }
+        "python.weakref_proxy" => {
+            crate::emitter::weakref_gc_adapter::emit_proxy(chunks, current, argc, line)
+        }
+        "python.weakref_finalize" => {
+            crate::emitter::weakref_gc_adapter::emit_finalize(chunks, current, argc, line)
+        }
+        "python.weakref_getweakrefcount" => {
+            crate::emitter::weakref_gc_adapter::emit_getweakrefcount(chunks, current, argc, line)
+        }
+        "python.gc_collect" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_collect(chunks, current, argc, line)
+        }
+        "python.gc_get_count" => crate::emitter::weakref_gc_adapter::emit_gc_triple(
+            chunks,
+            current,
+            argc,
+            [0.0, 0.0, 0.0],
+            line,
+        ),
+        "python.gc_get_threshold" => crate::emitter::weakref_gc_adapter::emit_gc_triple(
+            chunks,
+            current,
+            argc,
+            [700.0, 10.0, 10.0],
+            line,
+        ),
+        "python.gc_get_stats" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_stats(chunks, current, argc, line)
+        }
+        "python.gc_is_tracked" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_is_tracked(chunks, current, argc, line)
+        }
+        "python.gc_zero" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_zero(chunks, current, argc, line)
+        }
+        "python.weakref_getweakrefs" => {
+            crate::emitter::weakref_gc_adapter::emit_getweakrefs(chunks, current, argc, line)
+        }
+        "python.gc_empty_list" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_empty_list(chunks, current, argc, line)
+        }
+        "python.gc_isenabled" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_bool(chunks, current, argc, true, line)
+        }
+        "python.gc_none" => {
+            crate::emitter::weakref_gc_adapter::emit_gc_none(chunks, current, argc, line)
+        }
+        "python.uuid4" => {
+            crate::emitter::uuid_secrets_adapter::emit_uuid4(chunks, current, argc, line)
+        }
+        "python.uuid_new" => {
+            crate::emitter::uuid_secrets_adapter::emit_uuid_new(chunks, current, argc, line)
+        }
+        "python.secrets_token_bytes" => {
+            crate::emitter::uuid_secrets_adapter::emit_token_bytes(chunks, current, argc, line)
+        }
+        "python.secrets_token_hex" => {
+            crate::emitter::uuid_secrets_adapter::emit_token_hex(chunks, current, argc, line)
+        }
+        "python.secrets_token_urlsafe" => {
+            crate::emitter::uuid_secrets_adapter::emit_token_urlsafe(chunks, current, argc, line)
+        }
+        "python.secrets_randbelow" => {
+            crate::emitter::uuid_secrets_adapter::emit_randbelow(chunks, current, argc, line)
+        }
+        "python.secrets_choice" => {
+            crate::emitter::uuid_secrets_adapter::emit_choice(chunks, current, argc, line)
+        }
+        "python.zlib_compress" => {
+            crate::emitter::compression_adapter::emit_zlib_compress(chunks, current, argc, line)
+        }
+        "python.zlib_decompress" => {
+            crate::emitter::compression_adapter::emit_zlib_decompress(chunks, current, argc, line)
+        }
+        "python.gzip_compress" => {
+            crate::emitter::compression_adapter::emit_gzip_compress(chunks, current, argc, line)
+        }
+        "python.gzip_decompress" => {
+            crate::emitter::compression_adapter::emit_gzip_decompress(chunks, current, argc, line)
+        }
+        "python.colorsys_rgb_to_yiq" => {
+            crate::emitter::colorsys_adapter::emit_rgb_to_yiq(chunks, current, argc, line)
+        }
+        "python.colorsys_yiq_to_rgb" => {
+            crate::emitter::colorsys_adapter::emit_yiq_to_rgb(chunks, current, argc, line)
+        }
+        "python.colorsys_rgb_to_hls" => {
+            crate::emitter::colorsys_adapter::emit_rgb_to_hls(chunks, current, argc, line)
+        }
+        "python.colorsys_hls_to_rgb" => {
+            crate::emitter::colorsys_adapter::emit_hls_to_rgb(chunks, current, argc, line)
+        }
+        "python.colorsys_rgb_to_hsv" => {
+            crate::emitter::colorsys_adapter::emit_rgb_to_hsv(chunks, current, argc, line)
+        }
+        "python.colorsys_hsv_to_rgb" => {
+            crate::emitter::colorsys_adapter::emit_hsv_to_rgb(chunks, current, argc, line)
         }
         "python.codecs_encode" => {
             crate::emitter::base64_adapter::emit_codecs_encode(chunks, current, argc, line)
@@ -849,6 +1053,60 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.ip4_net_parts" => {
             crate::emitter::socket_adapter::emit_ip4_net_parts(chunks, current, argc, line)
+        }
+        // The socket OBJECT. Was `VybeSocketImpl` in SOCKET_PRELUDE; it is
+        // bytecode now so it cannot inherit walker defects the way python
+        // source does. The walker rewrites `<handle>.m(...)` into
+        // `__sock_m(<handle>, ...)` — see `rewrite_socket_call`.
+        "python.sock_new" => crate::emitter::socket_adapter::emit_sock_new(chunks, current, argc, line),
+        "python.sock_bind" => {
+            crate::emitter::socket_adapter::emit_sock_bind(chunks, current, argc, line)
+        }
+        "python.sock_listen" => {
+            crate::emitter::socket_adapter::emit_sock_listen(chunks, current, argc, line)
+        }
+        "python.sock_accept" => {
+            crate::emitter::socket_adapter::emit_sock_accept(chunks, current, argc, line)
+        }
+        "python.sock_connect" => {
+            crate::emitter::socket_adapter::emit_sock_connect(chunks, current, argc, line)
+        }
+        // `send` answers the byte count, `sendall` answers None. Same wire.
+        "python.sock_send" => {
+            crate::emitter::socket_adapter::emit_sock_send(chunks, current, argc, line, true)
+        }
+        "python.sock_sendall" => {
+            crate::emitter::socket_adapter::emit_sock_send(chunks, current, argc, line, false)
+        }
+        "python.sock_recv" => {
+            crate::emitter::socket_adapter::emit_sock_recv(chunks, current, argc, line)
+        }
+        "python.sock_getsockname" => {
+            crate::emitter::socket_adapter::emit_sock_addr(chunks, current, argc, line, true)
+        }
+        "python.sock_getpeername" => {
+            crate::emitter::socket_adapter::emit_sock_addr(chunks, current, argc, line, false)
+        }
+        "python.sock_close" => {
+            crate::emitter::socket_adapter::emit_sock_close(chunks, current, argc, line)
+        }
+        "python.sock_settimeout" => {
+            crate::emitter::socket_adapter::emit_sock_setopt(chunks, current, argc, "__timeout", line)
+        }
+        "python.sock_gettimeout" => {
+            crate::emitter::socket_adapter::emit_sock_getopt(chunks, current, argc, "__timeout", line)
+        }
+        "python.sock_setsockopt" => {
+            crate::emitter::socket_adapter::emit_sock_setopt(chunks, current, argc, "__sockopt", line)
+        }
+        "python.sock_getsockopt" => {
+            crate::emitter::socket_adapter::emit_sock_getopt(chunks, current, argc, "__sockopt", line)
+        }
+        "python.sock_fileno" => {
+            crate::emitter::socket_adapter::emit_sock_fileno(chunks, current, argc, line)
+        }
+        "python.sock_self" => {
+            crate::emitter::socket_adapter::emit_sock_self(chunks, current, argc, line)
         }
         "python.sock_inet_aton" => {
             crate::emitter::socket_adapter::emit_inet_aton(chunks, current, argc, line)

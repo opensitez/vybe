@@ -4,11 +4,14 @@
 //! introducing Python-only host imports. They are routed via
 //! `common:python.*` from the Python profile.
 
+pub mod adapter_util;
 pub mod array_adapter;
 pub mod base64_adapter;
 pub mod bisect_adapter;
 pub mod calendar_adapter;
 pub mod collections_adapter;
+pub mod compression_adapter;
+pub mod colorsys_adapter;
 pub mod dataclass_adapter;
 pub mod datetime_adapter;
 pub mod dispatch;
@@ -16,11 +19,13 @@ pub mod file_adapter;
 pub mod float_adapter;
 pub mod hash_adapter;
 pub mod heapq_adapter;
+pub mod introspect_adapter;
 pub mod itertools_adapter;
 pub mod json_adapter;
 pub mod math_adapter;
 pub mod os_adapter;
 pub mod os_path_adapter;
+pub mod quopri_locale_adapter;
 pub mod re_adapter;
 pub mod repr_adapter;
 pub mod runtime_adapter;
@@ -28,8 +33,12 @@ pub mod socket_adapter;
 pub mod sql_adapter;
 pub mod statistics_adapter;
 pub mod string_adapter;
+pub mod surface_adapter;
 pub mod struct_adapter;
 pub mod thread_adapter;
 pub mod time_adapter;
+pub mod typing_adapter;
+pub mod uuid_secrets_adapter;
+pub mod weakref_gc_adapter;
 pub mod tree_register;
 pub mod url_adapter;

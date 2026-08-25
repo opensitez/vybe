@@ -20,9 +20,17 @@
 //! - opcode/intrinsic/print builtins have no process-global target — skipped.
 //!
 //! Python is CASE-SENSITIVE, so keys keep their exact source casing
-//! (`OrderedDict`, `NamedTemporaryFile`); the lowercase-canonical rule applies
-//! only to case-insensitive languages, so the `Subtree` is built directly
-//! rather than through the lowercase-asserting `namespace()` helper.
+//! (`OrderedDict`, `NamedTemporaryFile`).
+//!
+//! ⛔ That USED to require bypassing the `namespace()` helper, which asserted
+//! keys were lowercase-canonical. **This registrar was right and the invariant
+//! was wrong**: the rule was a shortcut from the era when several namespaces
+//! and resolvers were being unified, and it served the five case-insensitive
+//! languages at the expense of the twelve others. The assertion is gone, tree
+//! lookups match EXACT first and fold only on a miss, and every registrar now
+//! keeps the case the source wrote — see
+//! `documentation/casesensitivityplan.md`. Building the `Subtree` directly
+//! here is now an ordinary choice rather than a workaround.
 
 use std::collections::BTreeMap;
 use std::sync::Once;
@@ -124,6 +132,14 @@ fn register_from_profile() {
         };
         let root = roots.entry("math".to_string()).or_default();
         insert_path(root, &[name], NamespaceNode::Alias(target));
+    }
+
+    // Python spells one leaf under two module names. namespaceplan.md
+    // §"Source-name ≠ canonical-name": an `Alias` NAMES the existing typed
+    // leaf instead of restating it, so the tree holds exactly one CRC-32.
+    for (module, member, target) in [("zlib", "crc32", "python.binascii.crc32")] {
+        let root = roots.entry(module.to_string()).or_default();
+        insert_path(root, &[member], NamespaceNode::Alias(target.to_string()));
     }
 
     // ONE root, the way `platforms/jvm` owns `jvm.java.*`, kotlin owns

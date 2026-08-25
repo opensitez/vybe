@@ -79,6 +79,8 @@ fn emit_pack_and_name(chunks: &mut [Chunk], current: usize, line: u32) {
         current,
         &names,
         Some("struct_time"),
+        // Python field names are case-sensitive.
+        None,
         line,
     );
 }
@@ -114,6 +116,8 @@ pub fn emit_struct_time(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         current,
         &names,
         Some("struct_time"),
+        // Python field names are case-sensitive.
+        None,
         line,
     );
 }
