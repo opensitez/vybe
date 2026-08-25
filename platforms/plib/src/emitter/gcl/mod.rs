@@ -432,46 +432,72 @@ static CLASSES: &[GclClass] = &[
         // in silence. Adding those to `<ul>` in `web:html` would have been
         // inventing surface the spec does not have — the element was wrong, not
         // the platform.
-        "select:6",
+        //
+        // ⛔ `size` is a content ATTRIBUTE (`@size=6`), not the input type. The
+        // `tag:type` slot becomes `type="…"`, which `<select>` does not have —
+        // so spelling it there produced `<select type="6">`, failed the
+        // engine's `size > 1` test, and rendered the dropdown this exists to
+        // stop being.
+        "select;@size=6",
         LIST_PROPERTIES,
         ITEM_METHODS
     ),
     widget_class!("TGroupBox", "TWinControl", "fieldset", &[], EMPTY_METHODS),
     widget_class!("TPanel", "TWinControl", "div", &[], EMPTY_METHODS),
-    widget_class!("TImage", "TControl", "vybe-picturebox", &[], EMPTY_METHODS),
+    // A `TImage` IS a drawing surface, and HTML spells that `<canvas>` — the
+    // same element WinForms' `PictureBox` resolves to, and the only node that
+    // owns a recording for `Canvas`/`Graphics` calls to land on.
+    widget_class!("TImage", "TControl", "canvas", &[], EMPTY_METHODS),
+    // `TShape` and `TBevel` draw one primitive — a rectangle, ellipse or a
+    // bevelled line. That is a drawing surface too, not a control with
+    // behaviour, so both are the element a drawing goes on.
     widget_class!(
         "TShape",
         "TControl",
-        "vybe-shape",
+        "canvas",
         &["Shape", "Brush", "Pen"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TBevel",
         "TControl",
-        "vybe-bevel",
+        "canvas",
         &["Shape", "Style"],
         EMPTY_METHODS
     ),
-    widget_class!("TSplitter", "TControl", "vybe-splitter", &[], EMPTY_METHODS),
+    // The bare drag bar between two panes — a box with a resize cursor.
+    widget_class!(
+        "TSplitter",
+        "TControl",
+        "div;background-color:#c8c8c8;cursor:col-resize",
+        &[],
+        EMPTY_METHODS
+    ),
+    // A tab strip over its pages, and a page. Ordinary containers; which page
+    // shows is a `display` question, not a different element.
     widget_class!(
         "TPageControl",
         "TWinControl",
-        "vybe-tabcontrol",
+        "div;display:flex;flex-direction:column",
         PAGE_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TTabSheet",
         "TWinControl",
-        "vybe-tabpage",
+        "section",
         PAGE_PROPERTIES,
         EMPTY_METHODS
     ),
+    // A `components` member: present and scriptable, never painted, which is
+    // what `display: none` says in HTML's own vocabulary.
+    //
+    // ⚠ If a timer still does not tick after this, that is the known dead
+    // `GuiState` defect and not the element — Cairn flagged it directly.
     widget_class!(
         "TTimer",
         "TComponent",
-        "vybe-timer",
+        "div;display:none",
         &["Interval", "Enabled", "OnTimer"],
         EMPTY_METHODS
     ),
@@ -511,10 +537,12 @@ static CLASSES: &[GclClass] = &[
         EMPTY_METHODS
     ),
     widget_class!("TTreeView", "TWinControl", "ul", &["Items"], EMPTY_METHODS),
+    // `<input type=color>` IS a colour chooser, hidden until `Execute` opens
+    // it — the same element WinForms' `ColorDialog` resolves to.
     widget_class!(
         "TColorDialog",
         "TComponent",
-        "vybe-colordialog",
+        "input:color;display:none",
         &["Color"],
         EMPTY_METHODS
     ),
@@ -526,14 +554,14 @@ static CLASSES: &[GclClass] = &[
     widget_class!(
         "TOpenDialog",
         "TComponent",
-        "vybe-opendialog",
+        "input:file;display:none",
         FILE_DIALOG_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TSaveDialog",
         "TComponent",
-        "vybe-savedialog",
+        "input:file;display:none",
         FILE_DIALOG_PROPERTIES,
         EMPTY_METHODS
     ),

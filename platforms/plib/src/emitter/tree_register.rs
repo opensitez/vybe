@@ -1,3 +1,8 @@
+//! ⛔ KEYS KEEP THE DECLARED SPELLING. They used to be lowercased here, which
+//! only worked because every tree lookup lowercased its query too. Lookups now
+//! match EXACT first and fold only on a miss, so a case-sensitive language
+//! resolves by the real name and a case-insensitive one still resolves by the
+//! fold. See `documentation/casesensitivityplan.md`.
 //! `plib.*` namespace-tree registration (namespaceplan.md: "Pascal GCL
 //! surface").
 //!
@@ -91,6 +96,8 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
             fields,
             ancestry: ancestry(class),
             control_fn: None,
+            // Not a control, so there is no chrome to be born with.
+            inner_html: None,
             // A VCL control IS its element from the moment it is constructed —
             // there is no configuration/element split to bridge.
             nest_coerce: None,
@@ -103,6 +110,9 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
         field_gui: Vec::new(),
         ancestry: ancestry(class),
         control_fn: Some(control_fn.to_string()),
+        // plib's composites (`TPageControl`, `TSplitter`) can declare their
+        // default children here the same way dotnet's do; none does yet.
+        inner_html: None,
         nest_coerce: None,
         value_equality: false,
     }
@@ -481,10 +491,10 @@ pub fn register_namespace_tree() {
                 };
                 let canonical = role.as_str();
                 if let Some(value_type) = gui::property_value_type(canonical) {
-                    member_returns.insert(prop.to_lowercase(), value_type.to_string());
+                    member_returns.insert(prop.to_string(), value_type.to_string());
                 }
                 members.insert(
-                    prop.to_lowercase(),
+                    prop.to_string(),
                     namespaces::property(
                         Some(NamespaceNode::CommonEmit(format!(
                             "{}{}",
@@ -505,7 +515,7 @@ pub fn register_namespace_tree() {
             for method in declared().flat_map(|c| c.methods) {
                 // Nearest declaration wins, so a subclass may override.
                 members
-                    .entry(method.name.to_lowercase())
+                    .entry(method.name.to_string())
                     .or_insert_with(|| match method.target {
                         super::gcl::GclMethodTarget::Common { emit } => {
                             NamespaceNode::CommonEmit(emit.to_string())
@@ -518,7 +528,7 @@ pub fn register_namespace_tree() {
                 .iter()
                 .filter(|(owner, _, _)| owner.eq_ignore_ascii_case(class.name))
             {
-                let key = member.to_lowercase();
+                let key = member.to_string();
                 members.insert(
                     key.clone(),
                     namespaces::property(
@@ -545,10 +555,12 @@ pub fn register_namespace_tree() {
                         )),
                     ),
                 );
-                member_returns.insert("item".to_string(), "string".to_string());
+                // Pascal declares the indexed property as `Items`/`Item` with a
+                // capital; the lowercase key was written for a folding tree.
+                member_returns.insert("Item".to_string(), "string".to_string());
             }
             classes.insert(
-                class.name.to_lowercase(),
+                class.name.to_string(),
                 NamespaceNode::Type {
                     ctor: Some(ctor_spec(class)),
                     ctor_call: None,
