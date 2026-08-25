@@ -42,9 +42,46 @@ pub enum CanonError {
     /// The type has a canonical layout this crate has not implemented yet.
     /// Named so the message points at the work rather than at the symptom.
     Unsupported(&'static str),
+    /// A flat core value did not have the type the ValType being lifted
+    /// requires. Carries BOTH sides: this used to be an `Unsupported` whose
+    /// helper did `let _ = (v, want);`, so the one fact a reader needs — what
+    /// arrived versus what was wanted — was computed and then thrown away.
+    FlatTypeMismatch {
+        got: crate::canon_flat::CoreType,
+        want: crate::canon_flat::CoreType,
+    },
     /// `realloc` could not satisfy the allocation a `string`/`list` needed.
     OutOfMemory {
         size: u32,
+    },
+    /// 🔧 A fixed-length `list<T, N>` was given a different number of
+    /// elements. `store_list` ASSERTS `N == len(v)`: storing fewer leaves the
+    /// tail as stale memory that `load` reads back as data, storing more runs
+    /// past the value into the next field.
+    FixedListLength {
+        got: usize,
+        want: u32,
+    },
+    /// A `char` was not a Unicode scalar value.
+    ///
+    /// `CanonicalABI.md:2456 convert_i32_to_char` traps on `i >= 0x110000` and
+    /// on the surrogate range `0xD800..=0xDFFF`. That check IS the difference
+    /// between `char` and `u32`; without it a lone surrogate crosses the ABI
+    /// as though it were a character.
+    NotAScalarValue {
+        got: u32,
+    },
+    /// A `variant` discriminant named a case the type does not have.
+    ///
+    /// This used to be an `Unsupported("variant discriminant out of range")`,
+    /// which the Display impl renders as "no store/load implemented for …".
+    /// That is a claim about THIS CRATE — it tells a reader the feature is
+    /// missing when in fact the feature works and the PROGRAM is invalid.
+    /// `enum`/`option`/`result` all despecialise through here, so it is the
+    /// trap a wrong case index anywhere lands on.
+    DiscriminantOutOfRange {
+        got: u32,
+        cases: usize,
     },
 }
 
@@ -63,6 +100,10 @@ impl std::fmt::Display for CanonError {
                 f,
                 "canonical ABI: {size} bytes at {ptr} is out of bounds of linear memory ({memory_len} bytes)"
             ),
+            CanonError::FlatTypeMismatch { got, want } => write!(
+                f,
+                "canonical ABI: flat lift wanted a core {want:?} and got a {got:?}"
+            ),
             CanonError::Unsupported(what) => write!(
                 f,
                 "canonical ABI: no store/load implemented for {what} — see CanonicalABI.md §Storing/§Loading"
@@ -70,6 +111,22 @@ impl std::fmt::Display for CanonError {
             CanonError::OutOfMemory { size } => write!(
                 f,
                 "canonical ABI: realloc could not supply {size} bytes for a string/list payload"
+            ),
+            CanonError::FixedListLength { got, want } => write!(
+                f,
+                "canonical ABI: a fixed-length `list<_, {want}>` was given {got} elements; \
+                 the length is part of the TYPE and the elements are stored inline"
+            ),
+            CanonError::NotAScalarValue { got } => write!(
+                f,
+                "canonical ABI: {got:#x} is not a Unicode scalar value — a `char` must be \
+                 below 0x110000 and outside the surrogate range 0xD800..=0xDFFF"
+            ),
+            CanonError::DiscriminantOutOfRange { got, cases } => write!(
+                f,
+                "canonical ABI: variant discriminant {got} names no case; the type has \
+                 {cases} (0..{})",
+                cases.saturating_sub(1)
             ),
         }
     }
@@ -139,17 +196,49 @@ pub fn store_with(
         ValType::Bool => {
             let _ = memory.store_u8(addr, u8::from(v.as_bool()));
         }
+        // The NARROW widths write exactly their own bytes. Writing four would
+        // clobber whatever field the layout placed next.
+        ValType::S8 | ValType::U8 => {
+            let _ = memory.store_u8(addr, v.as_i32() as u8);
+        }
+        ValType::S16 | ValType::U16 => {
+            let n = v.as_i32() as u16;
+            let _ = memory.store_u8(addr, (n & 0xff) as u8);
+            let _ = memory.store_u8(addr + 1, (n >> 8) as u8);
+        }
         ValType::I32 => {
             let _ = memory.store_i32(addr, v.as_i32());
         }
         ValType::I64 => {
             let _ = memory.store_i64(addr, v.as_i64());
         }
+        // `f32` is stored as its four-byte bit pattern, not as a truncated
+        // `f64` — `store` is `store_int(encode_float_as_i32(v), ptr, 4)`.
+        ValType::F32 => {
+            let _ = memory.store_i32(addr, (v.as_f64() as f32).to_bits() as i32);
+        }
         ValType::F64 => {
             let _ = memory.store_f64(addr, v.as_f64());
         }
+        // A `char` is its scalar value in four bytes. It arrives as a
+        // one-character string, which is what `load` produced.
+        ValType::Char => {
+            let _ = memory.store_i32(addr, value_to_scalar(v)? as i32);
+        }
+        // `store_flags` = `store_int(pack_flags_into_int(v, labels), ptr,
+        // elem_size_flags(labels))` — the PACKED width, not four bytes.
+        ValType::Flags(labels) => {
+            let packed = pack_flags(v, labels);
+            for k in 0..crate::canon_layout::flags_bytes(labels.len()) {
+                let _ = memory.store_u8(addr + k as usize, (packed >> (8 * k)) as u8);
+            }
+        }
         // A handle is its i32 index into the handle table.
-        ValType::Own(_) | ValType::Borrow(_) | ValType::Stream(_) | ValType::Future(_) => {
+        ValType::Own(_)
+        | ValType::Borrow(_)
+        | ValType::Stream(_)
+        | ValType::Future(_)
+        | ValType::ErrorContext => {
             let _ = memory.store_i32(addr, v.as_i32());
         }
         // `store_string` — `CanonicalABI.md`: encode into freshly allocated
@@ -181,6 +270,26 @@ pub fn store_with(
             }
             let _ = memory.store_i32(addr, dest as i32);
             let _ = memory.store_i32(addr + PTR_SIZE as usize, items.len() as i32);
+        }
+        // 🔧 `store_list` with a length present: `assert(N == len(v))` then
+        // the elements INLINE. No `realloc`, no pointer — the list occupies
+        // the value's own bytes.
+        //
+        // ⛔ The spec ASSERTS the count matches. Storing fewer would leave the
+        // tail as whatever was in memory and `load` would read it back as
+        // data; storing more would run past the value into the next field.
+        ValType::ListFixed(elem, n) => {
+            let items = array_items(v);
+            if items.len() as u32 != *n {
+                return Err(CanonError::FixedListLength {
+                    got: items.len(),
+                    want: *n,
+                });
+            }
+            let stride = elem_size(elem);
+            for (i, item) in items.iter().enumerate() {
+                store_with(memory, realloc, item, elem, ptr + stride * i as u32)?;
+            }
         }
         // `store_record` — each field aligned before it is placed, in
         // declaration order. Field lookup is by NAME, so a host value carrying
@@ -252,7 +361,11 @@ pub fn store_with(
 /// a `string` is well-formed UTF-8, so bytes that are not are a broken peer,
 /// and replacing them with U+FFFD would hand the caller a string that never
 /// existed.
-fn read_utf8(
+///
+/// Public because 📝 `error-context.new` is handed a raw `(ptr,
+/// tagged_code_units)` pair rather than a `string`-typed value — the spec calls
+/// this `load_string_from_range`.
+pub fn read_utf8(
     memory: &crate::shared_memory::SharedMemory,
     ptr: usize,
     len: usize,
@@ -323,6 +436,15 @@ fn write_bytes(
 }
 
 /// The elements of an array-shaped `Value`, or empty when it is not one.
+/// The elements of an array-shaped value, for callers outside this module.
+///
+/// `canon_flat_values` needs the same view `store` uses — reading it a second
+/// way is how a fixed list's flat lowering and its memory store would come to
+/// disagree about what counts as an element.
+pub fn array_items_public(v: &Value) -> Vec<Value> {
+    array_items(v)
+}
+
 fn array_items(v: &Value) -> Vec<Value> {
     use crate::value::ObjectKind;
     if let Value::Object(object) = v {
@@ -433,10 +555,38 @@ pub fn load(
     Ok(match t {
         // `convert_int_to_bool` — any non-zero byte is true.
         ValType::Bool => Value::Bool(memory.load_u8(addr).unwrap_or(0) != 0),
+        // ⛔ SIGNED widths SIGN-EXTEND; unsigned ones do not. `CanonicalABI.md:2376`
+        // spells them as separate cases — `load_int(cx, ptr, 1, signed = True)`
+        // versus `load_int(cx, ptr, 1)` — so an `s8` holding `0xFF` lifts as
+        // `-1` while a `u8` holding the same byte lifts as `255`.
+        ValType::S8 => Value::I32(memory.load_u8(addr).unwrap_or(0) as i8 as i32),
+        ValType::U8 => Value::I32(memory.load_u8(addr).unwrap_or(0) as i32),
+        ValType::S16 => Value::I32(load_u16(memory, addr) as i16 as i32),
+        ValType::U16 => Value::I32(load_u16(memory, addr) as i32),
         ValType::I32 => Value::I32(memory.load_i32(addr).unwrap_or(0)),
         ValType::I64 => Value::I64(memory.load_i64(addr).unwrap_or(0)),
+        ValType::F32 => {
+            Value::F64(f32::from_bits(memory.load_i32(addr).unwrap_or(0) as u32) as f64)
+        }
         ValType::F64 => Value::F64(memory.load_f64(addr).unwrap_or(0.0)),
-        ValType::Own(_) | ValType::Borrow(_) | ValType::Stream(_) | ValType::Future(_) => {
+        ValType::Char => {
+            let raw = memory.load_i32(addr).unwrap_or(0) as u32;
+            Value::String(std::sync::Arc::from(scalar_to_char(raw)?.to_string().as_str()))
+        }
+        // `load_flags` = `unpack_flags_from_int(load_int(ptr, elem_size))` —
+        // read only the packed width, then one bit per label.
+        ValType::Flags(labels) => {
+            let mut packed: u32 = 0;
+            for k in 0..crate::canon_layout::flags_bytes(labels.len()) {
+                packed |= (memory.load_u8(addr + k as usize).unwrap_or(0) as u32) << (8 * k);
+            }
+            unpack_flags(packed, labels)
+        }
+        ValType::Own(_)
+        | ValType::Borrow(_)
+        | ValType::Stream(_)
+        | ValType::Future(_)
+        | ValType::ErrorContext => {
             Value::I32(memory.load_i32(addr).unwrap_or(0))
         }
         // `load_string` — (ptr, length) where length is BYTES of UTF-8.
@@ -453,6 +603,16 @@ pub fn load(
             let mut items = Vec::with_capacity(count as usize);
             for i in 0..count {
                 items.push(load(memory, elem, at + stride * i)?);
+            }
+            Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
+        }
+        // 🔧 `load_list_from_valid_range(cx, ptr, N, t)` — N elements read
+        // in place. The count comes from the TYPE, not from memory.
+        ValType::ListFixed(elem, n) => {
+            let stride = elem_size(elem);
+            let mut items = Vec::with_capacity(*n as usize);
+            for i in 0..*n {
+                items.push(load(memory, elem, ptr + stride * i)?);
             }
             Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
         }
@@ -526,7 +686,12 @@ pub fn load(
                     object.properties.insert("val".into(), payload);
                     Value::Object(crate::heap::alloc(object))
                 }
-                None => return Err(CanonError::Unsupported("variant discriminant out of range")),
+                None => {
+                    return Err(CanonError::DiscriminantOutOfRange {
+                        got: case,
+                        cases: cases.len(),
+                    })
+                }
             }
         }
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
@@ -859,4 +1024,72 @@ pub fn store_pair_public(
         }
         _ => Err(CanonError::Unsupported("store_pair: not a (ptr, length) type")),
     }
+}
+
+/// Two bytes, little-endian — the memory has no 16-bit primitive.
+fn load_u16(memory: &crate::shared_memory::SharedMemory, addr: usize) -> u16 {
+    let lo = memory.load_u8(addr).unwrap_or(0) as u16;
+    let hi = memory.load_u8(addr + 1).unwrap_or(0) as u16;
+    lo | (hi << 8)
+}
+
+/// `convert_i32_to_char` — `CanonicalABI.md:2456`.
+///
+/// ⛔ This validation is not optional and not a nicety: it is the ONLY thing
+/// separating `char` from `u32`. Both are four bytes and both flatten to one
+/// core `i32`; the trap is the difference.
+pub fn scalar_to_char(raw: u32) -> Result<char, CanonError> {
+    if raw >= 0x110000 || (0xD800..=0xDFFF).contains(&raw) {
+        return Err(CanonError::NotAScalarValue { got: raw });
+    }
+    char::from_u32(raw).ok_or(CanonError::NotAScalarValue { got: raw })
+}
+
+/// The scalar value of a component `char`, which travels as a one-character
+/// string. An empty or multi-character string is a program error, not a
+/// representation this can guess at.
+pub fn value_to_scalar(v: &Value) -> Result<u32, CanonError> {
+    if let Value::String(s) = v {
+        let mut it = s.chars();
+        if let (Some(c), None) = (it.next(), it.next()) {
+            return Ok(c as u32);
+        }
+    }
+    // An i32 is accepted so a lowered `char` can round-trip through a numeric
+    // slot, but it is still validated.
+    let raw = v.as_i32() as u32;
+    scalar_to_char(raw).map(|c| c as u32)
+}
+
+/// `pack_flags_into_int` — `CanonicalABI.md:3062`. Bit `k` is `labels[k]`.
+///
+/// ⛔ POSITIONAL: the same integer means different things under two different
+/// label lists, which is why the labels travel with the type rather than being
+/// looked up somewhere. A missing property is `false`, matching `int(bool(v[l]))`
+/// on a record the guest filled partially.
+pub fn pack_flags(v: &Value, labels: &[String]) -> u32 {
+    let mut packed = 0u32;
+    for (shift, label) in labels.iter().enumerate() {
+        let set = match v {
+            Value::Object(_) => record_field_public(v, label).as_bool(),
+            // A flags value lowered from a plain integer keeps its bits — this
+            // is how a round trip through a numeric slot survives.
+            _ => (v.as_i32() as u32) >> shift & 1 == 1,
+        };
+        if set {
+            packed |= 1 << shift;
+        }
+    }
+    packed
+}
+
+/// `unpack_flags_from_int` — `CanonicalABI.md:3064`. A record of label → bool.
+pub fn unpack_flags(packed: u32, labels: &[String]) -> Value {
+    let mut object = crate::value::Object::new();
+    for (shift, label) in labels.iter().enumerate() {
+        object
+            .properties
+            .insert(label.as_str().into(), Value::Bool((packed >> shift) & 1 == 1));
+    }
+    Value::Object(crate::heap::alloc(object))
 }

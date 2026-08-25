@@ -658,7 +658,7 @@ impl VM {
     /// (`EventLoop::set_stream_producer`) and called through the ordinary host
     /// registry, so the VM carries no knowledge of what any particular stream
     /// produces.
-    fn run_stream_producer(&mut self, stream_id: u64) -> bool {
+    pub(crate) fn run_stream_producer(&mut self, stream_id: u64) -> bool {
         let Some((module, name)) = self.event_loop.borrow().stream_producer(stream_id) else {
             return false;
         };
@@ -1025,18 +1025,1095 @@ impl VM {
     /// REAL one: substituting a plausible width would move the wrong number of
     /// bytes into a peer component's memory, and nothing downstream could
     /// detect it. An error names the missing declaration instead.
+    /// The four 🧵 compound handoffs — `CanonicalABI.md`
+    /// `Thread.{suspend,yield}_then_{resume,promote}`.
+    ///
+    /// ```python
+    /// def suspend_then_resume(self, cancellable, other):
+    ///   assert(self.running() and other.suspended())
+    ///   return self.switch_to_internal(cancellable, other)
+    ///
+    /// def yield_then_resume(self, cancellable, other):
+    ///   self.start_waiting_internal(lambda: True)      # stay runnable
+    ///   return self.switch_to_internal(cancellable, other)
+    ///
+    /// def suspend_then_promote(self, cancellable, other):
+    ///   if other.ready():
+    ///     other.stop_waiting_internal(cancelled = False)
+    ///     return self.suspend_then_resume(cancellable, other)
+    ///   else:
+    ///     return self.suspend(cancellable)             # FALL BACK
+    /// ```
+    ///
+    /// `yields` = stay runnable rather than park. `promotes` = only switch if
+    /// the target is READY, otherwise degrade to a plain suspend/yield instead
+    /// of trapping — that fallback is the whole difference between `resume`
+    /// and `promote`, and it is why `promote` does NOT require the target to
+    /// be suspended up front.
+    fn exec_thread_handoff(
+        &mut self,
+        b: crate::vm::CanonBuiltin,
+        yields: bool,
+        promotes: bool,
+    ) -> Result<(), VMError> {
+        let who = b.spec_name();
+        let cancellable = self.canon_cancellable();
+        let target_idx = self.pop().as_i32() as u32;
+
+        let me = self.current_thread.ok_or_else(|| {
+            VMError::new(format!(
+                "canon {who}: no current thread — a thread exists only inside a \
+                 `canon lift`ed call (trap)"
+            ))
+        })?;
+        // ⛔ NO explicit self-target check. The spec's two families disagree
+        // about it, and BOTH already fall out of the checks below:
+        //
+        //   resume : `assert(self.running() and other.suspended())` — self is
+        //            running, therefore not suspended, so `!other.suspended()`
+        //            below traps. Same answer, from the spec's own condition.
+        //   promote: `assert(self.running())` then `if other.ready()` — self is
+        //            running, therefore not WAITING, therefore not ready, so it
+        //            takes the else branch and plain suspends/yields.
+        //
+        // An unconditional trap here (what this did) was wrong for the two
+        // promote rows: it refused a handoff the spec defines as a fallback.
+
+        let other = self.cm_instance.threads.get(target_idx).ok_or_else(|| {
+            VMError::new(format!("canon {who}: no thread at index {target_idx} (trap)"))
+        })?;
+
+        // `promote` consults READINESS; `resume` demands SUSPENDED.
+        let switch = if promotes {
+            let ready = other.ready();
+            if ready {
+                self.cm_instance
+                    .threads
+                    .get_mut(target_idx)
+                    .expect("just read")
+                    .stop_waiting_internal(false)
+                    .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
+            }
+            ready
+        } else {
+            if !other.suspended() {
+                return Err(VMError::new(format!(
+                    "canon {who}: thread {target_idx} is {:?}, must be Suspended (trap)",
+                    other.state()
+                )));
+            }
+            true
+        };
+
+        // Cancellation is delivered HERE — after `promote` has already
+        // de-waited its target, before this thread parks. The spec's ordering
+        // is `other.ready()` -> `stop_waiting_internal` -> the nested
+        // `suspend_then_resume`/`yield_then_resume`, which is where the
+        // `deliver_pending_cancel` lives. Delivering earlier would leave a
+        // promoted target still waiting; delivering later would park a thread
+        // that should have returned.
+        if self.deliver_pending_cancel_now(cancellable) {
+            self.push(Value::I32(1))?;
+            return Ok(());
+        }
+
+        if !switch {
+            // `promote` on a target that is not ready degrades to plain
+            // `suspend`/`yield_` — and those are NOT the same thing.
+            if yields {
+                // `yield_` is `wait_until(lambda: True)`, whose readiness
+                // condition already holds, so returning without switching is
+                // a choice the spec explicitly permits the embedder to make.
+                self.push(Value::I32(0))?;
+                return Ok(());
+            }
+            // `suspend` has no such early return: it BLOCKS. Returning here
+            // (what this did) turned `suspend-then-promote` into a no-op
+            // whenever the target happened not to be ready.
+            return self.thread_block(who, me);
+        }
+
+        // `yield_then_*` leaves this thread READY rather than parked. After the
+        // cancel check, per `yield_then_resume`.
+        if yields {
+            let me_t = self.cm_instance.threads.get_mut(me).expect("current thread");
+            // `start_waiting_internal` asserts we are not already waiting; the
+            // running thread never is, so a failure here is a real state bug.
+            me_t.start_waiting_internal(crate::cm_thread::ReadyWhen::Always)
+                .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
+        }
+
+        self.park_and_switch_to(who, me, target_idx)?;
+        // Reached only when this thread is resumed again; it was not cancelled
+        // on the way in (checked above), so `Cancelled.FALSE`.
+        self.push(Value::I32(0))?;
+        Ok(())
+    }
+
+    /// Resolve `$ftbl[fi]` for the table rows (`thread.new-indirect`,
+    /// `thread.spawn-indirect`). `$ftbl` is an IMMEDIATE on the canonical
+    /// definition, which is why these rows were unreachable before the canon
+    /// section existed to carry it.
+    fn thread_table_funcref(&mut self, who: &str, fi: i32) -> Result<Value, VMError> {
+        let def = self.canon_def_required(who)?;
+        let tableidx = def.table.ok_or_else(|| {
+            VMError::new(format!(
+                "canon {who}: definition carries no $ftbl immediate"
+            ))
+        })? as usize;
+        let table = self.table_ref(tableidx).ok_or_else(|| {
+            VMError::new(format!("canon {who}: unknown table {tableidx} (trap)"))
+        })?;
+        if fi < 0 || fi as usize >= table.len() {
+            return Err(VMError::new(format!(
+                "canon {who}: table index {fi} out of bounds (len {}) (trap)",
+                table.len()
+            )));
+        }
+        Ok(table[fi as usize].clone())
+    }
+
+    /// `canon_thread_resume_later(i)` — the second half of the spawn fusion.
+    /// Kept as one call so `spawn-*` is literally `new-*` followed by
+    /// `resume-later`, rather than a reimplementation that could drift.
+    fn resume_thread_later(&mut self, who: &str, index: u32) -> Result<(), VMError> {
+        self.cm_instance
+            .threads
+            .get_mut(index)
+            .ok_or_else(|| {
+                VMError::new(format!("canon {who}: no thread at index {index} (trap)"))
+            })?
+            .resume_later()
+            .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))
+    }
+
+    /// The `$cancellable?` immediate of the canonical definition this
+    /// built-in was defined with. Absent definition ⇒ NOT cancellable, which
+    /// is the safe default: a caller that never opted in is never told, and
+    /// the request survives for a later `cancellable` call.
+    fn canon_cancellable(&self) -> bool {
+        self.canon_type_immediate
+            .and_then(|i| self.canon_defs.get(i as usize))
+            .map(|d| d.cancellable)
+            .unwrap_or(false)
+    }
+
+    /// 🔀 `async` — `canonopt` 0x06 on this row's canon definition.
+    ///
+    /// ⛔ NOT a separate built-in. `Binary.md:310` is
+    /// `0x0f t:<typeidx> opts:<opts> => (canon stream.read t opts)`, so the
+    /// async/sync distinction rides in `opts` and there is exactly ONE
+    /// `CanonBuiltin::StreamRead`. Adding a second built-in for it would put
+    /// the same operation at two canonidx spaces.
+    ///
+    /// Absent immediates default to sync, which is the conservative answer:
+    /// a sync copy suspends until it has a real payload, where an async one
+    /// answers `BLOCKED` and obliges the caller to wait for the event.
+    fn canon_async_opt(&self) -> bool {
+        self.canon_type_immediate
+            .and_then(|i| self.canon_defs.get(i as usize))
+            .map(|d| d.opts.is_async)
+            .unwrap_or(false)
+    }
+
+    /// `self.task.deliver_pending_cancel(cancellable)` for the current task.
+    ///
+    /// Returns `Cancelled.TRUE`'s bool. Every blocking thread built-in calls
+    /// this FIRST — before parking, before switching — because a delivered
+    /// cancellation means the call returns instead of blocking.
+    fn deliver_pending_cancel_now(&mut self, cancellable: bool) -> bool {
+        match self.cm_tasks.last_mut() {
+            Some(task) => task.deliver_pending_cancel(cancellable),
+            None => false,
+        }
+    }
+
+    /// `$ft` must be `(func (param $c T))` — one parameter, no result.
+    ///
+    /// The VM is untyped, so this checks param/result COUNTS off the callee's
+    /// chunk, which is exactly what `call_indirect` does for its `(type $sig)`
+    /// check. It is not a full structural type comparison and does not pretend
+    /// to be: `T` is `i32` in every non-🐘 profile, so the shape is determined.
+    fn require_thread_func_shape(&self, who: &str, funcref: &Value) -> Result<(), VMError> {
+        if let Value::Object(o) = funcref {
+            let ob = o.lock().unwrap();
+            if let ObjectKind::Function(f) = &ob.kind {
+                let ch = &self.chunks[f.chunk_index];
+                if ch.param_count != 1 || ch.result_arity != 0 {
+                    return Err(VMError::new(format!(
+                        "canon {who}: thread function has {} param(s) and {} result(s); \
+                         `$ft` must be `(func (param $c i32))` (trap)",
+                        ch.param_count, ch.result_arity
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a thread over `funcref` with `closure` bound, register it, and
+    /// return its index. The thread is SUSPENDED — `thread.new-*` never runs
+    /// the thread it creates.
+    fn create_thread_over(
+        &mut self,
+        who: &str,
+        funcref: Value,
+        closure: Value,
+    ) -> Result<u32, VMError> {
+        if funcref.is_null_ref() {
+            return Err(VMError::new(format!("canon {who}: null funcref (trap)")));
+        }
+        self.require_thread_func_shape(who, &funcref)?;
+        let task_id = self.cm_tasks.last().map(|t| t.id).ok_or_else(|| {
+            VMError::new(format!(
+                "canon {who}: no current task — a thread belongs to the task of a \
+                 `canon lift`ed call (trap)"
+            ))
+        })?;
+        let cont = self.new_bound_continuation(funcref, closure);
+        let thread = crate::cm_thread::Thread::new(task_id, cont);
+        debug_assert!(thread.suspended(), "a new thread must not run");
+        Ok(self.cm_instance.threads.register(thread))
+    }
+
+    /// `shared?` 🧵② — present means the spawned thread is PREEMPTIVE and runs
+    /// in parallel with all other threads. Cooperative fibers cannot do that,
+    /// and handing back a cooperative thread to a guest that asked for a
+    /// parallel one would be a silent lie about the memory model it may then
+    /// rely on. Refuse instead.
+    fn refuse_shared_threads(&self, who: &str) -> Result<(), VMError> {
+        let shared = self
+            .canon_type_immediate
+            .and_then(|i| self.canon_defs.get(i as usize))
+            .map(|d| d.shared)
+            .unwrap_or(false);
+        if shared {
+            return Err(VMError::new(format!(
+                "canon {who}: `shared` requests a PREEMPTIVE thread able to execute in \
+                 parallel; this runtime schedules cooperative fibers and has no \
+                 preemptive threads to give (trap)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Park the current thread and enter `target_idx`'s continuation.
+    ///
+    /// The running thread has `cont == None` by definition, so a continuation
+    /// has to be MINTED to hold its fiber; that object is what a later resume
+    /// of this thread restores.
+    fn park_and_switch_to(&mut self, who: &str, me: u32, target_idx: u32) -> Result<(), VMError> {
+        let target_cont = self
+            .cm_instance
+            .threads
+            .get(target_idx)
+            .and_then(|t| t.cont.clone())
+            .ok_or_else(|| {
+                VMError::new(format!(
+                    "canon {who}: thread {target_idx} has no continuation to enter (trap)"
+                ))
+            })?;
+        let my_cont = self.new_parked_continuation();
+        self.switch_to_continuation(who, &target_cont, Value::Undefined, Some(&my_cont))?;
+        if let Some(me_t) = self.cm_instance.threads.get_mut(me) {
+            me_t.put_cont(my_cont);
+        }
+        Ok(())
+    }
+
+    /// `Thread.block_internal` — `block(switch_to = None)`.
+    ///
+    /// The spec's `Thread.resume` loop exits when nothing is handed to
+    /// `switch_to` and control returns to the embedder's scheduler. We have
+    /// three genuinely different situations here and they get three different
+    /// answers, because collapsing them would report a deadlock for a program
+    /// that is merely waiting on I/O:
+    ///
+    /// 1. another thread is READY — switch to it. That IS the scheduler's
+    ///    choice, and is what the spec's loop does on the next iteration.
+    /// 2. nothing ready, nothing pending — a real deadlock. Trap, in the shape
+    ///    of the existing "parked with no writer left to wake them".
+    /// 3. nothing ready but HOST work is pending — a legitimate block that
+    ///    needs the fiber-suspension path (`SuspensionKind`) the event loop
+    ///    drives. Not implemented; traps naming that gap rather than hanging
+    ///    or pretending the call returned normally.
+    ///
+    /// Pushes the `Cancelled` result on the paths that return.
+    fn thread_block(&mut self, who: &str, me: u32) -> Result<(), VMError> {
+        let target = self
+            .cm_instance
+            .threads
+            .ready_indices()
+            .into_iter()
+            .find(|&i| i != me);
+        if let Some(t) = target {
+            self.cm_instance
+                .threads
+                .get_mut(t)
+                .expect("just listed")
+                .stop_waiting_internal(false)
+                .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
+            self.park_and_switch_to(who, me, t)?;
+            self.push(Value::I32(0))?;
+            return Ok(());
+        }
+
+        let host_work_pending = {
+            let el = self.event_loop.borrow();
+            // The ready QUEUE counts: a job already queued will run and may be
+            // exactly what wakes this thread. Leaving it out would report a
+            // deadlock for a thread suspending one step ahead of its waker.
+            !el.immediate.is_empty()
+                || el.parked_sync_copies() > 0
+                || !el.waiting_fibers.is_empty()
+                || !el.future_waiting_fibers.is_empty()
+                || !el.stream_waiting_fibers.is_empty()
+        };
+        if host_work_pending {
+            return Err(VMError::new(format!(
+                "canon {who}: blocking with host work still pending needs the fiber \
+                 suspension path the event loop drives, which this built-in does not \
+                 yet reach (trap)"
+            )));
+        }
+        Err(VMError::new(format!(
+            "canon {who}: no thread is ready and no host work is pending — this thread \
+             blocks with nothing left that could ever wake it (trap)"
+        )))
+    }
+
+    /// A `Ready` continuation over `entry` with `arg` bound, so entering it
+    /// calls `entry(arg)`.
+    ///
+    /// Uses `__bound_args` — the same property `cont.bind` writes and
+    /// `switch_to_continuation` reads — so a thread's closure parameter travels
+    /// by the mechanism that already exists rather than a parallel one.
+    fn new_bound_continuation(&mut self, entry: Value, arg: Value) -> Value {
+        let mut bound = crate::value::Object::new();
+        bound.kind = ObjectKind::Array(vec![arg]);
+        let state = crate::value::ContinuationState {
+            entry,
+            saved: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
+        };
+        let mut obj = crate::value::Object::new();
+        obj.kind = ObjectKind::Continuation(state);
+        obj.properties.insert(
+            "__bound_args".into(),
+            Value::Object(crate::heap::alloc(bound)),
+        );
+        Value::Object(crate::heap::alloc(obj))
+    }
+
+    /// A fresh `Suspended`-capable continuation object with no entry, used to
+    /// hold the fiber of a thread that is being parked mid-flight.
+    ///
+    /// Its `entry` is never called: `switch_to_continuation` only consults
+    /// `entry` for a `Ready` continuation, and this one is handed straight to
+    /// the park path, which sets `Suspended` and stores the fiber.
+    fn new_parked_continuation(&mut self) -> Value {
+        let state = crate::value::ContinuationState {
+            entry: Value::Undefined,
+            saved: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
+        };
+        let mut obj = crate::value::Object::new();
+        obj.kind = ObjectKind::Continuation(state);
+        Value::Object(crate::heap::alloc(obj))
+    }
+
+    /// Park the current fiber into `park_into` and enter `target` — the
+    /// switch/resume core, with **no tag and no handler search**.
+    ///
+    /// `Op::SWITCH` is this plus the stack-switching proposal's tag matching.
+    /// The Component Model's `thread.{suspend,yield}-then-{resume,promote}`
+    /// need the same park-and-enter with no tag: `Thread.resume` is a plain
+    ///
+    ///     (thread.cont, switch_to) = resume(cont, cancelled, thread)
+    ///
+    /// loop with a `switch_to` target, and a CM thread has no handler to
+    /// search. Keeping the tag in the OPCODE and the switch here is what lets
+    /// both callers share one implementation instead of two that drift.
+    ///
+    /// `park_into` is where the CURRENT execution goes: `Some(cont)` saves the
+    /// fiber into that continuation and marks it `Suspended`; `None` abandons
+    /// it, which is what a thread that is ending does.
+    ///
+    /// The caller owns any handler-frame bookkeeping — on `Err` nothing here
+    /// has been pushed, so a caller that popped a frame must restore it.
+    pub(crate) fn switch_to_continuation(
+        &mut self,
+        who: &str,
+        target: &Value,
+        val: Value,
+        park_into: Option<&Value>,
+    ) -> Result<(), VMError> {
+        let (phase, entry) = match target {
+            Value::Object(obj) => {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Continuation(cs) => {
+                        (*cs.state.lock().unwrap(), cs.entry.clone())
+                    }
+                    _ => return Err(VMError::new(format!("{who}: not a continuation"))),
+                }
+            }
+            _ => return Err(VMError::new(format!("{who}: not a continuation"))),
+        };
+        if matches!(phase, crate::value::ContinuationPhase::Done) {
+            return Err(VMError::new(format!(
+                "trap: {who} to completed continuation"
+            )));
+        }
+
+        // Park the current execution BEFORE entering the target: once the
+        // target runs, `self` is no longer this fiber.
+        let fiber = self.save_fiber();
+        if let Some(Value::Object(obj)) = park_into {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Continuation(cs) = &o.kind {
+                *cs.saved.lock().unwrap() = Some(fiber);
+                *cs.state.lock().unwrap() = crate::value::ContinuationPhase::Suspended;
+            }
+        }
+
+        match phase {
+            // Never entered: call its entry function, prefixing whatever
+            // `cont.bind` attached.
+            crate::value::ContinuationPhase::Ready => {
+                let bound: Vec<Value> = match target {
+                    Value::Object(obj) => {
+                        let o = obj.lock().unwrap();
+                        match o.properties.get("__bound_args") {
+                            Some(Value::Object(arr)) => {
+                                let a = arr.lock().unwrap();
+                                if let ObjectKind::Array(v) = &a.kind {
+                                    v.clone()
+                                } else {
+                                    Vec::new()
+                                }
+                            }
+                            _ => Vec::new(),
+                        }
+                    }
+                    _ => Vec::new(),
+                };
+                let argc = bound.len() + 1;
+                self.push(entry)?;
+                for b in bound {
+                    self.push(b)?;
+                }
+                self.push(val)?;
+                self.call_value_direct(argc)?;
+            }
+            // Already running once: restore its saved fiber.
+            crate::value::ContinuationPhase::Suspended => {
+                let saved = match target {
+                    Value::Object(obj) => {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Continuation(cs) = &o.kind {
+                            cs.saved.lock().unwrap().take()
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(fiber) = saved {
+                    self.resume_fiber_with(fiber, Some(val))?;
+                }
+            }
+            crate::value::ContinuationPhase::Done => unreachable!("checked above"),
+        }
+        Ok(())
+    }
+
+    /// `(current thread index, slot index)` for a `context.*` built-in.
+    /// Pops the slot index.
+    ///
+    /// `thread = current_thread()` is unconditional in the spec, so there is no
+    /// answer outside a lifted call — the implicit thread IS the context.
+    fn canon_context_slot(&mut self, builtin: &str) -> Result<(u32, usize), VMError> {
+        let index = self.pop().as_i32() as usize;
+        // `Explainer.md:1679`: "Validation currently restricts `i` to be less
+        // than 2". Checked here as well as by the array bound, so the message
+        // names the SPEC limit rather than a Rust length.
+        if index >= crate::vm::CONTEXT_STORAGE_SLOTS {
+            return Err(VMError::new(format!(
+                "canon {builtin}: slot {index} exceeds the {} slots the spec permits (trap)",
+                crate::vm::CONTEXT_STORAGE_SLOTS
+            )));
+        }
+        let thread_idx = self.current_thread.ok_or_else(|| {
+            VMError::new(format!(
+                "canon {builtin}: no current thread — thread-local storage exists \
+                 only inside a `canon lift`ed call (trap)"
+            ))
+        })?;
+        Ok((thread_idx, index))
+    }
+
+    /// The `$t` / `$rt` TYPE INDEX this built-in was defined with — the row's
+    /// type, not the row's own index.
+    ///
+    /// `canon_type_immediate` holds a CANONIDX. `resource.{new,rep,drop}` want
+    /// `rt:<typeidx>`, and reading the canonidx directly is only correct while
+    /// the identity section is in force. The moment a real canon section exists
+    /// those are different numbers, and comparing a canonidx against a
+    /// `type_id` is the `GLOBAL_GET` defect with a new pair of tables.
+    ///
+    /// `None` means the import declared no immediate at all.
+    pub(crate) fn canon_type_index(&self) -> Option<u32> {
+        let idx = self.canon_type_immediate?;
+        if self.canon_defs.is_empty() {
+            // Identity section: row `i` declares `$t = i`.
+            return Some(idx);
+        }
+        self.canon_defs.get(idx as usize)?.ty
+    }
+
     fn canon_element_type(&self, builtin: &str) -> Result<crate::component::ValType, VMError> {
         let Some(idx) = self.canon_type_immediate else {
             return Err(VMError::new(format!(
-                "canon {builtin}: no $t immediate — import it as `canon`/`{builtin}@<typeidx>` \
-                 with the type registered in `VM::canon_types`"
+                "canon {builtin}: no canonidx — import it as `canon`/`{builtin}@<canonidx>` \
+                 naming a row of `VM::canon_defs` whose `$t` is registered in `VM::canon_types`"
             )));
         };
-        self.canon_types.get(idx as usize).cloned().ok_or_else(|| {
+        // The canonidx names a ROW; the row's `$t` names the type. Two hops,
+        // because they are two index spaces — reading `canon_types[canonidx]`
+        // directly (what this did) is the `GLOBAL_GET` defect: one integer
+        // silently serving whichever table the reader happened to pick.
+        //
+        // A module with NO canon section gets the IDENTITY section: row `i`
+        // declares `$t = i`. Core WASM has no way to spell a canon section —
+        // `(import "canon" "future.read@1")` in a `.wat` carries the immediate
+        // and nothing else — so without this the only expressible spelling
+        // would name a row that cannot exist. The identity mapping is what
+        // `@N` already meant, now stated as a rule instead of assumed.
+        //
+        // It is a declared fallback, not a silent one: the moment a real canon
+        // section exists, `canon_defs` is non-empty and the row wins.
+        let ty = if self.canon_defs.is_empty() {
+            idx
+        } else {
+            let def = self.canon_defs.get(idx as usize).ok_or_else(|| {
+                VMError::new(format!(
+                    "canon {builtin}: canonidx {idx} is not a row of `VM::canon_defs` \
+                     (have {})",
+                    self.canon_defs.len()
+                ))
+            })?;
+            def.require_type(builtin)
+                .map_err(|e| VMError::new(format!("{e} (canonidx {idx})")))?
+        };
+        match self.canon_types.get(ty as usize) {
+            Some(Some(v)) => Ok(v.clone()),
+            // The typeidx EXISTS but holds something else — a function type, or
+            // a form the front end recorded without decomposing. Distinguished
+            // from out-of-range because they are different mistakes: one is a
+            // stale index, the other is naming the wrong kind of type.
+            Some(None) => Err(VMError::new(format!(
+                "canon {builtin}: $t {ty} (from canonidx {idx}) is a declared typeidx \
+                 but does not hold a VALUE type"
+            ))),
+            None => Err(VMError::new(format!(
+                "canon {builtin}: $t {ty} (from canonidx {idx}) is not registered in \
+                 `VM::canon_types` (have {})",
+                self.canon_types.len()
+            ))),
+        }
+    }
+
+    /// The canon-section row this built-in was defined by, or a trap naming
+    /// what is missing. `lift`/`lower` cannot fall back to the identity
+    /// section: identity answers "which TYPE", and these need `$callee`,
+    /// `$opts` and `$ft` — three immediates no import name can carry.
+    fn canon_def_required(
+        &self,
+        builtin: &str,
+    ) -> Result<crate::canon_def::CanonDef, VMError> {
+        let idx = self.canon_type_immediate.ok_or_else(|| {
             VMError::new(format!(
-                "canon {builtin}: type immediate {idx} is not registered in `VM::canon_types`"
+                "canon {builtin}: no canonidx — `{builtin}` is defined by a \
+                 `(canon {builtin} ...)` row carrying its immediates, so it needs a \
+                 row of the canon section; import it as `canon`/`{builtin}@<canonidx>`"
+            ))
+        })?;
+        self.canon_defs.get(idx as usize).cloned().ok_or_else(|| {
+            VMError::new(format!(
+                "canon {builtin}: canonidx {idx} is not a row of `VM::canon_defs` (have {})",
+                self.canon_defs.len()
             ))
         })
+    }
+
+    /// Resolve a row's `$ft` through the FUNCTION type index space.
+    ///
+    /// Deliberately not `canon_types`: `$ft` is a function type and `$t` is a
+    /// value type. One table serving both is the `GLOBAL_GET` defect.
+    fn canon_functype(
+        &self,
+        builtin: &str,
+        def: &crate::canon_def::CanonDef,
+    ) -> Result<crate::canon_def::CanonFuncType, VMError> {
+        let idx = def.functype.ok_or_else(|| {
+            VMError::new(format!("canon {builtin}: definition carries no $ft immediate"))
+        })?;
+        match self.canon_functypes.get(idx as usize) {
+            Some(Some(ft)) => Ok(ft.clone()),
+            Some(None) => Err(VMError::new(format!(
+                "canon {builtin}: $ft {idx} is a declared typeidx but does not hold a \
+                 FUNCTION type"
+            ))),
+            None => Err(VMError::new(format!(
+                "canon {builtin}: $ft {idx} is not registered in `VM::canon_functypes` (have {})",
+                self.canon_functypes.len()
+            ))),
+        }
+    }
+
+    /// Call a canon callee to completion and return its single result.
+    ///
+    /// `argc` values are already on the operand stack. The callee value is
+    /// inserted BELOW them — the same shape `ImportTarget::ChunkFn` uses — and
+    /// `execute_until` runs the nested frame to completion, which is what makes
+    /// this a synchronous call rather than a frame push the caller never sees
+    /// the result of.
+    fn call_canon_callee(
+        &mut self,
+        builtin: &str,
+        callee: crate::canon_def::CalleeRef,
+        argc: usize,
+    ) -> Result<Value, VMError> {
+        let chunk_index = match callee {
+            crate::canon_def::CalleeRef::Core(i) => i as usize,
+            // A component funcidx indexes the COMPONENT's function index
+            // space, which needs the component linker — deferred with the
+            // export path (see cmplan.md). Refusing names that dependency
+            // instead of silently reading the core space, where the same
+            // integer means a different function.
+            // A component function DEFINED HERE — by a `canon lift` — needs no
+            // linker: `component_funcs` maps the funcidx to the canonidx of the
+            // row that defines it, and calling it IS running that lift. The
+            // linker is for component functions that arrive as IMPORTS.
+            crate::canon_def::CalleeRef::Component(i) => {
+                let slot = *self.component_funcs.get(i as usize).ok_or_else(|| {
+                    VMError::new(format!(
+                        "canon {builtin}: $callee {i} is not in the component function \
+                         index space (have {})",
+                        self.component_funcs.len()
+                    ))
+                })?;
+                // ⛔ THE SLOT EXISTS AND IS EMPTY. That is an IMPORTED component
+                // function: `(import "x" (func $x (type $ft)))` occupies an
+                // index in declaration order without defining anything here, so
+                // the slot has to be present and unfilled. This is the one case
+                // that genuinely needs the component linker — every other
+                // producer (`canon lift`, `(alias export …)`, `(export …)`)
+                // resolves to a row in THIS component.
+                //
+                // Out-of-range and empty are deliberately different messages,
+                // because they are different mistakes: a stale index versus a
+                // callee nothing has supplied.
+                let canonidx = slot.ok_or_else(|| {
+                    VMError::new(format!(
+                        "canon {builtin}: component func {i} is IMPORTED — it has no \
+                         defining row in this component, so calling it needs the \
+                         component linker (see cmplan.md §Deferred to export)"
+                    ))
+                })?;
+                // `exec_canon_lift` reads its row through `canon_type_immediate`,
+                // so the callee's canonidx is installed for the nested call and
+                // restored after: a lifted call NESTS (a `realloc` is itself a
+                // lift), and leaving it set would make the outer row read the
+                // inner one's immediates.
+                let saved = self.canon_type_immediate;
+                self.canon_type_immediate = Some(canonidx);
+                let outcome = self.exec_canon_lift();
+                self.canon_type_immediate = saved;
+                outcome?;
+                // `exec_canon_lift` pushes exactly one value, per this VM's
+                // canon-import ABI.
+                return Ok(self.pop());
+            }
+        };
+        if chunk_index >= self.chunks.len() {
+            return Err(VMError::new(format!(
+                "canon {builtin}: $callee core funcidx {chunk_index} is out of range (have {})",
+                self.chunks.len()
+            )));
+        }
+        let func = crate::value::Function {
+            name: None,
+            arity: self.chunks[chunk_index].arity,
+            chunk_index,
+            upvalues: Vec::new(),
+        };
+        let mut obj = crate::value::Object::new();
+        obj.kind = crate::value::ObjectKind::Function(func);
+        let func_val = Value::Object(crate::heap::alloc(obj));
+        let args_start = self.stack.len() - argc;
+        self.stack.insert(args_start, func_val);
+        let depth = self.frames.len();
+        self.call_value(argc)?;
+        // `call_value` does not always push a frame — a host or callable shim
+        // completes inline and leaves its result on the stack. Mirrors the
+        // same guard in `vm.rs`'s callback path.
+        if self.frames.len() == depth {
+            return Ok(self.pop());
+        }
+        // ⛔ `depth + 1`, not `depth`. `execute_until_inner` exits a nested
+        // loop when `frames.len() < min_depth`, and the callee's RETURN pops
+        // its own frame FIRST — so frames are back to `depth` at the moment
+        // the check runs, and `depth < depth` is false.
+        //
+        // The consequence was not a hang: the arm fell through, PUSHED the
+        // results onto the stack and kept interpreting the caller's frames.
+        // The value `canon lift` then lifted was `Null`, while the callee's
+        // real result sat on the operand stack where the core caller read it —
+        // which is why a lifted `(func (result bool))` handed its caller the
+        // callee's raw 9 instead of 1, and why deleting the result type
+        // changed nothing.
+        //
+        // `vm.rs` and `jspi.rs` both pass `saved_frame_depth + 1`.
+        self.execute_until(depth + 1)
+    }
+
+    /// `canon lower` — `CanonicalABI.md §canon lower`, synchronous path.
+    ///
+    /// ```python
+    /// flat_args = CoreValueIter(flat_args)
+    /// args = lift_flat_values(cx, MAX_FLAT_PARAMS, flat_args, ft.param_types())
+    /// result = callee(args)
+    /// flat_results = lower_flat_values(cx, MAX_FLAT_RESULTS, result, ft.result_type())
+    /// return flat_results
+    /// ```
+    ///
+    /// A lowered import is what CORE wasm calls, so its arguments arrive FLAT
+    /// on the operand stack and its results must leave flat. The conversion is
+    /// the whole job: lift the flat args up to component values, call, lower
+    /// the result back down.
+    fn exec_canon_lower(&mut self) -> Result<(), VMError> {
+        use crate::canon_flat::{CoreType, FlattenContext, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
+        let def = self.canon_def_required("lower")?;
+        let ft = self.canon_functype("lower", &def)?;
+        let callee = def
+            .require_callee("lower")
+            .map_err(VMError::new)?;
+
+        let flat_ft = crate::canon_flat::flatten_functype(
+            &ft.params,
+            ft.result.as_ref(),
+            FlattenContext::Lower,
+            def.opts.is_async,
+            def.opts.callback.is_some(),
+            CoreType::I32,
+        );
+        let flat_args = self.pop_core_values(&flat_ft.params)?;
+
+        let memory = self.memory.clone();
+        let args = crate::canon_flat_values::lift_flat_values(
+            &memory,
+            MAX_FLAT_PARAMS,
+            &flat_args,
+            &ft.params,
+            CoreType::I32,
+        )
+        .map_err(|e| VMError::new(format!("canon lower: lifting arguments: {e}")))?;
+
+        let argc = args.len();
+        for a in args {
+            self.push(a)?;
+        }
+        let result = self.call_canon_callee("lower", callee, argc)?;
+
+        let mut bump = self.canon_bump_start();
+        let flat_results = {
+            let mut alloc = Self::bump_realloc(&memory, &mut bump);
+            // `Realloc<'a> = &'a mut dyn FnMut(u32,u32) -> Option<u32>` — the
+            // coercion is explicit because an `impl FnMut` is not the trait
+            // object the canonical-ABI helpers take.
+            let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
+            let types: Vec<_> = ft.result.iter().cloned().collect();
+            let values: Vec<_> = ft.result.iter().map(|_| result.clone()).collect();
+            crate::canon_flat_values::lower_flat_values(
+                &memory,
+                &mut realloc,
+                MAX_FLAT_RESULTS,
+                &values,
+                &types,
+                CoreType::I32,
+            )
+            .map_err(|e| VMError::new(format!("canon lower: lowering result: {e}")))?
+        };
+        self.canon_bump_commit(bump);
+        for v in flat_results {
+            self.push(Self::core_value_to_value(v))?;
+        }
+        Ok(())
+    }
+
+    /// `canon lift` — `CanonicalABI.md §canon lift`, synchronous path.
+    ///
+    /// ```python
+    /// flat_args = lower_flat_values(cx, MAX_FLAT_PARAMS, args, ft.param_types())
+    /// flat_results = call_and_trap_on_throw(callee, flat_args)
+    /// result = lift_flat_values(cx, MAX_FLAT_RESULTS, flat_results, ft.result_type())
+    /// task.return_(result)
+    /// if opts.post_return is not None:
+    ///   inst.may_leave = False
+    ///   [] = call_and_trap_on_throw(opts.post_return, flat_results)
+    ///   inst.may_leave = True
+    /// ```
+    ///
+    /// The mirror of `lower`: component values in, flat values to the core
+    /// callee, and the core results lifted back up. The result goes to the
+    /// TASK (`task.return_`), not to the operand stack.
+    fn exec_canon_lift(&mut self) -> Result<(), VMError> {
+        use crate::canon_flat::{CoreType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
+        let def = self.canon_def_required("lift")?;
+        let ft = self.canon_functype("lift", &def)?;
+        let callee = def.require_callee("lift").map_err(VMError::new)?;
+
+        // "a task is created for each call to a component export (in
+        // `canon_lift`) ... starting with the IMPLICIT thread that is spawned
+        // by `canon_lift`" — CanonicalABI.md §Tasks.
+        //
+        // This is the ONLY place either comes into existence, and nothing was
+        // doing it: `CMTask::new` had no caller outside its own unit tests, so
+        // `cm_tasks` was permanently empty and `task.return`'s guards could
+        // never fire. With no thread, `thread.index` had nothing to answer and
+        // every other 🧵 built-in had no table entry to address.
+        let task_id = self.next_cm_task_id;
+        self.next_cm_task_id += 1;
+        let mut task = crate::cm_task::CMTask::new(task_id);
+        task.start();
+        self.cm_tasks.push(task);
+
+        // The implicit thread is RUNNING, not suspended: it is the one
+        // executing this lifted call. `Thread::new` starts a thread suspended
+        // holding a continuation, which is right for `thread.new-indirect` and
+        // wrong here, so the continuation is taken immediately — `running()`
+        // is `cont is None`.
+        let mut implicit = crate::cm_thread::Thread::new(task_id, Value::Undefined);
+        implicit.take_cont();
+        debug_assert!(implicit.running());
+        let thread_index = self.cm_instance.threads.register(implicit);
+        let prev_thread = self.current_thread.replace(thread_index);
+
+        let mut args = Vec::with_capacity(ft.params.len());
+        for _ in 0..ft.params.len() {
+            args.push(self.pop());
+        }
+        args.reverse();
+
+        let memory = self.memory.clone();
+        let mut bump = self.canon_bump_start();
+        let flat_args = {
+            let mut alloc = Self::bump_realloc(&memory, &mut bump);
+            let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
+            crate::canon_flat_values::lower_flat_values(
+                &memory,
+                &mut realloc,
+                MAX_FLAT_PARAMS,
+                &args,
+                &ft.params,
+                CoreType::I32,
+            )
+            .map_err(|e| VMError::new(format!("canon lift: lowering arguments: {e}")))?
+        };
+        self.canon_bump_commit(bump);
+
+        let argc = flat_args.len();
+        for v in &flat_args {
+            self.push(Self::core_value_to_value(*v))?;
+        }
+        let raw = self.call_canon_callee("lift", callee, argc)?;
+
+        // The core type comes from the SPEC'S FLATTENING of the declared
+        // result, not from whatever variant the returned `Value` happens to
+        // hold. Those are different questions: `flatten_type(u32)` is `i32`,
+        // while a core function returning `(i32.const 5)` hands back a
+        // `Value::F64` in this VM, because its numeric tower is doubles. Reading
+        // the core type off the value made every integer-returning lift fail
+        // with "wanted a core I32 and got a F64" — the callee was right and the
+        // question was wrong.
+        let flat_results = match &ft.result {
+            Some(t) => {
+                let want = crate::canon_flat::flatten_type(t, CoreType::I32);
+                vec![Self::value_to_core_value_as(
+                    &raw,
+                    want.first().copied().unwrap_or(CoreType::I32),
+                )]
+            }
+            None => Vec::new(),
+        };
+        let types: Vec<_> = ft.result.iter().cloned().collect();
+        let lifted = crate::canon_flat_values::lift_flat_values(
+            &memory,
+            MAX_FLAT_RESULTS,
+            &flat_results,
+            &types,
+            CoreType::I32,
+        )
+        .map_err(|e| VMError::new(format!("canon lift: lifting result: {e}")))?;
+
+        // `task.return_(result)` — the result belongs to the TASK. `canon_lift`
+        // has no return value in the spec: it hands the lifted result to the
+        // task and a core caller reaches it through `canon lower`, never by
+        // calling the lift directly.
+        let result = lifted.into_iter().next().unwrap_or(Value::Undefined);
+        if let Some(task) = self.cm_tasks.last_mut() {
+            task.return_(result.clone())
+                .map_err(|e| VMError::new(format!("canon lift: {e} (trap)")))?;
+        }
+        // …but THIS VM's canon-import ABI is one value per call: the emitter
+        // reserves a stack slot for every `canon` import's result and drops it
+        // when unused. Pushing nothing does not mean "no result", it means the
+        // caller reads whatever sat BELOW — which is how a lifted
+        // `(func (result bool))` handed its caller the callee's raw 9 instead
+        // of 1, and how deleting the result type changed nothing.
+        //
+        // What a CORE caller must receive is the result LOWERED back to flat
+        // core values, not the component value: `result` here is a
+        // `Value::Bool`, and a core function cannot receive one. Importing
+        // `canon`/`lift@N` into core wasm is standing in for lower ∘ lift, so
+        // this composes them — which is also what makes the value observably
+        // the LIFTED one: a `bool` lifted from a core 9 lowers back to 1, so
+        // 9 arriving would prove the lift had been skipped.
+        let pushed = match &ft.result {
+            Some(t) => {
+                let mut bump2 = self.canon_bump_start();
+                let flat = {
+                    let mut alloc = Self::bump_realloc(&memory, &mut bump2);
+                    let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
+                    crate::canon_flat_values::lower_flat_values(
+                        &memory,
+                        &mut realloc,
+                        MAX_FLAT_RESULTS,
+                        std::slice::from_ref(&result),
+                        std::slice::from_ref(t),
+                        CoreType::I32,
+                    )
+                    .map_err(|e| VMError::new(format!("canon lift: lowering result: {e}")))?
+                };
+                self.canon_bump_commit(bump2);
+                flat.first()
+                    .map(|v| Self::core_value_to_value(*v))
+                    .unwrap_or(Value::Undefined)
+            }
+            // A lift with no declared result still owes the caller its one
+            // stack slot; the emitter drops it.
+            None => Value::Undefined,
+        };
+        self.push(pushed)?;
+
+        // `post-return` runs with `may_leave` CLEARED, which is what lets a
+        // sync-lowered call to a sync-lifted function be a plain call: neither
+        // it nor `realloc` may block, so no fiber is needed.
+        if let Some(pr) = def.opts.post_return {
+            self.cm_instance
+                .enter_no_leave()
+                .map_err(|e| VMError::new(format!("canon lift: post-return: {e}")))?;
+            for v in &flat_args {
+                self.push(Self::core_value_to_value(*v))?;
+            }
+            let outcome = self.call_canon_callee(
+                "lift",
+                crate::canon_def::CalleeRef::Core(pr),
+                flat_args.len(),
+            );
+            self.cm_instance.exit_no_leave();
+            outcome?;
+        }
+
+        // `task.exit_implicit_thread()` — thread and task end with the call.
+        // `current_thread` is RESTORED, not cleared: a lifted call nests (a
+        // `realloc` is itself a `canon_lift`), and clearing would strand the
+        // outer thread with no index.
+        self.cm_instance.threads.unregister(thread_index);
+        self.current_thread = prev_thread;
+        self.cm_tasks.pop();
+        Ok(())
+    }
+
+    /// Pop the operand-stack values for `want` as flat core values, in stack
+    /// order, each typed by the FLATTENED SIGNATURE.
+    ///
+    /// ⛔ This used to take a COUNT and infer each core type from the popped
+    /// value's own variant — the same defect `exec_canon_lift`'s result path
+    /// had. It is wrong for the same reason: `flatten_type(u32)` is `i32`, but
+    /// a core function's `(i32.const 5)` is a `Value::F64` in this VM, so the
+    /// inferred type disagreed with the signature and `lift_flat_values`
+    /// rejected an argument the caller had passed correctly.
+    ///
+    /// The caller already has `flat_ft.params`; it was throwing it away and
+    /// passing only its length.
+    fn pop_core_values(
+        &mut self,
+        want: &[crate::canon_flat::CoreType],
+    ) -> Result<Vec<crate::canon_flat_values::CoreValue>, VMError> {
+        let n = want.len();
+        if self.stack.len() < n {
+            return Err(VMError::new(format!(
+                "canon: expected {n} flat argument(s), stack holds {}",
+                self.stack.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(n);
+        // Popped in reverse, so the type for each pop comes from the tail.
+        for t in want.iter().rev() {
+            let v = self.pop();
+            out.push(Self::value_to_core_value_as(&v, *t));
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    /// A flat core value as an operand-stack `Value`.
+    fn core_value_to_value(v: crate::canon_flat_values::CoreValue) -> Value {
+        use crate::canon_flat_values::CoreValue as C;
+        match v {
+            C::I32(i) => Value::I32(i as i32),
+            C::I64(i) => Value::I64(i as i64),
+            C::F32(f) => Value::F64(f as f64),
+            C::F64(f) => Value::F64(f),
+        }
+    }
+
+    /// An operand-stack `Value` as a flat core value.
+    ///
+    /// The flat ABI has exactly four core types; anything else on the stack at
+    /// a canon boundary is a value that was never lowered, so it is carried as
+    /// its i32 form rather than silently reinterpreted as a float.
+    /// A `Value` as the core type the canonical ABI asks for.
+    ///
+    /// Distinct from [`Self::value_to_core_value`], which infers the core type
+    /// from the value's own variant. That inference is right where the flat
+    /// types are genuinely unknown and wrong wherever the signature states
+    /// them — a `u32` result flattens to `i32` no matter how the VM happens to
+    /// be holding the number.
+    fn value_to_core_value_as(
+        v: &Value,
+        want: crate::canon_flat::CoreType,
+    ) -> crate::canon_flat_values::CoreValue {
+        use crate::canon_flat::CoreType as T;
+        use crate::canon_flat_values::CoreValue as C;
+        match want {
+            T::I32 => C::I32(v.as_i32() as u32),
+            T::I64 => C::I64(v.as_i64() as u64),
+            T::F32 => C::F32(v.as_f64() as f32),
+            T::F64 => C::F64(v.as_f64()),
+        }
+    }
+
+    fn value_to_core_value(v: &Value) -> crate::canon_flat_values::CoreValue {
+        use crate::canon_flat_values::CoreValue as C;
+        match v {
+            Value::I64(i) => C::I64(*i as u64),
+            Value::F64(f) => C::F64(*f),
+            other => C::I32(other.as_i32() as u32),
+        }
     }
 
     /// Look up a waitable set and take its ready event, as an `EventTuple`.
@@ -1163,36 +2240,48 @@ impl VM {
     /// ride the operand stack; each builtin pops exactly its own args.
     pub(crate) fn exec_canon_builtin(&mut self, b: crate::vm::CanonBuiltin) -> Result<(), VMError> {
         use crate::vm::CanonBuiltin as B;
+
+        // `trap_if(not inst.may_leave)` — 32 occurrences in `CanonicalABI.md`,
+        // and it had NO implementation at all: `may_leave` did not exist, so
+        // the guard on nearly every built-in was simply absent.
+        //
+        // Stated once here rather than restated per arm, because it is one
+        // rule. The delegating rows are covered through their helpers exactly
+        // as the spec covers them: `stream.read`/`write` via `stream_copy`,
+        // the four `cancel-*` via `cancel_copy`, `future.read`/`write` via
+        // `future_copy`, and all four `drop-*` via `drop` — each of which
+        // opens with the guard.
+        //
+        // The exemptions are the spec's, verified row by row against
+        // `CanonicalABI.md`, not assumed:
+        //   backpressure.inc/dec — must work precisely WHILE entry is blocked
+        //   context.get/set      — thread-local storage, never leaves
+        //   resource.rep         — guarded by `isinstance` + `h.rt is rt`
+        //   thread.available-parallelism 🧵② — `canon_thread_available_
+        //                          parallelism()` is two lines returning a
+        //                          count and carries NO `trap_if` at all
+        //
+        // ⛔ That last row used to read "is also exempt, but has no arm yet".
+        // The arm landed and the comment did not, so the row was running a
+        // guard the spec does not give it.
+        let exempt = matches!(
+            b,
+            B::BackpressureInc
+                | B::BackpressureDec
+                | B::ContextGet
+                | B::ContextSet
+                | B::ResourceRep
+                | B::ThreadAvailableParallelism
+        );
+        if !exempt {
+            self.cm_instance
+                .require_may_leave(b.spec_name())
+                .map_err(VMError::new)?;
+        }
+
         match b {
-            B::Lift => {
-                // canon lift — args [value, typeidx]: convert core value to
-                // component interface type. For now: if value is an object,
-                // stamp its type_id. In full CM, this would validate/convert
-                // the value shape.
-                let type_idx = self.pop().as_i32() as usize;
-                let val = self.pop();
-                if let Value::Object(ref obj) = val {
-                    let mut o = obj.lock().unwrap();
-                    if o.type_id == 0 && type_idx < self.type_registry.types.len() {
-                        o.type_id = type_idx;
-                    }
-                }
-                self.push(val)?;
-            }
-            B::Lower => {
-                // canon lower — args [value, typeidx]: convert component
-                // interface type to core value. For now: validate type_id
-                // matches, strip interface metadata.
-                let type_idx = self.pop().as_i32() as usize;
-                let val = self.pop();
-                if let Value::Object(ref obj) = val {
-                    let o = obj.lock().unwrap();
-                    if type_idx < self.type_registry.types.len() && o.type_id != type_idx {
-                        // Type mismatch — could trap, for now allow
-                    }
-                }
-                self.push(val)?;
-            }
+            B::Lift => self.exec_canon_lift()?,
+            B::Lower => self.exec_canon_lower()?,
             B::TaskReturn => {
                 // canon task.return — `CanonicalABI.md §canon task.return`:
                 //
@@ -1509,13 +2598,9 @@ impl VM {
                     return self.stream_read_typed(handle, end, ptr, n, &elem);
                 }
 
-                let mut bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
-                if bytes.is_empty()
-                    && !self.event_loop.borrow().stream_is_eof(end.id)
-                    && self.run_stream_producer(end.id)
-                {
-                    bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
-                }
+                // Same as the typed path: the producer is a last resort the
+                // event loop drives, never an inline blocking call.
+                let bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
                 if bytes.is_empty() {
                     // Nothing copied: either the far end is gone for good, or
                     // it simply has not written yet.
@@ -1543,6 +2628,22 @@ impl VM {
                             self.handle_table.get_mut(handle)
                         {
                             e.state = crate::handle_table::CopyState::Copying;
+                        }
+                        // 🔀 ASYNC (`opts.async_`): answer BLOCKED now and let
+                        // the real result arrive later as an
+                        // `EventCode.STREAM_READ` event. Only the async form
+                        // may do this — `CanonicalABI.md` §canon
+                        // stream.{read,write} — which is exactly why the sync
+                        // form below suspends instead.
+                        //
+                        // ⚠ The end stays COPYING, deliberately: the copy IS in
+                        // flight. A caller that wants POSIX `EAGAIN` retry
+                        // semantics must issue `stream.cancel-read` before
+                        // reading again, which is the only thing that returns
+                        // an end to IDLE; a bare retry traps on "not IDLE".
+                        if self.canon_async_opt() {
+                            self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                            return Ok(());
                         }
                         // SUSPEND — this is the synchronous variant. Answering
                         // `BLOCKED` here is what every reader in the tree was
@@ -1667,6 +2768,14 @@ impl VM {
                         {
                             e.state = crate::handle_table::CopyState::Copying;
                         }
+                        // 🔀 ASYNC (`opts.async_`) — the third and last park
+                        // site. All three branch on the same option, so a
+                        // future, a typed stream and a `stream<u8>` cannot
+                        // disagree about what `async` means.
+                        if self.canon_async_opt() {
+                            self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                            return Ok(());
+                        }
                         // Pending, and this is the synchronous variant: suspend
                         // until it settles rather than answering `BLOCKED`.
                         // Every 0.3.1 write path ends in a
@@ -1727,9 +2836,111 @@ impl VM {
             // owning handle. The rep is the component's private business; the
             // handle is what crosses a boundary, which is the whole point of
             // the indirection — a peer never sees the representation.
+            // 📝 canon error-context.new — `CanonicalABI.md:5147`:
+            //
+            //     def canon_error_context_new(opts, ptr, tagged_code_units):
+            //       trap_if(not inst.may_leave)
+            //       if DETERMINISTIC_PROFILE or random.randint(0,1):
+            //         s = String(('', 'utf8', 0))
+            //       else:
+            //         s = host_defined_transformation(load_string_from_range(...))
+            //       i = inst.handles.add(ErrorContext(s))
+            //
+            // ⛔ The spec permits the host to DISCARD the message — that branch
+            // exists so a production host can skip the cost. We PRESERVE it,
+            // which is equally conformant and is the only choice that makes the
+            // feature worth having: an error-context whose message is always
+            // empty is a handle that aids no debugging.
+            //
+            // Not the deterministic profile either. That flag also gates NaN
+            // scrambling, so claiming it here would assert a whole execution
+            // profile the rest of this VM does not implement.
+            B::ErrorContextNew => {
+                let len = self.pop().as_i32() as usize;
+                let ptr = self.pop().as_i32() as usize;
+                let memory = self.memory.clone();
+                let msg = crate::canon_value::read_utf8(&memory, ptr, len)
+                    .map_err(|e| VMError::new(format!("canon error-context.new: {e}")))?;
+                let h = self
+                    .handle_table
+                    .insert(crate::handle_table::HandleEntry::ErrorContext {
+                        debug_message: msg,
+                    });
+                self.push(Value::I32(h as i32))?;
+            }
+            // 📝 canon error-context.debug-message — `CanonicalABI.md:5189`.
+            // `store_string(cx, errctx.debug_message, ptr)` — the (ptr, length)
+            // pair goes at `ptr`, the bytes into freshly `realloc`ed memory,
+            // which is exactly what storing a `ValType::String` does.
+            B::ErrorContextDebugMessage => {
+                let ptr = self.pop().as_i32() as u32;
+                let handle = self.pop().as_i32() as u32;
+                let msg = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::ErrorContext { debug_message }) => {
+                        debug_message.clone()
+                    }
+                    // `trap_if(not isinstance(errctx, ErrorContext))` — naming
+                    // what the handle IS, because "wrong handle" and "no such
+                    // handle" are different mistakes to chase.
+                    Some(other) => {
+                        return Err(VMError::new(format!(
+                            "canon error-context.debug-message: handle {handle} is a {} , \
+                             not an error-context (trap)",
+                            crate::handle_table::HandleEntry::kind_name(other)
+                        )))
+                    }
+                    None => {
+                        return Err(VMError::new(format!(
+                            "canon error-context.debug-message: handle {handle} is not in the \
+                             instance handle table (trap)"
+                        )))
+                    }
+                };
+                let memory = self.memory.clone();
+                let mut bump = self.canon_bump_start();
+                {
+                    let mut alloc = Self::bump_realloc(&memory, &mut bump);
+                    let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
+                    crate::canon_value::store_with(
+                        &memory,
+                        &mut realloc,
+                        &Value::String(msg.into()),
+                        &crate::component::ValType::String,
+                        ptr,
+                    )
+                    .map_err(|e| {
+                        VMError::new(format!("canon error-context.debug-message: {e}"))
+                    })?;
+                }
+                self.canon_bump_commit(bump);
+            }
+            // 📝 canon error-context.drop — `CanonicalABI.md:5215`.
+            // `remove` then `trap_if(not isinstance(...))`: the handle must be
+            // CHECKED before it is released, or a mistyped drop has already
+            // freed someone else's entry by the time it traps.
+            B::ErrorContextDrop => {
+                let handle = self.pop().as_i32() as u32;
+                match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::ErrorContext { .. }) => {}
+                    Some(other) => {
+                        return Err(VMError::new(format!(
+                            "canon error-context.drop: handle {handle} is a {}, not an \
+                             error-context (trap)",
+                            crate::handle_table::HandleEntry::kind_name(other)
+                        )))
+                    }
+                    None => {
+                        return Err(VMError::new(format!(
+                            "canon error-context.drop: handle {handle} is not in the instance \
+                             handle table (trap)"
+                        )))
+                    }
+                }
+                self.handle_table.remove(handle);
+            }
             B::ResourceNew => {
                 let rep = self.pop().as_i32();
-                let type_id = self.canon_type_immediate.unwrap_or(0);
+                let type_id = self.canon_type_index().unwrap_or(0);
                 let h = self
                     .handle_table
                     .insert(crate::handle_table::HandleEntry::OwnedResource {
@@ -1748,13 +2959,13 @@ impl VM {
             // legitimately holds.
             B::ResourceRep => {
                 let handle = self.pop().as_i32() as u32;
-                let want = self.canon_type_immediate.unwrap_or(0);
+                let want = self.canon_type_index().unwrap_or(0);
                 match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::OwnedResource { type_id, value })
                     | Some(crate::handle_table::HandleEntry::BorrowedResource {
                         type_id, value, ..
                     }) => {
-                        if self.canon_type_immediate.is_some() && *type_id != want {
+                        if self.canon_type_index().is_some() && *type_id != want {
                             return Err(VMError::new(format!(
                                 "canon resource.rep: handle is resource type {type_id}, not {want}"
                             )));
@@ -1779,7 +2990,7 @@ impl VM {
             // means either a leak or a double free.
             B::ResourceDrop => {
                 let handle = self.pop().as_i32() as u32;
-                let want = self.canon_type_immediate;
+                let want = self.canon_type_index();
                 match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::OwnedResource { type_id, .. })
                     | Some(crate::handle_table::HandleEntry::BorrowedResource {
@@ -1816,11 +3027,30 @@ impl VM {
                 self.waitable_sets.remove(handle);
             }
             B::ThreadYield => {
-                // canon thread.yield — 🔀. Offer the scheduler a turn. Our
-                // canon built-ins run to completion on the calling fiber, so
-                // there is nothing to hand over synchronously; the honest
-                // answer is "not cancelled".
-                self.push(Value::I32(0))?;
+                // canon thread.yield — `CanonicalABI.md`:
+                //
+                //     def canon_thread_yield(cancellable):
+                //       thread = current_thread()
+                //       trap_if(not thread.task.inst.may_leave)
+                //       cancelled = thread.yield_(cancellable)
+                //       return [cancelled]
+                //
+                // `current_thread()` is UNCONDITIONAL, exactly as in
+                // `thread.index`. An earlier comment here claimed yield needs
+                // no current thread; that is not what the spec says, and core
+                // wasm inside a real component is always inside a lifted call.
+                let cancellable = self.canon_cancellable();
+                let _me = self.current_thread.ok_or_else(|| {
+                    VMError::new(
+                        "canon thread.yield: no current thread — a thread exists only \
+                         inside a `canon lift`ed call (trap)",
+                    )
+                })?;
+                // `yield_` is `wait_until(lambda: True)`, and `wait_until` may
+                // return early when the readiness condition already holds —
+                // the embedder's choice of whether to switch. We keep running.
+                let cancelled = self.deliver_pending_cancel_now(cancellable);
+                self.push(Value::I32(i32::from(cancelled)))?;
             }
             B::FutureNew => {
                 // canon future.new — same shape as `stream.new` above and from
@@ -1863,34 +3093,216 @@ impl VM {
             // canon backpressure.inc / backpressure.dec — CM3 replaced the
             // boolean `backpressure.set` (retired) with a counter: the
             // instance resists new calls while > 0. No args, no results.
-            B::BackpressureInc => {
-                if let Some(task) = self.cm_tasks.last_mut() {
-                    task.backpressure = task.backpressure.saturating_add(1);
+            B::ThreadIndex => {
+                // canon thread.index — `CanonicalABI.md`:
+                //     thread = current_thread()
+                //     assert(thread.index is not None)
+                //     return [thread.index]
+                // `assert`, not a default: outside a lifted call there IS no
+                // current thread, and answering 0 would name another slot.
+                let idx = self.current_thread.ok_or_else(|| {
+                    VMError::new(
+                        "canon thread.index: no current thread — a thread exists only \
+                         inside a `canon lift`ed call (trap)",
+                    )
+                })?;
+                self.push(Value::I32(idx as i32))?;
+            }
+            B::ThreadResumeLater => {
+                // canon thread.resume-later — `CanonicalABI.md`:
+                //     other_thread = inst.threads.get(i)
+                //     trap_if(not other_thread.suspended())
+                //     other_thread.resume_later()
+                // Never suspends the CURRENT thread, which is why this row
+                // carries no `cancellable` immediate: there is no suspension
+                // point at which a cancellation could be delivered.
+                let i = self.pop().as_i32() as u32;
+                let thread = self.cm_instance.threads.get_mut(i).ok_or_else(|| {
+                    VMError::new(format!(
+                        "canon thread.resume-later: no thread at index {i} (trap)"
+                    ))
+                })?;
+                thread.resume_later().map_err(|e| {
+                    VMError::new(format!("canon thread.resume-later: {e} (trap)"))
+                })?;
+            }
+            // The four compound handoffs are a 2x2 in the spec and get one
+            // implementation here for the same reason: **what happens to me**
+            // (suspend = park, yield = stay runnable) x **what happens to
+            // them** (resume = switch unconditionally, promote = switch only
+            // if they are ready, else fall back to plain suspend/yield).
+            B::ThreadSuspend => {
+                // canon thread.suspend — `CanonicalABI.md:4962`:
+                //
+                //     def canon_thread_suspend(cancellable):
+                //       thread = current_thread()
+                //       trap_if(not thread.task.inst.may_leave)
+                //       cancelled = thread.suspend(cancellable)
+                //       return [cancelled]
+                //
+                // and `Thread.suspend` is `deliver_pending_cancel` then
+                // `block_internal` — a block with NO `switch_to`, which is the
+                // one thing separating this row from the four handoffs.
+                let cancellable = self.canon_cancellable();
+                let me = self.current_thread.ok_or_else(|| {
+                    VMError::new(
+                        "canon thread.suspend: no current thread — a thread exists only \
+                         inside a `canon lift`ed call (trap)",
+                    )
+                })?;
+                if self.deliver_pending_cancel_now(cancellable) {
+                    self.push(Value::I32(1))?;
+                } else {
+                    self.thread_block("thread.suspend", me)?;
                 }
+            }
+            B::ThreadSpawnRef => {
+                // canon thread.spawn-ref 🧵② — `CanonicalABI.md`:
+                //
+                //     [i] = canon_thread_new_ref(shared, ft, f, c)
+                //     []  = canon_thread_resume_later(shared, i)
+                //     return [i]
+                //
+                // "fuses thread.new-ref and thread.resume-later, allowing
+                // thread-creation to skip the intermediate suspended state".
+                // `canon_thread_new_ref` is not itself defined in the spec yet
+                // (it arrives with the GC ABI option) but is specified as
+                // "like canon_thread_new_indirect minus the table access and
+                // type check" — so the funcref arrives as a VALUE, not an
+                // index, and that is the only difference here.
+                self.refuse_shared_threads("thread.spawn-ref")?;
+                let closure = self.pop();
+                let funcref = self.pop();
+                let index = self.create_thread_over("thread.spawn-ref", funcref, closure)?;
+                self.resume_thread_later("thread.spawn-ref", index)?;
+                self.push(Value::I32(index as i32))?;
+            }
+            B::ThreadSpawnIndirect => {
+                // canon thread.spawn-indirect 🧵② — the same fusion over
+                // `thread.new-indirect`, so it takes the table path: `$ftbl`
+                // is an immediate, `fi` and `c` are runtime args.
+                self.refuse_shared_threads("thread.spawn-indirect")?;
+                let closure = self.pop();
+                let fi = self.pop().as_i32();
+                let funcref = self.thread_table_funcref("thread.spawn-indirect", fi)?;
+                let index = self.create_thread_over("thread.spawn-indirect", funcref, closure)?;
+                self.resume_thread_later("thread.spawn-indirect", index)?;
+                self.push(Value::I32(index as i32))?;
+            }
+            B::ThreadAvailableParallelism => {
+                // canon thread.available-parallelism 🧵② — "the number of
+                // threads the underlying hardware can be expected to execute in
+                // PARALLEL", and "not allowed to change over the lifetime of a
+                // component instance".
+                //
+                // Cooperative fibers execute exactly one thread at a time, so
+                // the true answer is 1. This is not the deterministic profile's
+                // `return [1]` standing in for a real number — it IS the real
+                // number for this scheduler, and it is constant by construction.
+                //
+                // `shared?` is not refused here: this row spawns nothing, it
+                // only reports a count, and the count it reports is honest.
+                self.push(Value::I32(1))?;
+            }
+            B::ThreadSuspendThenResume => self.exec_thread_handoff(b, false, false)?,
+            B::ThreadYieldThenResume => self.exec_thread_handoff(b, true, false)?,
+            B::ThreadSuspendThenPromote => self.exec_thread_handoff(b, false, true)?,
+            B::ThreadYieldThenPromote => self.exec_thread_handoff(b, true, true)?,
+            B::ThreadNewIndirect => {
+                // canon thread.new-indirect — `CanonicalABI.md`:
+                //
+                //     f = ftbl.get(fi)
+                //     trap_if(f.t != ft)
+                //     def thread_func(): call_and_trap_on_throw(f.callee, [c])
+                //     new_thread = Thread(task, thread_func)
+                //     task.register_thread(new_thread)
+                //     return [new_thread.index]
+                //
+                // Runtime args are `(fi, c)`; `$ft` and `$ftbl` are IMMEDIATES
+                // on the canon definition — which is why this row was
+                // unreachable until the canon section existed to carry them.
+                //
+                // The new thread starts SUSPENDED holding a continuation it has
+                // not entered. That is the whole contract: "core wasm must call
+                // one of the other `thread.*` built-ins" to start it, so
+                // creating a thread must never run it. `thread.spawn-indirect`
+                // is exactly this row plus `resume-later` and shares both
+                // helpers, so the two cannot drift apart.
+                let closure = self.pop();
+                let fi = self.pop().as_i32();
+                let funcref = self.thread_table_funcref("thread.new-indirect", fi)?;
+                let index = self.create_thread_over("thread.new-indirect", funcref, closure)?;
+                self.push(Value::I32(index as i32))?;
+            }
+            B::BackpressureInc => {
+                // canon backpressure.inc — `CanonicalABI.md`:
+                //
+                //     inst.backpressure += 1
+                //     trap_if(inst.backpressure == 2**16)
+                //
+                // `saturating_add` was a SILENT failure: at the ceiling the
+                // counter stops moving while `dec` keeps decrementing, so the
+                // pairing is lost and backpressure releases early — the exact
+                // situation the trap exists to prevent.
+                //
+                // The counter is per INSTANCE (`current_instance()`), which is
+                // why it lives on `cm_instance` and not on the task: two tasks
+                // in one instance share the backpressure that gates entry to
+                // that instance.
+                self.cm_instance
+                    .backpressure_inc()
+                    .map_err(|e| VMError::new(format!("canon backpressure.inc: {e}")))?;
             }
             B::BackpressureDec => {
-                if let Some(task) = self.cm_tasks.last_mut() {
-                    task.backpressure = task.backpressure.saturating_sub(1);
-                }
+                // canon backpressure.dec — `trap_if(inst.backpressure < 0)`.
+                // `saturating_sub` turned an unbalanced `dec` into a no-op, so
+                // a missing `inc` never surfaced.
+                self.cm_instance
+                    .backpressure_dec()
+                    .map_err(|e| VMError::new(format!("canon backpressure.dec: {e}")))?;
             }
             B::ContextGet => {
-                // canon context.get — pops index_i32, pushes context slot value.
-                let index = self.pop().as_i32() as usize;
+                // canon context.get — `CanonicalABI.md`:
+                //
+                //     thread = current_thread()
+                //     assert(i < len(thread.storage))
+                //     return [thread.storage[i]]
+                //
+                // Storage is per-THREAD. It lived in a process-wide
+                // `VM::context_slots`, so two threads shared one context —
+                // the opposite of what thread-local storage is for. Now that
+                // `canon lift` creates the implicit thread, the array has its
+                // real owner and the VM-wide field is gone.
+                let (thread_idx, index) = self.canon_context_slot("context.get")?;
                 let val = self
-                    .context_slots
-                    .get(index)
-                    .cloned()
-                    .unwrap_or(Value::Undefined);
+                    .cm_instance
+                    .threads
+                    .get(thread_idx)
+                    .and_then(|t| t.storage.get(index).cloned())
+                    .ok_or_else(|| {
+                        VMError::new(format!(
+                            "canon context.get: no thread at index {thread_idx} (trap)"
+                        ))
+                    })?;
                 self.push(val)?;
             }
             B::ContextSet => {
-                // canon context.set — pops [value, index_i32], sets context slot.
-                let index = self.pop().as_i32() as usize;
+                // canon context.set — same owner, same bound:
+                //
+                //     thread.storage[i] = v
                 let val = self.pop();
-                if index >= self.context_slots.len() {
-                    self.context_slots.resize(index + 1, Value::Undefined);
-                }
-                self.context_slots[index] = val;
+                let (thread_idx, index) = self.canon_context_slot("context.set")?;
+                let slot = self
+                    .cm_instance
+                    .threads
+                    .get_mut(thread_idx)
+                    .and_then(|t| t.storage.get_mut(index))
+                    .ok_or_else(|| {
+                        VMError::new(format!(
+                            "canon context.set: no thread at index {thread_idx} (trap)"
+                        ))
+                    })?;
+                *slot = val;
             }
         }
         Ok(())
@@ -2178,13 +3590,17 @@ impl VM {
             ));
         }
 
-        let mut items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
-        if items.is_empty()
-            && !self.event_loop.borrow().stream_is_eof(end.id)
-            && self.run_stream_producer(end.id)
-        {
-            items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
-        }
+        // The producer is NOT called here. It is a LAST RESORT, driven by the
+        // event loop once nothing else can run — see `drive_parked_producers`.
+        //
+        // Calling it inline deadlocks the ordinary case. `accept-into-stream`
+        // waits for a connection, and the code that will make that connection
+        // is very often another fiber in this same program: a python
+        // `Thread.start()` DEFERS its body, so a server that accepts inline
+        // blocks the one execution thread that would have run the client. The
+        // read has to park FIRST so the loop can run everyone else; only when
+        // it has run out of work is blocking for a peer the right thing to do.
+        let items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
         if items.is_empty() {
             if self.event_loop.borrow().stream_is_eof(end.id) {
                 if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
@@ -2205,6 +3621,13 @@ impl VM {
                     self.handle_table.get_mut(handle)
                 {
                     e.state = crate::handle_table::CopyState::Copying;
+                }
+                // 🔀 ASYNC — same rule as the byte path: only `opts.async_`
+                // may answer BLOCKED. Both paths branch, so a typed stream and
+                // a `stream<u8>` cannot disagree about what `async` means.
+                if self.canon_async_opt() {
+                    self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                    return Ok(());
                 }
                 return Err(self.park_sync_copy(crate::fiber::PendingCopy {
                     handle,
@@ -2504,15 +3927,15 @@ impl VM {
             let opcode_start = self.frame().ip;
             let group = self.read_u16();
             let sub = self.read_u16();
-            let op = match Op::decode(group as u16, sub as u16) {
-                Some(op) => op,
-                None => {
-                    return Err(VMError::new(format!(
-                        "Invalid opcode: 0x{:04X} 0x{:04X}",
-                        group, sub
-                    )));
-                }
-            };
+            // Trusted construction: every chunk was validated instruction-by-
+            // instruction at LOAD (`VM::validate_chunk_code` — run_linked,
+            // nested eval, and reload all gate on it), so the per-dispatch
+            // `Op::decode` → `wasm_name_opt` name-table probe this replaces
+            // re-proved a fact millions of times (a top-3 profile sample on a
+            // pure-arithmetic loop). An op that somehow escaped validation
+            // still lands in this match's final `Unhandled opcode` arm — an
+            // error, never undefined behaviour.
+            let op = Op::new(group as u16, sub as u16);
             if self.dbg_ac {
                 dbg_last_op = Some(op);
             }
@@ -2558,19 +3981,19 @@ impl VM {
             }
 
             match op {
-                _ if op == Op::UNREACHABLE => {
+                Op::UNREACHABLE => {
                     return Err(VMError::new("trap: unreachable executed"));
                 }
-                _ if op == Op::NOP => { /* no-op */ }
+                Op::NOP => { /* no-op */ }
 
-                _ if op == Op::DROP => {
+                Op::DROP => {
                     if self.stack.len() > self.stack_floor() {
                         self.pop();
                     }
                 }
 
                 // -- Variables --
-                _ if op == Op::LOCAL_GET => {
+                Op::LOCAL_GET => {
                     let slot = self.read_u16() as usize;
                     let base = self.frame().base;
                     let idx = base + slot;
@@ -2585,7 +4008,7 @@ impl VM {
                     }
                     self.push(val)?;
                 }
-                _ if op == Op::LOCAL_SET => {
+                Op::LOCAL_SET => {
                     let slot = self.read_u16() as usize;
                     let val = self.pop();
                     if let Some(rec) = self.type_recorder.as_mut() {
@@ -2616,7 +4039,7 @@ impl VM {
                         *dst = val;
                     }
                 }
-                _ if op == Op::LOCAL_TEE => {
+                Op::LOCAL_TEE => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
                     if let Some(rec) = self.type_recorder.as_mut() {
@@ -2640,7 +4063,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
                     *dst = val;
                 }
-                _ if op == Op::GLOBAL_GET => {
+                Op::GLOBAL_GET => {
                     // A globalidx over `global_imports ++ defined`, exactly as
                     // WASM's `global.get`. No name is consulted here.
                     let idx = self.read_u16() as usize;
@@ -2661,7 +4084,7 @@ impl VM {
                     };
                     self.push(val)?;
                 }
-                _ if op == Op::GLOBAL_SET => {
+                Op::GLOBAL_SET => {
                     // See GLOBAL_GET: a globalidx, not a name.
                     let idx = self.read_u16() as usize;
                     let val = self.pop();
@@ -2681,7 +4104,7 @@ impl VM {
                 }
 
                 // -- Properties --
-                _ if op == Op::STRUCT_GET => {
+                Op::STRUCT_GET => {
                     let typeidx = self.read_u16() as usize;
                     let idx = self.read_u16();
                     if typeidx != 0 {
@@ -2795,7 +4218,7 @@ impl VM {
                     }
                     self.push(self.resolve_property(&obj, &name)?)?;
                 }
-                _ if op == Op::STRUCT_SET => {
+                Op::STRUCT_SET => {
                     let typeidx = self.read_u16() as usize;
                     let idx = self.read_u16();
                     if typeidx != 0 {
@@ -2875,7 +4298,7 @@ impl VM {
                     // `val` back on every path — the reason ~500 emit sites
                     // carried a compensating DROP.)
                 }
-                _ if op == Op::ARRAY_GET => {
+                Op::ARRAY_GET => {
                     let key = self.pop();
                     let obj = self.pop();
                     // WASM GC `array.get` traps on a typed null (GC array ref);
@@ -3028,7 +4451,7 @@ impl VM {
                         _ => self.push(Value::Null)?,
                     }
                 }
-                _ if op == Op::ARRAY_SET => {
+                Op::ARRAY_SET => {
                     let val = self.pop();
                     let key = self.pop();
                     let obj = self.pop();
@@ -3115,70 +4538,70 @@ impl VM {
                 }
 
                 // -- F32 arithmetic (f32 precision, stored as F64) --
-                _ if op == Op::F32_ADD => {
+                Op::F32_ADD => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a + b))?;
                 }
-                _ if op == Op::F32_SUB => {
+                Op::F32_SUB => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a - b))?;
                 }
-                _ if op == Op::F32_MUL => {
+                Op::F32_MUL => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a * b))?;
                 }
-                _ if op == Op::F32_DIV => {
+                Op::F32_DIV => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a / b))?;
                 }
                 // -- Float arithmetic --
-                _ if op == Op::F64_ADD => {
+                Op::F64_ADD => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a + b))?;
                 }
-                _ if op == Op::F64_SUB => {
+                Op::F64_SUB => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a - b))?;
                 }
-                _ if op == Op::F64_MUL => {
+                Op::F64_MUL => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a * b))?;
                 }
-                _ if op == Op::F64_DIV => {
+                Op::F64_DIV => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a / b))?;
                 }
                 // f64_mod: removed (non-WASM, use __stdlib_fmod)
-                _ if op == Op::F64_NEG => {
+                Op::F64_NEG => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(-a))?;
                 }
 
                 // -- Integer arithmetic --
-                _ if op == Op::I32_ADD => {
+                Op::I32_ADD => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_add(b)))?;
                 }
-                _ if op == Op::I32_SUB => {
+                Op::I32_SUB => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_sub(b)))?;
                 }
-                _ if op == Op::I32_MUL => {
+                Op::I32_MUL => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(Value::I32(a.wrapping_mul(b)))?;
                 }
-                _ if op == Op::I32_DIV_S => {
+                Op::I32_DIV_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     if b == 0 {
@@ -3189,7 +4612,7 @@ impl VM {
                     }
                     self.push(Value::I32(a / b))?;
                 }
-                _ if op == Op::I32_DIV_U => {
+                Op::I32_DIV_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     if b == 0 {
@@ -3197,7 +4620,7 @@ impl VM {
                     }
                     self.push(Value::I32((a / b) as i32))?;
                 }
-                _ if op == Op::I32_REM_S => {
+                Op::I32_REM_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     if b == 0 {
@@ -3205,7 +4628,7 @@ impl VM {
                     }
                     self.push(Value::I32(a.wrapping_rem(b)))?;
                 }
-                _ if op == Op::I32_REM_U => {
+                Op::I32_REM_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     if b == 0 {
@@ -3215,22 +4638,22 @@ impl VM {
                 }
 
                 // -- i64 arithmetic --
-                _ if op == Op::I64_ADD => {
+                Op::I64_ADD => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.wrapping_add(b)))?;
                 }
-                _ if op == Op::I64_SUB => {
+                Op::I64_SUB => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.wrapping_sub(b)))?;
                 }
-                _ if op == Op::I64_MUL => {
+                Op::I64_MUL => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.wrapping_mul(b)))?;
                 }
-                _ if op == Op::I64_DIV_S => {
+                Op::I64_DIV_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     if b == 0 {
@@ -3241,7 +4664,7 @@ impl VM {
                     }
                     self.push(Value::I64(a / b))?;
                 }
-                _ if op == Op::I64_DIV_U => {
+                Op::I64_DIV_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     if b == 0 {
@@ -3249,7 +4672,7 @@ impl VM {
                     }
                     self.push(Value::I64((a / b) as i64))?;
                 }
-                _ if op == Op::I64_REM_S => {
+                Op::I64_REM_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     if b == 0 {
@@ -3257,7 +4680,7 @@ impl VM {
                     }
                     self.push(Value::I64(a.wrapping_rem(b)))?;
                 }
-                _ if op == Op::I64_REM_U => {
+                Op::I64_REM_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     if b == 0 {
@@ -3265,85 +4688,85 @@ impl VM {
                     }
                     self.push(Value::I64((a % b) as i64))?;
                 }
-                _ if op == Op::I64_AND => {
+                Op::I64_AND => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a & b))?;
                 }
-                _ if op == Op::I64_OR => {
+                Op::I64_OR => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a | b))?;
                 }
-                _ if op == Op::I64_XOR => {
+                Op::I64_XOR => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a ^ b))?;
                 }
-                _ if op == Op::I64_SHL => {
+                Op::I64_SHL => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a << (b & 0x3f)))?;
                 }
-                _ if op == Op::I64_SHR_S => {
+                Op::I64_SHR_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a >> (b & 0x3f)))?;
                 }
-                _ if op == Op::I64_SHR_U => {
+                Op::I64_SHR_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::I64((a >> (b & 0x3f)) as i64))?;
                 }
-                _ if op == Op::I64_ROTL => {
+                Op::I64_ROTL => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::I64(a.rotate_left((b & 0x3f) as u32) as i64))?;
                 }
-                _ if op == Op::I64_ROTR => {
+                Op::I64_ROTR => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::I64(a.rotate_right((b & 0x3f) as u32) as i64))?;
                 }
-                _ if op == Op::I64_CLZ => {
+                Op::I64_CLZ => {
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.leading_zeros() as i64))?;
                 }
-                _ if op == Op::I64_CTZ => {
+                Op::I64_CTZ => {
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.trailing_zeros() as i64))?;
                 }
-                _ if op == Op::I64_POPCNT => {
+                Op::I64_POPCNT => {
                     let a = self.pop().as_i64();
                     self.push(Value::I64(a.count_ones() as i64))?;
                 }
 
                 // -- f64 math --
-                _ if op == Op::F64_ABS => {
+                Op::F64_ABS => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.abs()))?;
                 }
-                _ if op == Op::F64_CEIL => {
+                Op::F64_CEIL => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.ceil()))?;
                 }
-                _ if op == Op::F64_FLOOR => {
+                Op::F64_FLOOR => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.floor()))?;
                 }
-                _ if op == Op::F64_TRUNC => {
+                Op::F64_TRUNC => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.trunc()))?;
                 }
-                _ if op == Op::F64_NEAREST => {
+                Op::F64_NEAREST => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.round_ties_even()))?;
                 }
-                _ if op == Op::F64_SQRT => {
+                Op::F64_SQRT => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.sqrt()))?;
                 }
-                _ if op == Op::F64_MIN => {
+                Op::F64_MIN => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(if a.is_nan() || b.is_nan() {
@@ -3352,7 +4775,7 @@ impl VM {
                         a.min(b)
                     }))?;
                 }
-                _ if op == Op::F64_MAX => {
+                Op::F64_MAX => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(if a.is_nan() || b.is_nan() {
@@ -3361,42 +4784,42 @@ impl VM {
                         a.max(b)
                     }))?;
                 }
-                _ if op == Op::F64_COPYSIGN => {
+                Op::F64_COPYSIGN => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a.copysign(b)))?;
                 }
 
                 // -- f32 (promoted to f64) --
-                _ if op == Op::F32_ABS => {
+                Op::F32_ABS => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.abs()))?;
                 }
-                _ if op == Op::F32_NEG => {
+                Op::F32_NEG => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(-a))?;
                 }
-                _ if op == Op::F32_CEIL => {
+                Op::F32_CEIL => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.ceil()))?;
                 }
-                _ if op == Op::F32_FLOOR => {
+                Op::F32_FLOOR => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.floor()))?;
                 }
-                _ if op == Op::F32_TRUNC => {
+                Op::F32_TRUNC => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.trunc()))?;
                 }
-                _ if op == Op::F32_NEAREST => {
+                Op::F32_NEAREST => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.round_ties_even()))?;
                 }
-                _ if op == Op::F32_SQRT => {
+                Op::F32_SQRT => {
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.sqrt()))?;
                 }
-                _ if op == Op::F32_MIN => {
+                Op::F32_MIN => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(if a.is_nan() || b.is_nan() {
@@ -3405,7 +4828,7 @@ impl VM {
                         a.min(b)
                     }))?;
                 }
-                _ if op == Op::F32_MAX => {
+                Op::F32_MAX => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(if a.is_nan() || b.is_nan() {
@@ -3414,14 +4837,14 @@ impl VM {
                         a.max(b)
                     }))?;
                 }
-                _ if op == Op::F32_COPYSIGN => {
+                Op::F32_COPYSIGN => {
                     let b = self.pop().as_f32();
                     let a = self.pop().as_f32();
                     self.push(Value::F32(a.copysign(b)))?;
                 }
 
                 // -- WASM select --
-                _ if op == Op::SELECT => {
+                Op::SELECT => {
                     let cond = self.pop().as_i32();
                     let val2 = self.pop();
                     let val1 = self.pop();
@@ -3431,7 +4854,7 @@ impl VM {
                 // untyped select; the result-type vec is a validation-time
                 // hint. The emitter writes `0x1C <count> <valtype>*`; VM
                 // side just pops and picks.
-                _ if op == Op::SELECT_T => {
+                Op::SELECT_T => {
                     let cond = self.pop().as_i32();
                     let val2 = self.pop();
                     let val1 = self.pop();
@@ -3444,7 +4867,7 @@ impl VM {
                 // `wasm_tables`, indexed directly by tableidx.
                 // `table.get tbl` — the index is i64 for a 64-bit (table64)
                 // table, else i32. table64 adds no new opcodes.
-                _ if op == Op::TABLE_GET => {
+                Op::TABLE_GET => {
                     let table_idx = self.read_u16() as usize;
                     let idx = if self.tbl_is_64(table_idx) {
                         Self::table64_index(self.pop(), "table.get")?
@@ -3462,7 +4885,7 @@ impl VM {
                 }
                 // `table.set tbl` — pop value + index, write into table.
                 // Trap on out-of-bounds index per spec.
-                _ if op == Op::TABLE_SET => {
+                Op::TABLE_SET => {
                     let table_idx = self.read_u16() as usize;
                     let val = self.pop();
                     let idx = if self.tbl_is_64(table_idx) {
@@ -3480,35 +4903,35 @@ impl VM {
                 }
 
                 // -- i32 rotation and bit counting --
-                _ if op == Op::I32_ROTL => {
+                Op::I32_ROTL => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I32(a.rotate_left(b & 0x1f) as i32))?;
                 }
-                _ if op == Op::I32_ROTR => {
+                Op::I32_ROTR => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I32(a.rotate_right(b & 0x1f) as i32))?;
                 }
-                _ if op == Op::I32_CLZ => {
+                Op::I32_CLZ => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I32(a.leading_zeros() as i32))?;
                 }
-                _ if op == Op::I32_CTZ => {
+                Op::I32_CTZ => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I32(a.trailing_zeros() as i32))?;
                 }
-                _ if op == Op::I32_POPCNT => {
+                Op::I32_POPCNT => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I32(a.count_ones() as i32))?;
                 }
 
                 // -- eqz --
-                _ if op == Op::I32_EQZ => {
+                Op::I32_EQZ => {
                     let a = self.pop().as_i32();
                     self.push(wasm_bool(a == 0))?;
                 }
-                _ if op == Op::I64_EQZ => {
+                Op::I64_EQZ => {
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a == 0))?;
                 }
@@ -3516,33 +4939,33 @@ impl VM {
                 // -- String --
 
                 // -- Bitwise --
-                _ if op == Op::I32_AND => {
+                Op::I32_AND => {
                     let b = self.pop().to_ecma_int32();
                     let a = self.pop().to_ecma_int32();
                     self.push(Value::I32(a & b))?;
                 }
-                _ if op == Op::I32_OR => {
+                Op::I32_OR => {
                     let b = self.pop().to_ecma_int32();
                     let a = self.pop().to_ecma_int32();
                     self.push(Value::I32(a | b))?;
                 }
-                _ if op == Op::I32_XOR => {
+                Op::I32_XOR => {
                     let b = self.pop().to_ecma_int32();
                     let a = self.pop().to_ecma_int32();
                     self.push(Value::I32(a ^ b))?;
                 }
                 // i32_not: removed (non-WASM, use i32.const -1 + i32.xor)
-                _ if op == Op::I32_SHL => {
+                Op::I32_SHL => {
                     let b = self.pop().to_ecma_int32();
                     let a = self.pop().to_ecma_int32();
                     self.push(Value::I32(a.wrapping_shl((b as u32) & 0x1f)))?;
                 }
-                _ if op == Op::I32_SHR_S => {
+                Op::I32_SHR_S => {
                     let b = self.pop().to_ecma_int32();
                     let a = self.pop().to_ecma_int32();
                     self.push(Value::I32(a >> (b & 0x1f)))?;
                 }
-                _ if op == Op::I32_SHR_U => {
+                Op::I32_SHR_U => {
                     let b = self.pop().to_ecma_int32() as u32;
                     let a = self.pop().to_ecma_int32() as u32;
                     self.push(Value::I32((a >> (b & 0x1f)) as i32))?;
@@ -3550,165 +4973,165 @@ impl VM {
 
                 // -- Comparison --
                 // i32 comparisons (WASM MVP 0x46–0x4F)
-                _ if op == Op::I32_EQ => {
+                Op::I32_EQ => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(wasm_bool(a.eq(&b)))?;
                 }
-                _ if op == Op::I32_NE => {
+                Op::I32_NE => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(wasm_bool(!a.eq(&b)))?;
                 }
-                _ if op == Op::I32_LT_S => {
+                Op::I32_LT_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::I32_LT_U => {
+                Op::I32_LT_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::I32_GT_S => {
+                Op::I32_GT_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::I32_GT_U => {
+                Op::I32_GT_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::I32_LE_S => {
+                Op::I32_LE_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::I32_LE_U => {
+                Op::I32_LE_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::I32_GE_S => {
+                Op::I32_GE_S => {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     self.push(wasm_bool(a >= b))?;
                 }
-                _ if op == Op::I32_GE_U => {
+                Op::I32_GE_U => {
                     let b = self.pop().as_i32() as u32;
                     let a = self.pop().as_i32() as u32;
                     self.push(wasm_bool(a >= b))?;
                 }
                 // i64 comparisons (WASM MVP 0x51–0x5A)
-                _ if op == Op::I64_EQ => {
+                Op::I64_EQ => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a == b))?;
                 }
-                _ if op == Op::I64_NE => {
+                Op::I64_NE => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a != b))?;
                 }
-                _ if op == Op::I64_LT_S => {
+                Op::I64_LT_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::I64_LT_U => {
+                Op::I64_LT_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::I64_GT_S => {
+                Op::I64_GT_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::I64_GT_U => {
+                Op::I64_GT_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::I64_LE_S => {
+                Op::I64_LE_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::I64_LE_U => {
+                Op::I64_LE_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::I64_GE_S => {
+                Op::I64_GE_S => {
                     let b = self.pop().as_i64();
                     let a = self.pop().as_i64();
                     self.push(wasm_bool(a >= b))?;
                 }
-                _ if op == Op::I64_GE_U => {
+                Op::I64_GE_U => {
                     let b = self.pop().as_i64() as u64;
                     let a = self.pop().as_i64() as u64;
                     self.push(wasm_bool(a >= b))?;
                 }
                 // f32 comparisons (WASM MVP 0x5B–0x60) — operate on f32 precision
-                _ if op == Op::F32_EQ => {
+                Op::F32_EQ => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a == b))?;
                 }
-                _ if op == Op::F32_NE => {
+                Op::F32_NE => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a != b))?;
                 }
-                _ if op == Op::F32_LT => {
+                Op::F32_LT => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::F32_GT => {
+                Op::F32_GT => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::F32_LE => {
+                Op::F32_LE => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::F32_GE => {
+                Op::F32_GE => {
                     let b = self.pop().as_f64() as f32;
                     let a = self.pop().as_f64() as f32;
                     self.push(wasm_bool(a >= b))?;
                 }
                 // f64 comparisons (WASM MVP 0x61–0x66)
-                _ if op == Op::F64_EQ => {
+                Op::F64_EQ => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a == b))?;
                 }
-                _ if op == Op::F64_NE => {
+                Op::F64_NE => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a != b))?;
                 }
-                _ if op == Op::F64_LT => {
+                Op::F64_LT => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a < b))?;
                 }
-                _ if op == Op::F64_GT => {
+                Op::F64_GT => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a > b))?;
                 }
-                _ if op == Op::F64_LE => {
+                Op::F64_LE => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a <= b))?;
                 }
-                _ if op == Op::F64_GE => {
+                Op::F64_GE => {
                     let b = self.pop().as_f64();
                     let a = self.pop().as_f64();
                     self.push(wasm_bool(a >= b))?;
@@ -3719,7 +5142,7 @@ impl VM {
                 // bool_not: removed (non-WASM, use dyn_to_bool + i32_eqz)
 
                 // -- Control flow --
-                _ if op == Op::BR => {
+                Op::BR => {
                     let ci = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
                     let depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
@@ -3728,7 +5151,7 @@ impl VM {
                         self.branch_to_label(depth, entry);
                     }
                 }
-                _ if op == Op::BR_IF => {
+                Op::BR_IF => {
                     let ci = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
                     let depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
@@ -3754,7 +5177,7 @@ impl VM {
                 // The old callee-on-stack `Op::CALL` arm (byte-identical to
                 // CALL_REF) is deleted; spec `call` (0x00 0x10) is being
                 // redefined as a static import call — see callimportretirement.md.
-                _ if op == Op::CALL_REF => {
+                Op::CALL_REF => {
                     // Direct call through a function reference — same as call
                     // but the func ref is already on the stack (no table lookup).
                     let argc = self.read_byte() as usize;
@@ -3763,6 +5186,91 @@ impl VM {
                     // execution, so it is not read here.
                     let _results = self.read_byte();
                     self.call_value(argc)?;
+                }
+                // ── Call Tags proposal ───────────────────────────────────
+                //
+                // `call_with_tag $call_tag : [ti* funcref] -> [to*]`
+                //
+                // The decision is the CALLEE's, which is what separates this
+                // from `call_indirect`: the caller names a tag, and the funcref
+                // either handles it or does not. The Overview:
+                //
+                //   If the call tag is not recognized, then the code
+                //   jumps-to/tail-calls the fall-back handler pointed to by the
+                //   call tag, leaving all the arguments in their place but
+                //   replacing the call-tag value with the value of the current
+                //   `funcref`.
+                //
+                // and, for a tag with no handler declared:
+                //
+                //   For canonical call tags, the answer is simply that the
+                //   program traps.
+                //
+                // Trapping is the point. An unhandled convention is a MISTAKE,
+                // and the alternative — calling anyway under the wrong shape —
+                // is a silent wrong answer.
+                Op::CALL_WITH_TAG => {
+                    // The immediate NAMES the tag (a constant-pool index); the
+                    // entity id is resolved from it, as a `throw`'s tagidx is.
+                    let name_idx = self.read_u16();
+                    let argc = self.read_byte() as usize;
+                    let ci = self.frame().chunk_index;
+                    let tag = self.resolve_chunk_call_tag(ci, name_idx)?;
+                    self.call_with_tag(tag, argc)?;
+                }
+                // `call_indirect_with_tag $table $call_tag : [ti* i32] -> [to*]`
+                // is shorthand for `(call_with_tag $call_tag (table.get $table))`,
+                // so it resolves the element and then runs the identical path —
+                // one implementation, no second set of rules to drift.
+                Op::CALL_INDIRECT_WITH_TAG => {
+                    let table = self.read_u16() as usize;
+                    let local = self.read_u16();
+                    let argc = self.read_byte() as usize;
+                    let ci = self.frame().chunk_index;
+                    let tag = self.resolve_chunk_call_tag(ci, local)?;
+                    let elem_idx = match self.stack.pop() {
+                        Some(Value::I32(i)) => i as usize,
+                        // wast integers reach the stack as f64 through this
+                        // pipeline, exactly as they do for plain
+                        // `call_indirect`; a whole f64 IS the i32 index.
+                        Some(Value::F64(f)) if f.fract() == 0.0 && f >= 0.0 => f as usize,
+                        Some(other) => {
+                            return Err(VMError::new(format!(
+                                "call_indirect_with_tag: table index must be i32, got {other:?}"
+                            )));
+                        }
+                        None => {
+                            return Err(VMError::new(
+                                "call_indirect_with_tag: missing table index".to_string(),
+                            ));
+                        }
+                    };
+                    // `table.get $table` — out of bounds traps, as it does for
+                    // the plain `call_indirect` this is shorthand for.
+                    let funcref = self
+                        .wasm_tables
+                        .get(table)
+                        .and_then(|t| t.get(elem_idx))
+                        .cloned()
+                        .ok_or_else(|| {
+                            VMError::new(format!(
+                                "call_indirect_with_tag: undefined element {elem_idx} in table {table}"
+                            ))
+                        })?;
+                    self.stack.push(funcref);
+                    self.call_with_tag(tag, argc)?;
+                }
+                // The tail-call form. The Overview defers the tail behaviour to
+                // the Tail Call proposal ("for engines that support
+                // `call_return`"); the tag semantics are identical, so it shares
+                // the same resolution and differs only in not growing the frame
+                // where the engine can avoid it.
+                Op::CALL_RETURN_WITH_TAG => {
+                    let name_idx = self.read_u16();
+                    let argc = self.read_byte() as usize;
+                    let ci = self.frame().chunk_index;
+                    let tag = self.resolve_chunk_call_tag(ci, name_idx)?;
+                    self.call_with_tag(tag, argc)?;
                 }
                 // Multi-value RETURN: the current chunk declares how many
                 // results it produces via `result_arity` (defaults to 1 —
@@ -3773,7 +5281,7 @@ impl VM {
                 // the "final" return (callers that want every value can
                 // read them off the stack before the frame is popped;
                 // `Ok(...)` is a scalar channel).
-                _ if op == Op::RETURN => {
+                Op::RETURN => {
                     let frame_chunk = self.frame().chunk_index;
                     let frame_label_base = self.frame().label_base;
                     let n = (self.chunks[frame_chunk].result_arity as usize).max(1);
@@ -3850,7 +5358,7 @@ impl VM {
                         self.push(r)?;
                     }
                 }
-                _ if op == Op::REF_FUNC => {
+                Op::REF_FUNC => {
                     let func_idx = self.read_u16() as usize;
                     // The uv_count byte's high bit (0x80) is a "do not intern"
                     // flag: a bound method stamps a per-receiver property on its
@@ -3930,7 +5438,7 @@ impl VM {
                 // chunk's import table, falling back to the linked module
                 // table. (The retired 0xFF CALL_IMPORT alias carried the
                 // identical immediates and body.)
-                _ if op == Op::CALL => {
+                Op::CALL => {
                     let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
                     let chunk_index = self.frame().chunk_index;
@@ -4080,7 +5588,7 @@ impl VM {
                 //                 $t's rtt — which is what makes `ref.test` /
                 //                 `ref.cast` answer from the type registry
                 //                 instead of a `__type` string.
-                _ if op == Op::STRUCT_NEW => {
+                Op::STRUCT_NEW => {
                     let typeidx = self.read_u16() as usize;
                     let count = self.read_u16() as usize;
                     if typeidx != 0 {
@@ -4126,7 +5634,7 @@ impl VM {
                 // `set` / `fill` / `copy` could never trap on one — the trap
                 // code existed but was unreachable for anything built here.
                 // Type index 0 = dynamic-language array literal (lenient).
-                _ if op == Op::ARRAY_NEW_FIXED => {
+                Op::ARRAY_NEW_FIXED => {
                     let typeidx = self.read_u16() as usize;
                     let count = self.read_u16() as usize;
                     let count = count.min(self.stack.len());
@@ -4139,7 +5647,7 @@ impl VM {
                 }
                 // `array.new $t` — [value, length] -> [array of length,
                 // every lane = value].
-                _ if op == Op::ARRAY_NEW => {
+                Op::ARRAY_NEW => {
                     // Immediate is a 1-based index into the script chunk's type
                     // table naming an `(array …)` defined type (0 = a
                     // dynamic-language array, no GC type). Resolved to the
@@ -4161,7 +5669,7 @@ impl VM {
                 // zero-initialised]. We use `Value::Null` as the default
                 // for externref lanes (the only lane type we actually
                 // support) per the "null is the default for refs" rule.
-                _ if op == Op::ARRAY_NEW_DEFAULT => {
+                Op::ARRAY_NEW_DEFAULT => {
                     // Immediate is a 1-based script-chunk type-table index (0 =
                     // dynamic); resolved to the instance rtt so a defaulted GC
                     // array traps per spec, matching `array.new`.
@@ -4179,7 +5687,7 @@ impl VM {
                 // garbage. Emitted WASM still carries the spec-correct
                 // opcode bytes, so engines with real segment support
                 // execute these correctly.
-                _ if op == Op::ARRAY_NEW_DATA => {
+                Op::ARRAY_NEW_DATA => {
                     let _typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
                     if self.dropped_data.contains(&dataidx) {
@@ -4201,7 +5709,7 @@ impl VM {
                         .collect();
                     self.push(Value::Object(crate::heap::alloc(Object::new_array(elems))))?;
                 }
-                _ if op == Op::ARRAY_NEW_ELEM => {
+                Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
                     let elemidx = self.read_u16() as u32;
                     if self.dropped_elems.contains(&elemidx) {
@@ -4231,7 +5739,7 @@ impl VM {
                 // or zero-extended (U) to i32. We honour that on typed
                 // storage (TypedArray / ArrayBuffer) and fall back to a
                 // plain read for Value arrays.
-                _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
+                Op::ARRAY_GET_S | Op::ARRAY_GET_U => {
                     let _typeidx = self.read_u16();
                     let is_signed = op == Op::ARRAY_GET_S;
                     let raw_idx = self.pop().as_i32();
@@ -4319,7 +5827,7 @@ impl VM {
                 // src_byte_offset, count]. Each element occupies `elemsize` bytes
                 // in the segment, read little-endian; `src` is a BYTE offset so
                 // the source span is `[src, src + count·elemsize)`.
-                _ if op == Op::ARRAY_INIT_DATA => {
+                Op::ARRAY_INIT_DATA => {
                     let _typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
                     if self.dropped_data.contains(&dataidx) {
@@ -4391,7 +5899,7 @@ impl VM {
                         return Err(VMError::new("array.init_data: not an array"));
                     }
                 }
-                _ if op == Op::ARRAY_INIT_ELEM => {
+                Op::ARRAY_INIT_ELEM => {
                     let _typeidx = self.read_u16();
                     let elemidx = self.read_u16() as u32;
                     if self.dropped_elems.contains(&elemidx) {
@@ -4439,7 +5947,7 @@ impl VM {
                 // to derive a typed zero from. Recovering the real per-type
                 // defaults needs the reader to build field types into the
                 // TypeEntry.
-                _ if op == Op::STRUCT_NEW_DEFAULT => {
+                Op::STRUCT_NEW_DEFAULT => {
                     let typeidx = self.read_u16() as usize;
                     let mut obj = Object::new();
                     if typeidx != 0 {
@@ -4469,7 +5977,7 @@ impl VM {
                 // Descriptors are stashed in the object's `__descriptor`
                 // property slot — reading them back via REF_GET_DESC just
                 // returns whatever was stamped at construction.
-                _ if op == Op::STRUCT_NEW_DESC => {
+                Op::STRUCT_NEW_DESC => {
                     let _typeidx = self.read_u16();
                     let descriptor = self.pop();
                     // Pop N field values — spec takes exactly the type's
@@ -4484,14 +5992,14 @@ impl VM {
                     obj.properties.insert("__descriptor".into(), descriptor);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
-                _ if op == Op::STRUCT_NEW_DEFAULT_DESC => {
+                Op::STRUCT_NEW_DEFAULT_DESC => {
                     let _typeidx = self.read_u16();
                     let descriptor = self.pop();
                     let mut obj = Object::new();
                     obj.properties.insert("__descriptor".into(), descriptor);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
-                _ if op == Op::REF_GET_DESC => {
+                Op::REF_GET_DESC => {
                     let _typeidx = self.read_u16();
                     let val = self.pop();
                     let desc = descriptor_of(&val);
@@ -4507,7 +6015,7 @@ impl VM {
                 // descriptor traps unconditionally — before the reference is
                 // even looked at — so the null check comes first for all four
                 // of these instructions.
-                _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
+                Op::REF_CAST_DESC_EQ | Op::REF_CAST_DESC_EQ_NULL => {
                     let _typeidx = self.read_u16();
                     let expected = self.pop();
                     if expected.is_null_ref() {
@@ -4531,7 +6039,7 @@ impl VM {
                 // type-name-idx, u8 label depth). The descriptor is consumed
                 // either way; the reference stays for both the branch and the
                 // fallthrough.
-                _ if op == Op::BR_ON_CAST_DESC_EQ || op == Op::BR_ON_CAST_DESC_EQ_FAIL => {
+                Op::BR_ON_CAST_DESC_EQ | Op::BR_ON_CAST_DESC_EQ_FAIL => {
                     let _typeidx = self.read_u16();
                     let depth = self.read_byte() as usize;
                     let expected = self.pop();
@@ -4555,7 +6063,7 @@ impl VM {
                 // variants. Our structs have externref fields only, so
                 // there's no sign extension to do — both behave like
                 // `struct.get`.
-                _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
+                Op::STRUCT_GET_S | Op::STRUCT_GET_U => {
                     let _typeidx = self.read_u16();
                     let field_idx = self.read_u16();
                     let obj = self.pop();
@@ -4574,13 +6082,13 @@ impl VM {
                 // non-null variants but succeed when the operand is null.
                 // Our VM already treats null as assignable to externref,
                 // so these short-circuit to true / pass-through on null.
-                _ if op == Op::REF_TEST_NULL => {
+                Op::REF_TEST_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
                     let result = val.is_null_ref() || self.ref_test_or_declared_name(&val, ht);
                     self.push(Value::I32(if result { 1 } else { 0 }))?;
                 }
-                _ if op == Op::REF_CAST_NULL => {
+                Op::REF_CAST_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
                     if !val.is_null_ref() && !self.ref_test_or_declared_name(&val, ht) {
@@ -4594,10 +6102,10 @@ impl VM {
                 // runtime for us: our value ABI is a universal externref.
                 // Spec says composing the two yields the original value, so
                 // emitting them as nops is semantically correct.
-                _ if op == Op::ANY_CONVERT_EXTERN || op == Op::EXTERN_CONVERT_ANY => {}
+                Op::ANY_CONVERT_EXTERN | Op::EXTERN_CONVERT_ANY => {}
                 // `ref.as_non_null` — trap if the operand is null, otherwise
                 // pass the value through unchanged.
-                _ if op == Op::REF_AS_NON_NULL => {
+                Op::REF_AS_NON_NULL => {
                     if self.stack.last().map_or(false, |v| v.is_null_ref()) {
                         return Err(VMError::new("trap: ref.as_non_null on null reference"));
                     }
@@ -4606,7 +6114,7 @@ impl VM {
                 // otherwise leave the value on the stack and fall through.
                 // `br_on_non_null $l` — if TOS is non-null, branch with
                 // the value; otherwise pop and fall through.
-                _ if op == Op::BR_ON_NULL => {
+                Op::BR_ON_NULL => {
                     let offset = self.read_i16();
                     let is_null = self.stack.last().map_or(false, |v| v.is_null_ref());
                     if is_null {
@@ -4615,7 +6123,7 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                _ if op == Op::BR_ON_NON_NULL => {
+                Op::BR_ON_NON_NULL => {
                     let offset = self.read_i16();
                     let is_null = self.stack.last().map_or(false, |v| v.is_null_ref());
                     if !is_null {
@@ -4632,7 +6140,7 @@ impl VM {
                 // `ref.null extern`/`func` is the lenient null the dynamic
                 // languages use. That distinction is the immediate, not a
                 // second opcode.
-                _ if op == Op::NULL => {
+                Op::NULL => {
                     let ht = self.read_byte();
                     if crate::opcode::heaptype::is_gc_heap(ht) {
                         self.push(Value::TypedNull(0))?
@@ -4641,19 +6149,19 @@ impl VM {
                     }
                 }
 
-                _ if op == Op::I32_CONST => {
+                Op::I32_CONST => {
                     let v = self.read_leb_i32();
                     self.push(Value::I32(v))?;
                 }
-                _ if op == Op::I64_CONST => {
+                Op::I64_CONST => {
                     let v = self.read_leb_i64();
                     self.push(Value::I64(v))?;
                 }
-                _ if op == Op::F32_CONST => {
+                Op::F32_CONST => {
                     let v = self.read_f32();
                     self.push(Value::F32(v))?;
                 }
-                _ if op == Op::F64_CONST => {
+                Op::F64_CONST => {
                     let v = self.read_f64();
                     self.push(Value::F64(v))?;
                 }
@@ -4662,7 +6170,7 @@ impl VM {
                 // Two references are equal iff they point at the same
                 // underlying object. Null-null is also true. Used by JS
                 // `===` for object identity.
-                _ if op == Op::REF_EQ => {
+                Op::REF_EQ => {
                     let b = self.pop();
                     let a = self.pop();
                     self.push(wasm_bool(ref_eq(&a, &b)))?;
@@ -4673,13 +6181,13 @@ impl VM {
                 // decoded from the spec's signed LEB. Abstract types answer
                 // from the value's shape; a concrete one is an index walk over
                 // declared supertypes.
-                _ if op == Op::REF_TEST => {
+                Op::REF_TEST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
                     let result = self.ref_test_or_declared_name(&val, ht);
                     self.push(wasm_bool(result))?;
                 }
-                _ if op == Op::REF_CAST => {
+                Op::REF_CAST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
                     if !self.ref_test_or_declared_name(&val, ht) {
@@ -4701,7 +6209,7 @@ impl VM {
                 // (u16 type-name-idx, u8 label-depth), matching core `br`'s
                 // label-stack discipline so the VM can honour the branch
                 // without a parallel byte-offset table.
-                _ if op == Op::BR_ON_CAST => {
+                Op::BR_ON_CAST => {
                     let type_name_idx = self.read_u16();
                     let depth = self.read_byte() as usize;
                     let target_name = self.constant_str(type_name_idx);
@@ -4712,7 +6220,7 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::BR_ON_CAST_FAIL => {
+                Op::BR_ON_CAST_FAIL => {
                     let type_name_idx = self.read_u16();
                     let depth = self.read_byte() as usize;
                     let target_name = self.constant_str(type_name_idx);
@@ -4725,14 +6233,14 @@ impl VM {
                 }
 
                 // -- i31ref (tagged small integers) --
-                _ if op == Op::I31_NEW => {
+                Op::I31_NEW => {
                     // Box i32 as i31ref. In our VM, I32 is already unboxed,
                     // so this is a no-op identity. The optimization is that
                     // the VM can use I32 directly without heap allocation.
                     let v = self.pop().as_i32();
                     self.push(Value::I32(v & 0x7FFF_FFFF))?; // mask to 31 bits
                 }
-                _ if op == Op::I31_GET_S => {
+                Op::I31_GET_S => {
                     // Both getters take `(ref null i31)` and trap on null; a
                     // null used to read back as 0, indistinguishable from a
                     // genuine `ref.i31 0`.
@@ -4749,7 +6257,7 @@ impl VM {
                     };
                     self.push(Value::I32(extended))?;
                 }
-                _ if op == Op::I31_GET_U => {
+                Op::I31_GET_U => {
                     let raw = self.pop();
                     if raw.is_null_ref() {
                         return Err(VMError::new("trap: i31.get_u on null reference"));
@@ -4760,7 +6268,7 @@ impl VM {
                 // ── Stringref proposal ────────────────────────────────────
                 // Strings are `Value::String`. The `$mem` immediate defaults to
                 // memory 0 (no immediate bytes read — matches operand_format).
-                _ if op == Op::STRING_NEW_UTF8 || op == Op::STRING_NEW_WTF8 => {
+                Op::STRING_NEW_UTF8 | Op::STRING_NEW_WTF8 => {
                     let len = self.pop().as_i32() as u32 as usize;
                     let ptr = self.pop().as_i32() as u32 as usize;
                     let bytes = self.read_memory_bytes(0, ptr, len)?;
@@ -4770,14 +6278,14 @@ impl VM {
                         .map_err(|_| VMError::new("trap: invalid UTF-8"))?;
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_NEW_LOSSY_UTF8 => {
+                Op::STRING_NEW_LOSSY_UTF8 => {
                     let len = self.pop().as_i32() as u32 as usize;
                     let ptr = self.pop().as_i32() as u32 as usize;
                     let bytes = self.read_memory_bytes(0, ptr, len)?;
                     let s = String::from_utf8_lossy(&bytes).into_owned();
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_NEW_UTF8_ARRAY || op == Op::STRING_NEW_WTF16_ARRAY => {
+                Op::STRING_NEW_UTF8_ARRAY | Op::STRING_NEW_WTF16_ARRAY => {
                     let end = self.pop().as_i32() as u32 as usize;
                     let start = self.pop().as_i32() as u32 as usize;
                     let arr = self.pop();
@@ -4791,22 +6299,22 @@ impl VM {
                     };
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_MEASURE_UTF8 || op == Op::STRING_MEASURE_WTF8 => {
+                Op::STRING_MEASURE_UTF8 | Op::STRING_MEASURE_WTF8 => {
                     let s = self.pop_stringref()?;
                     self.push(Value::I32(s.len() as i32))?;
                 }
-                _ if op == Op::STRING_MEASURE_WTF16 => {
+                Op::STRING_MEASURE_WTF16 => {
                     let s = self.pop_stringref()?;
                     self.push(Value::I32(s.encode_utf16().count() as i32))?;
                 }
-                _ if op == Op::STRING_ENCODE_UTF8 => {
+                Op::STRING_ENCODE_UTF8 => {
                     let ptr = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
                     let bytes = s.as_bytes().to_vec();
                     self.write_memory_bytes(0, ptr, &bytes)?;
                     self.push(Value::I32(bytes.len() as i32))?;
                 }
-                _ if op == Op::STRING_ENCODE_WTF16 => {
+                Op::STRING_ENCODE_WTF16 => {
                     let ptr = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
                     let units: Vec<u16> = s.encode_utf16().collect();
@@ -4817,7 +6325,7 @@ impl VM {
                     self.write_memory_bytes(0, ptr, &bytes)?;
                     self.push(Value::I32(units.len() as i32))?;
                 }
-                _ if op == Op::STRING_ENCODE_UTF8_ARRAY || op == Op::STRING_ENCODE_WTF16_ARRAY => {
+                Op::STRING_ENCODE_UTF8_ARRAY | Op::STRING_ENCODE_WTF16_ARRAY => {
                     let start = self.pop().as_i32() as u32 as usize;
                     let arr = self.pop();
                     let s = self.pop_stringref()?;
@@ -4844,7 +6352,7 @@ impl VM {
                     }
                     self.push(Value::I32(units.len() as i32))?;
                 }
-                _ if op == Op::STRING_CONCAT => {
+                Op::STRING_CONCAT => {
                     let b = self.pop_stringref()?;
                     let a = self.pop_stringref()?;
                     let mut s = String::with_capacity(a.len() + b.len());
@@ -4852,7 +6360,7 @@ impl VM {
                     s.push_str(&b);
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_EQ => {
+                Op::STRING_EQ => {
                     // Does NOT trap on null: null == null → 1, null vs string → 0.
                     let b = self.pop();
                     let a = self.pop();
@@ -4863,7 +6371,7 @@ impl VM {
                     };
                     self.push(Value::I32(i32::from(eq)))?;
                 }
-                _ if op == Op::STRING_AS_WTF8 || op == Op::STRING_AS_WTF16 => {
+                Op::STRING_AS_WTF8 | Op::STRING_AS_WTF16 => {
                     // Views over the same content: return the string unchanged
                     // (trap on null). The stringview cursor ops below operate on
                     // this string directly (position is an explicit operand).
@@ -4875,7 +6383,7 @@ impl VM {
                 // Native strings are always valid UTF-8 (= valid USV sequences,
                 // no lone surrogates), so WTF-8 and lossy-UTF-8 encode/decode
                 // identically to UTF-8; WTF-16 mirrors the existing UTF-16 paths.
-                _ if op == Op::STRING_NEW_WTF16 => {
+                Op::STRING_NEW_WTF16 => {
                     // (ptr, codeunits): read codeunits × 2 bytes as little-endian u16.
                     let units = self.pop().as_i32() as u32 as usize;
                     let ptr = self.pop().as_i32() as u32 as usize;
@@ -4887,7 +6395,7 @@ impl VM {
                     let s = String::from_utf16_lossy(&u16s);
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_ENCODE_WTF8 || op == Op::STRING_ENCODE_LOSSY_UTF8 => {
+                Op::STRING_ENCODE_WTF8 | Op::STRING_ENCODE_LOSSY_UTF8 => {
                     // (str, ptr): write the UTF-8 bytes, return the byte count.
                     let ptr = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
@@ -4895,7 +6403,7 @@ impl VM {
                     self.write_memory_bytes(0, ptr, &bytes)?;
                     self.push(Value::I32(bytes.len() as i32))?;
                 }
-                _ if op == Op::STRING_NEW_WTF8_ARRAY || op == Op::STRING_NEW_LOSSY_UTF8_ARRAY => {
+                Op::STRING_NEW_WTF8_ARRAY | Op::STRING_NEW_LOSSY_UTF8_ARRAY => {
                     // (array, start, end): decode the byte range into a string.
                     let end = self.pop().as_i32() as u32 as usize;
                     let start = self.pop().as_i32() as u32 as usize;
@@ -4911,9 +6419,7 @@ impl VM {
                     };
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_ENCODE_WTF8_ARRAY
-                    || op == Op::STRING_ENCODE_LOSSY_UTF8_ARRAY =>
-                {
+                Op::STRING_ENCODE_WTF8_ARRAY | Op::STRING_ENCODE_LOSSY_UTF8_ARRAY => {
                     // (str, array, start): write the UTF-8 bytes into the array.
                     let start = self.pop().as_i32() as u32 as usize;
                     let arr = self.pop();
@@ -4936,7 +6442,7 @@ impl VM {
                     }
                     self.push(Value::I32(units.len() as i32))?;
                 }
-                _ if op == Op::STRING_IS_USV_SEQUENCE => {
+                Op::STRING_IS_USV_SEQUENCE => {
                     // A native Rust string is always a valid Unicode scalar-value
                     // sequence (no lone surrogates possible) → always 1 for a
                     // non-null string.
@@ -4949,11 +6455,11 @@ impl VM {
                 // positions are byte offsets with the spec's "position treatment"
                 // (snap forward to the next codepoint boundary, clamp to length);
                 // WTF-16 positions are code-unit offsets, clamped to length.
-                _ if op == Op::STRINGVIEW_WTF16_LENGTH => {
+                Op::STRINGVIEW_WTF16_LENGTH => {
                     let s = self.pop_stringref()?;
                     self.push(Value::I32(s.encode_utf16().count() as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF16_GET_CODEUNIT => {
+                Op::STRINGVIEW_WTF16_GET_CODEUNIT => {
                     let pos = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
                     let units: Vec<u16> = s.encode_utf16().collect();
@@ -4962,7 +6468,7 @@ impl VM {
                     })?;
                     self.push(Value::I32(u as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF16_SLICE => {
+                Op::STRINGVIEW_WTF16_SLICE => {
                     let end = self.pop().as_i32() as u32 as usize;
                     let start = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
@@ -4976,7 +6482,7 @@ impl VM {
                     };
                     self.push(Value::String(Arc::from(out.as_str())))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF16_ENCODE => {
+                Op::STRINGVIEW_WTF16_ENCODE => {
                     // (view, ptr, pos, len) → code units written.
                     let len = self.pop().as_i32() as u32 as usize;
                     let pos = self.pop().as_i32() as u32 as usize;
@@ -4992,7 +6498,7 @@ impl VM {
                     self.write_memory_bytes(0, ptr, &bytes)?;
                     self.push(Value::I32(count as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF8_ADVANCE => {
+                Op::STRINGVIEW_WTF8_ADVANCE => {
                     // (view, pos, bytes) → next byte offset (highest codepoint
                     // boundary ≤ treated_pos + bytes).
                     let bytes = self.pop().as_i32() as u32 as usize;
@@ -5005,7 +6511,7 @@ impl VM {
                     }
                     self.push(Value::I32(target as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF8_SLICE => {
+                Op::STRINGVIEW_WTF8_SLICE => {
                     // (view, start, end) → substring over the treated byte range.
                     let end = self.pop().as_i32() as u32 as usize;
                     let start = self.pop().as_i32() as u32 as usize;
@@ -5019,7 +6525,7 @@ impl VM {
                     };
                     self.push(Value::String(Arc::from(out.as_str())))?;
                 }
-                _ if op == Op::STRINGVIEW_WTF8_ENCODE_UTF8 => {
+                Op::STRINGVIEW_WTF8_ENCODE_UTF8 => {
                     // (view, ptr, pos, bytes) → (next_pos, bytes_written). Writes
                     // whole codepoints only, never splitting one across the limit.
                     let max = self.pop().as_i32() as u32 as usize;
@@ -5042,7 +6548,7 @@ impl VM {
                 // `string.as_iter` yields a cursor object: an ordinary object
                 // carrying the string plus a codepoint index in its properties
                 // (`__iter_str` / `__iter_pos`). The iter ops read/advance it.
-                _ if op == Op::STRING_AS_ITER => {
+                Op::STRING_AS_ITER => {
                     let s = self.pop_stringref()?;
                     let mut obj = crate::value::Object::new();
                     obj.properties
@@ -5051,7 +6557,7 @@ impl VM {
                         .insert("__iter_pos".to_string(), Value::I32(0));
                     self.push(Value::Object(Arc::new(std::sync::Mutex::new(obj))))?;
                 }
-                _ if op == Op::STRINGVIEW_ITER_NEXT => {
+                Op::STRINGVIEW_ITER_NEXT => {
                     let view = self.pop();
                     let (s, pos) = self.read_string_iter(&view)?;
                     let total = s.chars().count();
@@ -5063,7 +6569,7 @@ impl VM {
                         self.push(Value::I32(cp))?;
                     }
                 }
-                _ if op == Op::STRINGVIEW_ITER_ADVANCE => {
+                Op::STRINGVIEW_ITER_ADVANCE => {
                     let n = self.pop().as_i32() as u32 as usize;
                     let view = self.pop();
                     let (s, pos) = self.read_string_iter(&view)?;
@@ -5072,7 +6578,7 @@ impl VM {
                     self.write_string_iter_pos(&view, new_pos)?;
                     self.push(Value::I32((new_pos - pos) as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_ITER_REWIND => {
+                Op::STRINGVIEW_ITER_REWIND => {
                     let n = self.pop().as_i32() as u32 as usize;
                     let view = self.pop();
                     let (_s, pos) = self.read_string_iter(&view)?;
@@ -5080,7 +6586,7 @@ impl VM {
                     self.write_string_iter_pos(&view, new_pos)?;
                     self.push(Value::I32((pos - new_pos) as i32))?;
                 }
-                _ if op == Op::STRINGVIEW_ITER_SLICE => {
+                Op::STRINGVIEW_ITER_SLICE => {
                     // Substring of up to `n` codepoints from the cursor; does NOT
                     // advance the iterator.
                     let n = self.pop().as_i32() as u32 as usize;
@@ -5090,7 +6596,7 @@ impl VM {
                     self.push(Value::String(Arc::from(out.as_str())))?;
                 }
 
-                _ if op == Op::REF_IS_NULL => {
+                Op::REF_IS_NULL => {
                     let v = self.pop();
                     self.push(Value::I32(
                         if v.is_null_ref() || matches!(v, Value::Undefined) {
@@ -5101,35 +6607,35 @@ impl VM {
                     ))?;
                 }
                 // -- Conversions --
-                _ if op == Op::F64_FROM_I32 => {
+                Op::F64_FROM_I32 => {
                     let v = self.pop();
                     self.push(Value::F64(v.as_f64()))?;
                 }
-                _ if op == Op::F64_CONVERT_I32_U => {
+                Op::F64_CONVERT_I32_U => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::F64(a as f64))?;
                 }
-                _ if op == Op::F64_CONVERT_I64_S => {
+                Op::F64_CONVERT_I64_S => {
                     let a = self.pop().as_i64();
                     self.push(Value::F64(a as f64))?;
                 }
-                _ if op == Op::F64_CONVERT_I64_U => {
+                Op::F64_CONVERT_I64_U => {
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::F64(a as f64))?;
                 }
-                _ if op == Op::F32_CONVERT_I32_S => {
+                Op::F32_CONVERT_I32_S => {
                     let a = self.pop().as_i32();
                     self.push(Value::F32(a as f32))?;
                 }
-                _ if op == Op::F32_CONVERT_I32_U => {
+                Op::F32_CONVERT_I32_U => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::F32(a as f32))?;
                 }
-                _ if op == Op::F32_CONVERT_I64_S => {
+                Op::F32_CONVERT_I64_S => {
                     let a = self.pop().as_i64();
                     self.push(Value::F32(a as f32))?;
                 }
-                _ if op == Op::F32_CONVERT_I64_U => {
+                Op::F32_CONVERT_I64_U => {
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::F32(a as f32))?;
                 }
@@ -5144,7 +6650,7 @@ impl VM {
                 // then trap a legal value), and the f32 spacing near 2^31 is
                 // 256, so no representable f32 falls in the gap anyway. Same
                 // reasoning for the i64 forms against f64.
-                _ if op == Op::I32_FROM_F64 => {
+                Op::I32_FROM_F64 => {
                     let v = self.pop().as_f64();
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5164,7 +6670,7 @@ impl VM {
                 // NaN is a DIFFERENT trap from being out of range (spec
                 // §4.3.3; `conversions.wast:101` vs `:104`), so the two carry
                 // different messages.
-                _ if op == Op::I32_TRUNC_F64_U => {
+                Op::I32_TRUNC_F64_U => {
                     let v = self.pop().as_f64();
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5174,7 +6680,7 @@ impl VM {
                     }
                     self.push(Value::I32(v as u32 as i32))?;
                 }
-                _ if op == Op::I32_TRUNC_F32_S => {
+                Op::I32_TRUNC_F32_S => {
                     let v = self.pop().as_f64() as f32;
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5184,7 +6690,7 @@ impl VM {
                     }
                     self.push(Value::I32(v as i32))?;
                 }
-                _ if op == Op::I32_TRUNC_F32_U => {
+                Op::I32_TRUNC_F32_U => {
                     let v = self.pop().as_f64() as f32;
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5194,7 +6700,7 @@ impl VM {
                     }
                     self.push(Value::I32(v as u32 as i32))?;
                 }
-                _ if op == Op::I64_TRUNC_F32_S => {
+                Op::I64_TRUNC_F32_S => {
                     let v = self.pop().as_f64() as f32;
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5204,7 +6710,7 @@ impl VM {
                     }
                     self.push(Value::I64(v as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_F32_U => {
+                Op::I64_TRUNC_F32_U => {
                     let v = self.pop().as_f64() as f32;
                     if v.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5217,35 +6723,35 @@ impl VM {
 
                 // nontrapping-float-to-int-conversions proposal (0xFC 0x00–0x07).
                 // Rust `as` casts saturate since 1.45: NaN → 0, overflow → min/max.
-                _ if op == Op::I32_TRUNC_SAT_F32_S => {
+                Op::I32_TRUNC_SAT_F32_S => {
                     let v = self.pop().as_f64();
                     self.push(Value::I32(v as i32))?;
                 }
-                _ if op == Op::I32_TRUNC_SAT_F32_U => {
+                Op::I32_TRUNC_SAT_F32_U => {
                     let v = self.pop().as_f64();
                     self.push(Value::I32((v as u32) as i32))?;
                 }
-                _ if op == Op::I32_TRUNC_SAT_F64_S => {
+                Op::I32_TRUNC_SAT_F64_S => {
                     let v = self.pop().as_f64();
                     self.push(Value::I32(v as i32))?;
                 }
-                _ if op == Op::I32_TRUNC_SAT_F64_U => {
+                Op::I32_TRUNC_SAT_F64_U => {
                     let v = self.pop().as_f64();
                     self.push(Value::I32((v as u32) as i32))?;
                 }
-                _ if op == Op::I64_TRUNC_SAT_F32_S => {
+                Op::I64_TRUNC_SAT_F32_S => {
                     let v = self.pop().as_f64();
                     self.push(Value::I64(v as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_SAT_F32_U => {
+                Op::I64_TRUNC_SAT_F32_U => {
                     let v = self.pop().as_f64();
                     self.push(Value::I64((v as u64) as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_SAT_F64_S => {
+                Op::I64_TRUNC_SAT_F64_S => {
                     let v = self.pop().as_f64();
                     self.push(Value::I64(v as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_SAT_F64_U => {
+                Op::I64_TRUNC_SAT_F64_U => {
                     let v = self.pop().as_f64();
                     self.push(Value::I64((v as u64) as i64))?;
                 }
@@ -5257,7 +6763,7 @@ impl VM {
                 // Normal exit from a try block is handled by the structural
                 // `end` (Op::END, `is_try` label) — see the END dispatch. The
                 // custom TRY_END opcode has been retired.
-                _ if op == Op::THROW => {
+                Op::THROW => {
                     // Spec `throw <tagidx>`: the tag index immediate selects
                     // the tag entity; the payload (per the tag's signature
                     // arity) is popped off the stack.
@@ -5272,7 +6778,7 @@ impl VM {
                     payload.reverse();
                     self.raise_exception(entity, payload, 0)?;
                 }
-                _ if op == Op::THROW_REF => {
+                Op::THROW_REF => {
                     // Spec `throw_ref`: rethrow the exception an exnref
                     // refers to — same tag identity, same payload.
                     let val = self.pop();
@@ -5288,7 +6794,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("throw_ref: operand is not an exnref"))?;
                     self.raise_exception(entity, payload, 0)?;
                 }
-                _ if op == Op::RETHROW => {
+                Op::RETHROW => {
                     // Legacy EH rethrow — carries the exception object as a
                     // value; re-raises through the vybe:exception tag.
                     let chunk_idx = self.frame().chunk_index;
@@ -5298,7 +6804,7 @@ impl VM {
                     let val = self.pop();
                     self.raise_exception_value(val)?;
                 }
-                _ if op == Op::DELEGATE => {
+                Op::DELEGATE => {
                     let chunk_idx = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
                     let depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
@@ -5306,7 +6812,7 @@ impl VM {
                     let val = self.pop();
                     self.raise_exception_value_skipping(val, depth as usize)?;
                 }
-                _ if op == Op::TRY_TABLE => {
+                Op::TRY_TABLE => {
                     // Spec try_table. Internal fixed-width encoding:
                     //   [try_table, u8 clause_count, per clause:
                     //    u8 kind (0=catch 1=catch_ref 2=catch_all 3=catch_all_ref),
@@ -5383,7 +6889,7 @@ impl VM {
                 }
 
                 // -- Tail call --
-                _ if op == Op::RETURN_CALL => {
+                Op::RETURN_CALL => {
                     let argc = self.read_byte() as usize;
                     let _results = self.read_byte(); // writer-facing functype info
                     // Reuse current frame: move callee + args down to base-1.
@@ -5403,7 +6909,7 @@ impl VM {
                     self.pop_frame_for_tail_call();
                     self.call_value(argc)?;
                 }
-                _ if op == Op::RETURN_CALL_INDIRECT => {
+                Op::RETURN_CALL_INDIRECT => {
                     // Tail-call form of `call_indirect`: same immediate shape
                     // (argc, tableidx, expected results), same `wasm_tables`
                     // lookup and runtime type-shape check — but reuses the
@@ -5452,7 +6958,7 @@ impl VM {
                     self.pop_frame_for_tail_call();
                     self.call_value(argc)?;
                 }
-                _ if op == Op::RETURN_CALL_REF => {
+                Op::RETURN_CALL_REF => {
                     let argc = self.read_byte() as usize;
                     let _results = self.read_byte(); // writer-facing functype info
                     let old_base = self.frame().base;
@@ -5466,7 +6972,7 @@ impl VM {
                 }
 
                 // -- Linear memory --
-                _ if op == Op::MEMORY_SIZE => {
+                Op::MEMORY_SIZE => {
                     let memidx = self.read_u16() as usize;
                     let pages = self.mem_len(memidx) / 65536;
                     // memory64: page count is i64; 32-bit memory: i32.
@@ -5476,7 +6982,7 @@ impl VM {
                         self.push(Value::I32(pages as i32))?;
                     }
                 }
-                _ if op == Op::MEMORY_GROW => {
+                Op::MEMORY_GROW => {
                     let memidx = self.read_u16() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let pages = self.pop_mem_index(is64);
@@ -5488,63 +6994,63 @@ impl VM {
                         self.push(Value::I32(if failed { -1 } else { old_pages as i32 }))?;
                     }
                 }
-                _ if op == Op::I32_LOAD => {
+                Op::I32_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I32(i32::from_le_bytes(read_le(&bytes))))?;
                 }
-                _ if op == Op::I32_STORE => {
+                Op::I32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32();
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::I64_LOAD => {
+                Op::I64_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     self.push(Value::I64(i64::from_le_bytes(read_le(&bytes))))?;
                 }
-                _ if op == Op::I64_STORE => {
+                Op::I64_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64();
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::F64_LOAD => {
+                Op::F64_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
                 }
-                _ if op == Op::F64_STORE => {
+                Op::F64_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_f64();
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::I32_LOAD8_U => {
+                Op::I32_LOAD8_U => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I32(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i32,
                     ))?;
                 }
-                _ if op == Op::I32_STORE8 => {
+                Op::I32_STORE8 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as u8;
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &[val])?;
                 }
-                _ if op == Op::F32_LOAD => {
+                Op::F32_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let val = f32::from_le_bytes(read_le(&bytes));
                     self.push(Value::F32(val))?;
                 }
-                _ if op == Op::F32_STORE => {
+                Op::F32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     // Bit-preserving: memory stores the operand's ENCODING, so
                     // this must not round-trip through f64 (that quiets a
@@ -5554,86 +7060,86 @@ impl VM {
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::I32_LOAD8_S => {
+                Op::I32_LOAD8_S => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I32(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i32,
                     ))?;
                 }
-                _ if op == Op::I32_LOAD16_S => {
+                Op::I32_LOAD16_S => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = i16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
                 }
-                _ if op == Op::I32_LOAD16_U => {
+                Op::I32_LOAD16_U => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = u16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
                 }
-                _ if op == Op::I32_STORE16 => {
+                Op::I32_STORE16 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as i16;
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::I64_LOAD8_S => {
+                Op::I64_LOAD8_S => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I64(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i64,
                     ))?;
                 }
-                _ if op == Op::I64_LOAD8_U => {
+                Op::I64_LOAD8_U => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I64(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i64,
                     ))?;
                 }
-                _ if op == Op::I64_LOAD16_S => {
+                Op::I64_LOAD16_S => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = i16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
-                _ if op == Op::I64_LOAD16_U => {
+                Op::I64_LOAD16_U => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = u16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
-                _ if op == Op::I64_LOAD32_S => {
+                Op::I64_LOAD32_S => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as i64))?;
                 }
-                _ if op == Op::I64_LOAD32_U => {
+                Op::I64_LOAD32_U => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as u32 as i64))?;
                 }
-                _ if op == Op::I64_STORE8 => {
+                Op::I64_STORE8 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as u8;
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &[val])?;
                 }
-                _ if op == Op::I64_STORE16 => {
+                Op::I64_STORE16 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i16;
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
-                _ if op == Op::I64_STORE32 => {
+                Op::I64_STORE32 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i32;
                     let addr = self.effective_addr(memidx, offset);
@@ -5641,19 +7147,19 @@ impl VM {
                 }
 
                 // -- Conversions --
-                _ if op == Op::I32_WRAP_I64 => {
+                Op::I32_WRAP_I64 => {
                     let a = self.pop().as_i64();
                     self.push(Value::I32(a as i32))?;
                 }
-                _ if op == Op::I64_EXTEND_I32_S => {
+                Op::I64_EXTEND_I32_S => {
                     let a = self.pop().as_i32();
                     self.push(Value::I64(a as i64))?;
                 }
-                _ if op == Op::I64_EXTEND_I32_U => {
+                Op::I64_EXTEND_I32_U => {
                     let a = self.pop().as_i32() as u32;
                     self.push(Value::I64(a as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_F64_S => {
+                Op::I64_TRUNC_F64_S => {
                     let a = self.pop().as_f64();
                     if a.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5663,7 +7169,7 @@ impl VM {
                     }
                     self.push(Value::I64(a as i64))?;
                 }
-                _ if op == Op::I64_TRUNC_F64_U => {
+                Op::I64_TRUNC_F64_U => {
                     let a = self.pop().as_f64();
                     if a.is_nan() {
                         return Err(VMError::new("trap: invalid conversion to integer"));
@@ -5673,15 +7179,15 @@ impl VM {
                     }
                     self.push(Value::I64(a as u64 as i64))?;
                 }
-                _ if op == Op::F64_PROMOTE_F32 => {
+                Op::F64_PROMOTE_F32 => {
                     let a = self.pop().as_f64();
                     self.push(Value::F64(a))?;
                 }
-                _ if op == Op::F32_DEMOTE_F64 => {
+                Op::F32_DEMOTE_F64 => {
                     let a = self.pop().as_f64();
                     self.push(Value::F32(a as f32))?;
                 }
-                _ if op == Op::I32_REINTERPRET_F32 => {
+                Op::I32_REINTERPRET_F32 => {
                     // `as_f32()`, NOT `as_f64() as f32`. Reinterpret is a pure
                     // bit copy, so it must not round-trip through f64: widening
                     // a SIGNALLING NaN to f64 and narrowing back sets the quiet
@@ -5691,37 +7197,37 @@ impl VM {
                     let a = self.pop().as_f32();
                     self.push(Value::I32(a.to_bits() as i32))?;
                 }
-                _ if op == Op::I64_REINTERPRET_F64 => {
+                Op::I64_REINTERPRET_F64 => {
                     let a = self.pop().as_f64();
                     self.push(Value::I64(a.to_bits() as i64))?;
                 }
-                _ if op == Op::F32_REINTERPRET_I32 => {
+                Op::F32_REINTERPRET_I32 => {
                     let a = self.pop().as_i32();
                     self.push(Value::F32(f32::from_bits(a as u32)))?;
                 }
-                _ if op == Op::F64_REINTERPRET_I64 => {
+                Op::F64_REINTERPRET_I64 => {
                     let a = self.pop().as_i64();
                     self.push(Value::F64(f64::from_bits(a as u64)))?;
                 }
 
                 // -- Sign extension --
-                _ if op == Op::I32_EXTEND8_S => {
+                Op::I32_EXTEND8_S => {
                     let a = self.pop().as_i32() as i8;
                     self.push(Value::I32(a as i32))?;
                 }
-                _ if op == Op::I32_EXTEND16_S => {
+                Op::I32_EXTEND16_S => {
                     let a = self.pop().as_i32() as i16;
                     self.push(Value::I32(a as i32))?;
                 }
-                _ if op == Op::I64_EXTEND8_S => {
+                Op::I64_EXTEND8_S => {
                     let a = self.pop().as_i64() as i8;
                     self.push(Value::I64(a as i64))?;
                 }
-                _ if op == Op::I64_EXTEND16_S => {
+                Op::I64_EXTEND16_S => {
                     let a = self.pop().as_i64() as i16;
                     self.push(Value::I64(a as i64))?;
                 }
-                _ if op == Op::I64_EXTEND32_S => {
+                Op::I64_EXTEND32_S => {
                     let a = self.pop().as_i64() as i32;
                     self.push(Value::I64(a as i64))?;
                 }
@@ -5730,7 +7236,7 @@ impl VM {
                 // pack, unpack: removed (non-WASM, were unused by compilers)
 
                 // -- Block/loop/if structured control (WASM-compliant) --
-                _ if op == Op::BLOCK => {
+                Op::BLOCK => {
                     // Blocktype = (param_count, result_count). Params are
                     // already on the stack (no runtime action); the label's
                     // branch arity for a BLOCK is its RESULT count (spec).
@@ -5757,7 +7263,7 @@ impl VM {
                         stack_height: self.stack.len().saturating_sub(param_arity),
                     });
                 }
-                _ if op == Op::LOOP => {
+                Op::LOOP => {
                     // Blocktype = (param_count, result_count). Spec: a `br`
                     // to a LOOP label carries the loop's PARAMS — so the
                     // label arity recorded here is the param count, not the
@@ -5781,7 +7287,7 @@ impl VM {
                         stack_height: self.stack.len().saturating_sub(param_base),
                     });
                 }
-                _ if op == Op::IF => {
+                Op::IF => {
                     // Blocktype = (param_count, result_count); label arity
                     // for an IF is its RESULT count, like BLOCK.
                     let param_arity = self.read_byte() as usize;
@@ -5845,7 +7351,7 @@ impl VM {
                         self.frame_mut().ip = targets.end_ip;
                     }
                 }
-                _ if op == Op::ELSE => {
+                Op::ELSE => {
                     // Then-body completed normally. ELSE behaves like `br 0` for the IF
                     // block: pop the IF label and jump past the else-body (to past END).
                     // The else-body is thus never executed on the then-path.
@@ -5858,7 +7364,7 @@ impl VM {
                         .unwrap_or(self.frame().ip);
                     self.frame_mut().ip = end_ip;
                 }
-                _ if op == Op::END => {
+                Op::END => {
                     // Closing a block. If it is a try_table block (`is_try`),
                     // also remove its exception-handler group — the structural
                     // end of the protected region, replacing the retired
@@ -5876,7 +7382,7 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::BR_TABLE => {
+                Op::BR_TABLE => {
                     let ci = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
                     let count = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
@@ -5898,7 +7404,7 @@ impl VM {
                 }
 
                 // -- call_indirect --
-                _ if op == Op::CALL_INDIRECT => {
+                Op::CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
                     let tableidx = self.read_byte() as usize;
                     let expected_results = self.read_byte() as usize;
@@ -5968,7 +7474,7 @@ impl VM {
                 // -- Weak References & Finalizers --
 
                 // -- Multi-Memory --
-                _ if op == Op::MEMORY_INIT => {
+                Op::MEMORY_INIT => {
                     let data_idx = self.read_u16() as u32;
                     let memidx = self.read_u16() as usize;
                     // Spec (bulk-memory Overview §data.drop): a dropped
@@ -6007,7 +7513,7 @@ impl VM {
                 // route through `table_ref`/`table_mut` so the multi-table
                 // proposal works: index 0 maps to `func_table`, indexes
                 // indexed directly in `wasm_tables`.
-                _ if op == Op::TABLE_SIZE => {
+                Op::TABLE_SIZE => {
                     let tidx = self.read_u16() as usize;
                     let size = self
                         .table_ref(tidx)
@@ -6020,7 +7526,7 @@ impl VM {
                         self.push(Value::I32(size as i32))?;
                     }
                 }
-                _ if op == Op::TABLE_GROW => {
+                Op::TABLE_GROW => {
                     let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let delta = self.pop_table_count(is64);
@@ -6056,7 +7562,7 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::TABLE_FILL => {
+                Op::TABLE_FILL => {
                     let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let count = self.pop_table_count(is64);
@@ -6073,7 +7579,7 @@ impl VM {
                         table[i] = value.clone();
                     }
                 }
-                _ if op == Op::TABLE_COPY => {
+                Op::TABLE_COPY => {
                     let dst_table_idx = self.read_u16() as usize;
                     let src_table_idx = self.read_u16() as usize;
                     // table64: operands are i64 if either table is 64-bit.
@@ -6096,7 +7602,7 @@ impl VM {
                     }
                     destination[dst..dst + count].clone_from_slice(&values);
                 }
-                _ if op == Op::TABLE_INIT => {
+                Op::TABLE_INIT => {
                     let elem_idx = self.read_u16() as u32;
                     let table_idx = self.read_u16() as usize;
                     if self.dropped_elems.contains(&elem_idx) {
@@ -6122,15 +7628,15 @@ impl VM {
                     }
                     table[dst..dst + count].clone_from_slice(&values);
                 }
-                _ if op == Op::ELEM_DROP => {
+                Op::ELEM_DROP => {
                     let elem_idx = self.read_u16() as u32;
                     self.dropped_elems.insert(elem_idx);
                 }
-                _ if op == Op::DATA_DROP => {
+                Op::DATA_DROP => {
                     let data_idx = self.read_u16() as u32;
                     self.dropped_data.insert(data_idx);
                 }
-                _ if op == Op::MEMORY_COPY => {
+                Op::MEMORY_COPY => {
                     let dst_mem = self.read_u16() as usize;
                     let src_mem = self.read_u16() as usize;
                     // memory64: operands are i64 if either memory is 64-bit.
@@ -6141,7 +7647,7 @@ impl VM {
                     let buf = self.read_memory_bytes(src_mem, src, count)?;
                     self.write_memory_bytes(dst_mem, dst, &buf)?;
                 }
-                _ if op == Op::MEMORY_FILL => {
+                Op::MEMORY_FILL => {
                     let memidx = self.read_u16() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let count = self.pop_mem_index(is64);
@@ -6167,7 +7673,7 @@ impl VM {
                 // Type discrimination opcodes
 
                 // -- Array builtins --
-                _ if op == Op::ARRAY_LENGTH => {
+                Op::ARRAY_LENGTH => {
                     let arr = self.pop();
                     // `array.len` takes `(ref null array)` and traps on null.
                     if matches!(arr, Value::TypedNull(_)) {
@@ -6197,12 +7703,7 @@ impl VM {
                 // path at `Op::decode`'s None branch and trap cleanly.
 
                 // WASM GC array ops
-                _ if op == Op::ARRAY_NEW_DEFAULT => {
-                    let len = self.pop().as_i32().max(0) as usize;
-                    let elems = vec![Value::Null; len];
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(elems))))?;
-                }
-                _ if op == Op::ARRAY_FILL => {
+                Op::ARRAY_FILL => {
                     // Spec `array.fill $t`: stack `[arrayref, index, value, count]`,
                     // so popping off the top yields count, value, index, arrayref.
                     let count = self.pop().as_i32().max(0) as usize;
@@ -6237,7 +7738,7 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::ARRAY_COPY => {
+                Op::ARRAY_COPY => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let src_off = self.pop().as_i32().max(0) as usize;
                     let src = self.pop();
@@ -6302,7 +7803,7 @@ impl VM {
                 // (`self.active_continuations`) records which cont owns the
                 // current execution — suspend reads the topmost entry to
                 // decide where to stash the fresh fiber.
-                _ if op == Op::CONT_NEW => {
+                Op::CONT_NEW => {
                     let func_val = self.pop();
                     if func_val.is_null_ref() {
                         return Err(VMError::new("trap: cont.new: null function reference"));
@@ -6333,7 +7834,7 @@ impl VM {
                     );
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
-                _ if op == Op::SUSPEND => {
+                Op::SUSPEND => {
                     let tag = self.read_u16();
                     let val = self.pop();
                     // Yield a value from the innermost active continuation.
@@ -6379,7 +7880,7 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::RESUME => {
+                Op::RESUME => {
                     let _tag = self.read_u16();
                     let resume_handlers = self.chunks[self.frame().chunk_index]
                         .stack_switch_handlers
@@ -6466,10 +7967,14 @@ impl VM {
                         return Err(VMError::new("resume: not a continuation"));
                     }
                 }
-                _ if op == Op::SWITCH => {
+                Op::SWITCH => {
+                    // `switch $tag` — the stack-switching proposal's symmetric
+                    // swap. The TAG SEARCH is what belongs to this opcode; the
+                    // park-and-enter underneath it is shared with the Component
+                    // Model's `thread.{suspend,yield}-then-{resume,promote}`,
+                    // which have no tag at all, so it lives in
+                    // `switch_to_continuation`.
                     let tag = self.read_u16();
-                    // Symmetric swap: suspend the current cont (top of the
-                    // active stack) and resume the target cont in one step.
                     let val = self.pop();
                     let target = self.pop();
                     let Some(current) = self.active_continuations.pop() else {
@@ -6483,74 +7988,14 @@ impl VM {
                         self.active_continuations.push(current);
                         return Err(VMError::new("switch: no matching continuation handler"));
                     }
-                    let (phase, entry) = if let Value::Object(ref obj) = target {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Continuation(cs) = &o.kind {
-                            (*cs.state.lock().unwrap(), cs.entry.clone())
-                        } else {
-                            self.active_continuations.push(current);
-                            return Err(VMError::new("switch: not a continuation"));
-                        }
-                    } else {
+                    // On any failure the handler frame must go back, or the
+                    // next `switch` in this coroutine reports "no active
+                    // continuation handler" for a completely unrelated reason.
+                    if let Err(e) =
+                        self.switch_to_continuation("switch", &target, val, Some(&current.cont))
+                    {
                         self.active_continuations.push(current);
-                        return Err(VMError::new("switch: not a continuation"));
-                    };
-                    if matches!(phase, crate::value::ContinuationPhase::Done) {
-                        self.active_continuations.push(current);
-                        return Err(VMError::new("trap: switch to completed continuation"));
-                    }
-                    let fiber = self.save_fiber();
-                    if let Value::Object(ref obj) = current.cont {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Continuation(cs) = &o.kind {
-                            *cs.saved.lock().unwrap() = Some(fiber);
-                            *cs.state.lock().unwrap() = crate::value::ContinuationPhase::Suspended;
-                        }
-                    }
-                    match phase {
-                        crate::value::ContinuationPhase::Ready => {
-                            let bound: Vec<Value> = {
-                                let o = match &target {
-                                    Value::Object(obj) => obj.lock().unwrap(),
-                                    _ => unreachable!(),
-                                };
-                                match o.properties.get("__bound_args") {
-                                    Some(Value::Object(arr)) => {
-                                        let a = arr.lock().unwrap();
-                                        if let ObjectKind::Array(v) = &a.kind {
-                                            v.clone()
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    }
-                                    _ => Vec::new(),
-                                }
-                            };
-                            let argc = bound.len() + 1;
-                            self.push(entry)?;
-                            for b in bound {
-                                self.push(b)?;
-                            }
-                            self.push(val)?;
-                            self.call_value_direct(argc)?;
-                        }
-                        crate::value::ContinuationPhase::Suspended => {
-                            let saved = {
-                                let o = match &target {
-                                    Value::Object(obj) => obj.lock().unwrap(),
-                                    _ => unreachable!(),
-                                };
-                                if let ObjectKind::Continuation(cs) = &o.kind {
-                                    cs.saved.lock().unwrap().take()
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(fiber) = saved {
-                                self.resume_fiber_with(fiber, Some(val))?;
-                            }
-                        }
-                        crate::value::ContinuationPhase::Done => unreachable!(),
+                        return Err(e);
                     }
                     self.active_continuations.push(ActiveContinuation {
                         cont: target.clone(),
@@ -6563,7 +8008,7 @@ impl VM {
                 // continuation. Stack: [cont, arg0, ..., arg(argc-1)] →
                 // [cont'] where cont' is a fresh continuation that will
                 // receive those args on first resume.
-                _ if op == Op::CONT_BIND => {
+                Op::CONT_BIND => {
                     let argc = self.read_byte() as usize;
                     let mut args: Vec<Value> = Vec::with_capacity(argc);
                     for _ in 0..argc {
@@ -6647,7 +8092,7 @@ impl VM {
                 // by throwing an exception into it. Stack:
                 // [cont, exn_value] → control transfers into the cont's
                 // nearest try_table matching the throw tag.
-                _ if op == Op::RESUME_THROW => {
+                Op::RESUME_THROW => {
                     let _tag_idx = self.read_u16();
                     let resume_handlers = self.chunks[self.frame().chunk_index]
                         .stack_switch_handlers
@@ -6734,7 +8179,7 @@ impl VM {
                     }
                 }
 
-                _ if op == Op::RESUME_THROW_REF => {
+                Op::RESUME_THROW_REF => {
                     // `resume_throw_ref $ct (handler)*` — like resume_throw
                     // but the exception is the exnref already on the stack
                     // (no tag immediate). Stack: [cont, exnref].
@@ -6830,13 +8275,13 @@ impl VM {
                 // (ImportTarget::WasiThreadSpawn — the VM is the embedder
                 // implementation), and join is helper BYTECODE futex-waiting
                 // the task's status word. No thread opcodes exist.
-                _ if op == Op::V128_LOAD => {
+                Op::V128_LOAD => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let mut b = [0u8; 16];
                     b.copy_from_slice(&self.read_memory_bytes(memidx, addr, 16)?);
                     self.push(Value::V128(b))?;
                 }
-                _ if op == Op::V128_LOAD8X8_S => {
+                Op::V128_LOAD8X8_S => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6847,7 +8292,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD8X8_U => {
+                Op::V128_LOAD8X8_U => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6858,7 +8303,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD16X4_S => {
+                Op::V128_LOAD16X4_S => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6870,7 +8315,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD16X4_U => {
+                Op::V128_LOAD16X4_U => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6882,7 +8327,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD32X2_S => {
+                Op::V128_LOAD32X2_S => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6892,7 +8337,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD32X2_U => {
+                Op::V128_LOAD32X2_U => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let mut out = [0u8; 16];
@@ -6902,12 +8347,12 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD8_SPLAT => {
+                Op::V128_LOAD8_SPLAT => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let b = self.read_memory_bytes(memidx, addr, 1)?[0];
                     self.push(Value::V128([b; 16]))?;
                 }
-                _ if op == Op::V128_LOAD16_SPLAT => {
+                Op::V128_LOAD16_SPLAT => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let lo = bytes[0];
@@ -6919,7 +8364,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD32_SPLAT => {
+                Op::V128_LOAD32_SPLAT => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let v = i32::from_le_bytes(read_le(&bytes));
@@ -6929,7 +8374,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD64_SPLAT => {
+                Op::V128_LOAD64_SPLAT => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let v = i64::from_le_bytes(read_le(&bytes));
@@ -6938,21 +8383,21 @@ impl VM {
                     out[8..16].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_STORE => {
+                Op::V128_STORE => {
                     let val = self.pop();
                     let (memidx, addr) = self.pop_simd_addr()?;
                     if let Value::V128(b) = val {
                         self.write_memory_bytes(memidx, addr, &b)?;
                     }
                 }
-                _ if op == Op::V128_CONST => {
+                Op::V128_CONST => {
                     let mut b = [0u8; 16];
                     for i in 0..16 {
                         b[i] = self.read_byte();
                     }
                     self.push(Value::V128(b))?;
                 }
-                _ if op == Op::V128_LOAD8_LANE => {
+                Op::V128_LOAD8_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 15;
                     let val = self.pop();
@@ -6965,7 +8410,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_LOAD16_LANE => {
+                Op::V128_LOAD16_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 7;
                     let val = self.pop();
@@ -6980,7 +8425,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_LOAD32_LANE => {
+                Op::V128_LOAD32_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 3;
                     let val = self.pop();
@@ -6994,7 +8439,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_LOAD64_LANE => {
+                Op::V128_LOAD64_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 1;
                     let val = self.pop();
@@ -7014,7 +8459,7 @@ impl VM {
                 // first, so a spec-ordered module (anything read back from a
                 // conforming `.wasm`, and any correctly written `.wat`) stored
                 // from the address and addressed with the vector.
-                _ if op == Op::V128_STORE8_LANE => {
+                Op::V128_STORE8_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 15;
                     let val = self.pop();
@@ -7024,7 +8469,7 @@ impl VM {
                         self.write_memory_bytes(memidx, addr, &[v[lane]])?;
                     }
                 }
-                _ if op == Op::V128_STORE16_LANE => {
+                Op::V128_STORE16_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 7;
                     let val = self.pop();
@@ -7034,7 +8479,7 @@ impl VM {
                         self.write_memory_bytes(memidx, addr, &v[lane * 2..lane * 2 + 2])?;
                     }
                 }
-                _ if op == Op::V128_STORE32_LANE => {
+                Op::V128_STORE32_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 3;
                     let val = self.pop();
@@ -7044,7 +8489,7 @@ impl VM {
                         self.write_memory_bytes(memidx, addr, &v[lane * 4..lane * 4 + 4])?;
                     }
                 }
-                _ if op == Op::V128_STORE64_LANE => {
+                Op::V128_STORE64_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 1;
                     let val = self.pop();
@@ -7054,7 +8499,7 @@ impl VM {
                         self.write_memory_bytes(memidx, addr, &v[lane * 8..lane * 8 + 8])?;
                     }
                 }
-                _ if op == Op::V128_LOAD32_ZERO => {
+                Op::V128_LOAD32_ZERO => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let v = i32::from_le_bytes(read_le(&bytes));
@@ -7062,7 +8507,7 @@ impl VM {
                     out[0..4].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::V128_LOAD64_ZERO => {
+                Op::V128_LOAD64_ZERO => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     let v = i64::from_le_bytes(read_le(&bytes));
@@ -7071,7 +8516,7 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 // Shuffle / swizzle
-                _ if op == Op::I8X16_SHUFFLE => {
+                Op::I8X16_SHUFFLE => {
                     let mut idx = [0u8; 16];
                     for i in 0..16 {
                         idx[i] = self.read_byte();
@@ -7089,7 +8534,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I8X16_SWIZZLE => {
+                Op::I8X16_SWIZZLE => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7104,11 +8549,11 @@ impl VM {
                     }
                 }
                 // Splat
-                _ if op == Op::I8X16_SPLAT => {
+                Op::I8X16_SPLAT => {
                     let v = self.pop().as_i32() as u8;
                     self.push(Value::V128([v; 16]))?;
                 }
-                _ if op == Op::I16X8_SPLAT => {
+                Op::I16X8_SPLAT => {
                     let v = self.pop().as_i32() as i16;
                     let b = v.to_le_bytes();
                     let mut out = [0u8; 16];
@@ -7117,7 +8562,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::I32X4_SPLAT => {
+                Op::I32X4_SPLAT => {
                     let v = self.pop().as_i32();
                     let mut out = [0u8; 16];
                     for i in 0..4 {
@@ -7125,14 +8570,14 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::I64X2_SPLAT => {
+                Op::I64X2_SPLAT => {
                     let v = self.pop().as_i64();
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
                     out[8..16].copy_from_slice(&v.to_le_bytes());
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::F32X4_SPLAT => {
+                Op::F32X4_SPLAT => {
                     // Lanes hold the operand's ENCODING — bit-preserving, so no
                     // f64 round-trip (it would quiet a signalling NaN).
                     let v = self.pop().as_f32();
@@ -7143,7 +8588,7 @@ impl VM {
                     }
                     self.push(Value::V128(out))?;
                 }
-                _ if op == Op::F64X2_SPLAT => {
+                Op::F64X2_SPLAT => {
                     let v = self.pop().as_f64();
                     let mut out = [0u8; 16];
                     out[0..8].copy_from_slice(&v.to_le_bytes());
@@ -7151,7 +8596,7 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 // Extract / replace lane
-                _ if op == Op::I8X16_EXTRACT_LANE_S => {
+                Op::I8X16_EXTRACT_LANE_S => {
                     let l = self.read_byte() as usize & 15;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(a[l] as i8 as i32))?;
@@ -7159,7 +8604,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I8X16_EXTRACT_LANE_U => {
+                Op::I8X16_EXTRACT_LANE_U => {
                     let l = self.read_byte() as usize & 15;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(a[l] as i32))?;
@@ -7167,7 +8612,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I8X16_REPLACE_LANE => {
+                Op::I8X16_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 15;
                     let v = self.pop().as_i32() as u8;
                     if let Value::V128(mut a) = self.pop() {
@@ -7177,7 +8622,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTRACT_LANE_S => {
+                Op::I16X8_EXTRACT_LANE_S => {
                     let l = self.read_byte() as usize & 7;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(
@@ -7187,7 +8632,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTRACT_LANE_U => {
+                Op::I16X8_EXTRACT_LANE_U => {
                     let l = self.read_byte() as usize & 7;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(
@@ -7197,7 +8642,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I16X8_REPLACE_LANE => {
+                Op::I16X8_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 7;
                     let v = self.pop().as_i32() as i16;
                     if let Value::V128(mut a) = self.pop() {
@@ -7207,7 +8652,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTRACT_LANE => {
+                Op::I32X4_EXTRACT_LANE => {
                     let l = self.read_byte() as usize & 3;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(i32::from_le_bytes(
@@ -7217,7 +8662,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I32X4_REPLACE_LANE => {
+                Op::I32X4_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 3;
                     let v = self.pop().as_i32();
                     if let Value::V128(mut a) = self.pop() {
@@ -7227,7 +8672,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTRACT_LANE => {
+                Op::I64X2_EXTRACT_LANE => {
                     let l = self.read_byte() as usize & 1;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I64(i64::from_le_bytes(
@@ -7237,7 +8682,7 @@ impl VM {
                         self.push(Value::I64(0))?;
                     }
                 }
-                _ if op == Op::I64X2_REPLACE_LANE => {
+                Op::I64X2_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 1;
                     let v = self.pop().as_i64();
                     if let Value::V128(mut a) = self.pop() {
@@ -7247,7 +8692,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_EXTRACT_LANE => {
+                Op::F32X4_EXTRACT_LANE => {
                     let l = self.read_byte() as usize & 3;
                     if let Value::V128(a) = self.pop() {
                         // Result type is `f32` (spec): push a Value::F32 so it
@@ -7259,7 +8704,7 @@ impl VM {
                         self.push(Value::F32(0.0))?;
                     }
                 }
-                _ if op == Op::F32X4_REPLACE_LANE => {
+                Op::F32X4_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 3;
                     // Bit-preserving into a lane — see `F32X4_SPLAT`.
                     let v = self.pop().as_f32();
@@ -7270,7 +8715,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_EXTRACT_LANE => {
+                Op::F64X2_EXTRACT_LANE => {
                     let l = self.read_byte() as usize & 1;
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::F64(f64::from_le_bytes(
@@ -7280,7 +8725,7 @@ impl VM {
                         self.push(Value::F64(0.0))?;
                     }
                 }
-                _ if op == Op::F64X2_REPLACE_LANE => {
+                Op::F64X2_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 1;
                     let v = self.pop().as_f64();
                     if let Value::V128(mut a) = self.pop() {
@@ -7291,138 +8736,138 @@ impl VM {
                     }
                 }
                 // i8x16 comparisons
-                _ if op == Op::I8X16_EQ => {
+                Op::I8X16_EQ => {
                     self.simd_i8x16_binop(|a, b| if a == b { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_NE => {
+                Op::I8X16_NE => {
                     self.simd_i8x16_binop(|a, b| if a != b { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_LT_S => {
+                Op::I8X16_LT_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) < (b as i8) { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_LT_U => {
+                Op::I8X16_LT_U => {
                     self.simd_i8x16_binop(|a, b| if a < b { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_GT_S => {
+                Op::I8X16_GT_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) > (b as i8) { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_GT_U => {
+                Op::I8X16_GT_U => {
                     self.simd_i8x16_binop(|a, b| if a > b { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_LE_S => {
+                Op::I8X16_LE_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) <= (b as i8) { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_LE_U => {
+                Op::I8X16_LE_U => {
                     self.simd_i8x16_binop(|a, b| if a <= b { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_GE_S => {
+                Op::I8X16_GE_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) >= (b as i8) { 0xFF } else { 0 })?;
                 }
-                _ if op == Op::I8X16_GE_U => {
+                Op::I8X16_GE_U => {
                     self.simd_i8x16_binop(|a, b| if a >= b { 0xFF } else { 0 })?;
                 }
                 // i16x8 comparisons
-                _ if op == Op::I16X8_EQ => {
+                Op::I16X8_EQ => {
                     self.simd_i16x8_binop(|a, b| if a == b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_NE => {
+                Op::I16X8_NE => {
                     self.simd_i16x8_binop(|a, b| if a != b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_LT_S => {
+                Op::I16X8_LT_S => {
                     self.simd_i16x8_binop(|a, b| if a < b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_LT_U => {
+                Op::I16X8_LT_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) < (b as u16) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_GT_S => {
+                Op::I16X8_GT_S => {
                     self.simd_i16x8_binop(|a, b| if a > b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_GT_U => {
+                Op::I16X8_GT_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) > (b as u16) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_LE_S => {
+                Op::I16X8_LE_S => {
                     self.simd_i16x8_binop(|a, b| if a <= b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_LE_U => {
+                Op::I16X8_LE_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) <= (b as u16) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_GE_S => {
+                Op::I16X8_GE_S => {
                     self.simd_i16x8_binop(|a, b| if a >= b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I16X8_GE_U => {
+                Op::I16X8_GE_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) >= (b as u16) { -1 } else { 0 })?;
                 }
                 // i32x4 comparisons
-                _ if op == Op::I32X4_EQ => {
+                Op::I32X4_EQ => {
                     self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_NE => {
+                Op::I32X4_NE => {
                     self.simd_i32x4_binop(|a, b| if a != b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_LT_S => {
+                Op::I32X4_LT_S => {
                     self.simd_i32x4_binop(|a, b| if a < b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_LT_U => {
+                Op::I32X4_LT_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) < (b as u32) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_GT_S => {
+                Op::I32X4_GT_S => {
                     self.simd_i32x4_binop(|a, b| if a > b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_GT_U => {
+                Op::I32X4_GT_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) > (b as u32) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_LE_S => {
+                Op::I32X4_LE_S => {
                     self.simd_i32x4_binop(|a, b| if a <= b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_LE_U => {
+                Op::I32X4_LE_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) <= (b as u32) { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_GE_S => {
+                Op::I32X4_GE_S => {
                     self.simd_i32x4_binop(|a, b| if a >= b { -1 } else { 0 })?;
                 }
-                _ if op == Op::I32X4_GE_U => {
+                Op::I32X4_GE_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) >= (b as u32) { -1 } else { 0 })?;
                 }
                 // f32x4 comparisons
-                _ if op == Op::F32X4_EQ => {
+                Op::F32X4_EQ => {
                     self.simd_f32x4_cmp(|a, b| a == b)?;
                 }
-                _ if op == Op::F32X4_NE => {
+                Op::F32X4_NE => {
                     self.simd_f32x4_cmp(|a, b| a != b)?;
                 }
-                _ if op == Op::F32X4_LT => {
+                Op::F32X4_LT => {
                     self.simd_f32x4_cmp(|a, b| a < b)?;
                 }
-                _ if op == Op::F32X4_GT => {
+                Op::F32X4_GT => {
                     self.simd_f32x4_cmp(|a, b| a > b)?;
                 }
-                _ if op == Op::F32X4_LE => {
+                Op::F32X4_LE => {
                     self.simd_f32x4_cmp(|a, b| a <= b)?;
                 }
-                _ if op == Op::F32X4_GE => {
+                Op::F32X4_GE => {
                     self.simd_f32x4_cmp(|a, b| a >= b)?;
                 }
                 // f64x2 comparisons
-                _ if op == Op::F64X2_EQ => {
+                Op::F64X2_EQ => {
                     self.simd_f64x2_cmp(|a, b| a == b)?;
                 }
-                _ if op == Op::F64X2_NE => {
+                Op::F64X2_NE => {
                     self.simd_f64x2_cmp(|a, b| a != b)?;
                 }
-                _ if op == Op::F64X2_LT => {
+                Op::F64X2_LT => {
                     self.simd_f64x2_cmp(|a, b| a < b)?;
                 }
-                _ if op == Op::F64X2_GT => {
+                Op::F64X2_GT => {
                     self.simd_f64x2_cmp(|a, b| a > b)?;
                 }
-                _ if op == Op::F64X2_LE => {
+                Op::F64X2_LE => {
                     self.simd_f64x2_cmp(|a, b| a <= b)?;
                 }
-                _ if op == Op::F64X2_GE => {
+                Op::F64X2_GE => {
                     self.simd_f64x2_cmp(|a, b| a >= b)?;
                 }
                 // v128 bitwise
-                _ if op == Op::V128_NOT => {
+                Op::V128_NOT => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..16 {
@@ -7433,7 +8878,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_AND => {
+                Op::V128_AND => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(a), Value::V128(b)) = (a, b) {
@@ -7446,7 +8891,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_ANDNOT => {
+                Op::V128_ANDNOT => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(a), Value::V128(b)) = (a, b) {
@@ -7459,7 +8904,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_OR => {
+                Op::V128_OR => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(a), Value::V128(b)) = (a, b) {
@@ -7472,7 +8917,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_XOR => {
+                Op::V128_XOR => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(a), Value::V128(b)) = (a, b) {
@@ -7485,7 +8930,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_BITSELECT => {
+                Op::V128_BITSELECT => {
                     let m = self.pop();
                     let v2 = self.pop();
                     let v1 = self.pop();
@@ -7499,7 +8944,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::V128_ANY_TRUE => {
+                Op::V128_ANY_TRUE => {
                     if let Value::V128(a) = self.pop() {
                         self.push(Value::I32(if a.iter().any(|&b| b != 0) { 1 } else { 0 }))?;
                     } else {
@@ -7507,7 +8952,7 @@ impl VM {
                     }
                 }
                 // Promote / demote
-                _ if op == Op::F32X4_DEMOTE_F64X2_ZERO => {
+                Op::F32X4_DEMOTE_F64X2_ZERO => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -7520,7 +8965,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_PROMOTE_LOW_F32X4 => {
+                Op::F64X2_PROMOTE_LOW_F32X4 => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -7534,19 +8979,19 @@ impl VM {
                     }
                 }
                 // i8x16 unary
-                _ if op == Op::I8X16_ABS => {
+                Op::I8X16_ABS => {
                     self.simd_i8x16_unop(|a| (a as i8).unsigned_abs())?;
                 }
-                _ if op == Op::I8X16_NEG => {
+                Op::I8X16_NEG => {
                     self.simd_i8x16_unop(|a| (a as i8).wrapping_neg() as u8)?;
                 }
-                _ if op == Op::I8X16_POPCNT => {
+                Op::I8X16_POPCNT => {
                     self.simd_i8x16_unop(|a| a.count_ones() as u8)?;
                 }
-                _ if op == Op::I8X16_ALL_TRUE => {
+                Op::I8X16_ALL_TRUE => {
                     self.simd_i8x16_testop(|a| a != 0)?;
                 }
-                _ if op == Op::I8X16_BITMASK => {
+                Op::I8X16_BITMASK => {
                     if let Value::V128(a) = self.pop() {
                         let mut mask = 0i32;
                         for i in 0..16 {
@@ -7559,7 +9004,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I8X16_NARROW_I16X8_S => {
+                Op::I8X16_NARROW_I16X8_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7577,7 +9022,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I8X16_NARROW_I16X8_U => {
+                Op::I8X16_NARROW_I16X8_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7596,80 +9041,80 @@ impl VM {
                     }
                 }
                 // f32x4 unary
-                _ if op == Op::F32X4_CEIL => {
+                Op::F32X4_CEIL => {
                     self.simd_f32x4_unop(|a| a.ceil())?;
                 }
-                _ if op == Op::F32X4_FLOOR => {
+                Op::F32X4_FLOOR => {
                     self.simd_f32x4_unop(|a| a.floor())?;
                 }
-                _ if op == Op::F32X4_TRUNC => {
+                Op::F32X4_TRUNC => {
                     self.simd_f32x4_unop(|a| a.trunc())?;
                 }
-                _ if op == Op::F32X4_NEAREST => {
+                Op::F32X4_NEAREST => {
                     self.simd_f32x4_unop(|a| a.round_ties_even())?;
                 }
                 // i8x16 shifts
-                _ if op == Op::I8X16_SHL => {
+                Op::I8X16_SHL => {
                     let sh = self.pop().as_i32() as u32 & 7;
                     self.simd_i8x16_unop(|a| a.wrapping_shl(sh))?;
                 }
-                _ if op == Op::I8X16_SHR_S => {
+                Op::I8X16_SHR_S => {
                     let sh = self.pop().as_i32() as u32 & 7;
                     self.simd_i8x16_unop(|a| ((a as i8).wrapping_shr(sh)) as u8)?;
                 }
-                _ if op == Op::I8X16_SHR_U => {
+                Op::I8X16_SHR_U => {
                     let sh = self.pop().as_i32() as u32 & 7;
                     self.simd_i8x16_unop(|a| a.wrapping_shr(sh))?;
                 }
                 // i8x16 arithmetic
-                _ if op == Op::I8X16_ADD => {
+                Op::I8X16_ADD => {
                     self.simd_i8x16_binop(|a, b| a.wrapping_add(b))?;
                 }
-                _ if op == Op::I8X16_ADD_SAT_S => {
+                Op::I8X16_ADD_SAT_S => {
                     self.simd_i8x16_binop(|a, b| ((a as i8).saturating_add(b as i8)) as u8)?;
                 }
-                _ if op == Op::I8X16_ADD_SAT_U => {
+                Op::I8X16_ADD_SAT_U => {
                     self.simd_i8x16_binop(|a, b| a.saturating_add(b))?;
                 }
-                _ if op == Op::I8X16_SUB => {
+                Op::I8X16_SUB => {
                     self.simd_i8x16_binop(|a, b| a.wrapping_sub(b))?;
                 }
-                _ if op == Op::I8X16_SUB_SAT_S => {
+                Op::I8X16_SUB_SAT_S => {
                     self.simd_i8x16_binop(|a, b| ((a as i8).saturating_sub(b as i8)) as u8)?;
                 }
-                _ if op == Op::I8X16_SUB_SAT_U => {
+                Op::I8X16_SUB_SAT_U => {
                     self.simd_i8x16_binop(|a, b| a.saturating_sub(b))?;
                 }
-                _ if op == Op::I8X16_MIN_S => {
+                Op::I8X16_MIN_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) < (b as i8) { a } else { b })?;
                 }
-                _ if op == Op::I8X16_MIN_U => {
+                Op::I8X16_MIN_U => {
                     self.simd_i8x16_binop(|a, b| a.min(b))?;
                 }
-                _ if op == Op::I8X16_MAX_S => {
+                Op::I8X16_MAX_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) > (b as i8) { a } else { b })?;
                 }
-                _ if op == Op::I8X16_MAX_U => {
+                Op::I8X16_MAX_U => {
                     self.simd_i8x16_binop(|a, b| a.max(b))?;
                 }
-                _ if op == Op::I8X16_AVGR_U => {
+                Op::I8X16_AVGR_U => {
                     self.simd_i8x16_binop(|a, b| ((a as u16 + b as u16 + 1) / 2) as u8)?;
                 }
                 // f64x2 unary
-                _ if op == Op::F64X2_CEIL => {
+                Op::F64X2_CEIL => {
                     self.simd_f64x2_unop(|a| a.ceil())?;
                 }
-                _ if op == Op::F64X2_FLOOR => {
+                Op::F64X2_FLOOR => {
                     self.simd_f64x2_unop(|a| a.floor())?;
                 }
-                _ if op == Op::F64X2_TRUNC => {
+                Op::F64X2_TRUNC => {
                     self.simd_f64x2_unop(|a| a.trunc())?;
                 }
-                _ if op == Op::F64X2_NEAREST => {
+                Op::F64X2_NEAREST => {
                     self.simd_f64x2_unop(|a| a.round_ties_even())?;
                 }
                 // extadd pairwise
-                _ if op == Op::I16X8_EXTADD_PAIRWISE_I8X16_S => {
+                Op::I16X8_EXTADD_PAIRWISE_I8X16_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7681,7 +9126,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTADD_PAIRWISE_I8X16_U => {
+                Op::I16X8_EXTADD_PAIRWISE_I8X16_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7693,7 +9138,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTADD_PAIRWISE_I16X8_S => {
+                Op::I32X4_EXTADD_PAIRWISE_I16X8_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -7707,7 +9152,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTADD_PAIRWISE_I16X8_U => {
+                Op::I32X4_EXTADD_PAIRWISE_I16X8_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -7722,22 +9167,22 @@ impl VM {
                     }
                 }
                 // i16x8 unary
-                _ if op == Op::I16X8_ABS => {
+                Op::I16X8_ABS => {
                     self.simd_i16x8_unop(|a| a.unsigned_abs() as i16)?;
                 }
-                _ if op == Op::I16X8_NEG => {
+                Op::I16X8_NEG => {
                     self.simd_i16x8_unop(|a| a.wrapping_neg())?;
                 }
-                _ if op == Op::I16X8_Q15MULR_SAT_S => {
+                Op::I16X8_Q15MULR_SAT_S => {
                     self.simd_i16x8_binop(|a, b| {
                         let r = (a as i32 * b as i32 + 0x4000) >> 15;
                         r.clamp(i16::MIN as i32, i16::MAX as i32) as i16
                     })?;
                 }
-                _ if op == Op::I16X8_ALL_TRUE => {
+                Op::I16X8_ALL_TRUE => {
                     self.simd_i16x8_testop(|a| a != 0)?;
                 }
-                _ if op == Op::I16X8_BITMASK => {
+                Op::I16X8_BITMASK => {
                     if let Value::V128(a) = self.pop() {
                         let mut mask = 0i32;
                         for i in 0..8 {
@@ -7750,7 +9195,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I16X8_NARROW_I32X4_S => {
+                Op::I16X8_NARROW_I32X4_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7768,7 +9213,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_NARROW_I32X4_U => {
+                Op::I16X8_NARROW_I32X4_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7786,7 +9231,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTEND_LOW_I8X16_S => {
+                Op::I16X8_EXTEND_LOW_I8X16_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7798,7 +9243,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTEND_HIGH_I8X16_S => {
+                Op::I16X8_EXTEND_HIGH_I8X16_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7810,7 +9255,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTEND_LOW_I8X16_U => {
+                Op::I16X8_EXTEND_LOW_I8X16_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7822,7 +9267,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTEND_HIGH_I8X16_U => {
+                Op::I16X8_EXTEND_HIGH_I8X16_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
@@ -7834,57 +9279,57 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_SHL => {
+                Op::I16X8_SHL => {
                     let sh = self.pop().as_i32() as u32 & 15;
                     self.simd_i16x8_unop(|a| a.wrapping_shl(sh))?;
                 }
-                _ if op == Op::I16X8_SHR_S => {
+                Op::I16X8_SHR_S => {
                     let sh = self.pop().as_i32() as u32 & 15;
                     self.simd_i16x8_unop(|a| a.wrapping_shr(sh))?;
                 }
-                _ if op == Op::I16X8_SHR_U => {
+                Op::I16X8_SHR_U => {
                     let sh = self.pop().as_i32() as u32 & 15;
                     self.simd_i16x8_unop(|a| (a as u16).wrapping_shr(sh) as i16)?;
                 }
-                _ if op == Op::I16X8_ADD => {
+                Op::I16X8_ADD => {
                     self.simd_i16x8_binop(|a, b| a.wrapping_add(b))?;
                 }
-                _ if op == Op::I16X8_ADD_SAT_S => {
+                Op::I16X8_ADD_SAT_S => {
                     self.simd_i16x8_binop(|a, b| a.saturating_add(b))?;
                 }
-                _ if op == Op::I16X8_ADD_SAT_U => {
+                Op::I16X8_ADD_SAT_U => {
                     self.simd_i16x8_binop(|a, b| ((a as u16).saturating_add(b as u16)) as i16)?;
                 }
-                _ if op == Op::I16X8_SUB => {
+                Op::I16X8_SUB => {
                     self.simd_i16x8_binop(|a, b| a.wrapping_sub(b))?;
                 }
-                _ if op == Op::I16X8_SUB_SAT_S => {
+                Op::I16X8_SUB_SAT_S => {
                     self.simd_i16x8_binop(|a, b| a.saturating_sub(b))?;
                 }
-                _ if op == Op::I16X8_SUB_SAT_U => {
+                Op::I16X8_SUB_SAT_U => {
                     self.simd_i16x8_binop(|a, b| ((a as u16).saturating_sub(b as u16)) as i16)?;
                 }
-                _ if op == Op::I16X8_MUL => {
+                Op::I16X8_MUL => {
                     self.simd_i16x8_binop(|a, b| a.wrapping_mul(b))?;
                 }
-                _ if op == Op::I16X8_MIN_S => {
+                Op::I16X8_MIN_S => {
                     self.simd_i16x8_binop(|a, b| a.min(b))?;
                 }
-                _ if op == Op::I16X8_MIN_U => {
+                Op::I16X8_MIN_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) < (b as u16) { a } else { b })?;
                 }
-                _ if op == Op::I16X8_MAX_S => {
+                Op::I16X8_MAX_S => {
                     self.simd_i16x8_binop(|a, b| a.max(b))?;
                 }
-                _ if op == Op::I16X8_MAX_U => {
+                Op::I16X8_MAX_U => {
                     self.simd_i16x8_binop(|a, b| if (a as u16) > (b as u16) { a } else { b })?;
                 }
-                _ if op == Op::I16X8_AVGR_U => {
+                Op::I16X8_AVGR_U => {
                     self.simd_i16x8_binop(|a, b| {
                         (((a as u16 as u32) + (b as u16 as u32) + 1) / 2) as i16
                     })?;
                 }
-                _ if op == Op::I16X8_EXTMUL_LOW_I8X16_S => {
+                Op::I16X8_EXTMUL_LOW_I8X16_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7898,7 +9343,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTMUL_HIGH_I8X16_S => {
+                Op::I16X8_EXTMUL_HIGH_I8X16_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7912,7 +9357,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTMUL_LOW_I8X16_U => {
+                Op::I16X8_EXTMUL_LOW_I8X16_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7926,7 +9371,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_EXTMUL_HIGH_I8X16_U => {
+                Op::I16X8_EXTMUL_HIGH_I8X16_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -7941,16 +9386,16 @@ impl VM {
                     }
                 }
                 // i32x4 unary
-                _ if op == Op::I32X4_ABS => {
+                Op::I32X4_ABS => {
                     self.simd_i32x4_unop(|a| a.unsigned_abs() as i32)?;
                 }
-                _ if op == Op::I32X4_NEG => {
+                Op::I32X4_NEG => {
                     self.simd_i32x4_unop(|a| a.wrapping_neg())?;
                 }
-                _ if op == Op::I32X4_ALL_TRUE => {
+                Op::I32X4_ALL_TRUE => {
                     self.simd_i32x4_testop(|a| a != 0)?;
                 }
-                _ if op == Op::I32X4_BITMASK => {
+                Op::I32X4_BITMASK => {
                     if let Value::V128(a) = self.pop() {
                         let mut mask = 0i32;
                         for i in 0..4 {
@@ -7963,7 +9408,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTEND_LOW_I16X8_S => {
+                Op::I32X4_EXTEND_LOW_I16X8_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -7975,7 +9420,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTEND_HIGH_I16X8_S => {
+                Op::I32X4_EXTEND_HIGH_I16X8_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -7987,7 +9432,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTEND_LOW_I16X8_U => {
+                Op::I32X4_EXTEND_LOW_I16X8_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -7999,7 +9444,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTEND_HIGH_I16X8_U => {
+                Op::I32X4_EXTEND_HIGH_I16X8_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -8011,40 +9456,40 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_SHL => {
+                Op::I32X4_SHL => {
                     let sh = self.pop().as_i32() as u32 & 31;
                     self.simd_i32x4_unop(|a| a.wrapping_shl(sh))?;
                 }
-                _ if op == Op::I32X4_SHR_S => {
+                Op::I32X4_SHR_S => {
                     let sh = self.pop().as_i32() as u32 & 31;
                     self.simd_i32x4_unop(|a| a.wrapping_shr(sh))?;
                 }
-                _ if op == Op::I32X4_SHR_U => {
+                Op::I32X4_SHR_U => {
                     let sh = self.pop().as_i32() as u32 & 31;
                     self.simd_i32x4_unop(|a| (a as u32).wrapping_shr(sh) as i32)?;
                 }
-                _ if op == Op::I32X4_ADD => {
+                Op::I32X4_ADD => {
                     self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?;
                 }
-                _ if op == Op::I32X4_SUB => {
+                Op::I32X4_SUB => {
                     self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?;
                 }
-                _ if op == Op::I32X4_MUL => {
+                Op::I32X4_MUL => {
                     self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?;
                 }
-                _ if op == Op::I32X4_MIN_S => {
+                Op::I32X4_MIN_S => {
                     self.simd_i32x4_binop(|a, b| a.min(b))?;
                 }
-                _ if op == Op::I32X4_MIN_U => {
+                Op::I32X4_MIN_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) < (b as u32) { a } else { b })?;
                 }
-                _ if op == Op::I32X4_MAX_S => {
+                Op::I32X4_MAX_S => {
                     self.simd_i32x4_binop(|a, b| a.max(b))?;
                 }
-                _ if op == Op::I32X4_MAX_U => {
+                Op::I32X4_MAX_U => {
                     self.simd_i32x4_binop(|a, b| if (a as u32) > (b as u32) { a } else { b })?;
                 }
-                _ if op == Op::I32X4_DOT_I16X8_S => {
+                Op::I32X4_DOT_I16X8_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8062,7 +9507,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTMUL_LOW_I16X8_S => {
+                Op::I32X4_EXTMUL_LOW_I16X8_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8080,7 +9525,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTMUL_HIGH_I16X8_S => {
+                Op::I32X4_EXTMUL_HIGH_I16X8_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8099,7 +9544,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTMUL_LOW_I16X8_U => {
+                Op::I32X4_EXTMUL_LOW_I16X8_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8117,7 +9562,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_EXTMUL_HIGH_I16X8_U => {
+                Op::I32X4_EXTMUL_HIGH_I16X8_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8137,16 +9582,16 @@ impl VM {
                     }
                 }
                 // i64x2
-                _ if op == Op::I64X2_ABS => {
+                Op::I64X2_ABS => {
                     self.simd_i64x2_unop(|a| a.unsigned_abs() as i64)?;
                 }
-                _ if op == Op::I64X2_NEG => {
+                Op::I64X2_NEG => {
                     self.simd_i64x2_unop(|a| a.wrapping_neg())?;
                 }
-                _ if op == Op::I64X2_ALL_TRUE => {
+                Op::I64X2_ALL_TRUE => {
                     self.simd_i64x2_testop(|a| a != 0)?;
                 }
-                _ if op == Op::I64X2_BITMASK => {
+                Op::I64X2_BITMASK => {
                     if let Value::V128(a) = self.pop() {
                         let mut mask = 0i32;
                         for i in 0..2 {
@@ -8159,7 +9604,7 @@ impl VM {
                         self.push(Value::I32(0))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTEND_LOW_I32X4_S => {
+                Op::I64X2_EXTEND_LOW_I32X4_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8172,7 +9617,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTEND_HIGH_I32X4_S => {
+                Op::I64X2_EXTEND_HIGH_I32X4_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8186,7 +9631,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTEND_LOW_I32X4_U => {
+                Op::I64X2_EXTEND_LOW_I32X4_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8199,7 +9644,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTEND_HIGH_I32X4_U => {
+                Op::I64X2_EXTEND_HIGH_I32X4_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8213,46 +9658,46 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_SHL => {
+                Op::I64X2_SHL => {
                     let sh = self.pop().as_i32() as u32 & 63;
                     self.simd_i64x2_unop(|a| a.wrapping_shl(sh))?;
                 }
-                _ if op == Op::I64X2_SHR_S => {
+                Op::I64X2_SHR_S => {
                     let sh = self.pop().as_i32() as u32 & 63;
                     self.simd_i64x2_unop(|a| a.wrapping_shr(sh))?;
                 }
-                _ if op == Op::I64X2_SHR_U => {
+                Op::I64X2_SHR_U => {
                     let sh = self.pop().as_i32() as u32 & 63;
                     self.simd_i64x2_unop(|a| (a as u64).wrapping_shr(sh) as i64)?;
                 }
-                _ if op == Op::I64X2_ADD => {
+                Op::I64X2_ADD => {
                     self.simd_i64x2_binop(|a, b| a.wrapping_add(b))?;
                 }
-                _ if op == Op::I64X2_SUB => {
+                Op::I64X2_SUB => {
                     self.simd_i64x2_binop(|a, b| a.wrapping_sub(b))?;
                 }
-                _ if op == Op::I64X2_MUL => {
+                Op::I64X2_MUL => {
                     self.simd_i64x2_binop(|a, b| a.wrapping_mul(b))?;
                 }
-                _ if op == Op::I64X2_EQ => {
+                Op::I64X2_EQ => {
                     self.simd_i64x2_cmp(|a, b| a == b)?;
                 }
-                _ if op == Op::I64X2_NE => {
+                Op::I64X2_NE => {
                     self.simd_i64x2_cmp(|a, b| a != b)?;
                 }
-                _ if op == Op::I64X2_LT_S => {
+                Op::I64X2_LT_S => {
                     self.simd_i64x2_cmp(|a, b| a < b)?;
                 }
-                _ if op == Op::I64X2_GT_S => {
+                Op::I64X2_GT_S => {
                     self.simd_i64x2_cmp(|a, b| a > b)?;
                 }
-                _ if op == Op::I64X2_LE_S => {
+                Op::I64X2_LE_S => {
                     self.simd_i64x2_cmp(|a, b| a <= b)?;
                 }
-                _ if op == Op::I64X2_GE_S => {
+                Op::I64X2_GE_S => {
                     self.simd_i64x2_cmp(|a, b| a >= b)?;
                 }
-                _ if op == Op::I64X2_EXTMUL_LOW_I32X4_S => {
+                Op::I64X2_EXTMUL_LOW_I32X4_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8270,7 +9715,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTMUL_HIGH_I32X4_S => {
+                Op::I64X2_EXTMUL_HIGH_I32X4_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8289,7 +9734,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTMUL_LOW_I32X4_U => {
+                Op::I64X2_EXTMUL_LOW_I32X4_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8307,7 +9752,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_EXTMUL_HIGH_I32X4_U => {
+                Op::I64X2_EXTMUL_HIGH_I32X4_U => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8327,28 +9772,28 @@ impl VM {
                     }
                 }
                 // f32x4
-                _ if op == Op::F32X4_ABS => {
+                Op::F32X4_ABS => {
                     self.simd_f32x4_unop(|a| a.abs())?;
                 }
-                _ if op == Op::F32X4_NEG => {
+                Op::F32X4_NEG => {
                     self.simd_f32x4_unop(|a| -a)?;
                 }
-                _ if op == Op::F32X4_SQRT => {
+                Op::F32X4_SQRT => {
                     self.simd_f32x4_unop(|a| a.sqrt())?;
                 }
-                _ if op == Op::F32X4_ADD => {
+                Op::F32X4_ADD => {
                     self.simd_f32x4_binop(|a, b| a + b)?;
                 }
-                _ if op == Op::F32X4_SUB => {
+                Op::F32X4_SUB => {
                     self.simd_f32x4_binop(|a, b| a - b)?;
                 }
-                _ if op == Op::F32X4_MUL => {
+                Op::F32X4_MUL => {
                     self.simd_f32x4_binop(|a, b| a * b)?;
                 }
-                _ if op == Op::F32X4_DIV => {
+                Op::F32X4_DIV => {
                     self.simd_f32x4_binop(|a, b| a / b)?;
                 }
-                _ if op == Op::F32X4_MIN => {
+                Op::F32X4_MIN => {
                     self.simd_f32x4_binop(|a, b| {
                         if a.is_nan() || b.is_nan() {
                             f32::NAN
@@ -8357,7 +9802,7 @@ impl VM {
                         }
                     })?;
                 }
-                _ if op == Op::F32X4_MAX => {
+                Op::F32X4_MAX => {
                     self.simd_f32x4_binop(|a, b| {
                         if a.is_nan() || b.is_nan() {
                             f32::NAN
@@ -8366,35 +9811,35 @@ impl VM {
                         }
                     })?;
                 }
-                _ if op == Op::F32X4_PMIN => {
+                Op::F32X4_PMIN => {
                     self.simd_f32x4_binop(|a, b| if b < a { b } else { a })?;
                 }
-                _ if op == Op::F32X4_PMAX => {
+                Op::F32X4_PMAX => {
                     self.simd_f32x4_binop(|a, b| if a < b { b } else { a })?;
                 }
                 // f64x2
-                _ if op == Op::F64X2_ABS => {
+                Op::F64X2_ABS => {
                     self.simd_f64x2_unop(|a| a.abs())?;
                 }
-                _ if op == Op::F64X2_NEG => {
+                Op::F64X2_NEG => {
                     self.simd_f64x2_unop(|a| -a)?;
                 }
-                _ if op == Op::F64X2_SQRT => {
+                Op::F64X2_SQRT => {
                     self.simd_f64x2_unop(|a| a.sqrt())?;
                 }
-                _ if op == Op::F64X2_ADD => {
+                Op::F64X2_ADD => {
                     self.simd_f64x2_binop(|a, b| a + b)?;
                 }
-                _ if op == Op::F64X2_SUB => {
+                Op::F64X2_SUB => {
                     self.simd_f64x2_binop(|a, b| a - b)?;
                 }
-                _ if op == Op::F64X2_MUL => {
+                Op::F64X2_MUL => {
                     self.simd_f64x2_binop(|a, b| a * b)?;
                 }
-                _ if op == Op::F64X2_DIV => {
+                Op::F64X2_DIV => {
                     self.simd_f64x2_binop(|a, b| a / b)?;
                 }
-                _ if op == Op::F64X2_MIN => {
+                Op::F64X2_MIN => {
                     self.simd_f64x2_binop(|a, b| {
                         if a.is_nan() || b.is_nan() {
                             f64::NAN
@@ -8403,7 +9848,7 @@ impl VM {
                         }
                     })?;
                 }
-                _ if op == Op::F64X2_MAX => {
+                Op::F64X2_MAX => {
                     self.simd_f64x2_binop(|a, b| {
                         if a.is_nan() || b.is_nan() {
                             f64::NAN
@@ -8412,14 +9857,14 @@ impl VM {
                         }
                     })?;
                 }
-                _ if op == Op::F64X2_PMIN => {
+                Op::F64X2_PMIN => {
                     self.simd_f64x2_binop(|a, b| if b < a { b } else { a })?;
                 }
-                _ if op == Op::F64X2_PMAX => {
+                Op::F64X2_PMAX => {
                     self.simd_f64x2_binop(|a, b| if a < b { b } else { a })?;
                 }
                 // Conversions
-                _ if op == Op::I32X4_TRUNC_SAT_F32X4_S => {
+                Op::I32X4_TRUNC_SAT_F32X4_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -8436,7 +9881,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_TRUNC_SAT_F32X4_U => {
+                Op::I32X4_TRUNC_SAT_F32X4_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -8453,7 +9898,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_CONVERT_I32X4_S => {
+                Op::F32X4_CONVERT_I32X4_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -8466,7 +9911,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_CONVERT_I32X4_U => {
+                Op::F32X4_CONVERT_I32X4_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
@@ -8479,7 +9924,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_TRUNC_SAT_F64X2_S_ZERO => {
+                Op::I32X4_TRUNC_SAT_F64X2_S_ZERO => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8496,7 +9941,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_TRUNC_SAT_F64X2_U_ZERO => {
+                Op::I32X4_TRUNC_SAT_F64X2_U_ZERO => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8513,7 +9958,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_CONVERT_LOW_I32X4_S => {
+                Op::F64X2_CONVERT_LOW_I32X4_S => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8526,7 +9971,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_CONVERT_LOW_I32X4_U => {
+                Op::F64X2_CONVERT_LOW_I32X4_U => {
                     if let Value::V128(a) = self.pop() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
@@ -8551,7 +9996,7 @@ impl VM {
                 // (NaN sign, out-of-range truncation, lane-select bit
                 // policy) — we pick one policy per op and stick with it
                 // so results are reproducible across platforms.
-                _ if op == Op::I8X16_RELAXED_SWIZZLE => {
+                Op::I8X16_RELAXED_SWIZZLE => {
                     // Same as i8x16.swizzle; relaxed allows host to mask
                     // indices >= 16 to 0 or return unspecified bytes. We
                     // pick the safe mask-to-zero variant.
@@ -8568,7 +10013,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_TRUNC_F32X4_S => {
+                Op::I32X4_RELAXED_TRUNC_F32X4_S => {
                     let v = self.pop();
                     if let Value::V128(bytes) = v {
                         let mut out = [0u8; 16];
@@ -8582,7 +10027,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_TRUNC_F32X4_U => {
+                Op::I32X4_RELAXED_TRUNC_F32X4_U => {
                     let v = self.pop();
                     if let Value::V128(bytes) = v {
                         let mut out = [0u8; 16];
@@ -8596,7 +10041,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_TRUNC_F64X2_S_ZERO => {
+                Op::I32X4_RELAXED_TRUNC_F64X2_S_ZERO => {
                     let v = self.pop();
                     if let Value::V128(bytes) = v {
                         let mut out = [0u8; 16];
@@ -8611,7 +10056,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_TRUNC_F64X2_U_ZERO => {
+                Op::I32X4_RELAXED_TRUNC_F64X2_U_ZERO => {
                     let v = self.pop();
                     if let Value::V128(bytes) = v {
                         let mut out = [0u8; 16];
@@ -8625,7 +10070,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_RELAXED_MADD => {
+                Op::F32X4_RELAXED_MADD => {
                     let c = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8643,7 +10088,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_RELAXED_NMADD => {
+                Op::F32X4_RELAXED_NMADD => {
                     let c = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8661,7 +10106,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_RELAXED_MADD => {
+                Op::F64X2_RELAXED_MADD => {
                     let c = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8679,7 +10124,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_RELAXED_NMADD => {
+                Op::F64X2_RELAXED_NMADD => {
                     let c = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8701,7 +10146,7 @@ impl VM {
                 // mask bit policy: we use the full bit (all 8 / 16 / 32
                 // bits of the mask lane compared to 0) — picking the
                 // "any non-zero bit" interpretation consistently.
-                _ if op == Op::I8X16_RELAXED_LANESELECT => {
+                Op::I8X16_RELAXED_LANESELECT => {
                     let mask = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8715,7 +10160,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I16X8_RELAXED_LANESELECT => {
+                Op::I16X8_RELAXED_LANESELECT => {
                     let mask = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8735,7 +10180,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_LANESELECT => {
+                Op::I32X4_RELAXED_LANESELECT => {
                     let mask = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8755,7 +10200,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I64X2_RELAXED_LANESELECT => {
+                Op::I64X2_RELAXED_LANESELECT => {
                     let mask = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8780,7 +10225,7 @@ impl VM {
                 // either operand on NaN input (vs MVP which must return
                 // NaN). We pick `a` when `a` is NaN, `b` otherwise — the
                 // x86 `minps/maxps` behavior.
-                _ if op == Op::F32X4_RELAXED_MIN => {
+                Op::F32X4_RELAXED_MIN => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8796,7 +10241,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F32X4_RELAXED_MAX => {
+                Op::F32X4_RELAXED_MAX => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8812,7 +10257,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_RELAXED_MIN => {
+                Op::F64X2_RELAXED_MIN => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8828,7 +10273,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::F64X2_RELAXED_MAX => {
+                Op::F64X2_RELAXED_MAX => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8845,7 +10290,7 @@ impl VM {
                     }
                 }
                 // -- q15 multiply-round-saturate (same semantics as MVP) --
-                _ if op == Op::I16X8_RELAXED_Q15MULR_S => {
+                Op::I16X8_RELAXED_Q15MULR_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8868,7 +10313,7 @@ impl VM {
                 // The i8x16 x i7x16 ops assume the second operand's high
                 // bit is zero (7-bit). The "relaxed" part is that the
                 // implementation may saturate or wrap — we wrap via i32.
-                _ if op == Op::I16X8_RELAXED_DOT_I8X16_I7X16_S => {
+                Op::I16X8_RELAXED_DOT_I8X16_I7X16_S => {
                     let b = self.pop();
                     let a = self.pop();
                     if let (Value::V128(va), Value::V128(vb)) = (a, b) {
@@ -8886,7 +10331,7 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
-                _ if op == Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S => {
+                Op::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S => {
                     let c = self.pop();
                     let b = self.pop();
                     let a = self.pop();
@@ -8934,4 +10379,76 @@ impl VM {
 /// string and a host-stored one.
 pub(crate) fn canon_marshal_bump() -> &'static str {
     "__vybe_chan_futex_next"
+}
+
+#[cfg(test)]
+mod thread_block_tests {
+    use super::*;
+    use crate::vm::VM;
+
+    /// The two non-switching outcomes of `block(switch_to = None)` must be
+    /// DISTINGUISHABLE, and both must be reachable.
+    ///
+    /// The whole reason `thread_block` splits three ways is that a thread
+    /// blocking while host work is outstanding is *not* deadlocked — it is
+    /// waiting, and the machinery to park it properly is the gap. Report those
+    /// two as one message and the gap reads as a program bug forever after.
+    ///
+    /// If this test ever finds the two messages equal, or finds the host-work
+    /// branch unreachable, the three-way split has collapsed into a two-way one
+    /// with dead code — which is precisely what it was introduced to avoid.
+    #[test]
+    fn a_deadlock_and_a_pending_host_wait_are_different_answers() {
+        let mut vm = VM::new();
+        // No threads registered, nothing queued: nothing can ever wake us.
+        let deadlock = vm
+            .thread_block("thread.suspend", 0)
+            .expect_err("blocking with no waker must not succeed")
+            .message;
+        assert!(
+            deadlock.contains("no host work is pending"),
+            "the deadlock message must say WHY it is a deadlock: {deadlock}"
+        );
+
+        // One queued job is enough to make this a wait rather than a deadlock.
+        vm.event_loop
+            .borrow_mut()
+            .immediate
+            .push_back(crate::event_loop::Task::Callback {
+                callback: Value::Undefined,
+                value: Value::Undefined,
+            });
+        let waiting = vm
+            .thread_block("thread.suspend", 0)
+            .expect_err("the fiber-suspension path is not implemented yet")
+            .message;
+        assert!(
+            waiting.contains("fiber"),
+            "a legitimate block must name the MISSING MACHINERY, not blame the guest: {waiting}"
+        );
+        assert_ne!(
+            deadlock, waiting,
+            "collapsing these two would report a deadlock for a thread that is merely waiting"
+        );
+    }
+
+    /// A READY thread is a switch target, so `thread_block` must not reach
+    /// either error path — it hands control over instead. Asserted by the
+    /// ABSENCE of the deadlock message, since actually switching needs a live
+    /// fiber this test has no way to mint.
+    #[test]
+    fn a_ready_thread_is_preferred_over_reporting_a_deadlock() {
+        let mut vm = VM::new();
+        let cont = vm.new_parked_continuation();
+        let mut t = crate::cm_thread::Thread::new(0, cont);
+        t.resume_later().expect("a fresh thread is suspended");
+        assert!(t.ready(), "resume_later must leave it READY or this proves nothing");
+        let idx = vm.cm_instance.threads.register(t);
+
+        let err = vm.thread_block("thread.suspend", idx + 1).unwrap_err().message;
+        assert!(
+            !err.contains("no host work is pending"),
+            "a ready thread must be switched to, never reported as a deadlock: {err}"
+        );
+    }
 }

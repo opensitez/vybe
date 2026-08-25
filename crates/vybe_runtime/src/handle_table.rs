@@ -60,12 +60,39 @@ pub enum HandleEntry {
     Subtask { future_id: u64, state: SubtaskState },
     /// An owned component resource (type_id + value).
     OwnedResource { type_id: u32, value: Value },
+    /// 📝 `class ErrorContext: debug_message: String` — `CanonicalABI.md:5144`.
+    ///
+    /// The spec's handle table is
+    /// `Table[ResourceHandle | Waitable | WaitableSet | ErrorContext]`, so this
+    /// belongs here and not in a table of its own.
+    ErrorContext { debug_message: String },
     /// A borrowed resource lent from another task (scope_task is the lending CMTask id).
     BorrowedResource {
         type_id: u32,
         value: Value,
         scope_task: u32,
     },
+}
+
+impl HandleEntry {
+    /// What this entry IS, for a trap that has to say why a handle was wrong.
+    ///
+    /// `trap_if(not isinstance(h, X))` appears all over `CanonicalABI.md`, and
+    /// a message that only says "wrong kind of handle" sends the reader to
+    /// read the table by hand. Naming both sides is the difference between a
+    /// one-line diagnosis and a debugging session.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            HandleEntry::ReadableStreamEnd(_) => "readable stream end",
+            HandleEntry::WritableStreamEnd(_) => "writable stream end",
+            HandleEntry::ReadableFutureEnd(_) => "readable future end",
+            HandleEntry::WritableFutureEnd(_) => "writable future end",
+            HandleEntry::Subtask { .. } => "subtask",
+            HandleEntry::OwnedResource { .. } => "owned resource",
+            HandleEntry::BorrowedResource { .. } => "borrowed resource",
+            HandleEntry::ErrorContext { .. } => "error-context",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

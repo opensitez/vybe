@@ -165,6 +165,28 @@ pub fn lift_flat(
 ) -> Result<Value, CanonError> {
     Ok(match t {
         ValType::Bool => Value::Bool(matches!(vi.next()?, CoreValue::I32(i) if i != 0)),
+        // ⛔ The narrow widths arrive in a full core `i32` slot and must be
+        // NARROWED on the way in — `CanonicalABI.md:3282` lifts each through
+        // its own width, so the high bits of the slot are not part of the
+        // value. Signed ones then sign-extend, unsigned ones do not: the same
+        // byte `0xFF` is `-1` as `s8` and `255` as `u8`. Taking the slot
+        // verbatim would carry a silently out-of-range value.
+        ValType::S8 => match vi.next()? {
+            CoreValue::I32(i) => Value::I32(i as u8 as i8 as i32),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
+        ValType::U8 => match vi.next()? {
+            CoreValue::I32(i) => Value::I32(i as u8 as i32),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
+        ValType::S16 => match vi.next()? {
+            CoreValue::I32(i) => Value::I32(i as u16 as i16 as i32),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
+        ValType::U16 => match vi.next()? {
+            CoreValue::I32(i) => Value::I32(i as u16 as i32),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
         ValType::I32 => match vi.next()? {
             CoreValue::I32(i) => Value::I32(i as i32),
             other => return Err(mismatch(other, CoreType::I32)),
@@ -173,10 +195,38 @@ pub fn lift_flat(
             CoreValue::I64(i) => Value::I64(i as i64),
             other => return Err(mismatch(other, CoreType::I64)),
         },
+        ValType::F32 => match vi.next()? {
+            CoreValue::F32(f) => Value::F64(f as f64),
+            other => return Err(mismatch(other, CoreType::F32)),
+        },
         ValType::F64 => match vi.next()? {
             CoreValue::F64(f) => Value::F64(f),
             other => return Err(mismatch(other, CoreType::F64)),
         },
+        // `convert_i32_to_char` — the trap is what makes this a `char` and not
+        // a `u32`, so it runs here as well as on the memory path.
+        ValType::Char => match vi.next()? {
+            CoreValue::I32(i) => {
+                let c = crate::canon_value::scalar_to_char(i)?;
+                Value::String(std::sync::Arc::from(c.to_string().as_str()))
+            }
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
+        // `lift_flat_flags` — one `i32` however wide the packed integer is in
+        // memory, unpacked into a record of label → bool.
+        ValType::Flags(labels) => match vi.next()? {
+            CoreValue::I32(i) => crate::canon_value::unpack_flags(i, labels),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
+        // 🔧 `lift_flat_list` with a length present: N elements read straight
+        // from the flat sequence, no (ptr, len) pair and no memory access.
+        ValType::ListFixed(elem, n) => {
+            let mut items = Vec::with_capacity(*n as usize);
+            for _ in 0..*n {
+                items.push(lift_flat(memory, vi, elem, ptr_type)?);
+            }
+            Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
+        }
         // `lift_flat_string` — the (ptr, length) pair, bytes still in memory.
         ValType::String | ValType::List(_) => {
             let at = flat_ptr(vi.next()?)?;
@@ -230,11 +280,20 @@ pub fn lift_flat(
                     object.properties.insert("val".into(), payload);
                     Value::Object(crate::heap::alloc(object))
                 }
-                None => return Err(CanonError::Unsupported("variant discriminant out of range")),
+                None => {
+                    return Err(CanonError::DiscriminantOutOfRange {
+                        got: case,
+                        cases: cases.len(),
+                    })
+                }
             }
         }
         // A handle or async end is its index.
-        ValType::Own(_) | ValType::Borrow(_) | ValType::Stream(_) | ValType::Future(_) => {
+        ValType::Own(_)
+        | ValType::Borrow(_)
+        | ValType::Stream(_)
+        | ValType::Future(_)
+        | ValType::ErrorContext => {
             Value::I32(flat_ptr(vi.next()?)? as i32)
         }
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
@@ -264,7 +323,10 @@ fn lift_flat_variant(
 
     let case_index = flat_ptr(vi.next()?)?;
     if case_index as usize >= cases.len() {
-        return Err(CanonError::Unsupported("variant discriminant out of range"));
+        return Err(CanonError::DiscriminantOutOfRange {
+            got: case_index,
+            cases: cases.len(),
+        });
     }
 
     let mut consumed = 0usize;
@@ -306,9 +368,37 @@ pub fn lower_flat(
 ) -> Result<Vec<CoreValue>, CanonError> {
     Ok(match t {
         ValType::Bool => vec![CoreValue::I32(u32::from(v.as_bool()))],
+        // Lowering narrows to the declared width and then widens back into the
+        // i32 slot, so a value out of range for its type cannot be smuggled
+        // through in the slot's spare bits.
+        ValType::S8 => vec![CoreValue::I32(v.as_i32() as i8 as i32 as u32)],
+        ValType::U8 => vec![CoreValue::I32(v.as_i32() as u8 as u32)],
+        ValType::S16 => vec![CoreValue::I32(v.as_i32() as i16 as i32 as u32)],
+        ValType::U16 => vec![CoreValue::I32(v.as_i32() as u16 as u32)],
         ValType::I32 => vec![CoreValue::I32(v.as_i32() as u32)],
         ValType::I64 => vec![CoreValue::I64(v.as_i64() as u64)],
+        ValType::F32 => vec![CoreValue::F32(v.as_f64() as f32)],
         ValType::F64 => vec![CoreValue::F64(v.as_f64())],
+        ValType::Char => vec![CoreValue::I32(crate::canon_value::value_to_scalar(v)?)],
+        // `lower_flat_flags` — `[pack_flags_into_int(v, labels)]`.
+        ValType::Flags(labels) => vec![CoreValue::I32(crate::canon_value::pack_flags(v, labels))],
+        // 🔧 N elements' flat values in sequence. The count check is the same
+        // assertion `store` makes: the length is part of the TYPE, so a
+        // mismatched value cannot be silently padded or truncated.
+        ValType::ListFixed(elem, n) => {
+            let items = crate::canon_value::array_items_public(v);
+            if items.len() as u32 != *n {
+                return Err(CanonError::FixedListLength {
+                    got: items.len(),
+                    want: *n,
+                });
+            }
+            let mut flat = Vec::new();
+            for item in &items {
+                flat.extend(lower_flat(memory, realloc, item, elem, ptr_type)?);
+            }
+            flat
+        }
         // The bytes go to memory; only the pair travels flat.
         ValType::String | ValType::List(_) => {
             let (at, len) = store_pair(memory, realloc, v, t)?;
@@ -343,7 +433,11 @@ pub fn lower_flat(
             let (idx, payload) = crate::canon_value::variant_case_public(v, cases)?;
             lower_flat_variant(memory, realloc, idx, &payload, cases, ptr_type)?
         }
-        ValType::Own(_) | ValType::Borrow(_) | ValType::Stream(_) | ValType::Future(_) => {
+        ValType::Own(_)
+        | ValType::Borrow(_)
+        | ValType::Stream(_)
+        | ValType::Future(_)
+        | ValType::ErrorContext => {
             vec![CoreValue::I32(v.as_i32() as u32)]
         }
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
@@ -492,8 +586,10 @@ pub fn lift_flat_values(
 // ── helpers ───────────────────────────────────────────────────────────────
 
 fn mismatch(v: CoreValue, want: CoreType) -> CanonError {
-    let _ = (v, want);
-    CanonError::Unsupported("flat lift: core value of the wrong type")
+    CanonError::FlatTypeMismatch {
+        got: v.core_type(),
+        want,
+    }
 }
 
 /// A pointer-or-length core value as a `u32`, whatever width it travelled in.

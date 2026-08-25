@@ -24,14 +24,28 @@ impl VM {
         // only as the bare-VM fallback so `vybe_runtime`'s own tests run
         // without any platform.
         if let Some(scheduler) = self.scheduler.clone() {
-            while scheduler.has_pending(self) {
-                scheduler.turn(self)?;
+            loop {
+                while scheduler.has_pending(self) {
+                    scheduler.turn(self)?;
+                }
+                // Out of runnable work, but a reader may be parked on a stream
+                // that has a producer nobody has asked yet. Driving it HERE
+                // rather than from the read itself is what lets a blocking
+                // producer be correct: everything that could have run has run,
+                // so waiting for a peer can no longer starve one.
+                if !self.drive_parked_producers() {
+                    break;
+                }
             }
             return self.report_parked_sync_copies();
         }
         loop {
             let has_pending = self.event_loop.borrow().has_pending() || self.deferred_pending();
             if !has_pending {
+                // Same last-resort producer drive as the scheduler path above.
+                if self.drive_parked_producers() {
+                    continue;
+                }
                 break;
             }
 
@@ -75,6 +89,28 @@ impl VM {
     /// Called on BOTH exits from `run_event_loop`. The installed-scheduler
     /// path is the one that runs under `vybex` — a check only on the bare-VM
     /// fallback would be a check that never fires in production.
+    /// Ask every registered producer of a stream a reader is parked on to
+    /// produce, and answer whether any of them did.
+    ///
+    /// A host function returns once, so a stream it left open has no way to
+    /// gain more elements on its own — somebody has to ask. The reader cannot
+    /// be the one to ask before it parks (that blocks the fiber that would
+    /// have supplied the data), so the loop asks on its behalf once it has
+    /// nothing else to run.
+    ///
+    /// `true` means something arrived and a parked reader has been woken, so
+    /// the caller goes round again.
+    fn drive_parked_producers(&mut self) -> bool {
+        let ids = self.event_loop.borrow().parked_stream_ids();
+        let mut progressed = false;
+        for id in ids {
+            if self.run_stream_producer(id) {
+                progressed = true;
+            }
+        }
+        progressed
+    }
+
     fn report_parked_sync_copies(&mut self) -> Result<(), VMError> {
         let parked = self.event_loop.borrow().parked_sync_copies();
         if parked > 0 {

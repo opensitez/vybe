@@ -244,6 +244,19 @@ impl EventLoop {
         self.stream_sync_readers.len() + self.future_sync_readers.len()
     }
 
+    /// The streams a synchronous reader is currently parked on.
+    ///
+    /// What the loop asks before it concludes the program is stuck: a stream
+    /// with a registered producer is not stuck, it just has nobody who has
+    /// been asked to fill it yet. Deduplicated because several readers may
+    /// park on one stream and the producer only needs driving once.
+    pub fn parked_stream_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.stream_sync_readers.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     /// Generate a unique promise ID.
     pub fn next_promise_id(&mut self) -> u64 {
         let id = self.next_promise_id;

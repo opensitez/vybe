@@ -78,14 +78,38 @@ pub fn join(a: CoreType, b: CoreType) -> CoreType {
 pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
     match t {
         ValType::Bool => vec![CoreType::I32],
-        ValType::I32 => vec![CoreType::I32],
+        // `CanonicalABI.md:3190` — every integer narrower than 64 bits
+        // flattens to ONE core `i32`. The width is a MEMORY fact, not a flat
+        // one: it decides how many bytes `load`/`store` move, and the range
+        // check on the way in and out.
+        ValType::S8 | ValType::U8 | ValType::S16 | ValType::U16 | ValType::I32 => {
+            vec![CoreType::I32]
+        }
         ValType::I64 => vec![CoreType::I64],
+        // `f32` flattens to a core `f32`, NOT to `f64` — a demotion here would
+        // round in a place the spec does not.
+        ValType::F32 => vec![CoreType::F32],
         ValType::F64 => vec![CoreType::F64],
+        // A `char` travels as its scalar value in one `i32`.
+        ValType::Char => vec![CoreType::I32],
+        // `CanonicalABI.md:3197` — flags flatten to ONE `i32` whatever their
+        // memory width, because at most 32 labels fit and they are packed.
+        ValType::Flags(_) => vec![CoreType::I32],
         // (ptr, length) — both of the memory's address type.
         ValType::String => vec![ptr, ptr],
         // An unfixed list is (ptr, length); this crate's `ValType::List` has no
         // fixed-length form, so there is no `flatten_list` length case to take.
         ValType::List(_) => vec![ptr, ptr],
+        // 🔧 `flatten_type(t) * N` — N copies of the element's flat types,
+        // NOT the (ptr, len) pair an unfixed list takes.
+        ValType::ListFixed(elem, n) => {
+            let one = flatten_type(elem, ptr);
+            let mut flat = Vec::with_capacity(one.len() * *n as usize);
+            for _ in 0..*n {
+                flat.extend(one.iter().copied());
+            }
+            flat
+        }
         ValType::Record(fields) => {
             let mut flat = Vec::new();
             for (_, field) in fields {
@@ -110,7 +134,8 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
             flatten_variant_cases(&payloads, ptr)
         }
         // Handles and the async types are all one index.
-        ValType::Own(_) | ValType::Borrow(_) => vec![CoreType::I32],
+        // 📝 `error-context` flattens as its i32 handle, like own/borrow.
+        ValType::Own(_) | ValType::Borrow(_) | ValType::ErrorContext => vec![CoreType::I32],
         ValType::Stream(_) | ValType::Future(_) => vec![CoreType::I32],
         // `Any` is not a component type and has no flattening, the same
         // position `canon_value` takes. Answering `[]` would silently drop a

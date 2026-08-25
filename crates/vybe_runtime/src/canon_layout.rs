@@ -37,13 +37,26 @@ pub fn align_to(offset: u32, alignment: u32) -> u32 {
 pub fn alignment(t: &ValType) -> u32 {
     match t {
         ValType::Bool => 1,
+        // `CanonicalABI.md:2227` — the narrow widths align to their OWN size,
+        // not to 4. Aligning an `s8` field to 4 would put every later field of
+        // a record at the wrong offset.
+        ValType::S8 | ValType::U8 => 1,
+        ValType::S16 | ValType::U16 => 2,
         ValType::I32 => 4,
         ValType::I64 => 8,
+        ValType::F32 => 4,
         ValType::F64 => 8,
+        // A Unicode scalar value is carried as four bytes.
+        ValType::Char => 4,
+        // `alignment_flags` — the packed integer's own width.
+        ValType::Flags(labels) => flags_bytes(labels.len()),
         // `string` is (ptr, length) — aligned as a pointer.
         ValType::String => PTR_SIZE,
         // An unfixed `list` is also (ptr, length).
         ValType::List(_) => PTR_SIZE,
+        // 🔧 `alignment_list(t, N)` with a length present is the ELEMENT's
+        // alignment — the elements are inline, so there is no pointer to align.
+        ValType::ListFixed(elem, _) => alignment(elem),
         ValType::Record(fields) => fields.iter().map(|(_, t)| alignment(t)).max().unwrap_or(1),
         // `option`/`result` despecialise to `variant`, so they align as one:
         // the max of the discriminant's alignment and every case payload's.
@@ -53,7 +66,7 @@ pub fn alignment(t: &ValType) -> u32 {
         ValType::Result(ok, err) => alignment_variant(&[ok.as_deref(), err.as_deref()]),
         ValType::Variant(cases) => alignment_variant(&variant_cases(cases)),
         // Handles are i32 indices into the handle table.
-        ValType::Own(_) | ValType::Borrow(_) => 4,
+        ValType::Own(_) | ValType::Borrow(_) | ValType::ErrorContext => 4,
         ValType::Stream(_) | ValType::Future(_) => 4,
         // Not a component type — see `elem_size`.
         ValType::Any => 1,
@@ -124,19 +137,29 @@ fn discriminant_size(case_count: usize) -> u32 {
 pub fn elem_size(t: &ValType) -> u32 {
     match t {
         ValType::Bool => 1,
+        ValType::S8 | ValType::U8 => 1,
+        ValType::S16 | ValType::U16 => 2,
         ValType::I32 => 4,
         ValType::I64 => 8,
+        ValType::F32 => 4,
         ValType::F64 => 8,
+        ValType::Char => 4,
+        // `elem_size_flags` is the SAME function as `alignment_flags` — one
+        // packed integer, so its size and its alignment are one number.
+        ValType::Flags(labels) => flags_bytes(labels.len()),
         // `string` and an unfixed `list` are both (ptr, length) pairs.
         ValType::String => 2 * PTR_SIZE,
         ValType::List(_) => 2 * PTR_SIZE,
+        // 🔧 `N * elem_size(t)` — the whole list occupies the value's own
+        // space, not a pointer's.
+        ValType::ListFixed(elem, n) => n.saturating_mul(elem_size(elem)),
         ValType::Record(fields) => elem_size_record(fields),
         ValType::Option(inner) => elem_size_variant(&[None, Some(inner.as_ref())]),
         // `result` despecialises to a two-case variant, and EITHER case may
         // be payload-free — `result<_, error-code>` is the common one.
         ValType::Result(ok, err) => elem_size_variant(&[ok.as_deref(), err.as_deref()]),
         ValType::Variant(cases) => elem_size_variant(&variant_cases(cases)),
-        ValType::Own(_) | ValType::Borrow(_) => 4,
+        ValType::Own(_) | ValType::Borrow(_) | ValType::ErrorContext => 4,
         ValType::Stream(_) | ValType::Future(_) => 4,
         // `Any` is this crate's escape hatch for dynamically typed frontends,
         // not a component type. It has no canonical layout; treating it as one
@@ -266,5 +289,24 @@ mod tests {
         assert_eq!(align_to(1, 4), 4);
         assert_eq!(align_to(4, 4), 4);
         assert_eq!(align_to(5, 8), 8);
+    }
+}
+
+/// `alignment_flags` / `elem_size_flags` — `CanonicalABI.md:2292` and `:2356`.
+///
+/// One packed integer: 1 byte up to 8 labels, 2 up to 16, 4 beyond. Both spec
+/// functions are this same computation, which is why one helper serves both —
+/// giving them separate bodies is how the two silently drift apart.
+///
+/// ⛔ The spec asserts `0 < n <= 32`. Beyond 32 the bits do not fit in the
+/// `i32` the type flattens to, so a 33rd label would be silently dropped.
+/// `lower_valspec` refuses that case; here the width simply saturates at 4.
+pub fn flags_bytes(n: usize) -> u32 {
+    if n <= 8 {
+        1
+    } else if n <= 16 {
+        2
+    } else {
+        4
     }
 }

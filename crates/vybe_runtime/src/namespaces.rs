@@ -213,6 +213,34 @@ pub struct CtorSpec {
     /// How each constructor arg maps onto the control, aligned with `fields`.
     /// Only meaningful when `control_fn` is set.
     pub field_gui: Vec<FieldGui>,
+    /// The markup a control is BORN with — its default children.
+    ///
+    /// The exact companion of the CSS in `ControlElement::declares`, and set at
+    /// the same moment for the same reason: it is what the control IS before
+    /// any constructor argument is applied, so a program's own writes simply
+    /// act on a control that already exists.
+    ///
+    /// A `BindingNavigator`, a `SplitContainer` and a `MonthCalendar` are each
+    /// a container plus fixed chrome — buttons, two panes, a day grid — that
+    /// .NET's own constructor materializes (`AddStandardItems`) and a designer
+    /// file therefore never writes. With only a tag to declare, they could be
+    /// one empty element and nothing more.
+    ///
+    /// Carried as markup rather than emitted child by child because that is
+    /// what the chrome IS — static HTML, readable as HTML in the platform that
+    /// declares it. Children built from RUNTIME values are a different job and
+    /// keep their adapter (`DataGridView`'s `Columns.Add`).
+    ///
+    /// The platform owns the vocabulary; the shared path only sets what it was
+    /// handed, so no per-language markup lives in a shared crate. Engine-blind:
+    /// `SetInnerHtml` is parsed before any engine is entered and re-enters as
+    /// ordinary per-tag operations, so every engine builds the same subtree.
+    ///
+    /// ⛔ Static, so it carries no `id` — an `id` must be unique per document
+    /// (DOM §4.9) and two navigators would collide and break `getElementById`.
+    /// The parts are addressed by CLASS, which is as targetable and stays valid
+    /// however many instances a form holds.
+    pub inner_html: Option<String>,
     /// Guest function that answers **"which node does this value contribute?"**
     /// for a value being nested (`NestOrProp`/`Children`), or `None` when the
     /// value nested IS already the node.
@@ -295,13 +323,25 @@ fn registry() -> &'static RwLock<RegistryState> {
 /// replaces the previous node (later registration wins, mirroring host
 /// binary-loader registration).
 ///
-/// Keys must already be lowercase-canonical — see the module docs.
+/// Keys are stored as the REGISTRAR WROTE THEM.
+///
+/// ⛔ This used to `debug_assert` that the root was lowercase, and that
+/// invariant is gone on purpose. It was a shortcut taken while several
+/// namespaces and resolvers were being unified into one — a single
+/// lowercase-canonical key space was the cheapest way to make one resolver
+/// answer for all of them — and it was never a design decision. Lookups now
+/// match EXACT first and fold only on a miss (`fold_get`), so a registrar can
+/// author `StringBuffer` and a case-insensitive caller still finds it.
+///
+/// The cost of the old rule was being paid twice already:
+/// `languages/python/src/emitter/tree_register.rs` had to BYPASS the
+/// `namespace()` helper to keep `OrderedDict` spelled correctly, while
+/// `languages/dart/src/tree_register.rs` lowercases despite Dart declaring
+/// `case_sensitive = true`. Two registrars, two conventions, and nothing in the
+/// tree able to say which one a subtree followed.
+///
+/// See `documentation/casesensitivityplan.md`.
 pub fn register_namespace_tree(root: &str, tree: NamespaceNode) {
-    debug_assert_eq!(
-        root,
-        root.to_lowercase(),
-        "namespace tree keys are stored lowercase-canonical; canon at the boundary"
-    );
     let mut guard = registry().write().unwrap();
     merge_into(&mut guard.tree, root.to_string(), tree);
 }
@@ -382,8 +422,8 @@ pub fn has_root(root: &str) -> bool {
 /// classes: `Text` is a Flutter widget AND a .NET-ish name, and an unscoped
 /// search answers whichever registered first. A language declares which roots
 /// its type names come from — a property of the language, not its identity.
-fn find_type_node(scope: &[String], class_name: &str) -> Option<(Subtree, Subtree)> {
-    let wanted = class_name.trim().to_lowercase();
+fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Subtree, Subtree)> {
+    let wanted = class_name.trim().to_string();
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
     let guard = registry().read().unwrap();
 
@@ -393,6 +433,7 @@ fn find_type_node(scope: &[String], class_name: &str) -> Option<(Subtree, Subtre
         wanted: &str,
         path: &str,
         out: &mut Option<(Subtree, Subtree)>,
+        fold: Fold,
     ) {
         if out.is_some() {
             return;
@@ -405,14 +446,16 @@ fn find_type_node(scope: &[String], class_name: &str) -> Option<(Subtree, Subtre
                     } else {
                         format!("{path}.{k}")
                     };
-                    walk(v, leaf, wanted, &next, out);
+                    walk(v, leaf, wanted, &next, out, fold);
                 }
             }
             NamespaceNode::Type {
                 statics, methods, ..
             } => {
                 let this_leaf = path.rsplit('.').next().unwrap_or(path);
-                if this_leaf == leaf && (wanted == leaf || path.ends_with(wanted)) {
+                if seg_eq(this_leaf, leaf, fold)
+                    && (seg_eq(wanted, leaf, fold) || path.to_ascii_lowercase().ends_with(&wanted.to_ascii_lowercase()))
+                {
                     *out = Some((statics.clone(), methods.clone()));
                 }
             }
@@ -422,11 +465,135 @@ fn find_type_node(scope: &[String], class_name: &str) -> Option<(Subtree, Subtre
 
     let mut out = None;
     for root in scope {
-        if let Some(v) = guard.tree.get(root) {
-            walk(v, &leaf, &wanted, root, &mut out);
+        // ⛔ `fold_get`, not `.get`. A scope root comes from a PROFILE
+        // (`type_scopes = ["dotnet"]`, lowercase by convention) while a tree
+        // root comes from a REGISTRAR, which now writes the declared case.
+        // Those two no longer have to agree letter-for-letter, and this is the
+        // seam where they meet.
+        if let Some(v) = fold_get(&guard.tree, root, fold) {
+            walk(v, &leaf, &wanted, root, &mut out, fold);
         }
     }
     out
+}
+
+/// Whether a lookup may fall back to a case-insensitive match, and over which
+/// alphabet.
+///
+/// ⛔ `None` means EXACT ONLY. Five languages fold — vb, pascal, cobol, fortran,
+/// powershell — plus PHP's callable names; the other twelve must not, because a
+/// fold makes them accept programs their real compiler rejects (`math.abs` in
+/// Java, `STR(5)` in Python). The policy comes from
+/// `Directives::callable_fold()`, so it is the module's DECLARED rule rather
+/// than anything this crate infers.
+pub type Fold = Option<vybe_ast::CaseAlphabet>;
+
+/// The folding policy as it stood before the fold became conditional: fold
+/// every lookup, ASCII.
+///
+/// Kept for the two callers that must NOT read a module's directives — this
+/// file's own unit tests, and the compiler's, which assert the tree's shape
+/// rather than any one language's view of it. Production code reads the
+/// policy off `Directives::callable_fold()`; a new use here is a bug.
+pub const FOLD_ASCII: Fold = Some(vybe_ast::CaseAlphabet::Ascii);
+
+/// Look a key up EXACTLY, then case-insensitively if that misses.
+///
+/// ⛔ **THE QUERY IS NO LONGER LOWERCASED BEFORE THE LOOKUP.** Every site here
+/// used to do `map.get(&name.to_lowercase())`, which can only ever find a
+/// lowercase KEY — so the tree was forced to store lowercase-canonical keys,
+/// for the benefit of the five case-insensitive languages, at the cost of the
+/// twelve case-sensitive ones. That was a shortcut taken while unifying several
+/// namespaces and resolvers into one, not a design decision, and it is what
+/// `documentation/casesensitivityplan.md` exists to undo.
+///
+/// Exact-first is what lets both conventions coexist DURING that migration:
+/// a registrar that authors `StringBuffer` is found exactly, one that still
+/// authors `stringbuffer` is found by the fold, and neither has to change on
+/// the same commit as the other. `languages/python/src/emitter/tree_register.rs`
+/// already preserves case and had to BYPASS the `namespace()` helper to do it;
+/// this is what lets it come back.
+///
+/// ⛔ AN AMBIGUOUS FOLD IS REFUSED, NOT GUESSED — and it is NOT a declaration
+/// bug. Two sibling keys differing only in case are often BOTH LEGAL: `byte` is
+/// a C# keyword alias for `System.Byte`, and `platforms/dotnet` registers both
+/// deliberately, as it does for `Char`/`char`, `Double`/`double`,
+/// `Decimal`/`decimal`. Neither spelling is wrong.
+///
+/// It costs nothing, because EXACT-FIRST reaches both: C# source writes `byte`
+/// and hits `byte`; VB source writes `Byte` and hits `Byte`. The fold is only
+/// consulted on a miss, so a legitimate alias pair never needs it.
+///
+/// When the fold IS reached and two keys answer, picking one would be the
+/// `GLOBAL_GET` shape — one key meaning two things depending on who reads it —
+/// so this returns `None`, which sends the caller to its next resolution step
+/// exactly as a real miss does.
+///
+/// ⛔ I briefly asserted at `merge_into` that siblings must not collide, on the
+/// theory that a collision meant one spelling was wrong. **That rule is false**,
+/// it fired on the first legitimate alias pair, and because it was a
+/// `debug_assert` it aborted EVERY program on a debug build — blocking every
+/// session on the tree. The lookup-time refusal above is the whole of the
+/// correct behaviour; there is no registration-time invariant to enforce here.
+///
+/// ASCII, matching `Scope`'s `eq_ignore_ascii_case`. The tree used to fold with
+/// Unicode `to_lowercase()` while scopes folded ASCII — two algorithms in one
+/// pipeline, disagreeing on a Turkish dotted `I`, with nothing comparing them.
+/// Do two tree path segments name the same thing?
+///
+/// ⛔ Compares the RAW names rather than pre-lowercasing one side. Both sides
+/// used to be lowercased before they met, which forced the KEYS to be
+/// lowercase — comparing here instead lets a registrar author `StringBuffer`
+/// and a case-insensitive caller still find it.
+///
+/// ASCII, deliberately: `Scope` folds with `eq_ignore_ascii_case` and this used
+/// Unicode `to_lowercase()`, so a Turkish dotted `I` resolved one way as a
+/// local and another as a tree path in the same program.
+fn seg_eq(a: &str, b: &str, fold: Fold) -> bool {
+    match fold {
+        None => a == b,
+        Some(_) => a.eq_ignore_ascii_case(b),
+    }
+}
+
+pub fn fold_get<'a>(map: &'a Subtree, key: &str, fold: Fold) -> Option<&'a NamespaceNode> {
+    if let Some(hit) = map.get(key) {
+        return Some(hit);
+    }
+    // EXACT ONLY for a language that does not fold.
+    fold?;
+    let mut found = None;
+    for (k, v) in map.iter() {
+        if k.eq_ignore_ascii_case(key) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(v);
+        }
+    }
+    found
+}
+
+/// [`fold_get`] for the string-valued side tables (`member_returns`).
+fn fold_get_str<'a>(
+    map: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+    fold: Fold,
+) -> Option<&'a String> {
+    if let Some(hit) = map.get(key) {
+        return Some(hit);
+    }
+    fold?;
+    let mut found = None;
+    for (k, v) in map.iter() {
+        if k.eq_ignore_ascii_case(key) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(v);
+        }
+    }
+    found
 }
 
 /// An instance member of `class_name`, from the type's registered `methods`.
@@ -434,9 +601,10 @@ pub fn lookup_type_instance_member(
     scope: &[String],
     class_name: &str,
     member: &str,
+    fold: Fold,
 ) -> Option<NamespaceNode> {
-    let (_, methods) = find_type_node(scope, class_name)?;
-    methods.get(&member.to_lowercase()).cloned()
+    let (_, methods) = find_type_node(scope, class_name, fold)?;
+    fold_get(&methods, member, fold).cloned()
 }
 
 /// A static member of `class_name`, from the type's registered `statics`.
@@ -444,9 +612,10 @@ pub fn lookup_type_static_member(
     scope: &[String],
     class_name: &str,
     member: &str,
+    fold: Fold,
 ) -> Option<NamespaceNode> {
-    let (statics, _) = find_type_node(scope, class_name)?;
-    statics.get(&member.to_lowercase()).cloned()
+    let (statics, _) = find_type_node(scope, class_name, fold)?;
+    fold_get(&statics, member, fold).cloned()
 }
 
 /// The declared return type of `member` on `class_name`, if a platform
@@ -455,9 +624,10 @@ pub fn lookup_type_member_return(
     scope: &[String],
     class_name: &str,
     member: &str,
+    fold: Fold,
 ) -> Option<String> {
     let guard = registry().read().unwrap();
-    fn walk(node: &NamespaceNode, leaf: &str, member: &str, path: &str) -> Option<String> {
+    fn walk(node: &NamespaceNode, leaf: &str, member: &str, path: &str, fold: Fold) -> Option<String> {
         match node {
             NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
                 let next = if path.is_empty() {
@@ -465,12 +635,12 @@ pub fn lookup_type_member_return(
                 } else {
                     format!("{path}.{k}")
                 };
-                walk(v, leaf, member, &next)
+                walk(v, leaf, member, &next, fold)
             }),
             NamespaceNode::Type { member_returns, .. } => {
                 let this_leaf = path.rsplit('.').next().unwrap_or(path);
-                (this_leaf == leaf)
-                    .then(|| member_returns.get(&member.to_lowercase()).cloned())
+                seg_eq(this_leaf, leaf, fold)
+                    .then(|| fold_get_str(member_returns, member, fold).cloned())
                     .flatten()
             }
             _ => None,
@@ -480,13 +650,9 @@ pub fn lookup_type_member_return(
         .rsplit('.')
         .next()
         .unwrap_or(class_name)
-        .to_lowercase();
-    scope.iter().find_map(|root| {
-        guard
-            .tree
-            .get(root)
-            .and_then(|v| walk(v, &leaf, member, root))
-    })
+        .to_string();
+    scope.iter()
+        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, member, root, fold)))
 }
 
 /// True when a type registered UNDER `scope` declares `member` at `arity`.
@@ -497,13 +663,16 @@ pub fn lookup_type_member_return(
 /// type anywhere happen to have this name". An unscoped walk answers yes for
 /// unrelated types (a GUI control's `Add`) and diverts calls that should never
 /// have reached runtime dispatch.
-pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8) -> bool {
+pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8, fold: Fold) -> bool {
     let guard = registry().read().unwrap();
-    fn walk(node: &NamespaceNode, member: &str, arity: u8) -> bool {
+    fn walk(node: &NamespaceNode, member: &str, arity: u8, fold: Fold) -> bool {
         match node {
-            NamespaceNode::Namespace(children) => children.values().any(|v| walk(v, member, arity)),
-            NamespaceNode::Type { methods, .. } => methods
-                .get(member)
+            NamespaceNode::Namespace(children) => children.values().any(|v| walk(v, member, arity, fold)),
+            // ⛔ `fold_get`, not `.get`. The query is no longer lowercased before
+            // it arrives, so an exact lookup here misses every key a registrar
+            // wrote in a different case — which is what a plain `.get` did the
+            // moment the caller stopped folding for it.
+            NamespaceNode::Type { methods, .. } => fold_get(methods, member, fold)
                 .and_then(|declared| select_overload(declared, arity))
                 .is_some_and(
                     |n| matches!(n, NamespaceNode::Fn { arity: Some(a), .. } if *a == arity),
@@ -514,21 +683,22 @@ pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8) -> b
     if scope.is_empty() {
         return false;
     }
-    let m = member.to_lowercase();
+    let m = member.to_string();
     let mut node = match guard.tree.get(scope[0]) {
         Some(n) => n,
         None => return false,
     };
     for seg in &scope[1..] {
         node = match node {
-            NamespaceNode::Namespace(children) => match children.get(*seg) {
+            // A scope segment is profile data; a child key is registrar data.
+            NamespaceNode::Namespace(children) => match fold_get(children, seg, fold) {
                 Some(n) => n,
                 None => return false,
             },
             _ => return false,
         };
     }
-    walk(node, &m, arity)
+    walk(node, &m, arity, fold)
 }
 
 /// An instance METHOD target for `class_name`, from the type's registered
@@ -539,8 +709,9 @@ pub fn lookup_type_instance_target(
     class_name: &str,
     member: &str,
     argc: u8,
+    fold: Fold,
 ) -> Option<crate::component_model::InstanceMethodTarget> {
-    let declared = lookup_type_instance_member(scope, class_name, member)?;
+    let declared = lookup_type_instance_member(scope, class_name, member, fold)?;
     // A zero-arg call on a property IS its getter — `sw.Elapsed` reaches here
     // as a member read with no arguments, and the property node holds the
     // only target there is.
@@ -659,12 +830,12 @@ pub fn select_overload(node: &NamespaceNode, argc: u8) -> Option<&NamespaceNode>
 /// Same name matching as `find_type_node` (leaf-wise, case-insensitive,
 /// dotted-suffix tolerant) — it reads a different field, so it cannot share
 /// that walk.
-fn find_type_ctor_call(scope: &[String], class_name: &str) -> Option<NamespaceNode> {
-    let wanted = class_name.trim().to_lowercase();
+fn find_type_ctor_call(scope: &[String], class_name: &str, fold: Fold) -> Option<NamespaceNode> {
+    let wanted = class_name.trim().to_string();
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
     let guard = registry().read().unwrap();
 
-    fn walk(node: &NamespaceNode, leaf: &str, wanted: &str, path: &str) -> Option<NamespaceNode> {
+    fn walk(node: &NamespaceNode, leaf: &str, wanted: &str, path: &str, fold: Fold) -> Option<NamespaceNode> {
         match node {
             NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
                 let next = if path.is_empty() {
@@ -672,11 +843,15 @@ fn find_type_ctor_call(scope: &[String], class_name: &str) -> Option<NamespaceNo
                 } else {
                     format!("{path}.{k}")
                 };
-                walk(v, leaf, wanted, &next)
+                walk(v, leaf, wanted, &next, fold)
             }),
             NamespaceNode::Type { ctor_call, .. } => {
                 let this_leaf = path.rsplit('.').next().unwrap_or(path);
-                (this_leaf == leaf && (wanted == leaf || path.ends_with(wanted)))
+                (seg_eq(this_leaf, leaf, fold)
+                    && (seg_eq(wanted, leaf, fold)
+                        || path
+                            .to_ascii_lowercase()
+                            .ends_with(&wanted.to_ascii_lowercase())))
                     .then(|| ctor_call.as_deref().cloned())
                     .flatten()
             }
@@ -684,33 +859,35 @@ fn find_type_ctor_call(scope: &[String], class_name: &str) -> Option<NamespaceNo
         }
     }
 
-    scope.iter().find_map(|root| {
-        guard
-            .tree
-            .get(root)
-            .and_then(|v| walk(v, &leaf, &wanted, root))
-    })
+    scope.iter()
+        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold)))
 }
 
 /// The construction SPEC a platform declared for `class_name`, if the name is a
 /// registered `Type` under `scope`. This is what makes a platform base class
 /// foldable: the spec is the whole contribution (fields, control factory, GUI
 /// field mapping, ancestry).
-pub fn lookup_type_ctor_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
+pub fn lookup_type_ctor_spec(scope: &[String], class_name: &str, fold: Fold) -> Option<CtorSpec> {
     let bare = class_name
         .split(['<', '('])
         .next()
         .unwrap_or(class_name)
         .trim();
-    find_type_spec(scope, bare)
+    find_type_spec(scope, bare, fold)
 }
 
-fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
-    let wanted = class_name.trim().to_lowercase();
+fn find_type_spec(scope: &[String], class_name: &str, fold: Fold) -> Option<CtorSpec> {
+    let wanted = class_name.trim().to_string();
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
     let guard = registry().read().unwrap();
 
-    fn walk(node: &NamespaceNode, leaf: &str, wanted: &str, path: &str) -> Option<CtorSpec> {
+    fn walk(
+        node: &NamespaceNode,
+        leaf: &str,
+        wanted: &str,
+        path: &str,
+        fold: Fold,
+    ) -> Option<CtorSpec> {
         match node {
             NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
                 let next = if path.is_empty() {
@@ -718,11 +895,15 @@ fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
                 } else {
                     format!("{path}.{k}")
                 };
-                walk(v, leaf, wanted, &next)
+                walk(v, leaf, wanted, &next, fold)
             }),
             NamespaceNode::Type { ctor, .. } => {
                 let this_leaf = path.rsplit('.').next().unwrap_or(path);
-                (this_leaf == leaf && (wanted == leaf || path.ends_with(wanted)))
+                (seg_eq(this_leaf, leaf, fold)
+                    && (seg_eq(wanted, leaf, fold)
+                        || path
+                            .to_ascii_lowercase()
+                            .ends_with(&wanted.to_ascii_lowercase())))
                     .then(|| ctor.clone())
                     .flatten()
             }
@@ -730,12 +911,8 @@ fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
         }
     }
 
-    scope.iter().find_map(|root| {
-        guard
-            .tree
-            .get(root)
-            .and_then(|v| walk(v, &leaf, &wanted, root))
-    })
+    scope.iter()
+        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold)))
 }
 
 /// The CONSTRUCTOR target for `class_name`, from its registered `Type` node.
@@ -747,6 +924,7 @@ fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
 pub fn lookup_type_ctor_target(
     scope: &[String],
     class_name: &str,
+    fold: Fold,
 ) -> Option<crate::component_model::ConstructorTarget> {
     use crate::component_model::{ConstructorTarget, HostTarget};
     // `Dictionary<K, V>` / `List(Of T)` name the same registered type as the
@@ -756,7 +934,7 @@ pub fn lookup_type_ctor_target(
         .next()
         .unwrap_or(class_name)
         .trim();
-    match find_type_ctor_call(scope, bare)? {
+    match find_type_ctor_call(scope, bare, fold)? {
         NamespaceNode::Fn { module, func, .. } => {
             Some(ConstructorTarget::Host(HostTarget { module, name: func }))
         }
@@ -770,9 +948,10 @@ pub fn lookup_type_property_target(
     scope: &[String],
     class_name: &str,
     member: &str,
+    fold: Fold,
 ) -> Option<crate::component_model::InstancePropertyTarget> {
     property_target(
-        lookup_type_instance_member(scope, class_name, member)?,
+        lookup_type_instance_member(scope, class_name, member, fold)?,
         false,
     )
 }
@@ -783,9 +962,10 @@ pub fn lookup_type_property_setter_target(
     scope: &[String],
     class_name: &str,
     member: &str,
+    fold: Fold,
 ) -> Option<crate::component_model::InstancePropertyTarget> {
     property_target(
-        lookup_type_instance_member(scope, class_name, member)?,
+        lookup_type_instance_member(scope, class_name, member, fold)?,
         true,
     )
 }
@@ -819,8 +999,8 @@ fn property_target(
 }
 
 /// True when any registered platform contributed a `Type` node for this name.
-pub fn is_registered_type(scope: &[String], class_name: &str) -> bool {
-    find_type_node(scope, class_name).is_some()
+pub fn is_registered_type(scope: &[String], class_name: &str, fold: Fold) -> bool {
+    find_type_node(scope, class_name, fold).is_some()
 }
 
 /// Test-only: wipe the registry so unit tests are order-independent.
@@ -840,9 +1020,10 @@ pub fn clear_registry_for_tests() {
 /// remounting is skipped (`register_namespace_tree` stays available for
 /// platform/alias registration, which is additive).
 ///
-/// Keys are lowercased for storage (tree canon); the leaf payload keeps
-/// the host's true casing (`isArray`) so emission never mangles the
-/// name — the `matchAll` bug class.
+/// Keys keep the case the host export declared, as does the leaf payload
+/// (`isArray`) — emission has always used the payload, which is why the
+/// `matchAll` bug class stayed fixed even while KEYS were folded. Now neither
+/// side is folded and `fold_get` handles a case-insensitive caller at lookup.
 
 // ── Construction helpers ────────────────────────────────────────────────
 
@@ -892,14 +1073,10 @@ pub fn namespace(children: Vec<(&str, NamespaceNode)>) -> NamespaceNode {
     NamespaceNode::Namespace(
         children
             .into_iter()
-            .map(|(k, v)| {
-                debug_assert_eq!(
-                    k,
-                    k.to_lowercase(),
-                    "namespace tree keys are stored lowercase-canonical"
-                );
-                (k.to_string(), v)
-            })
+            // Keys keep the case the registrar wrote. The lowercase-canonical
+            // assertion that used to live here is gone — see
+            // `register_namespace_tree`.
+            .map(|(k, v)| (k.to_string(), v))
             .collect(),
     )
 }
@@ -918,19 +1095,23 @@ where
         // "ecma:json" → [ecma, json]; "wasi:cli/stdout" → [wasi, cli, stdout]
         let mut segments: Vec<String> = Vec::new();
         let mut rest = module.as_str();
+        // Segments keep the case the host export declared. Host module names
+        // ("ecma:json", "wasi:cli/stdout") are lowercase already, so this is
+        // not a behaviour change today — it is the invariant changing, so a
+        // host that later exports a cased name is not silently folded.
         if let Some((pkg, tail)) = rest.split_once(':') {
-            segments.push(pkg.to_lowercase());
+            segments.push(pkg.to_string());
             rest = tail;
         }
         for part in rest.split('/') {
             if !part.is_empty() {
-                segments.push(part.to_lowercase());
+                segments.push(part.to_string());
             }
         }
         if segments.is_empty() {
             continue;
         }
-        segments.push(func.to_lowercase());
+        segments.push(func.to_string());
 
         // Build the nested single-child tree for this leaf, then merge.
         // Host exports are discovered from the function registry, which does

@@ -51,7 +51,47 @@ pub enum ValType {
     F64,
     String,
     Bool,
+    /// The NARROW integer widths — `CanonicalABI.md:2227`, alignment 1 and 2.
+    ///
+    /// ⛔ These are NOT `I32` with a smaller range. `load` reads exactly 1 or 2
+    /// bytes and SIGN-EXTENDS for the signed ones (`load_int(cx, ptr, 1, signed
+    /// = True)`), so an `S8` holding `0xFF` lifts as `-1` while a `U8` holding
+    /// the same byte lifts as `255`. An `I32` performs neither the narrowing
+    /// nor the extension, which is why `lower_valspec` refused all four rather
+    /// than widening them: a widened value is silently out of range on the far
+    /// side of the ABI and nothing reports it.
+    S8,
+    U8,
+    S16,
+    U16,
+    /// `f32` — a REAL 32-bit float, not an `F64` rounded at the boundary.
+    ///
+    /// `load` is `decode_i32_as_float(load_int(cx, ptr, 4))`: four bytes, not
+    /// eight. Treating it as `F64` would read the wrong width from memory and
+    /// flatten to the wrong core type.
+    F32,
+    /// `char` — a Unicode SCALAR VALUE, four bytes, and validated on the way in.
+    ///
+    /// `convert_i32_to_char` (`CanonicalABI.md:2456`) traps on `i >= 0x110000`
+    /// and on the surrogate range `0xD800..=0xDFFF`. That check is the whole
+    /// difference between `char` and `U32`, and it is why an `I32` stand-in was
+    /// refused: it would carry a lone surrogate across the ABI as though it
+    /// were a character.
+    Char,
     List(Box<ValType>),
+    /// 🔧 `list<T, N>` — a FIXED-length list, which is a different shape from
+    /// `List`, not a `List` with a constraint.
+    ///
+    /// ⛔ It is INLINE. `alignment_list(t, N)` is `alignment(t)` and
+    /// `elem_size_list(t, N)` is `N * elem_size(t)`, so the elements sit where
+    /// the value sits — there is no `(ptr, length)` pair, and `store` writes
+    /// them in place rather than calling `realloc`. Flat, it is
+    /// `flatten_type(t) * N`, so `list<u32, 3>` occupies THREE core `i32`s
+    /// where an unfixed `list` occupies two pointers.
+    ///
+    /// Modelling it as `List` would put a pointer where the elements belong and
+    /// read the first two elements as an address and a count.
+    ListFixed(Box<ValType>, u32),
     Record(Vec<(String, ValType)>),
     /// CM3 / WASI 0.3 future<T>
     Future(Box<ValType>),
@@ -81,6 +121,33 @@ pub enum ValType {
     /// `alignment_variant`/`elem_size_variant` for exactly this shape — the
     /// layout half was written before the type existed.
     Variant(Vec<(String, Option<ValType>)>),
+    /// `flags` — the ONE specialized type `despecialize()` deliberately does
+    /// not expand (`CanonicalABI.md:2185`).
+    ///
+    /// ⛔ It is NOT a record of `bool`. It BIT-PACKS: one bit per label, into a
+    /// single integer of 1, 2 or 4 bytes by label count (`elem_size_flags`,
+    /// `0 < n <= 32`), and flattens to a single core `i32`. A record of `bool`
+    /// would take a byte per flag and lay every following field at the wrong
+    /// offset — a wrong layout nothing reports. That difference is exactly why
+    /// the spec leaves it out of `despecialize` while expanding `tuple`,
+    /// `enum` and `map`.
+    ///
+    /// The labels travel with the type because the ABI is positional: bit `k`
+    /// is `labels[k]`, so the same integer means different things under two
+    /// different label lists.
+    Flags(Vec<String>),
+    /// 📝 `error-context` — an opaque, immutable, host-defined value carrying a
+    /// debug message. `Explainer.md:702`.
+    ///
+    /// It holds NO payload here on purpose. The value lives in the component
+    /// instance's handle table (`HandleEntry::ErrorContext`) and this type is
+    /// only the i32 handle's static type, exactly like `own`/`borrow`.
+    ///
+    /// ⛔ `Explainer.md:721`: components *must not* depend on the CONTENTS for
+    /// behavioural correctness — case analysis on the message must never
+    /// decide error recovery, which is what `result`/`variant` in the return
+    /// type are for. This is a debugging breadcrumb, not an error value.
+    ErrorContext,
     /// Any — for dynamic languages that don't specify types
     Any,
     /// `own<T>` — an owned resource handle. The receiver takes ownership and is

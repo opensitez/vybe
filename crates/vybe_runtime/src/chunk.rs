@@ -84,6 +84,28 @@ pub struct Import {
 /// distinct tags even with equal names/arities. `debug_name` only feeds
 /// diagnostics and import/export naming; `arity` is the payload count of
 /// the tag's function-type signature (result type must be empty per spec).
+/// A CALL tag declaration (`proposals/call-tags`) — a different entity from the
+/// exception `TagDecl` below: that one names an exception type, this one names a
+/// calling convention over a signature.
+///
+/// Carried on the chunk and resolved into a VM entity at load, exactly as
+/// exception tags are, so a tag referenced by several chunks of one module
+/// coalesces to one identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallTagDecl {
+    pub debug_name: String,
+    pub params: u8,
+    pub results: u8,
+    /// `(canon)` — intern this tag per SIGNATURE (`call_tag.canon`). Without it
+    /// the declaration is `call_tag.new`: a fresh identity. Kept as a flag
+    /// rather than folded into the name, because the call site still names the
+    /// tag by its `$id` and has to find it.
+    pub canonical: bool,
+    /// `(fallback $f)` — the handler's function name, resolved at load.
+    /// `None` means canonical: an unhandled call TRAPS.
+    pub fallback: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TagDecl {
     pub debug_name: String,
@@ -361,6 +383,34 @@ pub struct Chunk {
     /// which dragged `cli.rs` in. An `Arc` clone per chunk costs a pointer and
     /// removes the parameter entirely.
     pub globals: Arc<Vec<String>>,
+    /// The module's CANON SECTION — `canonidx -> CanonDef`.
+    ///
+    /// Shared by every chunk exactly as [`Self::globals`] is, and for the same
+    /// reason: the section is module-level in the binary format, so a chunk
+    /// that CARRIES a canonidx must be able to say what that index means.
+    ///
+    /// Empty for every language that is not a Component Model front end. Until
+    /// this existed `VM::canon_defs` had no producer at all, and every canon
+    /// row in the tree fell through to the identity fallback where canonidx is
+    /// read as a typeidx — which is why `cancellable?` was false on every row
+    /// and no `$t` or `opts` immediate ever arrived.
+    pub canon_section: crate::canon_def::CanonSection,
+    /// The component's TYPE index space, as FUNCTION types — `typeidx -> ft`.
+    ///
+    /// POSITIONALLY ALIGNED with the source type space, with `None` where that
+    /// typeidx holds something else. Not a dense vector of only the function
+    /// types: a source space of `(type $t u32)` then `(type $ft (func …))`
+    /// would put the functype at dense index 0 while the source calls it 1,
+    /// and `canon lift $ft` would read whatever sat there.
+    pub canon_functypes: Arc<Vec<Option<crate::canon_def::CanonFuncType>>>,
+    /// The same space, as VALUE types — what a `stream`/`future` element `$t`
+    /// and a `context.get` slot name. Two tables and not one because a value
+    /// type and a function type are different things; `canon_types` and
+    /// `canon_functypes` are kept apart in the VM for exactly this reason.
+    pub canon_valtypes: Arc<Vec<Option<crate::component::ValType>>>,
+    /// The component FUNCTION index space: comp funcidx -> defining canonidx.
+    /// What `CalleeRef::Component` resolves through.
+    pub component_funcs: Arc<Vec<Option<u32>>>,
     /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
@@ -376,6 +426,20 @@ pub struct Chunk {
     /// metadata only (import/export naming), never used for matching.
     /// `arity` is the payload value count (the tag's signature params).
     pub tags: Vec<TagDecl>,
+    /// Call tags declared by this chunk's module (Call Tags proposal).
+    pub call_tag_decls: Vec<CallTagDecl>,
+    /// `func_switch` definitions: (name, arms as (tag, func), forward).
+    pub func_switch_decls: Vec<(String, Vec<(String, String)>, Option<String>)>,
+    /// `(func … (call_tag $t+))` — func name → the tags its funcref handles.
+    pub func_call_tag_decls: Vec<(String, Vec<String>)>,
+    /// Call tags THIS chunk's funcref handles.
+    ///
+    /// The by-name list above is the wast spelling, where a declaration names
+    /// another func. This one is the fact about the chunk itself, which is what
+    /// a compiler-generated accessor needs: an object-literal accessor is an
+    /// anonymous lambda, so there is no name to key on — and being per-chunk it
+    /// survives the index offsetting a module gets when it is installed.
+    pub handled_call_tags: Vec<String>,
     /// Type imports — types from other components this chunk needs.
     /// Each entry is (interface_name, type_name).
     pub type_imports: Vec<(String, String)>,
@@ -580,9 +644,17 @@ impl Chunk {
             imports: Vec::new(),
             global_imports: Vec::new(),
             globals: Arc::new(Vec::new()),
+            canon_section: Arc::new(Vec::new()),
+            canon_functypes: Arc::new(Vec::new()),
+            canon_valtypes: Arc::new(Vec::new()),
+            component_funcs: Arc::new(Vec::new()),
             types: Vec::new(),
             exception_tags: Vec::new(),
             tags: Vec::new(),
+            call_tag_decls: Vec::new(),
+            func_switch_decls: Vec::new(),
+            func_call_tag_decls: Vec::new(),
+            handled_call_tags: Vec::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
             global_inits: Vec::new(),
@@ -685,6 +757,33 @@ impl Chunk {
     /// Import a tag by name (spec tag import): resolves to the SAME entity
     /// as every other import of that name at load time. Deduplicated within
     /// the chunk — importing the same name twice is the same tag either way.
+    /// Declare a CALL tag, returning its chunk-local index (the operand
+    /// `call_with_tag` carries). Interned by name so a tag referenced from
+    /// several places in one module is one entity.
+    pub fn declare_call_tag(
+        &mut self,
+        name: impl Into<String>,
+        params: u8,
+        results: u8,
+        fallback: Option<String>,
+        canonical: bool,
+    ) -> u16 {
+        let name = name.into();
+        for (i, t) in self.call_tag_decls.iter().enumerate() {
+            if t.debug_name == name {
+                return i as u16;
+            }
+        }
+        self.call_tag_decls.push(CallTagDecl {
+            debug_name: name,
+            params,
+            results,
+            canonical,
+            fallback,
+        });
+        (self.call_tag_decls.len() - 1) as u16
+    }
+
     pub fn import_exception_tag(&mut self, name: impl Into<String>, arity: u8) -> u16 {
         let name = name.into();
         for (i, t) in self.tags.iter().enumerate() {

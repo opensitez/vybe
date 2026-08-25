@@ -184,6 +184,25 @@ impl CMTask {
         }
     }
 
+    /// `Task.deliver_pending_cancel` — `CanonicalABI.md:941`:
+    ///
+    /// ```python
+    /// def deliver_pending_cancel(self, cancellable) -> bool:
+    ///   if cancellable and self.state == Task.State.PENDING_CANCEL:
+    ///     self.state = Task.State.CANCEL_DELIVERED
+    ///     return True
+    ///   return False
+    /// ```
+    ///
+    /// Every blocking thread built-in calls this FIRST, and the `cancellable`
+    /// gate is the whole point: a caller that did not opt in is not told, and
+    /// the request stays `PendingCancel` so a later `cancellable` call gets it.
+    /// Delivering regardless would consume the request against a caller that
+    /// cannot act on it — the spec's "will only indicate cancellation once".
+    pub fn deliver_pending_cancel(&mut self, cancellable: bool) -> bool {
+        cancellable && self.deliver_cancel()
+    }
+
     /// Whether the task has reached its terminal state.
     pub fn resolved(&self) -> bool {
         self.phase == TaskPhase::Resolved
@@ -193,6 +212,33 @@ impl CMTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A non-cancellable caller must NOT consume the pending request. If it
+    /// did, the request would be marked delivered against a caller that never
+    /// learned of it, and the later `cancellable` call — the one that could
+    /// actually propagate — would see nothing pending and run on.
+    #[test]
+    fn a_non_cancellable_caller_leaves_the_request_pending() {
+        let mut t = CMTask::new(1);
+        t.start();
+        assert!(t.request_cancel());
+        assert_eq!(t.phase, TaskPhase::PendingCancel);
+
+        assert!(!t.deliver_pending_cancel(false), "not opted in: not told");
+        assert_eq!(
+            t.phase,
+            TaskPhase::PendingCancel,
+            "the request must SURVIVE a non-cancellable caller"
+        );
+
+        assert!(t.deliver_pending_cancel(true), "opted in: told");
+        assert_eq!(t.phase, TaskPhase::CancelDelivered);
+
+        assert!(
+            !t.deliver_pending_cancel(true),
+            "indicated ONCE — a second cancellable call sees nothing"
+        );
+    }
 
     #[test]
     fn return_resolves_once_and_keeps_the_value() {

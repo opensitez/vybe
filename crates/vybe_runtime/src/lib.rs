@@ -13,12 +13,15 @@ pub mod vm;
 // its own `impl VM { ... }` block operating on the same struct defined in
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.
 pub(crate) mod calls;
+pub mod canon_def;
 pub mod canon_copy;
 pub mod canon_flat;
 pub mod canon_flat_values;
 pub mod canon_layout;
 pub mod canon_value;
+pub mod cm_instance;
 pub mod cm_task;
+pub mod cm_thread;
 pub mod debug;
 pub mod debugger;
 pub(crate) mod dispatch;
@@ -257,3 +260,12 @@ mod host_signature_tests {
         assert!(binding.borrows_self, "a DOM op borrows, it does not consume");
     }
 }
+
+/// The call tag naming the RECEIVER-FIRST accessor convention.
+///
+/// `classes.rs` compiles `__get_x(self)` / `__set_x(self, v)`; a JS
+/// `Object.defineProperty` setter is `set(v)` and takes its receiver from the
+/// call. Both are valid, and their wasm signatures cannot tell them apart — a
+/// one-parameter setter is a one-parameter setter. This names the difference so
+/// property dispatch can ASK instead of inferring it from the parameter count.
+pub const RECEIVER_FIRST_ACCESSOR_TAG: &str = "vybe:accessor-receiver-first";

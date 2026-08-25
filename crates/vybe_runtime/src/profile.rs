@@ -643,12 +643,6 @@ pub struct LanguageProfile {
     /// the same algebra — a language declares whichever spelling it uses.
     pub set_bitwise_operators: bool,
 
-    /// Truth-testing consults the VALUE, not just its presence: an empty
-    /// collection, an empty string and `0` are all falsy, and a user class can
-    /// override via `__bool__`/`__len__`. When false, the shared
-    /// `emit_dyn_to_bool` coercion applies.
-    pub truthiness_via_dunder_or_length: bool,
-
     /// Generators expose `send(v)`, `throw(e)` and `close()` on the generator
     /// object itself, dispatched at the call site.
     pub generator_send_throw_close: bool,
@@ -876,24 +870,6 @@ pub struct LanguageProfile {
     /// Array higher-order methods routed to compiled JS builtins.
     /// "map" → "__array_map", "filter" → "__array_filter", etc.
     pub array_methods: HashMap<String, String>,
-
-    /// Which member SPELLING fills which protocol slot — flexclassplan §2b
-    /// registration path 1, the convention table.
-    ///
-    /// `"__str__" -> "to_string"`: the key is the language's own spelling, the
-    /// value is a [`vybe_ast::ProtocolSlot`] key (`ProtocolSlot::as_key`). The
-    /// shared normalizer resolves it with `ProtocolSlot::from_key` and stamps
-    /// the slot, so the spelling never leaves the frontend and no shared code
-    /// matches on it.
-    ///
-    /// For a language that identifies slots purely BY IDENTIFIER — python
-    /// dunders, lua metamethods, ruby, php magic methods — this replaces a
-    /// hand-written `canonical_method` match entirely. A language whose rule is
-    /// not a plain name lookup keeps its own `protocol.rs`: C#'s destructor is
-    /// the SIGIL `~Foo`, VB and pascal match case-insensitively, fortran
-    /// matches a normalized designator `operator(+)`. Those are rules, not
-    /// tables, and the plan is explicit that a table cannot carry them.
-    pub class_protocol: HashMap<String, String>,
 
     /// Return types of builtin free functions, for type inference on their
     /// result (e.g. VB `Command`/`Environ` → "String", `Timer` → "Double"),
@@ -1297,9 +1273,7 @@ impl LanguageProfile {
 /// profile inherits — so `CommandType.Text` reaches a language because that
 /// language said `type_scopes = ["dotnet"]`, not because a flag named a family.
 ///
-/// This replaces a `OnceLock` that only ever held the dotnet platform's table
-/// and a `use_dotnet` gate that decided who got it. Every platform now works the
-/// same way, and nothing here names one.
+/// Every platform works the same way here, and nothing names one.
 fn platform_namespace_constants_in_scope(type_scopes: &[String]) -> Vec<(&'static str, f64)> {
     crate::registry::all_platforms()
         .iter()
@@ -1896,10 +1870,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("set_bitwise_operators")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let truthiness_via_dunder_or_length = compiler
-        .get("truthiness_via_dunder_or_length")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let generator_send_throw_close = compiler
         .get("generator_send_throw_close")
         .and_then(|v| v.as_bool())
@@ -2320,7 +2290,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
             .map(|(k, v)| (k.to_lowercase(), v))
             .collect();
     let mut array_methods = parse_string_table(&root, "array_methods");
-    let class_protocol = parse_string_table(&root, "class_protocol");
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
@@ -2626,7 +2595,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         logical_ops_bitwise_for_integers,
         set_arithmetic_operators,
         set_bitwise_operators,
-        truthiness_via_dunder_or_length,
         generator_send_throw_close,
         slice_assignment_splices,
         member_invokes_parameterless_method,
@@ -2701,7 +2669,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         value_methods,
         namespace_constants,
         array_methods,
-        class_protocol,
         builtin_return_types,
         datetime_field_functions,
         esm_defaults,

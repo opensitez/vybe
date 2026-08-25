@@ -16,6 +16,7 @@
 //! Opcodes are defined in category files (core.rs, gc.rs, etc.) as `pub const` values.
 //! Adding an opcode = one line in one file.
 
+mod call_tags;
 mod canon;
 mod core_ops;
 mod gc;
@@ -213,6 +214,7 @@ impl Op {
             0xFD => simd::operand_format(self.sub()),
             0xFE => threads::operand_format(self.sub()),
             0xF0 => canon::operand_format(self.sub()),
+            0xF1 => call_tags::operand_format(self.sub()),
             0xFF => vm_internal::operand_format(self.sub()),
             _ => OperandFormat::None,
         }
@@ -228,6 +230,7 @@ impl Op {
             0xFD => simd::name(self.sub()),
             0xFE => threads::name(self.sub()),
             0xF0 => canon::name(self.sub()),
+            0xF1 => call_tags::name(self.sub()),
             0xFF => vm_internal::name(self.sub()),
             _ => None,
         }
@@ -259,6 +262,9 @@ impl Op {
         }
         if let Some(sub) = canon::from_name(wasm_name) {
             return Some(Op::new(0xF0, sub));
+        }
+        if let Some(sub) = call_tags::from_name(wasm_name) {
+            return Some(Op::new(0xF1, sub));
         }
         if let Some(sub) = vm_internal::from_name(wasm_name) {
             return Some(Op::new(0xFF, sub));

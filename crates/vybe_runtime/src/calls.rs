@@ -430,6 +430,183 @@ impl VM {
         self.call_value_inner(argc, false)
     }
 
+    /// `call_with_tag $call_tag` — Call Tags proposal.
+    ///
+    /// Stack on entry is `[ti* funcref]`: the funcref sits ABOVE its arguments,
+    /// which is the proposal's signature `[ti* funcref] -> [to*]` and the
+    /// opposite of `call_ref`'s callee-below-args layout. Resolution:
+    ///
+    /// 1. the funcref handles the tag → call it;
+    /// 2. else the tag has a fall-back handler → call THAT, with the funcref
+    ///    appended in place of the tag ("replacing the call-tag value with the
+    ///    value of the current `funcref`"), so the handler can adapt or reject;
+    /// 3. else trap.
+    ///
+    /// Step 3 is the property worth having: a convention mismatch stops the
+    /// program instead of calling under the wrong shape, which is exactly how
+    /// the ECMA accessor dispatch came to write into nowhere for years.
+    pub(crate) fn call_with_tag(&mut self, tag: u32, argc: usize) -> Result<(), VMError> {
+        let Some(tag_def) = self.call_tags.get(tag as usize).cloned() else {
+            return Err(VMError::new(format!(
+                "call_with_tag: undefined call tag {tag}"
+            )));
+        };
+
+        // The tag's own type is checked against the call site before anything
+        // is dispatched — `$call_tag : [ti*] -> [to*]` is a declaration, so a
+        // mismatched argument count is a malformed call, not a missed handler.
+        if tag_def.params as usize != argc {
+            return Err(VMError::new(format!(
+                "call_with_tag: tag '{}' takes {} argument(s), called with {argc}",
+                tag_def.debug_name, tag_def.params
+            )));
+        }
+
+        let funcref = self
+            .stack
+            .pop()
+            .ok_or_else(|| VMError::new("call_with_tag: missing funcref".to_string()))?;
+
+        let handled = match &funcref {
+            Value::Object(obj) => {
+                let chunk_index = {
+                    let o = obj.lock().unwrap();
+                    match &o.kind {
+                        ObjectKind::Function(f) => Some(f.chunk_index),
+                        // A host function has no wasm signature to derive a
+                        // canonical tag from, and the Overview's JS-interop rule
+                        // is that such a value answers every tag through its
+                        // interop handler — so it handles whatever it is given.
+                        ObjectKind::HostFunction(_) => None,
+                        _ => {
+                            return Err(VMError::new(format!(
+                                "call_with_tag: not a function reference (tag '{}')",
+                                tag_def.debug_name
+                            )));
+                        }
+                    }
+                };
+                match chunk_index {
+                    Some(ci) => self.func_handles_call_tag(ci, tag),
+                    None => true,
+                }
+            }
+            Value::Null => {
+                return Err(VMError::new(format!(
+                    "call_with_tag: null function reference (tag '{}')",
+                    tag_def.debug_name
+                )));
+            }
+            other => {
+                return Err(VMError::new(format!(
+                    "call_with_tag: not a function reference (tag '{}'), got {other:?}",
+                    tag_def.debug_name
+                )));
+            }
+        };
+
+        // A `func_switch` is not called — it SELECTS. Resolve it to the arm
+        // matching the tag (following `$func_switch?` forwards) and call that,
+        // so a subclass descriptor can forward inherited tags to its parent's
+        // funcref without re-listing them.
+        if let Value::Object(obj) = &funcref {
+            let chunk_index = {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Function(f) => Some(f.chunk_index),
+                    _ => None,
+                }
+            };
+            if let Some(ci) = chunk_index
+                && self.func_switches.contains_key(&ci)
+            {
+                return match self.resolve_func_switch(ci, tag) {
+                    Some(target) => {
+                        let target_fn = self.function_value_for_chunk(target);
+                        let callee_idx = self.stack.len() - argc;
+                        self.stack.insert(callee_idx, target_fn);
+                        self.call_value(argc)
+                    }
+                    // "otherwise the fall-back handler of the call tag is
+                    // (tail) called with the arguments" — the same rule an
+                    // ordinary funcref gets, so it lives in one place below.
+                    None => self.call_tag_fallback(&tag_def, funcref, argc),
+                };
+            }
+        }
+
+        if handled {
+            // `call_value_inner` wants the callee BELOW its arguments; the
+            // proposal puts it above. Move it, rather than teaching the shared
+            // call path a second stack layout.
+            let callee_idx = self.stack.len() - argc;
+            self.stack.insert(callee_idx, funcref);
+            return self.call_value(argc);
+        }
+
+        self.call_tag_fallback(&tag_def, funcref, argc)
+    }
+
+    /// The unhandled-tag rule, shared by ordinary funcrefs and `func_switch`.
+    fn call_tag_fallback(
+        &mut self,
+        tag_def: &crate::vm::CallTagDef,
+        funcref: Value,
+        argc: usize,
+    ) -> Result<(), VMError> {
+        match tag_def.fallback.clone() {
+            Some(handler) => {
+                // `$func : [ti* funcref] -> [to*]` — the arguments stay exactly
+                // where they are and the funcref becomes the extra trailing
+                // argument, so the handler sees which funcref refused the tag.
+                self.stack.push(funcref);
+                let callee_idx = self.stack.len() - (argc + 1);
+                self.stack.insert(callee_idx, handler);
+                self.call_value(argc + 1)
+            }
+            None => Err(VMError::new(format!(
+                "call_with_tag: funcref does not handle call tag '{}'",
+                tag_def.debug_name
+            ))),
+        }
+    }
+
+    /// Walk a `func_switch`'s arms for `tag`, following `$func_switch?`
+    /// forwards. Returns the chunk index to call, or `None` when nothing in the
+    /// chain matches.
+    fn resolve_func_switch(&self, mut chunk_index: usize, tag: u32) -> Option<usize> {
+        // A forward chain is author-supplied and could be cyclic; bound it by
+        // the number of switches that exist so a bad module cannot hang the VM.
+        for _ in 0..=self.func_switches.len() {
+            let sw = self.func_switches.get(&chunk_index)?;
+            if let Some((_, target)) = sw.arms.iter().find(|(t, _)| *t == tag) {
+                return Some(*target);
+            }
+            chunk_index = sw.forward?;
+        }
+        None
+    }
+
+    /// A callable `Value` for a chunk index, for dispatching a resolved arm.
+    pub(crate) fn function_value_for_chunk(&self, chunk_index: usize) -> Value {
+        let (name, arity) = self
+            .chunks
+            .get(chunk_index)
+            .map(|c| (Some(c.name.clone()), c.arity))
+            .unwrap_or((None, 0));
+        Value::Object(crate::heap::alloc(Object {
+            properties: indexmap::IndexMap::new(),
+            kind: ObjectKind::Function(crate::value::Function {
+                name,
+                arity,
+                chunk_index,
+                upvalues: Vec::new(),
+            }),
+            type_id: 0,
+            fields: Vec::new(),
+        }))
+    }
+
     /// Like `call_value` but bypasses the generator intercept — used
     /// from RESUME / GEN_NEXT when we genuinely want the generator
     /// body to execute.

@@ -111,6 +111,18 @@ pub struct HostContext<'a> {
     /// Raw pointer to the VM's shared memory, for the `wasm:threads`
     /// scheduler intrinsics (`all_parked`). Null when no VM is attached.
     shared_memory_slot: *const crate::shared_memory::SharedMemory,
+    /// Raw pointers to the call-tag tables, so a host function can ask which
+    /// CONVENTION a funcref answers to instead of inferring it from arity.
+    ///
+    /// Property dispatch needs exactly this: `__set_x(self, v)` and a JS
+    /// `defineProperty` `set(v)` are the same wasm signature and opposite
+    /// conventions. Declarations are resolved at load, before any host call, so
+    /// a read-only view is enough.
+    call_tag_registry_slot: *const HashMap<String, u32>,
+    func_call_tags_slot: *const HashMap<usize, Vec<u32>>,
+    /// Raw pointer to the chunk table, so the receiver query can fall back to
+    /// `Chunk.is_method` for a chunk that declares no tag.
+    chunks_slot: *const Vec<crate::chunk::Chunk>,
 }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
@@ -119,6 +131,53 @@ pub struct HostContext<'a> {
 unsafe impl Send for HostContext<'_> {}
 
 impl<'a> HostContext<'a> {
+    /// Does this funcref declare that it handles `tag`?
+    ///
+    /// The question property dispatch actually wants — "does parameter 0 mean
+    /// the receiver?" — asked rather than inferred. A func that declares
+    /// nothing answers `false`, which is the ambient-receiver case: its
+    /// receiver comes from the call, not from an argument.
+    pub fn func_handles_call_tag(&self, func: &Value, tag: &str) -> bool {
+        if self.call_tag_registry_slot.is_null() || self.func_call_tags_slot.is_null() {
+            return false;
+        }
+        let Value::Object(obj) = func else {
+            return false;
+        };
+        let chunk_index = match &obj.lock().unwrap().kind {
+            ObjectKind::Function(f) => f.chunk_index,
+            _ => return false,
+        };
+        // SAFETY: same contract as every other slot here — the pointers are the
+        // VM's own tables, valid for the duration of the host call.
+        let (registry, func_tags) = unsafe {
+            (&*self.call_tag_registry_slot, &*self.func_call_tags_slot)
+        };
+        if let Some(&id) = registry.get(tag)
+            && let Some(tags) = func_tags.get(&chunk_index)
+        {
+            return tags.contains(&id);
+        }
+        // No tag declared. Fall back to `Chunk.is_method`, which states the
+        // same fact for compiler-generated accessors: "arity includes an
+        // implicit leading receiver". It is a DECLARATION too, not a guess —
+        // the compiler sets it where it builds the accessor — and it covers the
+        // shapes the tag has not reached yet.
+        if self.chunks_slot.is_null() {
+            return false;
+        }
+        // SAFETY: as above — the VM's own table, valid for this host call.
+        let chunks = unsafe { &*self.chunks_slot };
+        // `is_method` alone is NOT sufficient evidence: a JS object-literal
+        // accessor is compiled as a plain lambda whose chunk may carry it for
+        // unrelated reasons, and treating that as receiver-first hands a
+        // one-parameter setter the receiver as its VALUE. Require the arity to
+        // agree with a receiver-first setter as well.
+        chunks
+            .get(chunk_index)
+            .is_some_and(|c| c.is_method && c.arity >= 2)
+    }
+
     /// Call a VM function reference from host code.
     /// Returns Value::Null if no invoker is available.
     pub fn invoke(&mut self, func_ref: &Value, args: &[Value]) -> Value {
@@ -555,6 +614,9 @@ impl<'a> HostContext<'a> {
             stack_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null_mut(),
             shared_memory_slot: std::ptr::null(),
+            call_tag_registry_slot: std::ptr::null(),
+            func_call_tags_slot: std::ptr::null(),
+            chunks_slot: std::ptr::null(),
         }
     }
 
@@ -573,6 +635,15 @@ impl<'a> HostContext<'a> {
 /// Host function signature. Receives restricted context + args, returns a value.
 /// Host function signature.
 pub type HostFn = Arc<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>;
+
+/// Length of a thread's `context.get`/`context.set` storage array.
+///
+/// `CanonicalABI.md class Thread`: `storage: tuple[int,int]` /
+/// `self.storage = [0,0]`. `Explainer.md:1679` states the matching validation
+/// rule: "Validation currently restricts `i` to be less than 2 and `T` to be
+/// `i32`". Named rather than inlined so the bound and the initial length can
+/// never drift apart — they are the same spec fact.
+pub const CONTEXT_STORAGE_SLOTS: usize = 2;
 
 /// Component Model canonical built-ins the VM implements natively. The CM
 /// defines these as `(core func)` DEFINITIONS a component wires into a core
@@ -610,9 +681,37 @@ pub enum CanonBuiltin {
     FutureDropWritable,
     WaitableSetDrop,
     ThreadYield,
+    /// 🧵 `thread.index` — the current thread's index in the instance table.
+    ThreadIndex,
+    /// 🧵 `thread.resume-later` — mark a suspended thread ready to run.
+    ThreadResumeLater,
+    /// 🧵 `thread.suspend-then-resume` — park me, run them.
+    ThreadSuspendThenResume,
+    /// 🧵 `thread.yield-then-resume` — stay runnable, run them.
+    ThreadYieldThenResume,
+    /// 🧵 `thread.suspend-then-promote` — park me, run them IF ready.
+    ThreadSuspendThenPromote,
+    /// 🧵 `thread.yield-then-promote` — stay runnable, run them IF ready.
+    ThreadYieldThenPromote,
+    /// 🧵 `thread.new-indirect` — create a suspended thread over a funcref.
+    ThreadNewIndirect,
+    /// 🧵 `thread.suspend` — block the current thread with no `switch_to`.
+    ThreadSuspend,
+    /// 🧵② `thread.spawn-ref` — `new-ref` + `resume-later`, fused.
+    ThreadSpawnRef,
+    /// 🧵② `thread.spawn-indirect` — `new-indirect` + `resume-later`, fused.
+    ThreadSpawnIndirect,
+    /// 🧵② `thread.available-parallelism`.
+    ThreadAvailableParallelism,
     ResourceNew,
     ResourceRep,
     ResourceDrop,
+    /// 📝 `error-context.new` — `CanonicalABI.md:5147`.
+    ErrorContextNew,
+    /// 📝 `error-context.debug-message` — `CanonicalABI.md:5189`.
+    ErrorContextDebugMessage,
+    /// 📝 `error-context.drop` — `CanonicalABI.md:5215`.
+    ErrorContextDrop,
     BackpressureInc,
     BackpressureDec,
     ContextGet,
@@ -644,6 +743,64 @@ impl CanonBuiltin {
         }
     }
 
+
+    /// The Binary.md spelling of this built-in — the inverse of [`Self::by_name`].
+    ///
+    /// Exists so a trap can name the ROW it belongs to (`canon task.return:
+    /// ...`) rather than a Rust identifier. Derived from the same 33 rows as
+    /// `by_name`, so a new built-in that forgets one side fails to compile.
+    pub fn spec_name(self) -> &'static str {
+        match self {
+            Self::Lift => "lift",
+            Self::Lower => "lower",
+            Self::TaskReturn => "task.return",
+            Self::TaskCancel => "task.cancel",
+            Self::SubtaskCancel => "subtask.cancel",
+            Self::SubtaskDrop => "subtask.drop",
+            Self::WaitableSetNew => "waitable-set.new",
+            Self::WaitableSetWait => "waitable-set.wait",
+            Self::WaitableSetPoll => "waitable-set.poll",
+            Self::WaitableJoin => "waitable.join",
+            Self::StreamNew => "stream.new",
+            Self::StreamRead => "stream.read",
+            Self::StreamWrite => "stream.write",
+            Self::StreamCancelRead => "stream.cancel-read",
+            Self::StreamCancelWrite => "stream.cancel-write",
+            Self::StreamDropReadable => "stream.drop-readable",
+            Self::StreamDropWritable => "stream.drop-writable",
+            Self::FutureNew => "future.new",
+            Self::FutureRead => "future.read",
+            Self::FutureWrite => "future.write",
+            Self::FutureCancelRead => "future.cancel-read",
+            Self::FutureCancelWrite => "future.cancel-write",
+            Self::FutureDropReadable => "future.drop-readable",
+            Self::FutureDropWritable => "future.drop-writable",
+            Self::WaitableSetDrop => "waitable-set.drop",
+            Self::ThreadYield => "thread.yield",
+            Self::ThreadIndex => "thread.index",
+            Self::ThreadResumeLater => "thread.resume-later",
+            Self::ThreadSuspendThenResume => "thread.suspend-then-resume",
+            Self::ThreadYieldThenResume => "thread.yield-then-resume",
+            Self::ThreadSuspendThenPromote => "thread.suspend-then-promote",
+            Self::ThreadYieldThenPromote => "thread.yield-then-promote",
+            Self::ThreadNewIndirect => "thread.new-indirect",
+            Self::ThreadSuspend => "thread.suspend",
+            Self::ThreadSpawnRef => "thread.spawn-ref",
+            Self::ThreadSpawnIndirect => "thread.spawn-indirect",
+            Self::ThreadAvailableParallelism => "thread.available-parallelism",
+            Self::ErrorContextNew => "error-context.new",
+            Self::ErrorContextDebugMessage => "error-context.debug-message",
+            Self::ErrorContextDrop => "error-context.drop",
+            Self::ResourceNew => "resource.new",
+            Self::ResourceRep => "resource.rep",
+            Self::ResourceDrop => "resource.drop",
+            Self::BackpressureInc => "backpressure.inc",
+            Self::BackpressureDec => "backpressure.dec",
+            Self::ContextGet => "context.get",
+            Self::ContextSet => "context.set",
+        }
+    }
+
     pub fn by_name(name: &str) -> Option<Self> {
         Some(match name {
             "lift" => Self::Lift,
@@ -672,6 +829,20 @@ impl CanonBuiltin {
             "future.drop-writable" => Self::FutureDropWritable,
             "waitable-set.drop" => Self::WaitableSetDrop,
             "thread.yield" => Self::ThreadYield,
+            "thread.index" => Self::ThreadIndex,
+            "thread.resume-later" => Self::ThreadResumeLater,
+            "thread.suspend-then-resume" => Self::ThreadSuspendThenResume,
+            "thread.yield-then-resume" => Self::ThreadYieldThenResume,
+            "thread.suspend-then-promote" => Self::ThreadSuspendThenPromote,
+            "thread.yield-then-promote" => Self::ThreadYieldThenPromote,
+            "thread.new-indirect" => Self::ThreadNewIndirect,
+            "thread.suspend" => Self::ThreadSuspend,
+            "thread.spawn-ref" => Self::ThreadSpawnRef,
+            "thread.spawn-indirect" => Self::ThreadSpawnIndirect,
+            "thread.available-parallelism" => Self::ThreadAvailableParallelism,
+            "error-context.new" => Self::ErrorContextNew,
+            "error-context.debug-message" => Self::ErrorContextDebugMessage,
+            "error-context.drop" => Self::ErrorContextDrop,
             "resource.new" => Self::ResourceNew,
             "resource.rep" => Self::ResourceRep,
             "resource.drop" => Self::ResourceDrop,
@@ -809,6 +980,55 @@ pub(crate) const CATCH_KIND_CATCH_ALL_REF: u8 = 3;
 pub(crate) struct TagEntity {
     pub(crate) debug_name: String,
     pub(crate) arity: u8,
+}
+
+/// A `func_switch` — the Overview's alternative way of defining a function:
+///
+/// > `func_switch ($call_tag $func)* $func_switch?`, specifying essentially a
+/// > switch statement that calls a `$func` if the given call tag matches the
+/// > corresponding `$call_tag`. If there is no corresponding call tag, then if
+/// > `$func_switch` is specified the call tag and arguments are forwarded to
+/// > it, otherwise the fall-back handler of the call tag is (tail) called.
+///
+/// This is what makes interface-method dispatch cheap in the proposal's
+/// motivating example: one `funcref` per descriptor slot, switching on the tag,
+/// with unmatched tags forwarded to the superclass's `funcref` so a subclass
+/// need not re-list everything it inherits.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FuncSwitch {
+    /// `($call_tag $func)*` — matched in declaration order.
+    pub(crate) arms: Vec<(u32, usize)>,
+    /// The trailing `$func_switch?` — another func_switch to forward to.
+    pub(crate) forward: Option<usize>,
+}
+
+/// A CALL tag (`proposals/call-tags`) — not an exception tag.
+///
+/// The identity that matters is the tag's INDEX, not its signature.
+/// `call_tag.canon $functype` interns one tag per signature; `call_tag.new
+/// $functype $func?` mints a fresh one over the *same* signature, so two funcs
+/// that are structurally identical — which, after GC type canonicalisation,
+/// means genuinely the same type — remain distinguishable at the call. That is
+/// the property a structural type system cannot give you and the reason the
+/// proposal exists.
+#[derive(Debug, Clone)]
+pub(crate) struct CallTagDef {
+    /// Spelling, for traps and disassembly.
+    pub(crate) debug_name: String,
+    /// The tag's signature. Runtime types are erased here, so a signature is
+    /// its shape: parameter count and result count.
+    pub(crate) params: u8,
+    pub(crate) results: u8,
+    /// Fall-back handler (`call_tag.new $functype $func`). When a `funcref`
+    /// does not handle this tag, the Overview tail-calls this with the same
+    /// arguments "but replacing the call-tag value with the value of the
+    /// current `funcref`". `None` — which is always the case for a canonical
+    /// tag — means an unhandled tag TRAPS.
+    pub(crate) fallback: Option<Value>,
+    /// True for a tag produced by `call_tag.canon`. Canonical tags never carry
+    /// a fall-back, and the Overview says so: "For canonical call tags, the
+    /// answer is simply that the program traps."
+    pub(crate) canonical: bool,
 }
 
 /// Exception handler entry — pushed per catch clause by `try_table`,
@@ -990,6 +1210,41 @@ pub struct VM {
     /// Name → entity for IMPORTED tags only (spec: imports resolve by
     /// name; local declarations never enter this registry).
     pub(crate) imported_tag_registry: HashMap<String, usize>,
+    /// CALL tags (`proposals/call-tags`) — a different entity from the EH tags
+    /// above, which name exception types. Identity IS the index, which is the
+    /// whole point: `call_tag.new` mints a FRESH identity over a signature that
+    /// already has one, so two funcs with the same structural type stay
+    /// distinguishable. Canonical tags (`call_tag.canon`) are interned by
+    /// signature so the same functype always yields the same tag.
+    pub(crate) call_tags: Vec<CallTagDef>,
+    /// Canonical-tag interning: `(params, results)` → index in `call_tags`.
+    pub(crate) canonical_call_tags: HashMap<(u8, u8), u32>,
+    /// `func_switch` definitions, keyed by the chunk index standing in for the
+    /// definition. The Overview makes this "an alternative to `func`": it has
+    /// no type, cannot be called directly, and exists to be reached by
+    /// `call_with_tag` through a `funcref`.
+    pub(crate) func_switches: HashMap<usize, FuncSwitch>,
+    /// Per-chunk resolution: chunk-local call-tag index → VM tag id, the
+    /// sibling of `chunk_tag_maps` for exception tags.
+    pub(crate) chunk_call_tag_maps: Vec<Vec<u32>>,
+    /// Call-tag name → id, so one name is one entity module-wide.
+    pub(crate) call_tag_registry: HashMap<String, u32>,
+    /// Call-tag validation failures found while resolving declarations.
+    ///
+    /// The spec validates at MODULE VALIDATION time; this VM resolves
+    /// declarations lazily as chunks are installed, so the findings are
+    /// collected here and surfaced by the first tagged call in the module.
+    /// The program still cannot execute a call under an invalid declaration,
+    /// which is the property that matters — it just learns at first use.
+    pub(crate) call_tag_errors: Vec<String>,
+    /// Which call tags a FUNC DEFINITION handles, keyed by chunk index.
+    ///
+    /// Keyed by the definition rather than stored on `Function` because the
+    /// Overview hangs it off the `func` ("When defining a `func` … one can
+    /// optionally specify `(call_tag $call_tag*)`"), so every closure over the
+    /// same func shares it. Absent means the default the Overview states: the
+    /// funcref handles exactly the canonical tag of its own signature.
+    pub(crate) func_call_tags: HashMap<usize, Vec<u32>>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
     /// The installed host scheduler (see [`crate::scheduler::Scheduler`]).
@@ -1242,7 +1497,36 @@ pub struct VM {
     /// `canon`/`future.read@2` and `canon`/`future.read@5` are different core
     /// funcs over the same built-in — the distinctness the spec requires,
     /// expressed in the one channel a core import has.
-    pub canon_types: Vec<crate::component::ValType>,
+    pub canon_types: Vec<Option<crate::component::ValType>>,
+    /// The component's FUNCTION type index space — `canon lift`'s
+    /// `ft:<typeidx>`.
+    ///
+    /// Separate from `canon_types` because they are different index spaces.
+    /// `stream.read`'s `$t` names a VALUE type; `canon lift`'s `$ft` names a
+    /// FUNCTION type. One `Vec` serving both is the `GLOBAL_GET` defect —
+    /// a single integer meaning two things depending on who reads it.
+    pub canon_functypes: Vec<Option<crate::canon_def::CanonFuncType>>,
+    /// The component FUNCTION index space — comp funcidx -> defining canonidx.
+    ///
+    /// `canon lower`'s `$callee` indexes this. A component function defined
+    /// HERE (by a `canon lift`) needs no linker to call: the linker is for
+    /// component functions that arrive as IMPORTS.
+    pub component_funcs: Vec<Option<u32>>,
+    /// The module's canon section — `Binary.md` §"Canonical Definitions".
+    /// A canon import resolves to a row here at link time, which is the spec's
+    /// instantiation-time capture of `$callee` / `$opts` / `$ft`.
+    pub canon_defs: Vec<crate::canon_def::CanonDef>,
+    /// The component instance — `CanonicalABI.md class ComponentInstance`.
+    /// Owns `may_enter`/`may_leave`, the backpressure counter and the thread
+    /// table. One instance, so `current_instance()` is always this.
+    pub cm_instance: crate::cm_instance::ComponentInstance,
+    /// `current_thread()` — index into `cm_instance.threads` of the thread
+    /// executing right now, or `None` outside any lifted call.
+    ///
+    /// The spec's implicit thread is spawned by `canon_lift`; there is no other
+    /// way for one to exist, which is why every 🧵 built-in was unreachable
+    /// while `canon lift` was a stub.
+    pub current_thread: Option<u32>,
     /// The `$t` immediate of the canonical built-in currently executing, set
     /// by the dispatch arm just before the call. Carried on the VM rather than
     /// threaded through `exec_canon_builtin` because only the typed copies read
@@ -1255,8 +1539,6 @@ pub struct VM {
     pub(crate) next_cm_task_id: u32,
     /// Waitable set registry.
     pub waitable_sets: crate::waitable::WaitableRegistry,
-    /// CM3 context slots (canon context.get/set).
-    pub context_slots: Vec<Value>,
 }
 
 /// A restorable post-boot baseline for [`VM::snapshot`] / [`VM::reset_to`].
@@ -1287,7 +1569,6 @@ pub struct VmSnapshot {
     handle_table: crate::handle_table::HandleTable,
     waitable_sets: crate::waitable::WaitableRegistry,
     cm_tasks: Vec<crate::cm_task::CMTask>,
-    context_slots: Vec<Value>,
     try_group_counter: u64,
     cur_fiber_id: u64,
     next_fiber_id: u64,
@@ -1300,6 +1581,14 @@ pub struct VmSnapshot {
     chunks_len: usize,
     chunk_tag_maps_len: usize,
     tag_entities_len: usize,
+    /// Call-tag tables (Call Tags proposal) — restored together for the same
+    /// reason `tag_entities` and `chunk_tag_maps` are: truncating the entity
+    /// list without the registry that indexes it leaves a name pointing at an
+    /// id that no longer exists.
+    call_tags_len: usize,
+    call_tag_registry: HashMap<String, u32>,
+    canonical_call_tags: HashMap<(u8, u8), u32>,
+    chunk_call_tag_maps_len: usize,
     // Registries a SCRIPT extends by running. Every one of these used to
     // survive a reset — the doc comment on `reset_to` even advertised leaving
     // the type registry and modules alone — so a program's class definitions
@@ -1438,6 +1727,13 @@ impl VM {
             chunk_tag_maps: Vec::new(),
             try_group_counter: 0,
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
+            call_tags: Vec::new(),
+            canonical_call_tags: HashMap::new(),
+            func_switches: HashMap::new(),
+            chunk_call_tag_maps: Vec::new(),
+            call_tag_registry: HashMap::new(),
+            call_tag_errors: Vec::new(),
+            func_call_tags: HashMap::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             scheduler: None,
             deferred_sources: Vec::new(),
@@ -1499,16 +1795,23 @@ impl VM {
             // convention, not a spec requirement, and a component that
             // registers its own types simply appends past them.
             canon_types: vec![
-                crate::component::ValType::Bool, // 0
-                crate::component::ValType::I32,  // 1
-                crate::component::ValType::I64,  // 2
-                crate::component::ValType::F64,  // 3
+                Some(crate::component::ValType::Bool), // 0
+                Some(crate::component::ValType::I32),  // 1
+                Some(crate::component::ValType::I64),  // 2
+                Some(crate::component::ValType::F64),  // 3
             ],
+            // Both start EMPTY. A component registers its own types and
+            // canon definitions; an absent row must be an error naming the
+            // missing declaration, not index 0 standing in for it.
+            canon_functypes: Vec::new(),
+            component_funcs: Vec::new(),
+            canon_defs: Vec::new(),
+            cm_instance: crate::cm_instance::ComponentInstance::new(),
+            current_thread: None,
             canon_type_immediate: None,
             cm_tasks: Vec::new(),
             next_cm_task_id: 1,
             waitable_sets: crate::waitable::WaitableRegistry::new(),
-            context_slots: Vec::new(),
         }
     }
 
@@ -1531,7 +1834,6 @@ impl VM {
             handle_table: self.handle_table.clone(),
             waitable_sets: self.waitable_sets.clone(),
             cm_tasks: self.cm_tasks.clone(),
-            context_slots: self.context_slots.clone(),
             try_group_counter: self.try_group_counter,
             cur_fiber_id: self.cur_fiber_id,
             next_fiber_id: self.next_fiber_id,
@@ -1540,6 +1842,10 @@ impl VM {
             chunks_len: self.chunks.len(),
             chunk_tag_maps_len: self.chunk_tag_maps.len(),
             tag_entities_len: self.tag_entities.len(),
+            call_tags_len: self.call_tags.len(),
+            call_tag_registry: self.call_tag_registry.clone(),
+            canonical_call_tags: self.canonical_call_tags.clone(),
+            chunk_call_tag_maps_len: self.chunk_call_tag_maps.len(),
             type_registry: self.type_registry.clone(),
             module_keys: self.modules.keys().cloned().collect(),
             deferred_sources_len: self.deferred_sources.len(),
@@ -1596,7 +1902,6 @@ impl VM {
         self.handle_table = snap.handle_table.clone();
         self.waitable_sets = snap.waitable_sets.clone();
         self.cm_tasks = snap.cm_tasks.clone();
-        self.context_slots = snap.context_slots.clone();
         // 4b. Drop the prior run's appended CODE (and its embedded string/data
         //     constants — security: no earlier tenant's bytes survive) + the
         //     chunk-parallel structures that grow with it. Everything below the
@@ -1605,6 +1910,13 @@ impl VM {
         self.chunks.truncate(snap.chunks_len);
         self.chunk_tag_maps.truncate(snap.chunk_tag_maps_len);
         self.tag_entities.truncate(snap.tag_entities_len);
+        self.call_tags.truncate(snap.call_tags_len);
+        self.chunk_call_tag_maps.truncate(snap.chunk_call_tag_maps_len);
+        self.call_tag_registry = snap.call_tag_registry.clone();
+        self.canonical_call_tags = snap.canonical_call_tags.clone();
+        self.call_tag_errors.clear();
+        self.func_switches.clear();
+        self.func_call_tags.clear();
         // 4c. Registries a SCRIPT extends by running. These are the ones that
         //     used to survive: a program's class definitions stayed in the type
         //     registry, its modules stayed registered, and the next program in
@@ -1799,6 +2111,9 @@ impl VM {
     }
 
     fn apply_reload(&mut self, mut new_chunks: Vec<Chunk>) -> Result<String, String> {
+        // Same load-time gate as `run_linked_impl` — reloaded bodies execute
+        // without the dispatch loop re-validating each instruction.
+        Self::validate_chunk_code(&new_chunks).map_err(|e| e.to_string())?;
         // 1. Structural identity: same count, names in order, imports, and tags.
         // A shifted/renamed/added/removed function invalidates the chunk-index
         // identity every funcref depends on → reject, don't corrupt.
@@ -2400,6 +2715,90 @@ impl VM {
         self.register_host_fn(&module, &name, call);
     }
 
+    // ── Call tags (proposals/call-tags) ──────────────────────────────────
+    //
+    // Tags are module entities like EH tags, memories or globals: declared in
+    // the tag section, referenced by index, importable and exportable. These
+    // are the declaration half; `call_with_tag` in `dispatch.rs` is the use.
+
+    /// `call_tag.canon $functype` — the canonical tag for a signature.
+    ///
+    /// INTERNED: the Overview defines `call_indirect $table $functype` as
+    /// `call_with_tag (call_tag.canon $functype)`, so every module deriving the
+    /// canonical tag for the same signature must get the SAME tag, or an
+    /// indirect call would stop matching a func that handles it.
+    pub fn call_tag_canon(&mut self, params: u8, results: u8) -> u32 {
+        // Same staleness rule as the name registry: an interned canonical id
+        // is only valid while its entity is still present.
+        if let Some(existing) = self.canonical_call_tags.get(&(params, results))
+            && (*existing as usize) < self.call_tags.len()
+        {
+            return *existing;
+        }
+        let idx = self.call_tags.len() as u32;
+        self.call_tags.push(CallTagDef {
+            debug_name: format!("canon[{params}->{results}]"),
+            params,
+            results,
+            // "For canonical call tags, the answer is simply that the program
+            // traps" — a canonical tag has no fall-back, by definition.
+            fallback: None,
+            canonical: true,
+        });
+        self.canonical_call_tags.insert((params, results), idx);
+        idx
+    }
+
+    /// `call_tag.new $functype $func?` — a FRESH tag over a signature that may
+    /// already have one. Never interned: minting a distinct identity is the
+    /// entire purpose.
+    ///
+    /// `fallback` is the Overview's optional handler, whose signature must be
+    /// the tag's `[ti*]` plus a trailing `funcref` — it receives the funcref
+    /// that failed to handle the tag, so it can adapt or reject.
+    pub fn call_tag_new(
+        &mut self,
+        debug_name: &str,
+        params: u8,
+        results: u8,
+        fallback: Option<Value>,
+    ) -> u32 {
+        let idx = self.call_tags.len() as u32;
+        self.call_tags.push(CallTagDef {
+            debug_name: debug_name.to_string(),
+            params,
+            results,
+            fallback,
+            canonical: false,
+        });
+        idx
+    }
+
+    /// `(func … (call_tag $call_tag*))` — declare which tags a func's `funcref`
+    /// handles. Declaring ANY replaces the default (its own canonical tag), which
+    /// is what makes the Overview's security property work: "if one specifies no
+    /// canonical call tags and only non-exported call tags, then one can be
+    /// guaranteed that the function is only indirectly called by this module".
+    pub fn declare_func_call_tags(&mut self, chunk_index: usize, tags: Vec<u32>) {
+        self.func_call_tags.insert(chunk_index, tags);
+    }
+
+    /// Does the func defined by `chunk_index` handle `tag`?
+    ///
+    /// With no declaration the func handles exactly the canonical tag of its own
+    /// signature — the Overview's default — so an undeclared func stays callable
+    /// through `call_indirect` and nothing existing changes behaviour.
+    pub(crate) fn func_handles_call_tag(&mut self, chunk_index: usize, tag: u32) -> bool {
+        if let Some(declared) = self.func_call_tags.get(&chunk_index) {
+            return declared.contains(&tag);
+        }
+        let Some(chunk) = self.chunks.get(chunk_index) else {
+            return false;
+        };
+        let (params, results) = (chunk.arity, chunk.result_arity);
+        self.call_tag_canon(params, results) == tag
+    }
+
     pub fn register_host_fn(
         &mut self,
         module: &str,
@@ -2596,6 +2995,9 @@ impl VM {
             stack_slot: &self.stack as *const Vec<Value>,
             handle_table_slot: &mut self.handle_table as *mut crate::handle_table::HandleTable,
             shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
+            call_tag_registry_slot: &self.call_tag_registry as *const HashMap<String, u32>,
+            func_call_tags_slot: &self.func_call_tags as *const HashMap<usize, Vec<u32>>,
+            chunks_slot: &self.chunks as *const Vec<crate::chunk::Chunk>,
         }
     }
 
@@ -2747,6 +3149,50 @@ impl VM {
         self.run_linked_impl(chunks, resolved_imports, true)
     }
 
+    /// Validate every instruction of every incoming chunk BEFORE any of it
+    /// can execute — the WASM spec's own architecture (validation is a phase
+    /// preceding instantiation), applied to every bytecode source alike: our
+    /// compilers, wast, reload, nested eval, and foreign `.wasm` binaries.
+    ///
+    /// This is what lets the dispatch loop construct `Op` WITHOUT the
+    /// per-instruction `wasm_name_opt` probe (measured: a top-3 sample on a
+    /// pure-arithmetic loop). The security posture is STRICTLY stronger than
+    /// the probe it replaces: a malformed module used to execute up to its
+    /// first bad opcode — side effects already done — where it is now
+    /// rejected here having run nothing. And an op that somehow escaped this
+    /// pass still lands in the dispatch match's final `Unhandled opcode`
+    /// arm: an error, never undefined behaviour.
+    fn validate_chunk_code(chunks: &[Chunk]) -> Result<(), VMError> {
+        for chunk in chunks {
+            let code = &chunk.code;
+            let mut ip = 0usize;
+            while ip + 3 < code.len() {
+                let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                let Some(op) = Op::decode(group, sub) else {
+                    return Err(VMError::new(format!(
+                        "invalid opcode 0x{:04X} 0x{:04X} at offset {} in chunk '{}' — module rejected at load",
+                        group, sub, ip, chunk.name
+                    )));
+                };
+                if op == Op::REF_FUNC {
+                    // Variable shape `operand_format` cannot size:
+                    // 4 opcode + 2 func_idx + 1 uv_count + uv_count × 3.
+                    ip += 4 + 2 + 1;
+                    if ip - 1 < code.len() {
+                        let uv_count = (code[ip - 1] & 0x7f) as usize;
+                        ip += uv_count * 3;
+                    }
+                    continue;
+                }
+                ip += 4;
+                let fmt = op.operand_format();
+                ip += fmt.size_in(code, ip);
+            }
+        }
+        Ok(())
+    }
+
     fn run_linked_impl(
         &mut self,
         chunks: Vec<Chunk>,
@@ -2756,6 +3202,7 @@ impl VM {
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
+        Self::validate_chunk_code(&chunks)?;
         let script_idx = self.chunks.len();
         // Offset ref_func indices
         let mut adjusted = chunks;
@@ -2797,6 +3244,8 @@ impl VM {
         // space before the chunks join it — each set was compiled against
         // its own table.
         self.merge_global_table(&mut adjusted);
+        self.merge_canon_section(&adjusted)?;
+        self.merge_canon_types(&adjusted)?;
         self.chunks.extend(adjusted);
         self.bind_imported_globals();
 
@@ -2993,7 +3442,19 @@ impl VM {
         // space before the chunks join it — each set was compiled against
         // its own table.
         self.merge_global_table(&mut adjusted);
+        self.merge_canon_section(&adjusted)?;
+        self.merge_canon_types(&adjusted)?;
         self.chunks.extend(adjusted);
+        // Resolve call-tag declarations EAGERLY, as soon as the chunks that
+        // carry them are installed.
+        //
+        // It used to happen lazily, on the first `call_with_tag` — but the
+        // tables are also read by HOST functions (property dispatch asks which
+        // receiver convention an accessor declares), and a program that never
+        // executes a tagged call would leave them empty. The host would then
+        // see every accessor as undeclared and treat a receiver-first one as
+        // ambient.
+        self.resolve_chunk_call_tags();
         self.bind_imported_globals();
 
         let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
@@ -3415,6 +3876,39 @@ impl VM {
     }
 
     /// Resolve a chunk-level tag index to its tag ENTITY (spec EH identity).
+    /// Chunk-local CALL-tag index → VM tag id, the sibling of
+    /// `resolve_chunk_tag` for the Call Tags proposal. Built lazily for the
+    /// same reason: every chunk-installation path must be covered.
+    /// Resolve a `call_with_tag` immediate — a constant-pool index naming the
+    /// tag — to its VM entity id.
+    ///
+    /// By NAME, because that is what identity means for a call tag: the
+    /// load-time pass interns every declaration by name, so an import and the
+    /// export it resolves to, or a declaration and a use in another chunk, all
+    /// meet at one id.
+    pub(crate) fn resolve_chunk_call_tag(
+        &mut self,
+        chunk_index: usize,
+        name_idx: u16,
+    ) -> Result<u32, VMError> {
+        if self.chunk_call_tag_maps.len() < self.chunks.len() {
+            self.resolve_chunk_call_tags();
+        }
+        if let Some(err) = self.call_tag_errors.first() {
+            return Err(VMError::new(format!("invalid call tag declaration: {err}")));
+        }
+        let name = self
+            .chunks
+            .get(chunk_index)
+            .and_then(|c| c.constants.get(name_idx as usize))
+            .map(|v| v.to_string())
+            .ok_or_else(|| VMError::new(format!("call tag name constant {name_idx} missing")))?;
+        self.call_tag_registry
+            .get(name.as_str())
+            .copied()
+            .ok_or_else(|| VMError::new(format!("undefined call tag '{name}'")))
+    }
+
     /// Maps are built lazily so every chunk-installation path is covered.
     pub(crate) fn resolve_chunk_tag(
         &mut self,
@@ -3468,6 +3962,173 @@ impl VM {
             }
             self.chunk_tag_maps.push(map);
         }
+        self.resolve_chunk_call_tags();
+    }
+
+    /// Load-time resolution for CALL tags (`proposals/call-tags`), the sibling
+    /// of `resolve_chunk_tags` above.
+    ///
+    /// Interned by NAME across the module, so a tag declared once and used from
+    /// several chunks is one identity — which is the whole contract: two funcs
+    /// are distinguishable because they answer different tag *identities*, not
+    /// different signatures.
+    pub(crate) fn resolve_chunk_call_tags(&mut self) {
+        while self.chunk_call_tag_maps.len() < self.chunks.len() {
+            let ci = self.chunk_call_tag_maps.len();
+            let decls = self.chunks[ci].call_tag_decls.clone();
+            let mut map = Vec::with_capacity(decls.len());
+            for decl in decls {
+                // An interned id is only reusable while the entity it names
+                // still EXISTS. `call_tags` is truncated on VM restore, so a
+                // surviving registry entry can point past the end — and
+                // short-circuiting on it left the name resolving to an id with
+                // nothing behind it ("undefined call tag 0" from a registry
+                // that plainly had the name).
+                if let Some(&existing) = self.call_tag_registry.get(&decl.debug_name)
+                    && (existing as usize) < self.call_tags.len()
+                {
+                    map.push(existing);
+                    continue;
+                }
+                // A fallback names a function; resolve it to a callable now so
+                // the unhandled-tag path costs nothing at call time.
+                // A wast func is a MEMBER of the module class, not a global —
+                // `ref.func $f` lowers to `Member { module_class, f }` — so the
+                // handler resolves through the chunk table and is materialised
+                // as a callable here, once, rather than looked up per call.
+                let fallback = decl
+                    .fallback
+                    .as_ref()
+                    .and_then(|f| self.chunk_index_for_func(f))
+                    .map(|ci| self.function_value_for_chunk(ci));
+                // `(canon)` interns per signature; everything else is
+                // `call_tag.new` — a FRESH identity. A missing fall-back does
+                // NOT make a tag canonical: the Overview puts the `?` on
+                // `$func`, not on the newness, and conflating the two collapsed
+                // two differently-named tags over one signature into a single
+                // id, so a func handling one answered calls under the other.
+                let id = if decl.canonical {
+                    self.call_tag_canon(decl.params, decl.results)
+                } else {
+                    self.call_tag_new(&decl.debug_name, decl.params, decl.results, fallback)
+                };
+                self.call_tag_registry.insert(decl.debug_name, id);
+                map.push(id);
+            }
+            self.chunk_call_tag_maps.push(map);
+
+            let switches = self.chunks[ci].func_switch_decls.clone();
+            for (name, arms, forward) in switches {
+                let resolved_arms: Vec<(u32, usize)> = arms
+                    .iter()
+                    .filter_map(|(tag, func)| {
+                        let t = self.call_tag_registry.get(tag).copied()?;
+                        let f = self.chunk_index_for_func(func)?;
+                        Some((t, f))
+                    })
+                    .collect();
+                let forward_idx = forward.as_ref().and_then(|f| self.chunk_index_for_func(f));
+                if let Some(own) = self.chunk_index_for_func(&name) {
+                    self.func_switches.insert(
+                        own,
+                        FuncSwitch {
+                            arms: resolved_arms,
+                            forward: forward_idx,
+                        },
+                    );
+                }
+            }
+
+            // Tags the chunk itself declares — the compiler-generated case.
+            let own_tags = self.chunks[ci].handled_call_tags.clone();
+            if !own_tags.is_empty() {
+                let ids: Vec<u32> = own_tags
+                    .iter()
+                    .map(|t| {
+                        // A compiler-declared tag may not have a `(call_tag …)`
+                        // field anywhere; mint it on first sight so the name is
+                        // one entity regardless of who declared it first.
+                        match self.call_tag_registry.get(t).copied() {
+                            Some(id) if (id as usize) < self.call_tags.len() => id,
+                            _ => {
+                                let id = self.call_tag_new(t, 2, 1, None);
+                                self.call_tag_registry.insert(t.clone(), id);
+                                id
+                            }
+                        }
+                    })
+                    .collect();
+                self.declare_func_call_tags(ci, ids);
+            }
+
+            let func_tags = self.chunks[ci].func_call_tag_decls.clone();
+            for (func, tags) in func_tags {
+                let ids: Vec<u32> = tags
+                    .iter()
+                    .filter_map(|t| self.call_tag_registry.get(t).copied())
+                    .collect();
+                if let Some(idx) = self.chunk_index_for_func(&func) {
+                    // "each `$call_tag`'s type must be a supertype of
+                    // `[ti*] -> [to*]`" — a func may only claim to handle a tag
+                    // whose type its own signature satisfies. Runtime types are
+                    // erased here, so a function type IS its arity pair and the
+                    // subtype relation reduces to equality of that shape.
+                    let (fp, fr) = {
+                        let c = &self.chunks[idx];
+                        (c.param_count.max(c.arity), c.result_arity)
+                    };
+                    for (name, id) in tags.iter().zip(ids.iter()) {
+                        if let Some(def) = self.call_tags.get(*id as usize)
+                            && (def.params != fp || def.results != fr)
+                        {
+                            self.call_tag_errors.push(format!(
+                                "call tag '{name}' has type [{}->{}], which is not a supertype of func '{func}' [{fp}->{fr}]",
+                                def.params, def.results
+                            ));
+                        }
+                    }
+                    self.declare_func_call_tags(idx, ids);
+                } else {
+                    self.call_tag_errors
+                        .push(format!("(call_tag …) names unknown func '{func}'"));
+                }
+            }
+
+            // "This `$func` must have the same signature as `$functype` *except*
+            // also accepting an additional `funcref`" — so a fall-back handler
+            // takes exactly one more parameter than its tag.
+            let decls = self.chunks[ci].call_tag_decls.clone();
+            for decl in decls {
+                let Some(fname) = decl.fallback.as_ref() else {
+                    continue;
+                };
+                match self.chunk_index_for_func(fname) {
+                    Some(fi) => {
+                        let c = &self.chunks[fi];
+                        let fp = c.param_count.max(c.arity);
+                        if fp != decl.params.saturating_add(1) {
+                            self.call_tag_errors.push(format!(
+                                "fall-back handler '{fname}' for call tag '{}' takes {fp} parameter(s); the tag's type plus the trailing funcref is {}",
+                                decl.debug_name,
+                                decl.params as u16 + 1
+                            ));
+                        }
+                    }
+                    None => self.call_tag_errors.push(format!(
+                        "call tag '{}' names unknown fall-back handler '{fname}'",
+                        decl.debug_name
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Chunk index of a wast function by its declared name.
+    fn chunk_index_for_func(&self, name: &str) -> Option<usize> {
+        let bare = name.trim_start_matches('$');
+        self.chunks
+            .iter()
+            .position(|c| c.name == name || c.name.trim_start_matches('$') == bare)
     }
 
     /// Record that chunks `first..` belong to a module whose type index space
@@ -3651,6 +4312,79 @@ impl VM {
         out
     }
 
+    /// Install the incoming set's CANON SECTION.
+    ///
+    /// Unlike the global table there is nothing to remap: a canonidx is
+    /// module-level and the operands that carry one already agree with the
+    /// section the same compile produced. What this does have to do is refuse a
+    /// SECOND, different section — two components in one program would each
+    /// number their canonidx space from zero, and quietly keeping the first
+    /// would make every row of the second address the wrong definition.
+    ///
+    /// This is `VM::canon_defs`' first and only producer. Before it existed the
+    /// field was declared, read in nine places, and written by nothing, so
+    /// every canon row fell through to the identity fallback where canonidx is
+    /// read as a typeidx — `cancellable?` false on every row, and no `$t` or
+    /// `opts` immediate ever arriving.
+    pub(crate) fn merge_canon_section(&mut self, incoming: &[Chunk]) -> Result<(), VMError> {
+        let Some(section) = incoming.first().map(|c| c.canon_section.clone()) else {
+            return Ok(());
+        };
+        if section.is_empty() {
+            return Ok(());
+        }
+        if !self.canon_defs.is_empty() && self.canon_defs[..] != section[..] {
+            return Err(VMError::new(
+                "canon section: this program declares two different canon sections; \
+                 each numbers its canonidx space from zero, so they cannot be merged",
+            ));
+        }
+        self.canon_defs = section.to_vec();
+        Ok(())
+    }
+
+    /// Merge a component's declared TYPE SPACE at load, like
+    /// [`Self::merge_canon_section`].
+    ///
+    /// This is `VM::canon_functypes`' first producer. It started `Vec::new()`
+    /// and nothing ever appended, so `canon lift` trapped with `$ft 0 is not
+    /// registered ... (have 0)` even when the source declared the type — the
+    /// declaration had nowhere to go.
+    ///
+    /// A declared space REPLACES the four bootstrap `canon_types` entries
+    /// rather than appending past them. Those four are a documented
+    /// convention for source that cannot spell a type space at all (a bare
+    /// `(module …)` reaching a built-in through `@N`); once a component states
+    /// its own space, that space is the authority and its typeidx numbering
+    /// starts at zero like every other index space.
+    pub(crate) fn merge_canon_types(&mut self, incoming: &[Chunk]) -> Result<(), VMError> {
+        let Some(first) = incoming.first() else {
+            return Ok(());
+        };
+        let (fts, vts) = (first.canon_functypes.clone(), first.canon_valtypes.clone());
+        if fts.is_empty() && vts.is_empty() {
+            return Ok(());
+        }
+        // Same rule as the canon section: two declared spaces each number from
+        // zero, so a second DIFFERENT one cannot be merged into the first.
+        let clash = (!self.canon_functypes.is_empty() && self.canon_functypes[..] != fts[..])
+            || (self.canon_types.len() != 4 && self.canon_types[..] != vts[..]);
+        if clash {
+            return Err(VMError::new(
+                "component type space: this program declares two different type spaces; \
+                 each numbers its typeidx from zero, so they cannot be merged",
+            ));
+        }
+        self.canon_functypes = fts.to_vec();
+        self.canon_types = vts.to_vec();
+        if let Some(fs) = incoming.first().map(|c| c.component_funcs.clone()) {
+            if !fs.is_empty() {
+                self.component_funcs = fs.to_vec();
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn merge_global_table(&mut self, incoming: &mut [Chunk]) {
         let Some(table) = incoming.first().map(|c| c.globals.clone()) else {
             return;
@@ -3793,13 +4527,21 @@ impl VM {
             return Ok(ImportTarget::StringConst(Arc::from(name)));
         }
         if module == "canon" {
-            // `name` or `name:<typeidx>` — the type immediate a `canon`
-            // definition carries, in the one channel a core import has. The
-            // suffix is what makes two instantiations of the same built-in
-            // DISTINCT core funcs, as the spec requires.
-            let (bare, type_idx) = CanonBuiltin::split_type_immediate(name);
+            // `name` or `name@<canonidx>` — an index into the module's CANON
+            // SECTION (`VM::canon_defs`, `Binary.md` §"Canonical Definitions").
+            //
+            // It used to be a raw typeidx, which could carry exactly one
+            // immediate. Binary.md gives most rows more than one — `stream.read
+            // t opts`, `context.get v i`, `thread.new-indirect ft tbl` — so a
+            // single integer could never name them. Now the integer names a
+            // ROW, and the row holds every immediate that row declares.
+            //
+            // Resolving it HERE, at link time, is the spec's instantiation-time
+            // capture (`Store.lift`/`Store.lower`): it is what makes two
+            // instantiations of one built-in distinct core funcs.
+            let (bare, canon_idx) = CanonBuiltin::split_type_immediate(name);
             if let Some(b) = CanonBuiltin::by_name(bare) {
-                return Ok(ImportTarget::Canon(b, type_idx));
+                return Ok(ImportTarget::Canon(b, canon_idx));
             }
         }
         if let Some(idx) = self.resolve_host_function_index(module, name) {
