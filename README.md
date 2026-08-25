@@ -1,4 +1,4 @@
-# Vybe
+# Vybe v0.6.1
 
 Vybe is a Rust workspace for compiling multiple source languages into one
 shared JS-shaped AST and one shared WASM bytecode runtime. Every frontend is
@@ -9,6 +9,12 @@ bytecode through `vybe_compiler::primitives`.
 The VM executes WASM-compliant bytecode only. Runtime access is provided by
 platform plugins with spec-shaped host namespaces such as `ecma:*`, `wasi:*`,
 `web:*`, and `node:*`.
+
+
+![Vybe Architecture](images/vybearchitecture.jpeg)
+![Vybe Languages](images/vybelanguages.jpeg)
+![Vybe Layers](images/vybelayers.jpeg)
+![Vybe Primitives](images/vybeprimitives.jpeg)
 
 ## Workspace Hierarchy
 
@@ -51,9 +57,6 @@ crates/
   vybex/
     Thin CLI/server/GUI launcher. It wires command-line behavior and calls into
     the compiler/runtime; language work should not live here.
-
-  vybe_widgets/
-    GUI/widget toolkit used by the Vybe GUI platform.
 
   code_editor/
     Code editor and project-facing UI support.
