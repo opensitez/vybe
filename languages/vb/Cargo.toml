@@ -16,7 +16,7 @@ vybe_runtime = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 chrono = "0.4"
-vybe_widgets = { workspace = true }
+widgets = { workspace = true }
 vybe_platform_dotnet = { workspace = true }
 
 [dev-dependencies]

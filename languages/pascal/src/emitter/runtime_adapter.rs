@@ -816,7 +816,7 @@ pub fn emit_int_to_hex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 ///
 /// Delphi's `TColor` is a packed integer, but the thing it is ASSIGNED to is a
 /// CSS colour, and `#RRGGBB` is the spelling both ends already agree on:
-/// `vybe_widgets`' `parse_color` reads it, and so does a browser. Packing it
+/// `widgets`' `parse_color` reads it, and so does a browser. Packing it
 /// into an integer here would mean unpacking it again at every property write,
 /// with VCL's byte order (`$00BBGGRR`, blue-first) as a second thing to get
 /// wrong.

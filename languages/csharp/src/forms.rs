@@ -256,7 +256,7 @@ fn expr_to_value_string(expr: &Expression) -> String {
     }
 }
 
-fn widget_to_csharp_type(widget: &dyn vybe_widgets::PanelWidget) -> &'static str {
+fn widget_to_csharp_type(widget: &dyn widgets::PanelWidget) -> &'static str {
     ControlType::dotnet_class_name_for_widget_type_name(std::any::type_name_of_val(widget))
 }
 
