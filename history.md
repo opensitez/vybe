@@ -1,4 +1,14 @@
-# v0.6.1
+# Current
+- --engine to allow multiple engines, right now html bo
+- note: for now, you need to manually place htmlbox in crates
+  - cd <vybe>/crates;git clone https://github.com/opensitez/HtmlBox
+  - when htmlbox is finalized, it will be pulled through crates.io
+* Finalize HtmlBox interface and public to crates.io
+* Finalize Vybe Widgets, Extract and publish to github
+* WASM3 Compliance
+
+
+# 20260825/ v0.6.1
 - improved whatwg compatibility
 - made the browser seam compatible both with htmlbox and vybe_widgets
 - vybe_widget made compatible
@@ -12,7 +22,7 @@
 - old tests deleted
 - no more static vars in compiler
 
-# v0.6.0
+# 2026/06/ v0.6.0
 - vybe_host is now split into platforms/web platforms/ecma platforms/node
 - languages are now split into their own crate in languages/<lang>
 - tests are now actual files instead of rustcode to avoid recompilation/run in real lang
@@ -26,7 +36,7 @@
 - vybe now has a dom and behaves like a dom
 - lua compiler
 
-# v0.5.0
+# 202603/ v0.5.0
 - wasi sql replaced vybe:sql
 - --serve mode to allow serving php
 - rewritten compilers as pest grammar
