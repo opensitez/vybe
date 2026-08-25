@@ -10,11 +10,11 @@
 //! ## Why here
 //!
 //! These used to be registered by `crates/vybex` — the RUNNER — reaching
-//! `vybe_widgets::dialogs` directly. The runner is the user agent: it should
+//! `widgets::dialogs` directly. The runner is the user agent: it should
 //! not be publishing page APIs, because then two crates own the browser's
 //! surface and neither owns it fully.
 //!
-//! `platforms/web` owns the relationship to `vybe_widgets`. Everything a page
+//! `platforms/web` owns the relationship to `widgets`. Everything a page
 //! can call belongs here.
 //!
 //! ## Where this diverges from the spec, deliberately
@@ -32,7 +32,7 @@
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
-use vybe_widgets::dialogs::{FileDialog, FileFilter, FolderDialog};
+use widgets::dialogs::{FileDialog, FileFilter, FolderDialog};
 
 /// `accept` as the spec spells it is a list of `{description, accept}` entries;
 /// a WinForms `Filter` is `"Text|*.txt|All|*.*"`. Both reduce to the same pair,
@@ -88,8 +88,8 @@ fn build(title: &str, filter: &str, directory: &str) -> FileDialog {
 ///
 /// Public because the RUNNER needs the same three pickers, and it must reach
 /// them through this crate rather than around it: `platforms/web` owns the
-/// relationship to `vybe_widgets`, and a second crate calling
-/// `vybe_widgets::dialogs` directly is how that ownership stops being true.
+/// relationship to `widgets`, and a second crate calling
+/// `widgets::dialogs` directly is how that ownership stops being true.
 pub fn open_file(title: &str, filter: &str, directory: &str) -> Option<std::path::PathBuf> {
     build(title, filter, directory).open()
 }

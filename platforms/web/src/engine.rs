@@ -3,7 +3,7 @@
 //! Same shape, and the same reason, as [`canvas_backend`](crate::canvas_backend):
 //! `Window`, `Document`, `Element` and `UIEvent` are web-platform interfaces,
 //! so they are declared here; the machinery behind them belongs to an engine.
-//! `vybe_widgets` is that engine today — its widget tree IS a document, with
+//! `widgets` is that engine today — its widget tree IS a document, with
 //! nesting, per-node properties and events already in it — and a real browser
 //! could be tomorrow, at which point the same guest code runs against the
 //! browser's own DOM. Neither engine is named by this module.
@@ -318,7 +318,7 @@ pub enum DomOp {
     /// the `type`), not as a winit event or a toolkit struct, so neither engine
     /// has to know what kind of window the host opened.
     ///
-    /// Without it the host hit-tested `vybe_widgets`' own form directly, which
+    /// Without it the host hit-tested `widgets`' own form directly, which
     /// is the toolkit whether or not the toolkit is the live engine: under
     /// another engine every click landed in an empty tree and nothing at all
     /// happened. Answers whether the frame needs repainting.

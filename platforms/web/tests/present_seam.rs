@@ -84,7 +84,7 @@ fn a_frame_is_painted_from_the_live_engine() {
         DomOp::SetStyleProperty(button, "background-color".into(), "#ff0000".into()),
     );
 
-    let mut pixmap = vybe_widgets::Pixmap::new(200, 100).expect("pixmap");
+    let mut pixmap = widgets::Pixmap::new(200, 100).expect("pixmap");
     assert!(
         vybe_platform_web::present::render(doc, &mut pixmap, 1.0),
         "the live engine refused to paint a document that has content"

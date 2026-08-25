@@ -85,7 +85,7 @@ pub mod present;
 #[cfg(feature = "engine-webcore")]
 pub type Browser = webcore::types::Document;
 #[cfg(all(feature = "gui", not(feature = "engine-webcore")))]
-pub type Browser = vybe_widgets::dom::Document;
+pub type Browser = widgets::dom::Document;
 
 /// Proof, at COMPILE TIME, that both browsers offer the same WHATWG surface.
 ///

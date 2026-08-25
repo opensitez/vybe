@@ -3870,7 +3870,7 @@ mod html_grammar_tests {
 #[cfg(all(test, feature = "gui"))]
 mod html_document_tests {
     use super::*;
-    use vybe_widgets::dom;
+    use widgets::dom;
 
     /// Parse, and hand back the document the handle names.
     fn parse(source: &str) -> dom::DocumentId {

@@ -133,7 +133,7 @@ pub fn classes() -> &'static [DotnetClass] {
         //
         // `widget_host_fn: None` on purpose — the ELEMENT materialises them
         // (`is_element_mapped`), which is the direction the whole conversion
-        // runs in. `vybe_widgets` already has all three kinds and their default
+        // runs in. `widgets` already has all three kinds and their default
         // sizes; only the declaration was missing.
         DotnetClass {
             name: "HScrollBar",

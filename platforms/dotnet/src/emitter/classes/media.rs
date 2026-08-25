@@ -64,7 +64,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<iframe>` — see `html_element_for_control`. Renders as a plain
-            // box until `vybe_widgets` grows a `webbrowser` kind.
+            // box until `widgets` grows a `webbrowser` kind.
             widget_host_fn: None,        },
     ]
 }

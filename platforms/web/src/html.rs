@@ -425,7 +425,7 @@ fn node_arg(args: &[Value], idx: usize) -> NodeId {
 ///
 /// **Why these are not the `Element`/`Document` ids.** Those belong to
 /// `web:dom-parser`'s trees, whose methods walk detached `Value::Object` nodes;
-/// the live document's methods go to `web:dom` and walk `vybe_widgets::dom`.
+/// the live document's methods go to `web:dom` and walk `widgets::dom`.
 /// One name cannot carry two implementations, so the live handles are the HTML
 /// Standard's own `HTMLDocument`/`HTMLElement`. That the two exist at all is
 /// the open item — see the two-DOMs note in the crate docs.
@@ -678,7 +678,7 @@ fn html_fn(
 /// And for `web:cssom` — `CSSStyleDeclaration`, whose two operations take a
 /// property NAME and a value, both `string`. That is CSSOM's own typing: a
 /// declaration's value is text until a property parses it, which is exactly
-/// why `vybe_widgets`' `Style` stores declarations verbatim and `CssProperties`
+/// why `widgets`' `Style` stores declarations verbatim and `CssProperties`
 /// is the typed view beside it.
 fn css_fn(
     vm: &mut VM,

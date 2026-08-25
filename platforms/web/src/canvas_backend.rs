@@ -1,7 +1,7 @@
 //! The seam between `web:canvas` (the API) and whatever actually paints.
 //!
 //! `CanvasRenderingContext2D` is a web-platform interface, so it is declared
-//! here; the pixels belong to an engine. `vybe_widgets` is that engine today
+//! here; the pixels belong to an engine. `widgets` is that engine today
 //! and a real browser engine could be tomorrow — neither is named by this
 //! module. A host installs its painter with [`set_backend`] at startup and
 //! the API surface never learns which one it got.

@@ -76,7 +76,7 @@ impl vybe_runtime::Plugin for Plugin {
     /// queue through `clear_pending`.
     ///
     /// ⛔THE WIDGET CRATE IS THE EXCEPTION, and it is why this method exists.
-    /// `vybe_widgets` keeps its own PROCESS-WIDE tables — `dom::DOCS`,
+    /// `widgets` keeps its own PROCESS-WIDE tables — `dom::DOCS`,
     /// `ui_events::QUEUE`, `scheduling::TIMERS`/`FRAMES`, each a `static
     /// OnceLock` — and no amount of VM teardown can reach a process global. A
     /// reused VM (the warm pool, `--serve`) would otherwise hand the next
@@ -84,14 +84,14 @@ impl vybe_runtime::Plugin for Plugin {
     /// timers.
     ///
     /// This ran in the `vybe` platform while `vybe:gui` owned the widgets. The
-    /// GUI is `web:*` now and it is the same `vybe_widgets` underneath, so the
+    /// GUI is `web:*` now and it is the same `widgets` underneath, so the
     /// obligation moved with it — the plugin that owns the state resets it.
     fn reset(&self) {
         #[cfg(feature = "gui")]
         {
-            vybe_widgets::dom::reset();
-            vybe_widgets::ui_events::reset();
-            vybe_widgets::scheduling::reset();
+            widgets::dom::reset();
+            widgets::ui_events::reset();
+            widgets::scheduling::reset();
         }
     }
 }

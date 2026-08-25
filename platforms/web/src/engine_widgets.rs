@@ -1,16 +1,16 @@
 //! The widget toolkit as the engine behind `web:*`.
 //!
-//! Pure forwarding: every operation is one call into `vybe_widgets`, which is
+//! Pure forwarding: every operation is one call into `widgets`, which is
 //! where windows, documents and the event queue actually live. Replacing this
 //! file with one that talks to a browser is what swapping engines means —
 //! nothing above it changes.
 
 use std::sync::Arc;
 
-use vybe_widgets::dom;
-use vybe_widgets::scheduling;
-use vybe_widgets::ui_events::{self, UiEvent};
-use vybe_widgets::window as wnd;
+use widgets::dom;
+use widgets::scheduling;
+use widgets::ui_events::{self, UiEvent};
+use widgets::window as wnd;
 
 use crate::engine::{
     DocumentId, DomOp, DomValue, EventOp, EventValue, ScheduleOp, ScheduleValue, UiEventFields,
@@ -296,7 +296,7 @@ impl WebEngine for Widgets {
                     .map(|n| n.input_type.clone())
                     .unwrap_or_default();
                 if input_type == "file"
-                    && let Some(path) = vybe_widgets::dialogs::FileDialog::new("Open").open()
+                    && let Some(path) = widgets::dialogs::FileDialog::new("Open").open()
                 {
                     doc.set_value(node, &path.to_string_lossy());
                 }
@@ -312,8 +312,8 @@ impl WebEngine for Widgets {
                 client_y,
                 button,
             } => {
-                use vybe_widgets::PanelWidget;
-                use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
+                use widgets::PanelWidget;
+                use widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
                 let which = match button {
                     1 => MouseButton::Middle,
                     2 => MouseButton::Right,
@@ -390,16 +390,16 @@ impl WebEngine for Widgets {
                 WindowValue::Pair(x, y)
             }
             WindowOp::Name(w) => WindowValue::Text(wnd::name(w)),
-            // The message box `vybe_widgets` already has. `alert` is one
+            // The message box `widgets` already has. `alert` is one
             // button, `confirm` is OK/Cancel answering a boolean — which is
             // exactly `DialogChoice::Ok`, so nothing new is drawn or invented.
             WindowOp::Alert(message) => {
-                vybe_widgets::dialogs::MessageBox::new(message, "").show();
+                widgets::dialogs::MessageBox::new(message, "").show();
                 WindowValue::None
             }
             WindowOp::Confirm(message) => WindowValue::Bool(matches!(
-                vybe_widgets::dialogs::MessageBox::ok_cancel(message, ""),
-                vybe_widgets::dialogs::DialogChoice::Ok
+                widgets::dialogs::MessageBox::ok_cancel(message, ""),
+                widgets::dialogs::DialogChoice::Ok
             )),
         }
     }

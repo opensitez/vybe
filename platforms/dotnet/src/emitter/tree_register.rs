@@ -503,7 +503,7 @@ fn gui_control_verb(method: &str, is_form: bool) -> Option<&'static str> {
 /// A control's accessors bind to the shared role emits
 /// (`gui.prop_get.<role>` / `gui.prop_set.<role>`) that `primitives/gui.rs`
 /// lowers to `web:dom` / `web:html` / `web:cssom` — the same target plib
-/// reaches. Both drive `vybe_widgets` underneath; the route is a DOM operation.
+/// reaches. Both drive `widgets` underneath; the route is a DOM operation.
 ///
 /// A dedicated per-property host function (`Environment.NewLine` →
 /// `node:os.EOL`) is NOT a control property and is left exactly as it was.
@@ -658,7 +658,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // A StatusStrip is the document's footer. `<footer>` has a
         // `control_kind` arm (a container) where `vybe-statusstrip` has none;
         // the `statusstrip` widget itself is still unreachable because no tag
-        // maps to it, which is `vybe_widgets`' half of the mapping, not this
+        // maps to it, which is `widgets`' half of the mapping, not this
         // registrar's.
         "statusstrip" => "footer",
         "combobox" => "select",
@@ -682,7 +682,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "numericupdown" => "input:number",
         // A PictureBox IS a drawing surface, and HTML spells that `<canvas>`.
         // `classes/media.rs` says the same thing from the other side: that
-        // surface "is exactly what the `vybe_widgets::Canvas` widget provides".
+        // surface "is exactly what the `widgets::Canvas` widget provides".
         //
         // Only a `<canvas>` node owns a recording — `Document::canvas_mut`
         // gates on `control_kind == "canvas"` — so a control that is any other
@@ -707,7 +707,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // instead of being implied by absence — and it keeps these names in
         // step with plib, which spells the same controls the same way
         // (`TImage`, `TSplitter`, `TPageControl`, `TTabSheet`, `TTimer`).
-        // The scrollbars and the navigator. `vybe_widgets` has had all three
+        // The scrollbars and the navigator. `widgets` has had all three
         // kinds and their default sizes the whole time; what was missing was
         // the DECLARATION, without which they had no `CtorSpec` and every
         // property write on them was silently dropped.
@@ -742,7 +742,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // the two spellings would render differently for no reason.
         "datagrid" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
         // ⚠ These have no widget kind YET, so they render as a label until
-        // `vybe_widgets` grows one — the designed degradation, visible in a
+        // `widgets` grows one — the designed degradation, visible in a
         // capture instead of the control vanishing. The declaration still buys
         // construction, identity, geometry, text, events and data binding.
         // A property grid is a two-column table of name/value rows, which is
@@ -821,7 +821,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // default moves from a constructor argument to a declaration; it does
         // not disappear.
         //
-        // The values match `vybe_widgets/src/html/panel.rs` (`table_css`,
+        // The values match `widgets/src/html/panel.rs` (`table_css`,
         // `flow_css`), which has spelled the same CSS for these two controls
         // all along — one fact, not two.
         "flowlayoutpanel" => "div;display:flex;flex-wrap:wrap;gap:4px",
@@ -876,7 +876,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // ── Non-visual components and the dialogs ──────────────────────────
         // A Timer, ToolTip or file dialog is a member of the form, not a box
         // on it — WinForms puts them in `components`, not `Controls`, and
-        // neither ever paints. `renders_nothing` in `vybe_widgets` already
+        // neither ever paints. `renders_nothing` in `widgets` already
         // names every tag below, so they are nodes that occupy no rectangle:
         // constructible, nameable, event-wireable, and invisible.
         //
@@ -889,7 +889,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // hack this conversion exists to remove.
         //
         // ⚠ `control_kind` maps `iframe` to the `picturebox` widget, because
-        // `vybe_widgets` has no `webbrowser` kind. So it renders as a plain
+        // `widgets` has no `webbrowser` kind. So it renders as a plain
         // box until one exists — Youness's call, deliberately taken: the tag is
         // right, the widget is a later job. When that widget lands, the only
         // change needed is a `control_kind` arm; this mapping stays.
@@ -931,7 +931,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // shared engine: every container ran the flexbox algorithm regardless
         // of `display`, so a `<div>` behaved as `display: flex; flex-direction:
         // column; align-items: stretch` and a row of children came out as a
-        // column of full-width bars. `vybe_widgets` grew real CSS normal flow
+        // column of full-width bars. `widgets` grew real CSS normal flow
         // on 2026-08-15 (`Formatting::{Flex,Normal}` on `FlowLayoutPanel`, set
         // from the computed `display`), which is the defect that gate was
         // waiting on.

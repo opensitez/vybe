@@ -166,7 +166,7 @@ pub fn register_types(fw: &mut Framework<'_>) {
     // The types above belong to `web:dom-parser` — detached `Value::Object`
     // trees, which is the right shape for `DOMParser().parseFromString(…)` and
     // `XMLHttpRequest.responseXML`, and which render nothing. The document a
-    // page actually has is `vybe_widgets::dom`, reached through `web:dom` /
+    // page actually has is `widgets::dom`, reached through `web:dom` /
     // `web:html` / `web:cssom`, and it needs its own vtables because the same
     // method name has a different implementation over a different tree.
     //
@@ -180,7 +180,7 @@ pub fn register_types(fw: &mut Framework<'_>) {
     // resolving at all.
     //
     // `insertBefore` / `replaceChild` / `cloneNode` are absent on purpose:
-    // `vybe_widgets::dom::Document` has `append_child` and `remove_child` and
+    // `widgets::dom::Document` has `append_child` and `remove_child` and
     // nothing else, so there is no engine operation to forward to. They are not
     // stubbed — a missing method fails to resolve, which is visible.
     let html_element_id = {

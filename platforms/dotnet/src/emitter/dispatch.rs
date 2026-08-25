@@ -368,7 +368,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `PushArgFieldField(1, "color", "r")`. So `FillRectangle(hatchBrush, …)`
         // reads `undefined` — PRE-EXISTING, true of the factories too, and not
         // introduced here. Fixing it means routing these to the canvas
-        // `createPattern` / `createLinearGradient` that `vybe_widgets` now has,
+        // `createPattern` / `createLinearGradient` that `widgets` now has,
         // which is the fill path, not the constructor.
         // `new Graphics()` — a bare identity record, exactly what `graphicsNew`
         // built: no arguments, three stamped fields, no canvas.

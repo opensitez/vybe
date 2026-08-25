@@ -29,14 +29,14 @@ use crate::canvas_backend::{
 // The canvas WIDGET is not named here: `with_canvas_2d` lends the drawing
 // context directly, so this file never sees the element's rendering object.
 // `Canvas` — the drawing trait — arrives as `&mut dyn` through that closure.
-use vybe_widgets::canvas::{
+use widgets::canvas::{
     Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, FontKerning,
     FontStretch, FontStyle, FontVariantCaps, FontWeight, Font, Gradient as CanvasGradient,
     Image, ImageData, LineCap, LineJoin, Paint as CanvasPaint, Pattern as CanvasPattern,
     Path2D as CanvasPath, PathOp as EnginePathOp, Repetition, Shadow, SmoothingQuality,
     TextRendering,
 };
-use vybe_widgets::dom::{self, NodeId};
+use widgets::dom::{self, NodeId};
 
 struct DocumentBackend;
 
@@ -72,7 +72,7 @@ fn node_of(document: &dom::Document, target: &str) -> Option<NodeId> {
 /// and neither can outlive it.
 fn with_canvas<T>(
     target: &str,
-    f: impl FnOnce(&mut dyn vybe_widgets::canvas::Canvas) -> T,
+    f: impl FnOnce(&mut dyn widgets::canvas::Canvas) -> T,
 ) -> Option<T> {
     dom::with_document(crate::html::active_document(), |document| {
         let node = node_of(document, target)?;
@@ -259,12 +259,12 @@ impl CanvasBackend for DocumentBackend {
                 // what a browser does with a bad assignment to either of these
                 // — it is not an error and it is not a reset.
                 Op2D::SetTextAlign(k) => {
-                    if let Some(a) = vybe_widgets::canvas::TextAlign::parse(&k) {
+                    if let Some(a) = widgets::canvas::TextAlign::parse(&k) {
                         c.set_text_align(a);
                     }
                 }
                 Op2D::SetTextBaseline(k) => {
-                    if let Some(b) = vybe_widgets::canvas::TextBaseline::parse(&k) {
+                    if let Some(b) = widgets::canvas::TextBaseline::parse(&k) {
                         c.set_text_baseline(b);
                     }
                 }
@@ -473,7 +473,7 @@ pub fn install() {
 /// The seam sets shadow components one at a time because the IDL has four
 /// separate attributes; the engine holds them as one value. Without this,
 /// assigning `shadowBlur` would silently reset `shadowColor` to its default.
-fn current_shadow(c: &mut dyn vybe_widgets::canvas::Canvas) -> Shadow {
+fn current_shadow(c: &mut dyn widgets::canvas::Canvas) -> Shadow {
     Shadow {
         color: parse_serialized_color(&c.shadow_color_css()),
         blur: c.shadow_blur(),
@@ -545,8 +545,8 @@ fn pattern(def: PatternDef) -> CanvasPattern {
 }
 
 /// A CSS `<color>` for a gradient stop, through the engine's parser.
-fn parse_stop_color(css: &str) -> Option<vybe_widgets::canvas::Color> {
-    vybe_widgets::canvas::parse_color_css(css)
+fn parse_stop_color(css: &str) -> Option<widgets::canvas::Color> {
+    widgets::canvas::parse_color_css(css)
 }
 
 /// The seam's path definition, in the engine's terms.

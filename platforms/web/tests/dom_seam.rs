@@ -37,7 +37,7 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
 /// contract, so the same assertions run against either browser and there is no
 /// second copy to drift:
 ///
-///     cargo test -p vybe_platform_web --features gui             # vybe_widgets
+///     cargo test -p vybe_platform_web --features gui             # widgets
 ///     cargo test -p vybe_platform_web --features engine-webcore  # webcore
 fn install() {
     #[cfg(feature = "engine-webcore")]
@@ -228,7 +228,7 @@ fn two_documents_are_two_trees() {
 /// Click the middle of a node, as the window shell does.
 ///
 /// **No longer engine-specific.** This was two functions behind a `#[cfg]` —
-/// one poking `vybe_widgets`' form, one calling webcore's `process_mouse_event`
+/// one poking `widgets`' form, one calling webcore's `process_mouse_event`
 /// — because delivering OS input was the one thing the seam had no verb for.
 /// The host had the same hole and filled it the same way, by reaching past the
 /// engine into the toolkit, so a click under any other engine went nowhere.
@@ -869,7 +869,7 @@ fn the_documents_text_is_its_title_and_writing_it_keeps_the_tree() {
     // control appended afterwards hung off a bodyless root.
     //
     // DOM §4.4 gives a Document null `textContent` and makes the setter a
-    // no-op; `vybe_widgets` answers the title instead, and one seam cannot have
+    // no-op; `widgets` answers the title instead, and one seam cannot have
     // two answers.
     let doc = setup();
     apply(doc, DomOp::SetTextContent(DOCUMENT, "Contact Manager".into()));

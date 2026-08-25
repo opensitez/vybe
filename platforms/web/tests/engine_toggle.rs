@@ -62,7 +62,7 @@ fn an_engine_name_is_parsed_the_way_a_user_would_type_it() {
     // The crate names work too, because that is what someone reading the
     // source would reach for.
     assert_eq!(Engine::parse("webcore"), Some(Engine::WebCore));
-    assert_eq!(Engine::parse("vybe_widgets"), Some(Engine::Widgets));
+    assert_eq!(Engine::parse("widgets"), Some(Engine::Widgets));
     // An unknown name is ignored rather than fatal — `VYBE_ENGINE=chrome`
     // falls back to the default instead of refusing to start.
     assert_eq!(Engine::parse("chrome"), None);

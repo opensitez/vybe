@@ -11,7 +11,7 @@ vybe_runtime = { workspace = true }
 vybe_platform_ecma = { workspace = true }
 # The engine behind `web:canvas` / `web:dom`. The web platform binds it
 # DIRECTLY — no adapter crate in between, no second surface to keep in sync.
-vybe_widgets = { workspace = true, optional = true }
+widgets = { workspace = true, optional = true }
 # The OTHER engine behind the same seam. `engine.rs` names neither, so both can
 # be compiled in at once and the choice is which one calls `set_engine`.
 webcore = { workspace = true, optional = true }
@@ -25,12 +25,12 @@ form_urlencoded = { workspace = true }
 
 [features]
 default = []
-gui = ["vybe_widgets"]
+gui = ["widgets"]
 # The webcore engine, additive to `gui`: `WindowOp`, `EventOp` and `ScheduleOp`
 # are host bookkeeping that webcore does not have, so the webcore engine still
-# delegates those to `vybe_widgets` and only `document()` changes hands.
+# delegates those to `widgets` and only `document()` changes hands.
 engine-webcore = ["gui", "webcore"]
 
 [dev-dependencies]
 # The seam tests drive the widget DOM directly.
-vybe_widgets = { workspace = true }
+widgets = { workspace = true }

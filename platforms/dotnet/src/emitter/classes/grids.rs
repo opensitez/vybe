@@ -120,7 +120,7 @@ pub fn classes() -> &'static [DotnetClass] {
         widget_host_fn: None,
     },
     // ⚠ `PropertyGrid` has no widget kind yet, so it renders as a LABEL until
-    // `vybe_widgets` grows one. That is the designed degradation for a
+    // `widgets` grows one. That is the designed degradation for a
     // `vybe-*` tag naming a control the widget layer does not know — visible
     // in a capture and in `html`, rather than the control vanishing. The
     // DECLARATION is still worth having on its own: it makes the class

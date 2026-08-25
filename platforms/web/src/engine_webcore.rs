@@ -8,7 +8,7 @@
 //!
 //! `DocumentId` is ONE namespace shared by `document()` and `window()`:
 //! `WindowOp::Open`, `Document`, `DefaultView` and `AdoptTopLevel` all mint or
-//! return one. If `vybe_widgets` answered those while webcore answered
+//! return one. If `widgets` answered those while webcore answered
 //! `document()`, the ids handed back would point into the widget document
 //! table and every following `apply()` would miss — two document tables over
 //! one id space. So webcore owns the whole browsing context: all of `DomOp`
@@ -16,7 +16,7 @@
 //!
 //! `EventOp` is NOT among them, which looks wrong until you follow the two
 //! queues. `DomOp::DrainEvents` is per-document and carries DOM listener
-//! events. `EventOp::Poll`/`Pending` read `vybe_widgets::ui_events::queue()`,
+//! events. `EventOp::Poll`/`Pending` read `widgets::ui_events::queue()`,
 //! a PROCESS-WIDE queue of raw input that the winit shell in `gui_launch.rs`
 //! pushes into. Different queues, different producers — so `EventOp`
 //! delegates, and swapping the DOM engine does not disturb input delivery.
@@ -49,7 +49,7 @@ use crate::engine::{
 /// The viewport a document is laid out against before anyone resizes it.
 /// `WindowOp::ResizeTo` is what changes it afterwards.
 ///
-/// The size `vybe_widgets` gives a form it was told nothing about
+/// The size `widgets` gives a form it was told nothing about
 /// (`dom.rs:735`). A default is a user-agent choice and either number would be
 /// defensible on its own — but two engines that answer differently make every
 /// program that declares no size render at two sizes, which turns a swap into a
@@ -74,7 +74,7 @@ struct Docs {
 
 /// `Document` is `Send` (webcore declares it for its parallel cascade) but not
 /// `Sync` — a `Mutex` around it is both, which is what the trait requires.
-/// Same shape `vybe_widgets::dom` uses for its own document table.
+/// Same shape `widgets::dom` uses for its own document table.
 fn docs() -> &'static Mutex<Docs> {
     static DOCS: OnceLock<Mutex<Docs>> = OnceLock::new();
     DOCS.get_or_init(|| Mutex::new(Docs::default()))
@@ -115,7 +115,7 @@ fn to_hb(doc: &Document, node: NodeId) -> u32 {
 /// and background are the BODY's, not the document's. Sent to `<html>` they
 /// styled a box the renderer takes its canvas colour and its page size from
 /// somewhere else entirely, so a form came out white and 1024x768 whatever it
-/// asked for. `vybe_widgets` keeps these as the document's own declarations and
+/// asked for. `widgets` keeps these as the document's own declarations and
 /// applies them to the form, which is the same box by another name.
 ///
 /// Falls back to the root when there is no body — an XML document has none, and
@@ -129,7 +129,7 @@ fn content_node(doc: &Document, node: NodeId) -> u32 {
 
 /// Where a node addressed to the DOCUMENT actually goes: the **body**.
 ///
-/// The same rule `vybe_widgets::dom::Document::content_parent` states, because
+/// The same rule `widgets::dom::Document::content_parent` states, because
 /// it is the DOM's rule rather than either engine's: a Document takes exactly
 /// one element child, so `document.appendChild(<p>)` is a
 /// `HierarchyRequestError` in a browser. A caller that says "the document"
@@ -192,7 +192,7 @@ impl WebEngine for WebCore {
         // parent's, and a page's root boxes are auto by default: a Flutter
         // `Scaffold` is `height: 100%`, so with nothing above it every
         // `Expanded` row underneath resolved to zero and the whole app
-        // collapsed to a line of text. `vybe_widgets` says the same thing by
+        // collapsed to a line of text. `widgets` says the same thing by
         // making its root boxes fill the viewport (`fit_body_to_viewport`),
         // which is the same fact in the toolkit's vocabulary.
         //
@@ -365,7 +365,7 @@ impl WebEngine for WebCore {
                 // The document is not its own element. webcore has no node for
                 // it, so `to_hb` answers `<html>` — right for reaching into the
                 // tree, wrong for the two questions that ask what the node IS.
-                // DOM §4.4: `9` and `#document`, which is what `vybe_widgets`
+                // DOM §4.4: `9` and `#document`, which is what `widgets`
                 // answers, and the seam is one API or it is not one.
                 DomOp::NodeType(DOCUMENT) => DomValue::Number(9.0),
                 DomOp::NodeName(DOCUMENT) => DomValue::Text("#document".to_string()),
@@ -413,7 +413,7 @@ impl WebEngine for WebCore {
                 // `Form.Text = "…"` wiped the body and every control appended
                 // afterwards hung off a bodyless `<html>` and rendered nothing.
                 // DOM §4.4 says `Document.textContent` is null and setting it
-                // does nothing; `vybe_widgets` answers the title, and one seam
+                // does nothing; `widgets` answers the title, and one seam
                 // cannot have two answers.
                 DomOp::TextContent(DOCUMENT) => DomValue::Text(doc.title()),
                 DomOp::SetTextContent(DOCUMENT, t) => {
@@ -449,7 +449,7 @@ impl WebEngine for WebCore {
                 }
                 // The DECLARED value — what was authored, un-resolved. webcore
                 // already answered this way, which is why it disagreed with the
-                // old `vybe_widgets` for `left`/`top`/`width`/`height`.
+                // old `widgets` for `left`/`top`/`width`/`height`.
                 DomOp::GetStyleProperty(n, p) => {
                     DomValue::Text(
                         doc.get_style_property(content_node(doc, n), &p).unwrap_or_default(),
@@ -457,7 +457,7 @@ impl WebEngine for WebCore {
                 }
                 // The RESOLVED value. Geometry comes off the laid-out rect;
                 // everything else falls back to the declared value, matching
-                // the floor `vybe_widgets` sets.
+                // the floor `widgets` sets.
                 DomOp::ComputedStyleProperty(n, p) => {
                     let node = content_node(doc, n);
                     DomValue::Text(doc.computed_style_property(node, &p))

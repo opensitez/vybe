@@ -17,7 +17,7 @@ use std::sync::RwLock;
 /// A browser engine this build can install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
-    /// `vybe_widgets` — the toolkit's own layout and painting.
+    /// `widgets` — the toolkit's own layout and painting.
     Widgets,
     /// `webcore` (`webcore`) — the HTML/CSS engine.
     WebCore,
@@ -34,7 +34,7 @@ impl Engine {
     /// Parse an engine name, case-insensitively. `None` for anything else.
     pub fn parse(name: &str) -> Option<Engine> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "widgets" | "vybe_widgets" => Some(Engine::Widgets),
+            "widgets" | "widgets" => Some(Engine::Widgets),
             "webcore" | "webcore" => Some(Engine::WebCore),
             _ => None,
         }
@@ -64,7 +64,7 @@ pub fn available() -> Vec<Engine> {
 
 /// The default when nothing asks for anything.
 ///
-/// `vybe_widgets`, because it is what every existing caller has been getting —
+/// `widgets`, because it is what every existing caller has been getting —
 /// .NET's designer, Flutter's realizer and SDL all reach the toolkit today, and
 /// a default that changed under them would be a swap nobody asked for.
 const DEFAULT: Engine = Engine::Widgets;

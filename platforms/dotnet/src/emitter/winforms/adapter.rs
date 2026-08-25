@@ -140,7 +140,7 @@ pub fn emit_form_activate(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 ///
 /// Unset, `screenWidth`/`screenHeight` answer the VIEWPORT, so this resolves to
 /// `moveTo(0, 0)` — "already centred", which is the truthful answer for a
-/// display we cannot measure. `vybe_widgets::window::set_screen` is the door for
+/// display we cannot measure. `widgets::window::set_screen` is the door for
 /// a shell that knows the real monitor.
 pub fn emit_form_center_to_screen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let win = chunks[current].alloc_scratch(1);

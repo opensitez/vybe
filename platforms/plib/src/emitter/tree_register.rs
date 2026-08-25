@@ -173,7 +173,7 @@ fn gui_property_role(owner: &str, prop: &str) -> &'static str {
         // `Font` IS a style property, reached like `Left` or `Color`. Every
         // `.dfm` in the corpus declares `Font.Name = 'Segoe UI'`, and without
         // this row the whole axis was dropped before it could reach the
-        // cascade — which is why `vybe_widgets`' CSS inheritance measured
+        // cascade — which is why `widgets`' CSS inheritance measured
         // neutral despite `font_family`/`font_size`/`font_weight`/`font_style`
         // all being in its inherited set.
         "font" => "font",

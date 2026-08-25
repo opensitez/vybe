@@ -14,12 +14,12 @@
 //! screen showing this document", with the engine painting it and the host never
 //! holding a buffer at all — plus an encode-to-bytes op for the headless case,
 //! which is what `Page.captureScreenshot` returns. Both engines here can already
-//! own a window (`vybe_widgets::app_window`, `webcore::main`), so that move is
+//! own a window (`widgets::app_window`, `webcore::main`), so that move is
 //! available; it relocates windowing out of `vybex`, which is why it is not this
 //! change.
 //!
 //! What this DOES fix is `vybex` reaching around the intermediary. It called
-//! `vybe_widgets::dom::with_document` directly, so the engine could swap and the
+//! `widgets::dom::with_document` directly, so the engine could swap and the
 //! renderer could not: the form went to webcore and the window painted the
 //! toolkit's empty tree. Everything above still asks `platforms/web`, which is
 //! the arrangement that stays true when the answer moves.
@@ -27,7 +27,7 @@
 // Through the toolkit's re-export rather than a direct `tiny-skia`
 // dependency: this module is `gui`-only, and the pixmap it borrows comes
 // from the window shell, which is the toolkit's.
-use vybe_widgets::Pixmap;
+use widgets::Pixmap;
 
 use crate::engine::DocumentId;
 use crate::engine_select::{self, Engine};
@@ -82,14 +82,14 @@ fn render_widgets(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool
     // one. The FONT SYSTEM is the toolkit's shared one, so text in a rendered
     // frame resolves the same faces as text measured anywhere else.
     thread_local! {
-        static GLYPHS: std::cell::RefCell<vybe_widgets::SwashCache> =
-            std::cell::RefCell::new(vybe_widgets::SwashCache::new());
+        static GLYPHS: std::cell::RefCell<widgets::SwashCache> =
+            std::cell::RefCell::new(widgets::SwashCache::new());
     }
     GLYPHS.with(|glyphs| {
         let mut glyphs = glyphs.borrow_mut();
-        vybe_widgets::ide_text::with_font_system(|fonts| {
-            vybe_widgets::dom::with_document(document, |doc| {
-                let mut ctx = vybe_widgets::RenderContext {
+        widgets::ide_text::with_font_system(|fonts| {
+            widgets::dom::with_document(document, |doc| {
+                let mut ctx = widgets::RenderContext {
                     pixmap,
                     font_system: fonts,
                     swash_cache: &mut glyphs,

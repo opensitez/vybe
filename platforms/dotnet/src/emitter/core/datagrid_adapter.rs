@@ -3,7 +3,7 @@
 //! **A grid's columns and rows are ELEMENTS, not a control's internal state.**
 //! `Columns.Add("Name", "Name")` is a `<th>` appended to the table and
 //! `Rows.Add(a, b)` is a `<tr>` of `<td>`s — which is what a real engine would
-//! render and what `vybe_widgets`' CSS tables already lay out. Nothing here
+//! render and what `widgets`' CSS tables already lay out. Nothing here
 //! adds a host function: the
 //! adapters compose `web:html`'s `createElement` / `setTextContent` /
 //! `appendChild`, the same three calls a script would make.
@@ -12,7 +12,7 @@
 //! 2.1 §17.2.1 generates an ANONYMOUS row box around cells that sit directly
 //! in a table, so the header row exists without anyone declaring it — which is
 //! the whole reason these adapters need no find-or-create and therefore no
-//! branching. `vybe_widgets` implements that rule
+//! branching. `widgets` implements that rule
 //! (`flow_layout::ANONYMOUS_ROW`); without it every `Columns.Add` would render
 //! nothing.
 //!

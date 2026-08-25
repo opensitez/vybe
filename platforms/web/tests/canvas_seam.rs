@@ -8,7 +8,7 @@
 //! Every assertion below is the WHATWG contract, so the same file runs against
 //! either engine and there is no second copy to drift:
 //!
-//!     cargo test -p vybe_platform_web --features gui             # vybe_widgets
+//!     cargo test -p vybe_platform_web --features gui             # widgets
 //!     cargo test -p vybe_platform_web --features engine-webcore  # webcore
 
 use vybe_platform_web::canvas_backend::{

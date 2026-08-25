@@ -1145,7 +1145,7 @@ const GRAPHICS_RESET_TRANSFORM: &[MethodOp] = &[
 /// **The clip baseline.** A canvas clip only ever INTERSECTS — `clip()` has no
 /// inverse — while .NET's `SetClip` REPLACES the region and `ResetClip` removes
 /// it. `save`/`restore` are what bridge the two, because they push and pop the
-/// clip along with the rest of the paint state (`vybe_widgets::canvas::Canvas`
+/// clip along with the rest of the paint state (`widgets::canvas::Canvas`
 /// says so on `clip()`), so a region is undone by returning to a state saved
 /// before it was applied.
 ///
