@@ -296,7 +296,7 @@ pub const APP_EXIT_EMIT: &str = "gui.app.exit";
 /// needs no mapping of its own: it emits these names already.
 ///
 /// Pascal never learns any of this. It calls with the same intent it always
-/// had; `vybe_widgets` is HTML underneath, which is not its business.
+/// had; `widgets` is HTML underneath, which is not its business.
 ///
 /// A role with no IDL counterpart becomes an attribute — where unknown
 /// properties belong on the web — so this stays the handful HTML treats
@@ -326,7 +326,7 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         //
         // Not painting it is also what the control does: WinForms' navigator,
         // split container and month calendar all INHERIT `Text` from `Control`
-        // and none of them draws it — `vybe_widgets` agrees, showing `0 of 0`
+        // and none of them draws it — `widgets` agrees, showing `0 of 0`
         // where the caption would be. So the write is kept, off the text node
         // and on an attribute, where a property with no visual counterpart
         // belongs and where it still round-trips.
@@ -450,7 +450,7 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // A FONT IS A STYLE PROPERTY, reached exactly like `left` or
         // `backcolor`. It was the one role named as explicitly unmapped, so
         // `X.Font.Size := 16` became `setAttribute("font", …)` and reached
-        // nothing — which is also why the CSS inheritance in `vybe_widgets`
+        // nothing — which is also why the CSS inheritance in `widgets`
         // measured neutral: `font_family`/`font_size`/`font_weight`/
         // `font_style` are all in its inherited set, and every `.dfm` in the
         // corpus declares `Font.Name`, so nothing could exercise it.
@@ -603,7 +603,7 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // `dock` joins these because it is geometry too, just expressed as a
         // rule instead of a number: the container computes the rect from it.
         // A frontend that spells it `Align` (VCL) or `Dock` (WinForms) reaches
-        // the same style property, and `vybe_widgets` owns the result.
+        // the same style property, and `widgets` owns the result.
         // ⚠ The READ is `getComputedStyle`, not `element.style`. A frontend
         // asking for `Left` wants the pixel the control OCCUPIES, which is a
         // resolved value; `element.style.getPropertyValue` answers what was
@@ -623,7 +623,7 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // above — there is no resolved `dock` to read, and asking the computed
         // style for one would answer with a value that has no meaning. A
         // frontend spelling it `Align` (VCL) or `Dock` (WinForms) reaches the
-        // same declaration, and `vybe_widgets` owns the result.
+        // same declaration, and `widgets` owns the result.
         "dock" => (
             CSSOM_MODULE,
             if setting {
@@ -1240,14 +1240,14 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
             // CSS geometry is TEXT with units (`"10px"`) — that is the spec,
-            // and `vybe_widgets` is right to store it that way. A control's
+            // and `widgets` is right to store it that way. A control's
             // `Left` is a number, so parse the unit back off here.
             "left" | "top" | "width" | "height" => {
                 let parse_float = self.import("ecma:number", "parseFloat");
                 self.emit_host_call(parse_float, 1);
             }
             // The inverse of the write: the store holds the EXPANDED track
-            // list (`vybe_widgets` normalises `repeat(7, 1fr)` on the way in),
+            // list (`widgets` normalises `repeat(7, 1fr)` on the way in),
             // so the count is how many tracks there are. Splitting on a space
             // and taking the length is the same trick `Lines` uses, and it
             // makes the round trip an identity — write 7, read 7.
@@ -1566,7 +1566,7 @@ impl Compiler {
                 // `<length>` has no unitless form outside `0`. The read path
                 // has always said so, parsing the unit back off with
                 // `parseFloat`; the write side did not, and only
-                // `vybe_widgets`' own lenient `parse_px` hid it. That is a
+                // `widgets`' own lenient `parse_px` hid it. That is a
                 // defect no capture can show, because both ends of OUR
                 // pipeline agreed on the wrong thing.
                 //

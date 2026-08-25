@@ -9,18 +9,18 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use tiny_skia::{Pixmap, Rect};
-use vybe_widgets::{FontSystem, SwashCache, TextColor};
+use widgets::{FontSystem, SwashCache, TextColor};
 use winit::event::ElementState;
 
 use serde::{Deserialize, Serialize};
 
 use crate::editor::Editor as MyEditor;
 use crate::lsp_client::LspClient;
-use vybe_widgets::code_editor_widget::{CodeEditorWidget, Theme};
-use vybe_widgets::layout::WidgetEvent;
-use vybe_widgets::output_panel::{OutputPanel, OutputPanelEvent};
-use vybe_widgets::{Dropdown, TreeView};
-use vybe_widgets::{LayoutRect, PanelWidget, SplitPanel, StatusBarPanel, TabPanel};
+use widgets::code_editor_widget::{CodeEditorWidget, Theme};
+use widgets::layout::WidgetEvent;
+use widgets::output_panel::{OutputPanel, OutputPanelEvent};
+use widgets::{Dropdown, TreeView};
+use widgets::{LayoutRect, PanelWidget, SplitPanel, StatusBarPanel, TabPanel};
 
 use dialogs::ProjectPropsDialog;
 
@@ -256,7 +256,7 @@ impl ProjectExplorerState {
 pub enum TabContent {
     Code(CodeEditorWidget),
     Form(crate::form_designer_tab::FormDesignerState),
-    Resources(vybe_widgets::ResourceEditor),
+    Resources(widgets::ResourceEditor),
 }
 
 pub struct Tab {
@@ -806,7 +806,7 @@ impl App {
                     "diagnostics" => {
                         self.output_panel.set_visible(true);
                         self.output_panel
-                            .set_active_tab(vybe_widgets::output_panel::OutputTab::Problems);
+                            .set_active_tab(widgets::output_panel::OutputTab::Problems);
                     }
                     _ => {}
                 },
@@ -968,7 +968,7 @@ impl App {
 
 // ── Application (toolkit) ──────────────────────────────────────────────
 
-impl vybe_widgets::Application for App {
+impl widgets::Application for App {
     fn title(&self) -> String {
         let tab_part = self
             .tabs
@@ -1016,8 +1016,8 @@ impl vybe_widgets::Application for App {
         self.render_internal(pix);
     }
 
-    fn handle_mouse(&mut self, event: vybe_widgets::MouseEvent) -> bool {
-        use vybe_widgets::layout::{MouseButton as WMouseButton, MouseEventKind};
+    fn handle_mouse(&mut self, event: widgets::MouseEvent) -> bool {
+        use widgets::layout::{MouseButton as WMouseButton, MouseEventKind};
         self.cmd_held = event.cmd;
         self.shift_held = event.shift;
         self.alt_held = event.alt;
@@ -1062,7 +1062,7 @@ impl vybe_widgets::Application for App {
         true
     }
 
-    fn handle_key(&mut self, event: vybe_widgets::KeyEvent) -> bool {
+    fn handle_key(&mut self, event: widgets::KeyEvent) -> bool {
         self.cmd_held = event.cmd;
         self.shift_held = event.shift;
         self.alt_held = event.alt;
@@ -1108,5 +1108,5 @@ impl vybe_widgets::Application for App {
 
 pub fn run_gui(my_editor: MyEditor, open_form: bool) {
     let app = App::new(my_editor, open_form);
-    vybe_widgets::run_app("Vybe IDE", 1200, 900, SCALE, app);
+    widgets::run_app("Vybe IDE", 1200, 900, SCALE, app);
 }

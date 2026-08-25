@@ -1,8 +1,8 @@
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use uuid::Uuid;
 use vybe_platform_dotnet::winforms::designer::{Control, ControlType, Form};
-use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
-use vybe_widgets::{PropEvent, PropItem, PropTab, PropertiesPanel};
+use widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
+use widgets::{PropEvent, PropItem, PropTab, PropertiesPanel};
 
 use crate::ide_text::{draw_text, draw_text_with_font, measure_text_with_font};
 
@@ -700,7 +700,7 @@ impl FormDesignerState {
 
         // Client area
         if let Some(ref hex) = self.form.back_color {
-            if let Some(c) = vybe_widgets::color_picker::PickedColor::from_hex(hex) {
+            if let Some(c) = widgets::color_picker::PickedColor::from_hex(hex) {
                 paint.set_color_rgba8(c.r, c.g, c.b, c.a);
             } else {
                 paint.set_color_rgba8(240, 240, 240, 255);
@@ -753,7 +753,7 @@ impl FormDesignerState {
 
         // Properties panel (right panel)
         let items = self.current_prop_items();
-        let mut ctx = vybe_widgets::layout::RenderContext {
+        let mut ctx = widgets::layout::RenderContext {
             pixmap: pix,
             font_system: fs,
             swash_cache: sc,
@@ -1745,7 +1745,7 @@ impl FormDesignerState {
 
     /// Route a keyboard event to the properties panel. Returns true if the
     /// panel consumed the key (i.e. was editing a value).
-    pub fn handle_properties_key(&mut self, event: &vybe_widgets::KeyEvent) -> bool {
+    pub fn handle_properties_key(&mut self, event: &widgets::KeyEvent) -> bool {
         if !self.prop_panel.is_editing() {
             return false;
         }
@@ -2126,7 +2126,7 @@ impl FormDesignerState {
         };
 
         let text_color = if let Some(hex) = ctrl.properties.get_string("ForeColor") {
-            vybe_widgets::color_picker::PickedColor::from_hex(hex)
+            widgets::color_picker::PickedColor::from_hex(hex)
                 .map(|c| CosmicColor::rgba(c.r, c.g, c.b, c.a))
                 .unwrap_or(CosmicColor::rgba(30, 30, 30, 255))
         } else {
@@ -2136,7 +2136,7 @@ impl FormDesignerState {
         let back_color = ctrl
             .properties
             .get_string("BackColor")
-            .and_then(vybe_widgets::color_picker::PickedColor::from_hex)
+            .and_then(widgets::color_picker::PickedColor::from_hex)
             .map(|c| (c.r, c.g, c.b, c.a));
 
         // Dispatch to the real widget. Widgets that own an opaque background
@@ -2145,7 +2145,7 @@ impl FormDesignerState {
         use ControlType::*;
         match ctrl.control_type {
             Button => {
-                let mut w = vybe_widgets::Button::new(&display_text);
+                let mut w = widgets::Button::new(&display_text);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2185,7 +2185,7 @@ impl FormDesignerState {
                 );
             }
             LinkLabel => {
-                let mut w = vybe_widgets::LinkLabel::new(&display_text);
+                let mut w = widgets::LinkLabel::new(&display_text);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2194,7 +2194,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             TextBox => {
-                let mut w = vybe_widgets::TextInput::new();
+                let mut w = widgets::TextInput::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2215,7 +2215,7 @@ impl FormDesignerState {
                 );
             }
             MaskedTextBox => {
-                let mut w = vybe_widgets::MaskedTextBox::new();
+                let mut w = widgets::MaskedTextBox::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2224,7 +2224,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             RichTextBox => {
-                let mut w = vybe_widgets::Panel::new();
+                let mut w = widgets::Panel::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2245,12 +2245,12 @@ impl FormDesignerState {
                 );
             }
             CheckBox => {
-                let mut w = vybe_widgets::Checkbox::new("");
+                let mut w = widgets::Checkbox::new("");
                 w.size = ch.min(cw).min(16.0);
                 w.check_state = if ctrl.properties.get_bool("Checked").unwrap_or(false) {
-                    vybe_widgets::layout::CheckState::Checked
+                    widgets::layout::CheckState::Checked
                 } else {
-                    vybe_widgets::layout::CheckState::Unchecked
+                    widgets::layout::CheckState::Unchecked
                 };
                 w.paint(pix, cx, cy, s);
                 draw_text_with_font(
@@ -2267,7 +2267,7 @@ impl FormDesignerState {
                 );
             }
             RadioButton => {
-                let mut w = vybe_widgets::Radio::new("");
+                let mut w = widgets::Radio::new("");
                 w.selected = ctrl.properties.get_bool("Checked").unwrap_or(false);
                 w.paint(pix, cx, cy, s);
                 draw_text_with_font(
@@ -2294,7 +2294,7 @@ impl FormDesignerState {
                     .get_int("SelectedIndex")
                     .map(|i| i.max(0) as usize)
                     .unwrap_or(0);
-                let mut w = vybe_widgets::Select::new(items.clone());
+                let mut w = widgets::Select::new(items.clone());
                 w.selected_index = selected;
                 w.width = cw;
                 w.height = ch;
@@ -2327,7 +2327,7 @@ impl FormDesignerState {
                     .get_string_array("Items")
                     .cloned()
                     .unwrap_or_default();
-                let mut w = vybe_widgets::ListBox::new();
+                let mut w = widgets::ListBox::new();
                 w.items = items.clone();
                 w.width = cw;
                 w.height = ch;
@@ -2371,7 +2371,7 @@ impl FormDesignerState {
                 }
             }
             PictureBox => {
-                let mut w = vybe_widgets::PictureBox::new();
+                let mut w = widgets::PictureBox::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2380,7 +2380,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             ProgressBar => {
-                let mut w = vybe_widgets::ProgressBar::new();
+                let mut w = widgets::ProgressBar::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2392,7 +2392,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             NumericUpDown | DomainUpDown => {
-                let mut w = vybe_widgets::NumericUpDown::new();
+                let mut w = widgets::NumericUpDown::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2401,7 +2401,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             TrackBar => {
-                let mut w = vybe_widgets::Slider::new(0.0, 100.0, 50.0);
+                let mut w = widgets::Slider::new(0.0, 100.0, 50.0);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2410,7 +2410,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             DateTimePicker => {
-                let mut w = vybe_widgets::DateTimePicker::new();
+                let mut w = widgets::DateTimePicker::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2419,7 +2419,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             TreeView => {
-                let mut w = vybe_widgets::TreeView::new(".", s);
+                let mut w = widgets::TreeView::new(".", s);
                 w.render_tree(
                     pix,
                     fs,
@@ -2432,7 +2432,7 @@ impl FormDesignerState {
                 );
             }
             ListView => {
-                let mut w = vybe_widgets::ListView::new();
+                let mut w = widgets::ListView::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2447,9 +2447,9 @@ impl FormDesignerState {
                     .map(|v| v.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
                     .unwrap_or_default();
                 let mut w = if cols.is_empty() {
-                    vybe_widgets::DataGrid::new(&[])
+                    widgets::DataGrid::new(&[])
                 } else {
-                    vybe_widgets::DataGrid::new(&cols)
+                    widgets::DataGrid::new(&cols)
                 };
                 w.width = cw;
                 w.height = ch;
@@ -2459,7 +2459,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             Panel | UserControl => {
-                let mut w = vybe_widgets::Panel::new();
+                let mut w = widgets::Panel::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2480,7 +2480,7 @@ impl FormDesignerState {
                 );
             }
             Frame => {
-                let mut w = vybe_widgets::GroupBox::new(display_text.clone());
+                let mut w = widgets::GroupBox::new(display_text.clone());
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2490,7 +2490,7 @@ impl FormDesignerState {
             }
             SplitContainer => {
                 let horiz = ctrl.properties.get_bool("Horizontal").unwrap_or(true);
-                let mut w = vybe_widgets::SplitContainer::new(horiz);
+                let mut w = widgets::SplitContainer::new(horiz);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2499,7 +2499,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             FlowLayoutPanel => {
-                let mut w = vybe_widgets::FlowLayoutPanel::new();
+                let mut w = widgets::FlowLayoutPanel::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2510,7 +2510,7 @@ impl FormDesignerState {
             TableLayoutPanel => {
                 let cols = ctrl.properties.get_int("Cols").unwrap_or(2) as usize;
                 let rows = ctrl.properties.get_int("Rows").unwrap_or(2) as usize;
-                let mut w = vybe_widgets::TableLayoutPanel::new(cols, rows);
+                let mut w = widgets::TableLayoutPanel::new(cols, rows);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2519,7 +2519,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             TabControl => {
-                let mut w = vybe_widgets::Tabs::new(&["Tab1", "Tab2"]);
+                let mut w = widgets::Tabs::new(&["Tab1", "Tab2"]);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2539,7 +2539,7 @@ impl FormDesignerState {
                 );
             }
             TabPage => {
-                let mut w = vybe_widgets::Panel::new();
+                let mut w = widgets::Panel::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2559,7 +2559,7 @@ impl FormDesignerState {
                 );
             }
             MenuStrip => {
-                let mut w = vybe_widgets::MenuStrip::new();
+                let mut w = widgets::MenuStrip::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2579,7 +2579,7 @@ impl FormDesignerState {
                 );
             }
             ToolStrip | BindingNavigator => {
-                let mut w = vybe_widgets::ToolStrip::new();
+                let mut w = widgets::ToolStrip::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2594,7 +2594,7 @@ impl FormDesignerState {
                 draw_text(pix, fs, sc, lbl, cx + 6.0, cy + 4.0, 11.0, text_color, s);
             }
             StatusStrip => {
-                let mut w = vybe_widgets::StatusStrip::new();
+                let mut w = widgets::StatusStrip::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2614,7 +2614,7 @@ impl FormDesignerState {
                 );
             }
             MonthCalendar => {
-                let mut w = vybe_widgets::MonthCalendar::new();
+                let mut w = widgets::MonthCalendar::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2623,7 +2623,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             HScrollBar => {
-                let mut w = vybe_widgets::ScrollBar::new(false);
+                let mut w = widgets::ScrollBar::new(false);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2632,7 +2632,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             VScrollBar => {
-                let mut w = vybe_widgets::ScrollBar::new(true);
+                let mut w = widgets::ScrollBar::new(true);
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2641,7 +2641,7 @@ impl FormDesignerState {
                 w.paint(pix, cx, cy, s);
             }
             WebBrowser => {
-                let mut w = vybe_widgets::Panel::new();
+                let mut w = widgets::Panel::new();
                 w.width = cw;
                 w.height = ch;
                 if let Some(bc) = back_color {
@@ -2995,15 +2995,15 @@ impl FormDesignerState {
             let lay = self.layout(rect);
             let popup_x = lay.properties.x + 10.0;
             let popup_y = lay.properties.y
-                + vybe_widgets::properties_panel::PROP_HEADER_H
-                + vybe_widgets::properties_panel::PROP_TAB_H
+                + widgets::properties_panel::PROP_HEADER_H
+                + widgets::properties_panel::PROP_TAB_H
                 + 40.0;
             match self
                 .prop_panel
                 .color_picker
                 .handle_drag(mx, my, popup_x, popup_y)
             {
-                vybe_widgets::color_picker::ColorPickerEvent::Changed(c) => {
+                widgets::color_picker::ColorPickerEvent::Changed(c) => {
                     let hex = c.to_hex();
                     if let Some(prop_name) = self.prop_panel.color_picker_prop.clone() {
                         self.apply_color_prop(&prop_name, &hex);

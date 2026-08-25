@@ -2,7 +2,7 @@ use super::{App, EditAction, PaletteAction, ProjectSearchHit, Tab, TabContent};
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::LspRequest;
-use vybe_widgets::code_editor_widget::CodeEditorWidget;
+use widgets::code_editor_widget::CodeEditorWidget;
 
 /// Insert `snippet` into a VB.NET class body just before its `End Class`.
 /// Mirrors the legacy designer — if there's no `End Class`, appends the
@@ -563,32 +563,32 @@ impl App {
 
     pub(super) fn create_resource_editor_from_project(
         project: &vybe_platform_dotnet::winforms::designer::project::Project,
-    ) -> vybe_widgets::ResourceEditor {
-        let mut editor = vybe_widgets::ResourceEditor::new();
+    ) -> widgets::ResourceEditor {
+        let mut editor = widgets::ResourceEditor::new();
         for rm in &project.resource_files {
             for item in &rm.resources {
-                editor.entries.push(vybe_widgets::ResourceEntry {
+                editor.entries.push(widgets::ResourceEntry {
                     name: item.name.clone(),
                     value: item.value.clone(),
                     comment: item.comment.clone().unwrap_or_default(),
                     tab: match item.resource_type {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::String => {
-                            vybe_widgets::ResourceTab::Strings
+                            widgets::ResourceTab::Strings
                         }
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Image => {
-                            vybe_widgets::ResourceTab::Images
+                            widgets::ResourceTab::Images
                         }
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Icon => {
-                            vybe_widgets::ResourceTab::Icons
+                            widgets::ResourceTab::Icons
                         }
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Audio => {
-                            vybe_widgets::ResourceTab::Audio
+                            widgets::ResourceTab::Audio
                         }
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::File => {
-                            vybe_widgets::ResourceTab::Files
+                            widgets::ResourceTab::Files
                         }
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Other => {
-                            vybe_widgets::ResourceTab::Other
+                            widgets::ResourceTab::Other
                         }
                     },
                     file_name: item.file_name.clone() });
@@ -598,21 +598,21 @@ impl App {
     }
 
     pub(super) fn process_resource_event(
-        evt: vybe_widgets::ResourceEditorEvent,
-        r: &mut vybe_widgets::ResourceEditor,
+        evt: widgets::ResourceEditorEvent,
+        r: &mut widgets::ResourceEditor,
         project: &mut vybe_platform_dotnet::winforms::designer::project::Project,
     ) {
         match evt {
-            vybe_widgets::ResourceEditorEvent::AddResource(tab) => {
+            widgets::ResourceEditorEvent::AddResource(tab) => {
                 if tab.is_file_based() {
                     let mut dialog = rfd::FileDialog::new();
                     let (filter_name, exts): (&str, Vec<&str>) = match tab {
-                        vybe_widgets::ResourceTab::Images => (
+                        widgets::ResourceTab::Images => (
                             "Images",
                             vec!["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"],
                         ),
-                        vybe_widgets::ResourceTab::Icons => ("Icons", vec!["ico"]),
-                        vybe_widgets::ResourceTab::Audio => {
+                        widgets::ResourceTab::Icons => ("Icons", vec!["ico"]),
+                        widgets::ResourceTab::Audio => {
                             ("Audio", vec!["wav", "mp3", "ogg", "flac", "aiff"])
                         }
                         _ => ("All Files", vec!["*"]),
@@ -630,7 +630,7 @@ impl App {
                                 .unwrap_or("Resource1")
                                 .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
                             let res_tab = tab;
-                            r.entries.push(vybe_widgets::ResourceEntry {
+                            r.entries.push(widgets::ResourceEntry {
                                 name: name.clone(),
                                 value: path_str.clone(),
                                 comment: String::new(),
@@ -638,16 +638,16 @@ impl App {
                                 file_name: Some(path_str.clone()),
                             });
                             let rt = match res_tab {
-                                vybe_widgets::ResourceTab::Images => {
+                                widgets::ResourceTab::Images => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::Image
                                 }
-                                vybe_widgets::ResourceTab::Icons => {
+                                widgets::ResourceTab::Icons => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::Icon
                                 }
-                                vybe_widgets::ResourceTab::Audio => {
+                                widgets::ResourceTab::Audio => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::Audio
                                 }
-                                vybe_widgets::ResourceTab::Files => {
+                                widgets::ResourceTab::Files => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::File
                                 }
                                 _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String };
@@ -666,7 +666,7 @@ impl App {
                         }
                     }
                 } else {
-                    r.entries.push(vybe_widgets::ResourceEntry {
+                    r.entries.push(widgets::ResourceEntry {
                         name: format!("NewResource{}", r.entries.len() + 1),
                         value: String::new(),
                         comment: String::new(),
@@ -676,7 +676,7 @@ impl App {
                 }
                 r.dirty = true;
             }
-            vybe_widgets::ResourceEditorEvent::DeleteResource(idx) => {
+            widgets::ResourceEditorEvent::DeleteResource(idx) => {
                 if idx < r.entries.len() {
                     r.entries.remove(idx);
                     r.selected_row = None;
@@ -684,17 +684,17 @@ impl App {
                     Self::sync_resources_to_project(r, project);
                 }
             }
-            vybe_widgets::ResourceEditorEvent::BrowseFile(idx) => {
+            widgets::ResourceEditorEvent::BrowseFile(idx) => {
                 if idx < r.entries.len() {
                     let entry = &r.entries[idx];
                     let rt = &entry.tab;
                     let mut dialog = rfd::FileDialog::new();
                     let exts: Vec<&str> = match rt {
-                        vybe_widgets::ResourceTab::Images => {
+                        widgets::ResourceTab::Images => {
                             vec!["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"]
                         }
-                        vybe_widgets::ResourceTab::Icons => vec!["ico"],
-                        vybe_widgets::ResourceTab::Audio => {
+                        widgets::ResourceTab::Icons => vec!["ico"],
+                        widgets::ResourceTab::Audio => {
                             vec!["wav", "mp3", "ogg", "flac", "aiff"]
                         }
                         _ => vec![],
@@ -718,9 +718,9 @@ impl App {
                     }
                 }
             }
-            vybe_widgets::ResourceEditorEvent::AddStringResource(name, value, comment) => {
+            widgets::ResourceEditorEvent::AddStringResource(name, value, comment) => {
                 let tab = r.active_tab;
-                r.entries.push(vybe_widgets::ResourceEntry {
+                r.entries.push(widgets::ResourceEntry {
                     name: name.clone(),
                     value: value.clone(),
                     comment: comment.clone(),
@@ -739,7 +739,7 @@ impl App {
                             name, value,
                         );
                     item.resource_type = match tab {
-                        vybe_widgets::ResourceTab::Other => {
+                        widgets::ResourceTab::Other => {
                             vybe_platform_dotnet::winforms::designer::resources::ResourceType::Other
                         }
                         _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String };
@@ -751,7 +751,7 @@ impl App {
                     rm.resources.push(item);
                 }
             }
-            vybe_widgets::ResourceEditorEvent::EditCommitted(_, _, _) => {
+            widgets::ResourceEditorEvent::EditCommitted(_, _, _) => {
                 Self::sync_resources_to_project(r, project);
             }
             _ => {}
@@ -759,7 +759,7 @@ impl App {
     }
 
     pub(super) fn sync_resources_to_project(
-        r: &vybe_widgets::ResourceEditor,
+        r: &widgets::ResourceEditor,
         project: &mut vybe_platform_dotnet::winforms::designer::project::Project,
     ) {
         if project.resource_files.is_empty() {
@@ -771,22 +771,22 @@ impl App {
             rm.resources.clear();
             for entry in &r.entries {
                 let rt = match entry.tab {
-                    vybe_widgets::ResourceTab::Strings => {
+                    widgets::ResourceTab::Strings => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::String
                     }
-                    vybe_widgets::ResourceTab::Images => {
+                    widgets::ResourceTab::Images => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Image
                     }
-                    vybe_widgets::ResourceTab::Icons => {
+                    widgets::ResourceTab::Icons => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Icon
                     }
-                    vybe_widgets::ResourceTab::Audio => {
+                    widgets::ResourceTab::Audio => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Audio
                     }
-                    vybe_widgets::ResourceTab::Files => {
+                    widgets::ResourceTab::Files => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::File
                     }
-                    vybe_widgets::ResourceTab::Other => {
+                    widgets::ResourceTab::Other => {
                         vybe_platform_dotnet::winforms::designer::resources::ResourceType::Other
                     }
                 };
@@ -880,7 +880,7 @@ impl App {
             ToggleProblems => {
                 self.output_panel.set_visible(true);
                 self.output_panel
-                    .set_active_tab(vybe_widgets::output_panel::OutputTab::Problems);
+                    .set_active_tab(widgets::output_panel::OutputTab::Problems);
             }
             CloseTab => {
                 self.close_tab(self.active_tab);

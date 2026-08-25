@@ -1,3 +1,3 @@
-//! Re-exports language definitions from vybe_widgets.
+//! Re-exports language definitions from widgets.
 
-pub use vybe_widgets::language::*;
+pub use widgets::language::*;

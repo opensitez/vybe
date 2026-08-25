@@ -2,10 +2,10 @@ use std::time::Instant;
 use winit::keyboard::{Key, NamedKey};
 
 use super::{App, TabContent};
-use vybe_widgets::CursorMotion;
+use widgets::CursorMotion;
 
 impl App {
-    pub(super) fn handle_key_press(&mut self, event: vybe_widgets::KeyEvent) {
+    pub(super) fn handle_key_press(&mut self, event: widgets::KeyEvent) {
         if self.tabs.is_empty() {
             return;
         }
@@ -938,7 +938,7 @@ impl App {
     }
 
     /// Command palette key handler. Fuzzy search + execute.
-    fn command_palette_handle_key(&mut self, event: &vybe_widgets::KeyEvent) {
+    fn command_palette_handle_key(&mut self, event: &widgets::KeyEvent) {
         if event.state != winit::event::ElementState::Pressed {
             return;
         }
@@ -984,7 +984,7 @@ impl App {
     }
 
     /// Project-wide text-search key handler.
-    fn project_search_handle_key(&mut self, event: &vybe_widgets::KeyEvent) {
+    fn project_search_handle_key(&mut self, event: &widgets::KeyEvent) {
         if event.state != winit::event::ElementState::Pressed {
             return;
         }

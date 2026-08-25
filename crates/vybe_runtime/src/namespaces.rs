@@ -207,7 +207,7 @@ pub struct CtorSpec {
     /// When set, the type is a thin GUI adapter: construction creates the
     /// control and, per arg, either nests a child widget/control or forwards a
     /// scalar property — child vs
-    /// scalar detected at runtime. The object IS the control, so vybe_widgets
+    /// scalar detected at runtime. The object IS the control, so widgets
     /// holds all state/layout/rendering. `None` = plain object (no GUI).
     pub control_fn: Option<String>,
     /// How each constructor arg maps onto the control, aligned with `fields`.

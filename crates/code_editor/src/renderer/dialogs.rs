@@ -1,5 +1,5 @@
 use tiny_skia::{Paint, Pixmap, Transform};
-use vybe_widgets::{FontSystem, SwashCache, TextColor as Color};
+use widgets::{FontSystem, SwashCache, TextColor as Color};
 
 pub(crate) struct ProjectPropsDialog {
     pub visible: bool,

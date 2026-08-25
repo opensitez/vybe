@@ -16,7 +16,7 @@
 //! name is its `id` — so a capture asks the same tree a window paints and the
 //! debugger inspects.
 
-use vybe_widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_background};
+use widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_background};
 
 /// Paint the document into `pixmap`.
 ///
@@ -29,7 +29,7 @@ use vybe_widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_backgroun
 pub fn render_into(pixmap: &mut Pixmap, scale: f32) {
     fill_background(pixmap, 240, 240, 240, 255);
     // Through `platforms/web`, which forwards to whichever engine is live.
-    // This used to call `vybe_widgets::dom` directly — around the intermediary
+    // This used to call `widgets::dom` directly — around the intermediary
     // rather than through it — so `--engine webcore` swapped the engine and
     // left the renderer pointed at the toolkit's empty tree.
     //
@@ -77,7 +77,7 @@ fn crop(src: &Pixmap, x: f32, y: f32, w: f32, h: f32) -> Option<Pixmap> {
 /// surface is named after the window title, so it can be
 /// `vybe sdl adapter - signal monitor_surface` and the user types
 /// `--capture-control surface`.
-fn control_rect(name: &str) -> Result<vybe_widgets::LayoutRect, String> {
+fn control_rect(name: &str) -> Result<widgets::LayoutRect, String> {
     let controls = crate::gui_document::controls();
     let needle = name.to_lowercase();
 

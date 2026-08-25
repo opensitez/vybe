@@ -19,6 +19,6 @@ lsp-server = "0.7.9"
 crossbeam-channel = "0.5.15"
 vybe_compiler = { path = "../vybe_compiler" }
 fuzzy-matcher = "0.3.7"
-vybe_widgets = { path = "../vybe_widgets" }
+widgets = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 rfd = { workspace = true }

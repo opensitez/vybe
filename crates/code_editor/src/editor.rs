@@ -1,10 +1,10 @@
-//! Code editor engine — wraps vybe_widgets::TextEditor with LSP diagnostic support.
+//! Code editor engine — wraps widgets::TextEditor with LSP diagnostic support.
 
 use lsp_types::Diagnostic;
 use std::collections::HashSet;
-use vybe_widgets::language::LanguageDef;
-use vybe_widgets::text_editor::TextEditor;
-pub use vybe_widgets::text_editor::{LexerState, TokenSpan};
+use widgets::language::LanguageDef;
+use widgets::text_editor::TextEditor;
+pub use widgets::text_editor::{LexerState, TokenSpan};
 
 /// Editor wraps TextEditor and adds LSP-specific diagnostics.
 pub struct Editor {

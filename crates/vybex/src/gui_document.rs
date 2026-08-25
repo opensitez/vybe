@@ -4,7 +4,7 @@
 //! and it lowers control creation to `web:dom.createElement`, control
 //! properties to `web:dom` / `web:html` / `web:cssom`, and `OnClick := h` to
 //! `addEventListener("click", h)`. VCL, WinForms, Flutter and SDL all end up in
-//! the SAME `vybe_widgets` document, so nothing in this module is
+//! the SAME `widgets` document, so nothing in this module is
 //! framework-specific and nothing in it may become so.
 //!
 //! `GuiState` still owns what is not a DOM element — form lifecycle flags,
@@ -24,8 +24,8 @@
 use vybe_platform_web::engine::{DocumentId, NodeId};
 use vybe_platform_web::html;
 use vybe_runtime::Value;
-use vybe_widgets::LayoutRect;
-use vybe_widgets::dom::Document;
+use widgets::LayoutRect;
+use widgets::dom::Document;
 
 /// This agent's ambient document — `window.document`.
 ///
@@ -63,7 +63,7 @@ static PINNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// test, and it is the same question `render_into` asks before it picks a form
 /// to paint.
 pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
-    vybe_widgets::dom::with_document(active(), |document| {
+    widgets::dom::with_document(active(), |document| {
         (document.form().control_count() > 0).then(|| f(document))
     })
     .flatten()
@@ -97,7 +97,7 @@ pub fn has_content() -> bool {
 /// a real run — the same mistake as a probe that calls a handler directly.
 pub mod inspect {
     use super::{NodeId, with_live};
-    use vybe_widgets::dom::Document;
+    use widgets::dom::Document;
 
     /// The INDENTED form, which is what a person reading a dump wants.
     ///
@@ -180,7 +180,7 @@ pub fn html() -> Option<String> {
 /// The live tree as the ENGINE has it — through the seam, so it answers for
 /// whichever engine is installed.
 ///
-/// `with_live` borrows `vybe_widgets::dom` directly, which is the toolkit
+/// `with_live` borrows `widgets::dom` directly, which is the toolkit
 /// whether or not the toolkit is the live engine. Every GUI command in the step
 /// debugger went through it, so under `--engine webcore` they reported an empty
 /// tree for a document webcore had built perfectly well — the debugger was
@@ -318,7 +318,7 @@ pub fn controls() -> Vec<DomControl> {
 /// form that builds its buttons in a loop can be listed but never clicked.
 pub fn node_by_id(name: &str) -> Option<NodeId> {
     // Through the seam, so the inspector answers for whichever engine is live.
-    // This walked `vybe_widgets`' document directly, which is the toolkit
+    // This walked `widgets`' document directly, which is the toolkit
     // whether or not the toolkit is running — so under `--engine webcore`
     // every `css`/`attr`/`text` command reported "no control named X" for
     // controls that were plainly in the tree. `html` was fixed first and made
@@ -392,7 +392,7 @@ pub fn drain() -> Vec<Dispatch> {
             .unwrap_or(0);
         // Through the web surface, not around it. `getAttribute` is a DOM
         // operation `platforms/web` already exposes, and reaching past it into
-        // `vybe_widgets::dom` made this crate a second driver of a document
+        // `widgets::dom` made this crate a second driver of a document
         // web is supposed to own.
         let sender = match vybe_platform_web::engine::apply(
             document,

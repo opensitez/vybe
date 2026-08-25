@@ -85,7 +85,7 @@ pub fn attach(vm: &mut VM) {
                 let rest: Vec<&str> = line.split_whitespace().skip(1).collect();
                 if rest.first() == Some(&"canvas") {
                     let on = rest.get(1) != Some(&"off");
-                    vybe_widgets::canvas::set_trace_enabled(on);
+                    widgets::canvas::set_trace_enabled(on);
                     eprintln!("  canvas tracing {}", if on { "on" } else { "off" });
                     continue;
                 }

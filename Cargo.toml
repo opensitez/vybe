@@ -1,10 +1,9 @@
 [workspace]
 resolver = "2"
-exclude = ["crates/webcore"]
+exclude = ["crates/webcore","crates/widgets"]
 members = [
     "crates/code_editor",
     "crates/vybe_runtime",
-    "crates/vybe_widgets",
     "crates/vybe_compiler",
     "crates/vybex",
     "crates/testrunner",
@@ -154,7 +153,7 @@ vybe_platform_dotnet = { path = "platforms/dotnet" }
 vybe_platform_flutter = { path = "platforms/flutter" }
 vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
-vybe_widgets = { path = "crates/vybe_widgets" }
+widgets = "0.2.0"
 # The HTML/CSS engine behind `web:*` when the `engine-webcore` feature is on.
 webcore = "0.2.0"
 vybe_compiler = { path = "crates/vybe_compiler" }

@@ -1,3 +1,3 @@
-//! Re-exports text rendering helpers from vybe_widgets.
+//! Re-exports text rendering helpers from widgets.
 
-pub use vybe_widgets::ide_text::*;
+pub use widgets::ide_text::*;

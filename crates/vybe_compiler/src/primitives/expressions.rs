@@ -222,7 +222,7 @@ impl Compiler {
         // walk at run time. That realizer had to build a SECOND control tree
         // beside the document, because a role only exists at compile time (it
         // is carried in the emit NAME) and target-language source can only
-        // re-derive it. `vybe_widgets`' document is the state; a frontend
+        // re-derive it. `widgets`' document is the state; a frontend
         // adapts to it and does not keep a parallel model.
         //
         // Only for a DECLARATIVE frontend: `field_gui` is empty when a

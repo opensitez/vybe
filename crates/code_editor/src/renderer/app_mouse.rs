@@ -11,9 +11,9 @@ use super::{
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::LspRequest;
-use vybe_widgets::PanelWidget;
-use vybe_widgets::code_editor_widget::CodeEditorWidget;
-use vybe_widgets::{Dropdown, DropdownEvent, TreeEvent};
+use widgets::PanelWidget;
+use widgets::code_editor_widget::CodeEditorWidget;
+use widgets::{Dropdown, DropdownEvent, TreeEvent};
 
 impl App {
     pub(super) fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -128,7 +128,7 @@ impl App {
         let tch = self.top_chrome_h();
         let ed_start_x = self.explorer_width + SPLITTER_WIDTH + 1.0;
         if my >= tch && my < tch + TAB_BAR_HEIGHT && mx > ed_start_x {
-            use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
+            use widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
             let move_event = WMouseEvent {
                 x: mx,
                 y: my,
@@ -310,11 +310,11 @@ impl App {
         {
             let out_rect = self.output_panel.rect();
             if out_rect.contains(mx, my) {
-                use vybe_widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
+                use widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
                 let click = WMouseEvent {
                     x: mx,
                     y: my,
-                    kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left),
+                    kind: WMEKind::Press(widgets::layout::MouseButton::Left),
                     cmd: self.cmd_held,
                     shift: self.shift_held,
                     alt: self.alt_held,
@@ -1013,13 +1013,13 @@ impl App {
                 let stab_top = tch;
                 if my >= stab_top && my < stab_top + SIDEBAR_TAB_H {
                     // Route to sidebar_tabs TabPanel
-                    use vybe_widgets::layout::{
+                    use widgets::layout::{
                         MouseEvent as WMouseEvent, MouseEventKind as WMEKind,
                     };
                     let click = WMouseEvent {
                         x: mx,
                         y: my,
-                        kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left),
+                        kind: WMEKind::Press(widgets::layout::MouseButton::Left),
                         cmd: self.cmd_held,
                         shift: self.shift_held,
                         alt: self.alt_held,

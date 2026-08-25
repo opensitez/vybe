@@ -8,10 +8,10 @@ use super::{
 };
 use crate::form_designer_tab::MenuAction;
 use crate::lsp_client::{LspEvent, LspRequest};
-use vybe_widgets::PanelWidget;
-use vybe_widgets::TextColor;
-use vybe_widgets::layout::RenderContext;
-use vybe_widgets::output_panel::{ProblemEntry, ProblemSeverity};
+use widgets::PanelWidget;
+use widgets::TextColor;
+use widgets::layout::RenderContext;
+use widgets::output_panel::{ProblemEntry, ProblemSeverity};
 
 fn format_kb(kb: &Keybinding) -> String {
     let mut s = String::new();
@@ -441,22 +441,22 @@ impl App {
                                 if let TabContent::Code(cw) = &mut t.content {
                                     cw.my_editor.diagnostics = diags
                                         .iter()
-                                        .map(|d| vybe_widgets::DiagnosticInfo {
+                                        .map(|d| widgets::DiagnosticInfo {
                                             line: d.range.start.line as usize,
                                             col_start: d.range.start.character as usize,
                                             col_end: d.range.end.character as usize,
                                             message: d.message.clone(),
                                             severity: match d.severity {
                                                 Some(lsp_types::DiagnosticSeverity::ERROR) => {
-                                                    vybe_widgets::DiagnosticSeverity::Error
+                                                    widgets::DiagnosticSeverity::Error
                                                 }
                                                 Some(lsp_types::DiagnosticSeverity::WARNING) => {
-                                                    vybe_widgets::DiagnosticSeverity::Warning
+                                                    widgets::DiagnosticSeverity::Warning
                                                 }
                                                 Some(
                                                     lsp_types::DiagnosticSeverity::INFORMATION,
-                                                ) => vybe_widgets::DiagnosticSeverity::Info,
-                                                _ => vybe_widgets::DiagnosticSeverity::Hint,
+                                                ) => widgets::DiagnosticSeverity::Info,
+                                                _ => widgets::DiagnosticSeverity::Hint,
                                             },
                                         })
                                         .collect();
@@ -468,7 +468,7 @@ impl App {
                     }
                     LspEvent::Completion(items) => {
                         use lsp_types::CompletionItemKind;
-                        use vybe_widgets::code_editor_widget::AutocompleteItem;
+                        use widgets::code_editor_widget::AutocompleteItem;
                         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                             if let TabContent::Code(cw) = &mut tab.content {
                                 cw.autocomplete_items = items
@@ -597,14 +597,14 @@ impl App {
                                 file: name.clone(),
                                 line: d.line + 1,
                                 severity: match d.severity {
-                                    vybe_widgets::DiagnosticSeverity::Error => {
+                                    widgets::DiagnosticSeverity::Error => {
                                         ProblemSeverity::Error
                                     }
-                                    vybe_widgets::DiagnosticSeverity::Warning => {
+                                    widgets::DiagnosticSeverity::Warning => {
                                         ProblemSeverity::Warning
                                     }
-                                    vybe_widgets::DiagnosticSeverity::Info => ProblemSeverity::Info,
-                                    vybe_widgets::DiagnosticSeverity::Hint => ProblemSeverity::Hint,
+                                    widgets::DiagnosticSeverity::Info => ProblemSeverity::Info,
+                                    widgets::DiagnosticSeverity::Hint => ProblemSeverity::Hint,
                                 },
                                 message: d.message.clone(),
                             })
@@ -644,8 +644,8 @@ impl App {
                     if let TabContent::Code(cw) = &t.content {
                         for d in &cw.my_editor.diagnostics {
                             match d.severity {
-                                vybe_widgets::DiagnosticSeverity::Error => errors += 1,
-                                vybe_widgets::DiagnosticSeverity::Warning => warnings += 1,
+                                widgets::DiagnosticSeverity::Error => errors += 1,
+                                widgets::DiagnosticSeverity::Warning => warnings += 1,
                                 _ => {}
                             }
                         }
@@ -1277,7 +1277,7 @@ impl App {
         sidebar_content_y: f32,
         _sidebar_w: f32,
         sidebar_content_h: f32,
-        theme: &vybe_widgets::code_editor_widget::Theme,
+        theme: &widgets::code_editor_widget::Theme,
     ) {
         let pe = &self.project_explorer;
         let project = &self.project;

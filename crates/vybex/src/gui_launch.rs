@@ -1,9 +1,9 @@
 //! GUI launch layer — owns the winit event loop, VM glue, and dialog registration.
 //!
-//! Uses `vybe_widgets::Form` as the container for all controls, and
-//! `vybe_widgets::Application` + `run_app()` for the window/event loop.
+//! Uses `widgets::Form` as the container for all controls, and
+//! `widgets::Application` + `run_app()` for the window/event loop.
 //! All graphics, focus management, hover states, and keyboard routing live
-//! in vybe_widgets.
+//! in widgets.
 //!
 //! One entry point: `launch_gui`.
 //!
@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vybe_widgets::{
+use widgets::{
     Application, FontSystem, KeyEvent, MouseEvent, PanelWidget, Pixmap, SwashCache, run_app,
 };
 
@@ -74,8 +74,8 @@ impl Application for FormApp {
         // the same queue a browser host fills from the real DOM. SDL's
         // vocabulary is applied later, by SDL's own adapter, not here.
         {
-            use vybe_widgets::layout::{MouseButton, MouseEventKind};
-            use vybe_widgets::ui_events::{UiEvent, queue};
+            use widgets::layout::{MouseButton, MouseEventKind};
+            use widgets::ui_events::{UiEvent, queue};
             // DOM `button`: 0 left, 1 middle, 2 right.
             let dom_button = |b: &MouseButton| match b {
                 MouseButton::Left => 0i32,
@@ -102,7 +102,7 @@ impl Application for FormApp {
                 ..UiEvent::default()
             });
             // Through the seam, so the LIVE engine hit-tests it. This called
-            // `vybe_widgets`' form directly, which is the toolkit whether or
+            // `widgets`' form directly, which is the toolkit whether or
             // not the toolkit is the engine in use — so under
             // `--engine webcore` every click was hit-tested against an empty
             // tree and nothing at all happened.
@@ -126,8 +126,8 @@ impl Application for FormApp {
     fn handle_key(&mut self, event: KeyEvent) -> bool {
         // Both edges as `keydown`/`keyup`, in W3C shape.
         {
-            use vybe_widgets::ui_events::{UiEvent, queue};
-            let pressed = event.state == vybe_widgets::winit::event::ElementState::Pressed;
+            use widgets::ui_events::{UiEvent, queue};
+            let pressed = event.state == widgets::winit::event::ElementState::Pressed;
             let (key, code, key_code) = dom_key_fields(&event.key_without_modifiers);
             queue().push(UiEvent {
                 kind: if pressed { "keydown" } else { "keyup" }.to_string(),
@@ -152,7 +152,7 @@ impl Application for FormApp {
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
         {
-            use vybe_widgets::ui_events::{UiEvent, queue};
+            use widgets::ui_events::{UiEvent, queue};
             // DOM `deltaY` is positive DOWN — the opposite of a scroll delta
             // that reports "up" as positive.
             queue().push(UiEvent {
@@ -169,8 +169,8 @@ impl Application for FormApp {
         handled
     }
 
-    fn cursor_icon(&self) -> vybe_widgets::CursorIcon {
-        vybe_widgets::CursorIcon::Default
+    fn cursor_icon(&self) -> widgets::CursorIcon {
+        widgets::CursorIcon::Default
     }
 
     /// The frame callback, called ~60 Hz from the event loop's
@@ -254,8 +254,8 @@ impl FormApp {
     /// document's body — so the listener lives on the body node and this is a
     /// plain `load` dispatch, exactly what a page does.
     fn fire_load_event(&mut self) {
-        let event = crate::gui_document::event_object("load", vybe_widgets::dom::DOCUMENT);
-        for listener in crate::gui_document::listeners_for(vybe_widgets::dom::DOCUMENT, "load") {
+        let event = crate::gui_document::event_object("load", widgets::dom::DOCUMENT);
+        for listener in crate::gui_document::listeners_for(widgets::dom::DOCUMENT, "load") {
             let mut vm = self.vm.borrow_mut();
             if let Err(e) = vm.invoke(&listener, &[event.clone()]) {
                 eprintln!("[LOAD] Error: {e}");
@@ -286,8 +286,8 @@ pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
 /// independent, `keyCode` is the legacy numeric identity browsers still
 /// ship. No SDL here — SDL's keysyms are derived from these by its own
 /// adapter, so a browser host producing real DOM events needs no changes.
-fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, i32) {
-    use vybe_widgets::winit::keyboard::{Key, NamedKey};
+fn dom_key_fields(key: &widgets::winit::keyboard::Key) -> (String, String, i32) {
+    use widgets::winit::keyboard::{Key, NamedKey};
     match key {
         Key::Character(text) => {
             let Some(c) = text.chars().next() else {
