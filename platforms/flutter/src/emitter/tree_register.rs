@@ -90,7 +90,7 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
                 // The claim this replaced was that "the host routes control
                 // events … to the Click handler". It does not: `drain_events`
                 // maps `SelectChanged`/`DropdownSelected`/`ListBoxSelected` to
-                // `change`, and htmlbox's form-event bridge does the same.
+                // `change`, and webcore's form-event bridge does the same.
                 //
                 // A field may name its own event through `role` — a text field
                 // wants `input`, which fires per keystroke as Flutter's

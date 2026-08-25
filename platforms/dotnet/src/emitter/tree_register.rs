@@ -912,10 +912,10 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // click. The control keeps its `FileName`/`Filter` surface; what it
         // stops needing is a custom element standing in for a picker HTML has.
         // (`control_kind` already maps `file` to the `fileinput` widget, and
-        // htmlbox draws the button-plus-label.)
+        // webcore draws the button-plus-label.)
         "openfiledialog" | "savefiledialog" | "folderbrowserdialog" => "input:file;display:none",
         // Likewise the colour chooser: `<input type=color>` IS one, with the
-        // swatch and the picker htmlbox already implements.
+        // swatch and the picker webcore already implements.
         "colordialog" => "input:color;display:none",
         // HTML has no font picker, but it does have the element a dialog IS.
         // A `<dialog>` without `open` is not rendered (HTML §4.11.4), so this
