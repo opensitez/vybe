@@ -225,50 +225,42 @@ fn two_documents_are_two_trees() {
 
 /// Synthesise a real user click on `node`, however THIS browser takes input.
 ///
-/// The one place an engine difference is unavoidable: injecting OS-level input
-/// is not a WHATWG operation — a browser receives it from the platform and no
-/// page script does this. Everything the test then ASSERTS is standard.
-#[cfg(not(feature = "engine-htmlbox"))]
-fn click_at(doc: u64, _node: u64) {
-    use vybe_platform_web::engine_widgets::with_document;
-    use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind, PanelWidget};
-
-    let press = MouseEvent {
-        kind: MouseEventKind::Press(MouseButton::Left),
-        x: 10.0,
-        y: 10.0,
-        cmd: false,
-        shift: false,
-        alt: false,
-    };
-    with_document(doc, |d| {
-        let form = d.form_mut();
-        form.handle_mouse(&press);
-        form.handle_mouse(&MouseEvent {
-            kind: MouseEventKind::Release(MouseButton::Left),
-            ..press
-        });
-    });
-}
-
-#[cfg(feature = "engine-htmlbox")]
+/// Click the middle of a node, as the window shell does.
+///
+/// **No longer engine-specific.** This was two functions behind a `#[cfg]` —
+/// one poking `vybe_widgets`' form, one calling htmlbox's `process_mouse_event`
+/// — because delivering OS input was the one thing the seam had no verb for.
+/// The host had the same hole and filled it the same way, by reaching past the
+/// engine into the toolkit, so a click under any other engine went nowhere.
+/// `DispatchPointer` is that verb, and this is now one path for both.
 fn click_at(doc: u64, node: u64) {
-    use rhtmledit::dom::HtmlEventType;
-    use rhtmledit::layout::LayoutEngine;
-    use vybe_platform_web::engine_htmlbox::with_document;
-
-    with_document(doc, |d| {
-        // Hit-testing needs boxes to have rects, and a document that has never
-        // been laid out has none.
-        LayoutEngine::new().layout(d, 1024.0);
-        let pt = d
-            .get_bounding_client_rect(node as u32)
-            .map(|r| (r.x + r.w / 2.0, r.y + r.h / 2.0))
-            .unwrap_or((0.0, 0.0));
-        d.process_mouse_event(HtmlEventType::MouseDown, pt, 0);
-        d.process_mouse_event(HtmlEventType::MouseUp, pt, 0);
-        d.process_mouse_event(HtmlEventType::Click, pt, 0);
-    });
+    // Hit-testing needs geometry, and a document that has never been laid out
+    // has none. Asking for a resolved value is what forces layout in a browser
+    // too — `getComputedStyle` is a documented reflow trigger — so this is the
+    // page-level way to say "settle first" rather than an engine call.
+    apply(doc, DomOp::ComputedStyleProperty(node, "width".into()));
+    // The element's CENTRE, so the click lands wherever layout put it rather
+    // than at a coordinate the test guessed.
+    let (x, y) = match apply(doc, DomOp::BoundingClientRect(node)) {
+        DomValue::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => ((x + width / 2.0) as f32, (y + height / 2.0) as f32),
+        other => panic!("getBoundingClientRect answered {other:?}"),
+    };
+    for kind in ["mousedown", "mouseup"] {
+        apply(
+            doc,
+            DomOp::DispatchPointer {
+                kind: kind.to_string(),
+                client_x: x,
+                client_y: y,
+                button: 0,
+            },
+        );
+    }
 }
 
 #[test]
@@ -570,11 +562,17 @@ fn host(doc: u64) -> u64 {
     host
 }
 
+/// The children's tags, for tests about tree SHAPE.
+///
+/// `localName`, not `nodeName`: `nodeName` is the HTML-uppercased qualified
+/// name (DOM §4.9), so it answers `A`/`B` and would make every shape assertion
+/// here about casing as well as order. `casing_is_tolerated_where_html_says…`
+/// is where the uppercase rule is asserted, once.
 fn tags_of(doc: u64, parent: u64) -> Vec<String> {
     match apply(doc, DomOp::ChildNodes(parent)) {
         DomValue::Nodes(children) => children
             .into_iter()
-            .map(|c| text(apply(doc, DomOp::NodeName(c))))
+            .map(|c| text(apply(doc, DomOp::LocalName(c))))
             .collect(),
         other => panic!("expected nodes, got {other:?}"),
     }
@@ -723,7 +721,10 @@ fn import_node_copies_across_documents_without_inserting() {
         "importing {described:?} produced {imported:?}"
     );
     let deep = node(imported);
-    assert_eq!(text(apply(target, DomOp::NodeName(deep))), "div");
+    // `DIV`, not `div` — `nodeName` is the HTML-uppercased qualified name
+    // (DOM §4.9). What this line is checking is that the import produced an
+    // element of the right kind in the TARGET document.
+    assert_eq!(text(apply(target, DomOp::NodeName(deep))), "DIV");
     assert_eq!(
         text(apply(target, DomOp::GetAttribute(deep, "id".into()))),
         "x"
@@ -745,6 +746,14 @@ fn import_node_copies_across_documents_without_inserting() {
             deep: false,
         },
     ));
+    // Positive facts FIRST: an empty child list is also what a failed import
+    // looks like, so "no children" alone cannot tell the two apart.
+    assert_eq!(text(apply(target, DomOp::NodeName(shallow))), "DIV");
+    assert_eq!(
+        text(apply(target, DomOp::GetAttribute(shallow, "id".into()))),
+        "x",
+        "a shallow import is still the node, attributes and all"
+    );
     assert!(
         tags_of(target, shallow).is_empty(),
         "deep:false must not bring the subtree"
@@ -775,4 +784,307 @@ fn a_fragment_accepts_children_in_any_document() {
          treats anything but Bool(true) as a refusal and drops the node"
     );
     assert_eq!(tags_of(second, fragment), vec!["div"]);
+}
+
+#[test]
+fn a_child_of_the_document_lands_in_the_body() {
+    // A Document takes exactly ONE element child — `document.appendChild(<p>)`
+    // is a `HierarchyRequestError` in a browser — so a caller that says "the
+    // document" means the body, and every frontend here says exactly that:
+    // `web:html.appendChild(DOCUMENT, control)` is how a form is built.
+    //
+    // htmlbox spelled `DOCUMENT` as `<html>` and hung the whole form beside
+    // `<head>` and `<body>` instead of inside one. Nothing errored, layout ran
+    // and reported its timings, and the window painted an empty page.
+    let doc = setup();
+    let p = create(doc, "p", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: p,
+        },
+    );
+
+    let body = node(apply(doc, DomOp::QuerySelector("body".into())));
+    assert_eq!(
+        node(apply(doc, DomOp::ParentNode(p))),
+        body,
+        "a node appended to the document must be a child of the body"
+    );
+    assert!(
+        matches!(
+            apply(doc, DomOp::QuerySelector("body > p".into())),
+            DomValue::Node(_)
+        ),
+        "the body has no element children — content went somewhere a page \
+         does not render"
+    );
+}
+
+#[test]
+fn the_documents_own_structure_is_obeyed_where_it_is_put() {
+    // The exception to the redirect: `<html>`, `<head>` and `<body>` ARE the
+    // document's structure. A parser that spells one out is building the
+    // skeleton, not adding content, so it is not moved into the body.
+    let doc = setup();
+    let extra_body = create(doc, "body", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: extra_body,
+        },
+    );
+    assert!(
+        !matches!(
+            apply(doc, DomOp::QuerySelector("body > body".into())),
+            DomValue::Node(_)
+        ),
+        "a `<body>` addressed to the document was redirected INTO the body"
+    );
+}
+
+#[test]
+fn the_document_is_not_an_element() {
+    // DOM §4.4. `DOCUMENT` is the document node, whatever the engine below
+    // uses to stand in for it — htmlbox has no node for it at all and answers
+    // with `<html>`, which is right for reaching into the tree and wrong for
+    // the two questions that ask what the node IS.
+    let doc = setup();
+    assert!(
+        matches!(apply(doc, DomOp::NodeType(DOCUMENT)), DomValue::Number(n) if n == 9.0),
+        "the document's nodeType is 9, not an element's 1"
+    );
+    assert_eq!(text(apply(doc, DomOp::NodeName(DOCUMENT))), "#document");
+}
+
+#[test]
+fn the_documents_text_is_its_title_and_writing_it_keeps_the_tree() {
+    // `textContent` replaces every child with one text node. Applied to the
+    // DOCUMENT that means `<head>` and `<body>` are DELETED — which is what
+    // htmlbox did, because it spells the document as `<html>` and applied the
+    // element rule. A .NET form's caption is `Form.Text` and the form IS the
+    // document, so the first line a program ran emptied its own page and every
+    // control appended afterwards hung off a bodyless root.
+    //
+    // DOM §4.4 gives a Document null `textContent` and makes the setter a
+    // no-op; `vybe_widgets` answers the title instead, and one seam cannot have
+    // two answers.
+    let doc = setup();
+    apply(doc, DomOp::SetTextContent(DOCUMENT, "Contact Manager".into()));
+
+    assert_eq!(
+        text(apply(doc, DomOp::Title)),
+        "Contact Manager",
+        "the document's text is its title"
+    );
+    assert!(
+        matches!(
+            apply(doc, DomOp::QuerySelector("body".into())),
+            DomValue::Node(_)
+        ),
+        "writing the document's text destroyed the body"
+    );
+
+    // And content appended AFTER that write still reaches the body.
+    let p = create(doc, "p", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: p,
+        },
+    );
+    assert!(
+        matches!(
+            apply(doc, DomOp::QuerySelector("body > p".into())),
+            DomValue::Node(_)
+        ),
+        "the tree survived the title write but content no longer lands in it"
+    );
+}
+
+#[test]
+fn setting_an_elements_text_inserts_a_text_node() {
+    // DOM §4.4 "string replace all": the element gets a CHILD Text node. Not a
+    // decoration — an engine lays out and paints the text it finds in the tree,
+    // so an implementation that keeps the string on the element instead has a
+    // `textContent` and an `outerHTML` that both read back correctly while the
+    // page renders a blank box. Every .NET label and button caption arrives
+    // this way.
+    let doc = setup();
+    let label = create(doc, "label", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: label,
+        },
+    );
+    apply(doc, DomOp::SetTextContent(label, "Name:".into()));
+
+    let kids = match apply(doc, DomOp::ChildNodes(label)) {
+        DomValue::Nodes(kids) => kids,
+        other => panic!("childNodes answered {other:?}"),
+    };
+    assert_eq!(kids.len(), 1, "textContent must leave exactly one child");
+    assert!(
+        matches!(apply(doc, DomOp::NodeType(kids[0])), DomValue::Number(n) if n == 3.0),
+        "the child must be a Text node (nodeType 3)"
+    );
+    assert_eq!(text(apply(doc, DomOp::TextContent(label))), "Name:");
+
+    // Empty text is the spec's null case: children removed, nothing inserted.
+    apply(doc, DomOp::SetTextContent(label, String::new()));
+    assert!(
+        matches!(apply(doc, DomOp::ChildNodes(label)), DomValue::Nodes(k) if k.is_empty()),
+        "setting empty text must remove the children and insert nothing"
+    );
+}
+
+#[test]
+fn a_checkboxs_value_is_what_it_submits_and_checked_is_its_state() {
+    // HTML §4.10.5.1.15 keeps these apart: `value` is the string a form sends
+    // when the box is ticked, `checked` is whether it is ticked. Nothing about
+    // one implies the other.
+    //
+    // The toolkit used to coerce — anything but `"false"`/`""` written to
+    // `value` ticked the box — so an emitter that reached for the wrong member
+    // looked correct here and rendered an EMPTY box under an engine that means
+    // what HTML says. Flutter's `Checkbox(value:)` was exactly that, and this
+    // is the assertion that would have caught it on either engine.
+    let doc = setup();
+    let cb = create(doc, "input", "checkbox");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: cb,
+        },
+    );
+
+    // The default a form submits for a box with no `value` attribute.
+    assert_eq!(text(apply(doc, DomOp::Value(cb))), "on");
+    assert!(
+        matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(false)),
+        "a fresh checkbox is not checked"
+    );
+
+    // Writing the submission value must NOT tick the box.
+    apply(doc, DomOp::SetValue(cb, "true".into()));
+    assert_eq!(text(apply(doc, DomOp::Value(cb))), "true");
+    assert!(
+        matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(false)),
+        "writing `value` ticked the box — that is the coercion this test exists \
+         to prevent, and it hides every emitter that writes the wrong member"
+    );
+
+    // And ticking it must not disturb the submission value.
+    apply(doc, DomOp::SetChecked(cb, true));
+    assert!(matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)));
+    assert_eq!(text(apply(doc, DomOp::Value(cb))), "true");
+}
+
+#[test]
+fn checkedness_is_not_the_checked_attribute() {
+    // HTML §4.10.5.3. The `checked` CONTENT ATTRIBUTE is `defaultChecked` —
+    // what a form reset restores to — and `input.checked` is whether the box is
+    // ticked right now. Ticking a box does not rewrite the markup, and writing
+    // the markup does not move a box the program has already set.
+    //
+    // One store for both is the same conflation `value` had, and it breaks the
+    // two things the split exists for: form reset, and `getAttribute` meaning
+    // "what the document says" rather than "what the user did".
+    let doc = setup();
+    let cb = create(doc, "input", "checkbox");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: cb,
+        },
+    );
+
+    // The markup says nothing yet.
+    assert!(
+        matches!(apply(doc, DomOp::GetAttribute(cb, "checked".into())), DomValue::Null),
+        "a checkbox nobody wrote markup for has no `checked` attribute"
+    );
+
+    // Ticking it is a STATE change, not a markup change.
+    apply(doc, DomOp::SetChecked(cb, true));
+    assert!(matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)));
+    assert!(
+        matches!(apply(doc, DomOp::GetAttribute(cb, "checked".into())), DomValue::Null),
+        "ticking the box wrote a `checked` attribute into the document — the \
+         state and the markup are one store"
+    );
+
+    // And the markup is the DEFAULT: setting it must not move a box whose
+    // checkedness the program has already set.
+    apply(doc, DomOp::SetAttribute(cb, "checked".into(), String::new()));
+    assert!(
+        matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)),
+        "the attribute overwrote checkedness the program had already set"
+    );
+}
+
+#[test]
+fn casing_is_tolerated_where_html_says_and_not_where_it_does_not() {
+    // **Browsers tolerate weird casing at BOTH ends** — writing and targeting —
+    // for the names HTML folds, and tolerate NOTHING for the values it does
+    // not. Both halves matter: fold only on write and `[DATA-Foo]` matches
+    // nothing; fold an `id` and two different elements answer one query.
+    let doc = setup();
+    let e = create(doc, "DIV", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: e,
+        },
+    );
+    apply(doc, DomOp::SetAttribute(e, "DATA-Foo".into(), "1".into()));
+    apply(doc, DomOp::SetAttribute(e, "ID".into(), "Mixed".into()));
+
+    // `nodeName` is the HTML-UPPERCASED qualified name (DOM §4.9); `localName`
+    // is the folded one. `el.nodeName == "DIV"` is what a page writes.
+    assert_eq!(text(apply(doc, DomOp::NodeName(e))), "DIV");
+    assert_eq!(text(apply(doc, DomOp::LocalName(e))), "div");
+
+    // An attribute NAME is case-insensitive, whichever spelling either side
+    // used. The selector half of this matched nothing until it folded too.
+    for asked in ["data-foo", "DATA-FOO", "Data-Foo"] {
+        assert_eq!(
+            text(apply(doc, DomOp::GetAttribute(e, asked.into()))),
+            "1",
+            "getAttribute({asked:?}) missed a folded attribute name"
+        );
+    }
+    for selector in ["div", "DIV", "[data-foo]", "[DATA-foo]"] {
+        assert!(
+            matches!(
+                apply(doc, DomOp::QuerySelector(selector.into())),
+                DomValue::Node(_)
+            ),
+            "querySelector({selector:?}) matched nothing"
+        );
+    }
+    assert!(
+        matches!(apply(doc, DomOp::ElementsByTag("DIV".into())), DomValue::Nodes(found) if found == vec![e]),
+        "getElementsByTagName folds the tag name"
+    );
+
+    // ⛔ And NOT tolerated: an `id` VALUE is case-sensitive (DOM §4.5), so a
+    // page cannot reach `Mixed` by asking for `mixed`. Leniency here would let
+    // two distinct elements answer one lookup.
+    assert!(matches!(
+        apply(doc, DomOp::GetElementById("Mixed".into())),
+        DomValue::Node(_)
+    ));
+    assert!(
+        matches!(apply(doc, DomOp::GetElementById("mixed".into())), DomValue::Null),
+        "an id lookup folded the case — ids are case-SENSITIVE"
+    );
 }
