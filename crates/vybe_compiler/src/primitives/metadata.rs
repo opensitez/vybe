@@ -994,9 +994,8 @@ impl Compiler {
 
     pub(super) fn should_infer_winforms_form(&self, name: &str, parents: &[String]) -> bool {
         // The IMPORT is the signal. A unit that imports `System.Windows.Forms`
-        // has the WinForms surface in scope by saying so; `use_dotnet` added
-        // nothing but a language-family name in front of a question the import
-        // already answers.
+        // has the WinForms surface in scope by saying so, and no language-family
+        // name belongs in front of a question the import already answers.
         if !parents.is_empty() || !self.module_imports_namespace("System.Windows.Forms") {
             return false;
         }

@@ -80,7 +80,7 @@ impl Compiler {
             capture_bindings.len() as u8,
         );
         self.chunks.push(factory);
-        self.scopes.push(Scope::new_function(!self.case_sensitive));
+        self.scopes.push(Scope::new_function(self.directives().variable_fold()));
         let saved = self.current;
         self.current = factory_idx;
 
@@ -223,13 +223,19 @@ impl Compiler {
         let ci = self.chunks.len();
         let chunk = common::functions::create_function_chunk("<lambda>", arity);
         self.chunks.push(chunk);
+        // Record the BODY chunk — not the factory that wraps it. A caller that
+        // needs to stamp a fact on the lambda (an object-literal accessor
+        // declaring its receiver convention) has no other handle: the chunk is
+        // anonymous, and `compile_lambda_with_flags` hands back the FACTORY's
+        // index, which is a different chunk entirely.
+        self.last_lambda_body_chunk = Some(ci);
         self.chunks[ci].is_async = is_async;
         self.chunks[ci].is_generator = is_generator;
         // A closure resolves names the way the body containing it does — a PHP
         // closure sees no more of the module than the function it sits in.
         let enclosing = self.scope().resolution;
         self.scopes
-            .push(Scope::new_function_like(enclosing, !self.case_sensitive));
+            .push(Scope::new_function_like(enclosing, self.directives().variable_fold()));
         let saved = self.current;
         self.current = ci;
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
@@ -629,6 +635,7 @@ impl Compiler {
                 &self.profile.namespaces.type_scopes,
                 &class_name,
                 method_name,
+                self.tree_fold(),
             ) {
                 if let Some(target) =
                     vybe_runtime::namespaces::select_overload(&member, args.len() as u8)

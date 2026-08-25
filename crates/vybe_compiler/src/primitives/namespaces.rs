@@ -21,7 +21,10 @@ use super::*;
 /// guards registration mistakes that create alias cycles.
 const MAX_ALIAS_DEPTH: usize = 8;
 
-pub fn resolve_path(segments: &[&str]) -> Option<ResolutionTarget> {
+pub fn resolve_path(
+    segments: &[&str],
+    fold: vybe_runtime::namespaces::Fold,
+) -> Option<ResolutionTarget> {
     if segments.is_empty() {
         return None;
     }
@@ -32,7 +35,7 @@ pub fn resolve_path(segments: &[&str]) -> Option<ResolutionTarget> {
             .map(|(m, n)| (m.to_string(), n.to_string())),
     );
     let guard = registry_read();
-    resolve_segments(&guard.tree, segments, 0)
+    resolve_segments(&guard.tree, segments, 0, fold)
 }
 
 /// Walk an EXPLICIT forest instead of the process-global registry.
@@ -42,11 +45,15 @@ pub fn resolve_path(segments: &[&str]) -> Option<ResolutionTarget> {
 /// but it must resolve by the same rules as `dotnet.*` or `ecma.*`. Sharing
 /// `resolve_segments` is what makes the user root one more root in ONE
 /// resolver rather than a second resolver wearing a tree's clothes.
-pub(crate) fn resolve_in(forest: &Subtree, segments: &[&str]) -> Option<ResolutionTarget> {
+pub(crate) fn resolve_in(
+    forest: &Subtree,
+    segments: &[&str],
+    fold: vybe_runtime::namespaces::Fold,
+) -> Option<ResolutionTarget> {
     if segments.is_empty() {
         return None;
     }
-    resolve_segments(forest, segments, 0)
+    resolve_segments(forest, segments, 0, fold)
 }
 
 pub(crate) fn normalize_source_path(name: &str) -> String {
@@ -174,6 +181,7 @@ fn resolve_segments(
     forest: &Subtree,
     segments: &[&str],
     alias_depth: usize,
+    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<ResolutionTarget> {
     if alias_depth > MAX_ALIAS_DEPTH {
         return None; // alias cycle or absurd chain — refuse, don't spin
@@ -182,12 +190,18 @@ fn resolve_segments(
     let mut walked: Vec<&str> = Vec::with_capacity(segments.len());
 
     for (i, seg) in segments.iter().enumerate() {
-        let node = current.get(*seg)?;
+        // ⛔ THE SAME RULE THE TREE USES — exact first, fold only on a miss.
+        // A second lookup rule here is how the resolver and the tree come to
+        // disagree about what resolves: this walker sees the SOURCE's spelling
+        // (`Encoding`, `getBytes`) and the tree now holds the REGISTRAR's, and
+        // only one function is allowed to decide whether those are the same
+        // name.
+        let node = vybe_runtime::namespaces::fold_get(current, seg, fold)?;
         walked.push(seg);
         let is_last = i + 1 == segments.len();
 
         if is_last {
-            return terminal(forest, node, &walked.join("."), alias_depth);
+            return terminal(forest, node, &walked.join("."), alias_depth, fold);
         }
 
         // Descend.
@@ -202,7 +216,7 @@ fn resolve_segments(
                 // segments appended.
                 let mut re_rooted: Vec<&str> = target.split('.').collect();
                 re_rooted.extend_from_slice(&segments[i + 1..]);
-                return resolve_segments(forest, &re_rooted, alias_depth + 1);
+                return resolve_segments(forest, &re_rooted, alias_depth + 1, fold);
             }
             // A function/const leaf with segments still remaining is not a
             // namespace path.
@@ -257,6 +271,7 @@ fn terminal(
     node: &NamespaceNode,
     path: &str,
     alias_depth: usize,
+    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<ResolutionTarget> {
     match node {
         NamespaceNode::Namespace(_) => Some(ResolutionTarget::NamespaceObject(path.to_string())),
@@ -285,10 +300,10 @@ fn terminal(
         // the direction.
         NamespaceNode::Property { get, .. } => get
             .as_deref()
-            .and_then(|n| terminal(forest, n, path, alias_depth)),
+            .and_then(|n| terminal(forest, n, path, alias_depth, fold)),
         NamespaceNode::Overloads(entries) => entries
             .last()
-            .and_then(|(_, n)| terminal(forest, n, path, alias_depth)),
+            .and_then(|(_, n)| terminal(forest, n, path, alias_depth, fold)),
         NamespaceNode::Const(v) => Some(ResolutionTarget::Const(v.clone())),
         // The unit's own declaration. Deliberately NOT a `Ctor`: construction
         // of a user class goes through the class machinery keyed on
@@ -302,7 +317,7 @@ fn terminal(
         }
         NamespaceNode::Alias(target) => {
             let segs: Vec<&str> = target.split('.').collect();
-            resolve_segments(forest, &segs, alias_depth + 1)
+            resolve_segments(forest, &segs, alias_depth + 1, fold)
         }
     }
 }
@@ -344,7 +359,7 @@ mod tests {
     fn resolves_direct_host_leaf() {
         let _g = LOCK.lock().unwrap();
         seed();
-        match resolve_path(&["ecma", "json", "stringify"]) {
+        match resolve_path(&["ecma", "json", "stringify"], vybe_runtime::namespaces::FOLD_ASCII) {
             Some(ResolutionTarget::HostCall { module, func, .. }) => {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
@@ -357,7 +372,7 @@ mod tests {
     fn resolves_alias_to_canonical_leaf() {
         let _g = LOCK.lock().unwrap();
         seed();
-        match resolve_path(&["python", "json", "dumps"]) {
+        match resolve_path(&["python", "json", "dumps"], vybe_runtime::namespaces::FOLD_ASCII) {
             Some(ResolutionTarget::HostCall { module, func, .. }) => {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
@@ -370,7 +385,7 @@ mod tests {
     fn interior_path_is_namespace_object() {
         let _g = LOCK.lock().unwrap();
         seed();
-        match resolve_path(&["ecma", "json"]) {
+        match resolve_path(&["ecma", "json"], vybe_runtime::namespaces::FOLD_ASCII) {
             Some(ResolutionTarget::NamespaceObject(p)) => assert_eq!(p, "ecma.json"),
             other => panic!("expected NamespaceObject, got {:?}", other),
         }
@@ -384,7 +399,7 @@ mod tests {
         register_namespace_tree("python", {
             namespace(vec![("js_like", NamespaceNode::Alias("ecma".into()))])
         });
-        match resolve_path(&["python", "js_like", "json", "parse"]) {
+        match resolve_path(&["python", "js_like", "json", "parse"], vybe_runtime::namespaces::FOLD_ASCII) {
             Some(ResolutionTarget::HostCall { func, .. }) => assert_eq!(func, "parse"),
             other => panic!("expected HostCall through interior alias, got {:?}", other),
         }
@@ -402,7 +417,7 @@ mod tests {
             "b",
             namespace(vec![("y", NamespaceNode::Alias("a.x".into()))]),
         );
-        assert!(resolve_path(&["a", "x"]).is_none());
+        assert!(resolve_path(&["a", "x"], vybe_runtime::namespaces::FOLD_ASCII).is_none());
     }
 
     #[test]
@@ -417,8 +432,8 @@ mod tests {
                 namespace(vec![("max", host_fn("ecma:math", "max"))]),
             )]),
         );
-        assert!(resolve_path(&["ecma", "json", "parse"]).is_some());
-        assert!(resolve_path(&["ecma", "math", "max"]).is_some());
+        assert!(resolve_path(&["ecma", "json", "parse"], vybe_runtime::namespaces::FOLD_ASCII).is_some());
+        assert!(resolve_path(&["ecma", "math", "max"], vybe_runtime::namespaces::FOLD_ASCII).is_some());
     }
 
     #[test]
@@ -444,11 +459,11 @@ mod tests {
             )]),
         );
         assert!(matches!(
-            resolve_path(&["dotnet", "system", "console"]),
+            resolve_path(&["dotnet", "system", "console"], vybe_runtime::namespaces::FOLD_ASCII),
             Some(ResolutionTarget::Ctor { .. })
         ));
         assert!(matches!(
-            resolve_path(&["dotnet", "system", "console", "writeline"]),
+            resolve_path(&["dotnet", "system", "console", "writeline"], vybe_runtime::namespaces::FOLD_ASCII),
             Some(ResolutionTarget::HostCall { .. })
         ));
     }
@@ -457,9 +472,9 @@ mod tests {
     fn unknown_paths_fall_through() {
         let _g = LOCK.lock().unwrap();
         seed();
-        assert!(resolve_path(&["nope"]).is_none());
-        assert!(resolve_path(&["ecma", "nope"]).is_none());
+        assert!(resolve_path(&["nope"], vybe_runtime::namespaces::FOLD_ASCII).is_none());
+        assert!(resolve_path(&["ecma", "nope"], vybe_runtime::namespaces::FOLD_ASCII).is_none());
         // Leaf with trailing segments is not a namespace path.
-        assert!(resolve_path(&["ecma", "json", "stringify", "extra"]).is_none());
+        assert!(resolve_path(&["ecma", "json", "stringify", "extra"], vybe_runtime::namespaces::FOLD_ASCII).is_none());
     }
 }

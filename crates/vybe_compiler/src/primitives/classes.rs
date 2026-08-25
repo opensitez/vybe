@@ -22,6 +22,25 @@ pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
 }
 
 impl Compiler {
+    /// Declare that an accessor chunk handles the RECEIVER-FIRST convention.
+    ///
+    /// `__get_x(self)` / `__set_x(self, v)` take the receiver as parameter 0,
+    /// while a JS `Object.defineProperty` setter is `set(v)` and takes its
+    /// receiver from the call. Those two are indistinguishable by signature —
+    /// a one-parameter setter is a one-parameter setter — so the property
+    /// dispatch in `platforms/ecma/src/object.rs` was GUESSING from arity, and
+    /// guessing wrong for the ambient-receiver case: the setter ran with no
+    /// receiver and wrote into nowhere, silently.
+    ///
+    /// A call tag is a name for a convention, which is precisely the fact that
+    /// was missing. Declared once per module; the host asks
+    /// `func_handles_call_tag` instead of counting parameters.
+    fn declare_receiver_first_accessor(&mut self, accessor_chunk: usize) {
+        self.chunks[accessor_chunk]
+            .handled_call_tags
+            .push(vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG.to_string());
+    }
+
     fn qualified_nested_type_name(enclosing: &str, nested: &str) -> String {
         if nested.contains('.') {
             nested.to_string()
@@ -394,9 +413,8 @@ impl Compiler {
     /// that way, so both answer here without naming a language — and any GUI
     /// surface added later works with no change to this function.
     ///
-    /// This used to read `profile.namespaces.use_dotnet`, which was a language
-    /// check standing in for the property: correct only while WinForms was the
-    /// only GUI surface. It silently excluded Pascal, so `class(TForm)` never
+    /// ⛔ A language-family check here is correct only while WinForms is the
+    /// only GUI surface. One silently excluded Pascal, so `class(TForm)` never
     /// took the control path and fell through to a per-class ctor global that
     /// control types deliberately no longer emit — `undefined is not callable`
     /// for every form with a constructor.
@@ -426,12 +444,11 @@ impl Compiler {
         //
         // This is the INHERITANCE twin of the standalone-construction site in
         // `calls.rs` (`New Button()`), which already asks exactly this pair —
-        // the two guard the same hazard and now answer the same way. It used to
-        // read `profile.namespaces.use_dotnet`, a language-family check
-        // standing in for the scoping.
+        // the two guard the same hazard and answer the same way.
         vybe_runtime::namespaces::is_registered_type(
             &self.profile.namespaces.type_scopes,
             parent_name,
+            self.tree_fold(),
         ) && !common::gui::canonical_control_name(parent_name).is_empty()
     }
 
@@ -440,6 +457,7 @@ impl Compiler {
         vybe_runtime::namespaces::lookup_type_ctor_spec(
             &self.profile.namespaces.type_scopes,
             parent_name,
+            self.tree_fold(),
         )
         .is_some_and(|spec| spec.control_fn.is_some())
     }
@@ -450,8 +468,7 @@ impl Compiler {
     /// `platform_owns_descriptor_class` asks every LINKED platform, not the
     /// ones this profile mounts, so on its own it answers `true` for a Python
     /// `class X(Timer)` merely because some other language in the workspace
-    /// links dotnet. `is_registered_type` supplies the missing scoping, which
-    /// is what `use_dotnet` used to stand in for.
+    /// links dotnet. `is_registered_type` supplies the missing scoping.
     ///
     /// The two questions cover the SAME class set: `descriptor.classes` is
     /// built by iterating `dotnet_class_exports()` (`descriptor.rs`), the same
@@ -462,6 +479,7 @@ impl Compiler {
         vybe_runtime::namespaces::is_registered_type(
             &self.profile.namespaces.type_scopes,
             parent_name,
+            self.tree_fold(),
         ) && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
             && !self.is_framework_control_parent(parent_name)
             && !self.defined_classes.contains(&self.canon(parent_name))
@@ -492,6 +510,7 @@ impl Compiler {
         let registered = common::gui::registered_control_element(
             &self.profile.namespaces.type_scopes,
             parent_name,
+            self.tree_fold(),
         )
         .is_some();
         if !registered && common::gui::canonical_control_name(parent_name).is_empty() {
@@ -1129,7 +1148,7 @@ impl Compiler {
             chunk.result_arity = n;
         }
         self.chunks.push(chunk);
-        self.scopes.push(Scope::new_function(!self.case_sensitive));
+        self.scopes.push(Scope::new_function(self.directives().variable_fold()));
         self.static_local_bindings.push(HashMap::new());
         let saved = self.current;
         self.current = func_idx;
@@ -1222,7 +1241,7 @@ impl Compiler {
 
         for (index, p) in params.iter().enumerate() {
             self.define_source_local_typed(&p.name, p.type_hint.clone());
-            let normalized_type_hint = p.type_hint.as_deref().map(Compiler::normalize_type_hint);
+            let normalized_type_hint = p.type_hint.as_deref().map(Compiler::tree_type_key);
             if normalized_type_hint
                 .as_deref()
                 .is_some_and(|type_hint| type_hint.ends_with("()"))
@@ -2050,6 +2069,18 @@ impl Compiler {
                 if pname_canon != self.canon(auto_field_name) {
                     field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
                 }
+                // The PROPERTY name also resolves to the backing slot — an
+                // auto-property has plain storage and default accessors, so a
+                // direct store there IS its write semantics. Without this row
+                // `val y: Int` + `init { y = … }` found no storage for `y`
+                // and the write fell through to a global. Only auto
+                // properties: a custom accessor has no `auto_field`, so its
+                // reads/writes keep going through the accessor path.
+                if pname_canon != prop_canon {
+                    field_storage_names
+                        .entry(prop_canon.clone())
+                        .or_insert_with(|| pname_canon.clone());
+                }
                 if p.is_static {
                     if !static_field_inits
                         .iter()
@@ -2509,7 +2540,7 @@ impl Compiler {
                 chunk.result_arity = n;
             }
             cc.chunks.push(chunk);
-            cc.scopes.push(Scope::new_function(!cc.case_sensitive));
+            cc.scopes.push(Scope::new_function(cc.directives().variable_fold()));
             cc.static_local_bindings.push(HashMap::new());
             let saved = cc.current;
             cc.current = ci;
@@ -3022,9 +3053,19 @@ impl Compiler {
                         .insert(get_name.clone(), vybe_ast::protocol_slot_key(*slot));
                 }
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(&get_name, 1);
+                let mut chunk = common::functions::create_function_chunk(&get_name, 1);
+                // This accessor takes the receiver as its FIRST parameter. Say
+                // so, rather than leaving the host to infer it from the arity —
+                // an arity-1 setter that wants a receiver and one that does not
+                // are the same shape, which is exactly what a call tag is for.
+                //
+                // `is_method` records the same fact and was never set here or
+                // read anywhere; the tag is the mechanism that generalises, so
+                // both are stamped and the host reads whichever it asks for.
+                chunk.is_method = true;
                 self.chunks.push(chunk);
-                self.scopes.push(Scope::new_function(!self.case_sensitive));
+                self.declare_receiver_first_accessor(ci);
+                self.scopes.push(Scope::new_function(self.directives().variable_fold()));
                 let saved = self.current;
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
@@ -3074,9 +3115,11 @@ impl Compiler {
             if let Some(setter) = &p.setter {
                 let set_name = format!("__set_{}", pname_canon);
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(&set_name, 2);
+                let mut chunk = common::functions::create_function_chunk(&set_name, 2);
+                chunk.is_method = true;
                 self.chunks.push(chunk);
-                self.scopes.push(Scope::new_function(!self.case_sensitive));
+                self.declare_receiver_first_accessor(ci);
+                self.scopes.push(Scope::new_function(self.directives().variable_fold()));
                 let saved = self.current;
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
@@ -3283,7 +3326,7 @@ impl Compiler {
                 &helper_name,
                 user_arity.saturating_add(1),
             ));
-            self.scopes.push(Scope::new_function(!self.case_sensitive));
+            self.scopes.push(Scope::new_function(self.directives().variable_fold()));
             let saved_cur = self.current;
             let saved_class2 = self.current_class.take();
             let saved_implicit2 = self.current_class_implicit_self;
@@ -4227,7 +4270,7 @@ impl Compiler {
             .unwrap_or(0) as u8;
         self.chunks
             .push(common::functions::create_function_chunk(name, ctor_arity));
-        self.scopes.push(Scope::new_function(!self.case_sensitive));
+        self.scopes.push(Scope::new_function(self.directives().variable_fold()));
         let saved_cur = self.current;
         self.current = ctor_idx;
         for i in 0..ctor_arity {
@@ -4823,8 +4866,10 @@ impl Compiler {
         {
             let line = self.line;
             let saved_js_this = self.save_js_this("__js_prev_static_init_this");
-            self.emit_u16(Op::LOCAL_GET, ctor_local);
-            self.set_js_this_from_stack();
+            if saved_js_this.is_some() {
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                self.set_js_this_from_stack();
+            }
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
             self.emit_direct_callable_invoke(0);

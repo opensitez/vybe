@@ -285,7 +285,11 @@ impl Compiler {
     /// the user's `class Label`, while the registry still answers — the guard
     /// and the lookup disagree about one name, and the user's class loses its
     /// own field writes to the DOM. A guard must fold exactly like the lookup
-    /// it guards; this is the case-blind form for the case-blind lookups.
+    /// it guards. ⛔ The lookups it guards are NO LONGER case-blind — the tree
+    /// folds only where the language declares a fold. This stays case-blind on
+    /// purpose: a user class shadows a platform type of the same name whatever
+    /// the language's case rules, and that is a question about the USER's
+    /// declaration, not about the tree's.
     pub(crate) fn user_owns_type_spelling(&self, name: &str) -> bool {
         self.shadows_builtin_type(name)
             || self
@@ -296,6 +300,30 @@ impl Compiler {
 
     pub(super) fn normalize_type_hint(type_hint: &str) -> String {
         type_hint.trim().to_lowercase()
+    }
+
+    /// The same type hint, keyed for a NAMESPACE TREE lookup.
+    ///
+    /// ⛔ Differs from [`Self::normalize_type_hint`] in exactly one way: it does
+    /// NOT fold case. The tree stores every type under the spelling its
+    /// registrar declared (`List`, `StringBuilder`, `LocalDate`), and since the
+    /// fold became conditional a case-sensitive language asks the tree for an
+    /// EXACT match. Handing a tree lookup the folded key makes
+    /// `seg_eq("List", "list", None)` false, which is invisible in every
+    /// folding language and takes out every lookup in the others.
+    ///
+    /// `normalize_type_hint` stays folded because its other consumers compare
+    /// it against lowercase literals (`"integer"`, `"string"`). The two
+    /// questions are different, so they get different functions rather than one
+    /// function with a flag.
+    pub(super) fn tree_type_key(type_hint: &str) -> String {
+        // ⛔ Generic ARGUMENTS are not part of the key. A platform registers
+        // `HashMap`, never `HashMap<String, Integer>`, so a hint that carries
+        // its arguments finds nothing — which is what made a STATIC field
+        // typed `java.util.HashMap<String,Integer>` unable to answer `.put`
+        // while the same type in a LOCAL worked, the local path having erased
+        // them on the way through `resolve_source_type_alias`.
+        crate::primitives::generics::generic_base_name(type_hint.trim()).to_string()
     }
 
     pub(super) fn emit_default_value_for_type_hint(&mut self, type_hint: Option<&str>) {

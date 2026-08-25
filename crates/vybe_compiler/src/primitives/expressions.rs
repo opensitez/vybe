@@ -1203,7 +1203,7 @@ impl Compiler {
                     }
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
-                    common::math::emit_pow(self.chunk(), line);
+                    self.emit_pow_for_region();
                     return Ok(());
                 }
                 // InstanceOf → WASM GC `ref.test` opcode with the type name
@@ -1765,7 +1765,18 @@ impl Compiler {
                                 if self.expr_is_integer_like(inner) {
                                     common::expressions::emit_i32_not(self.chunk(), line);
                                 } else {
-                                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+                                    // `not x` negates the CONDITION `x`, so it
+                                    // has to fold like one. This was
+                                    // `ops::emit_dyn_not`, which is ECMA
+                                    // ToBoolean and cannot see a `Bool`/`Len`
+                                    // slot — under a protocol language `not []`
+                                    // came out false, and `assert []` (a
+                                    // hand-built `Unary{Not}`) never raised.
+                                    // The python walker worked around it by
+                                    // lowering user `not` to a ternary; that
+                                    // workaround is gone with this line.
+                                    self.emit_condition_truthiness_from_stack();
+                                    self.emit(Op::I32_EQZ);
                                 }
                                 // `expr_is_integer_like` already answers false
                                 // unless the language declares
@@ -1991,12 +2002,13 @@ impl Compiler {
                 let receiver_declares_result = self
                     .infer_expr_type_hint(object)
                     .map(|hint| self.resolve_source_type_alias(&hint))
-                    .map(|hint| Self::normalize_type_hint(&hint))
+                    .map(|hint| Self::tree_type_key(&hint))
                     .is_some_and(|hint| {
                         vybe_runtime::namespaces::lookup_type_instance_member(
                             &self.profile.namespaces.type_scopes,
                             &hint,
                             "Result",
+                            self.tree_fold(),
                         )
                         .is_some()
                     });
@@ -2701,8 +2713,13 @@ impl Compiler {
                     if self.current_class.is_some() {
                         let result_slot = self.define_local("__js_super_prop_result");
                         let saved_this = self.save_js_this("__js_prev_this_super_prop");
-                        self.emit_js_current_this_value();
-                        self.set_js_this_from_stack();
+                        // `None` ⇒ no ambient receiver in this language, so the
+                        // value must not be COMPUTED either — pushing one that
+                        // nothing pops leaks an operand.
+                        if saved_this.is_some() {
+                            self.emit_js_current_this_value();
+                            self.set_js_this_from_stack();
+                        }
 
                         let getter_key = self.str_const(&format!("__get_{}", field));
                         self.emit_js_super_home_base();
@@ -2775,8 +2792,10 @@ impl Compiler {
                     let getter_slot = self.define_local("__js_private_getter");
                     self.emit_u16(Op::LOCAL_SET, getter_slot);
                     let saved_this = self.save_js_this("__js_prev_this_private_get");
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.set_js_this_from_stack();
+                    if saved_this.is_some() {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.set_js_this_from_stack();
+                    }
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_direct_callable_invoke(1);
@@ -2847,8 +2866,10 @@ impl Compiler {
                         // here keeps the semantics consistent with the
                         // explicit method-call path.
                         let saved_this = self.save_js_this("__js_prev_this_member");
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.set_js_this_from_stack();
+                        if saved_this.is_some() {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.set_js_this_from_stack();
+                        }
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit(Op::REF_IS_NULL);
@@ -3062,6 +3083,7 @@ impl Compiler {
                 {
                     let unknown_receiver_default = field.eq_ignore_ascii_case("Length");
                     let type_scopes = &self.profile.namespaces.type_scopes;
+                    let fold = self.tree_fold();
                     let is_collection_like_type = |type_hint: &str| {
                         // The tree is the authority: a registered type that
                         // declares `Count` IS a collection, whichever platform
@@ -3072,6 +3094,7 @@ impl Compiler {
                             type_scopes,
                             type_hint,
                             "Count",
+                            fold,
                         )
                         .is_some()
                         {
@@ -3129,35 +3152,6 @@ impl Compiler {
                 } else {
                     false
                 };
-
-                let is_dotnet_dictionary_accessor = !self.case_sensitive
-                    && matches!(field.as_str(), "Keys" | "Values")
-                    && receiver_type_hint
-                        .as_deref()
-                        .map(|type_hint| {
-                            Self::is_dictionary_type_hint(type_hint)
-                                || Self::is_sorted_dictionary_type_hint(type_hint)
-                        })
-                        .unwrap_or(false)
-                    && !matches!(
-                        &object.kind,
-                        ExprKind::Ident(name)
-                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
-                    );
-
-                if is_dotnet_dictionary_accessor {
-                    self.compile_expr(object)?;
-                    if field == "Keys" {
-                        common::collections::emit_iter_keys(
-                            &mut self.chunks,
-                            self.current,
-                            self.line,
-                        );
-                    } else {
-                        self.emit_common("dict.values", 1, self.line);
-                    }
-                    return Ok(());
-                }
 
                 // Gated by the RECEIVER being collection-like, which the tree
                 // now answers — not by which family compiled the file.
@@ -3266,7 +3260,7 @@ impl Compiler {
                 } else if !self.profile.namespaces.type_scopes.is_empty()
                     && !*null_safe
                     && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let class_name = Self::normalize_type_hint(type_hint);
+                        let class_name = Self::tree_type_key(type_hint);
                         // A USER-DECLARED class owns its own members. Without
                         // this, a platform type sharing the name answered for
                         // them: `Class Point` with a field `X` had every `p.X`
@@ -3290,7 +3284,8 @@ impl Compiler {
                         // `Class MyForm Inherits Form` never matched at this
                         // site anyway — it reaches Form's roles through
                         // `declared_property_role`'s parent walk.
-                        // Case-blind, like `lookup_type_property_target` — see
+                        // Case-blind on its own terms — the tree lookup
+                        // beside it is not; see
                         // `user_owns_type_spelling`.
                         if self.user_owns_type_spelling(&class_name) {
                             return None;
@@ -3299,6 +3294,7 @@ impl Compiler {
                             &self.profile.namespaces.type_scopes,
                             &class_name,
                             field,
+                            self.tree_fold(),
                         )
                     })
                 {
@@ -3345,12 +3341,13 @@ impl Compiler {
                         && !is_csharp_runtime_count_accessor
                     {
                         receiver_type_hint.as_deref().and_then(|type_hint| {
-                            let class_name = Self::normalize_type_hint(type_hint);
+                            let class_name = Self::tree_type_key(type_hint);
                             vybe_runtime::namespaces::lookup_type_instance_target(
                                 &self.profile.namespaces.type_scopes,
                                 &class_name,
                                 field,
                                 0,
+                                self.tree_fold(),
                             )
                         })
                     } else {
@@ -4631,9 +4628,27 @@ impl Compiler {
                         }
                     }
 
+                    // TWO spellings of the same name, and they are not
+                    // interchangeable.
+                    //
+                    // `bare_str` is folded, for the intrinsic `match` below and
+                    // the compiler's own lowercase-keyed sets.
+                    //
+                    // ⛔ `bare_src_str` keeps the SOURCE's spelling, and it is
+                    // the only one a NAMESPACE TREE lookup may be handed. The
+                    // tree stores each type under the spelling its registrar
+                    // declared (`List`, `StringBuilder`), and since the fold
+                    // became conditional a case-sensitive language asks for an
+                    // exact match. Handing those lookups the folded name made
+                    // `seg_eq("List", "list", None)` false and took out EVERY
+                    // C# constructor — 1492 tests — while VB, which folds, saw
+                    // nothing. A folded query is invisible until some language
+                    // stops folding.
                     let bare = type_name.to_lowercase();
                     let bare = bare.split('(').next().unwrap_or(&bare).trim();
                     let bare_str = bare.rsplit('.').next().unwrap_or(bare);
+                    let bare_src = type_name.split('(').next().unwrap_or(type_name).trim();
+                    let bare_src_str = bare_src.rsplit('.').next().unwrap_or(bare_src);
 
                     // WASM threading/async — use compiler_common, NOT host calls
                     match bare_str {
@@ -4819,7 +4834,8 @@ impl Compiler {
                     // their declared ancestry.
                     let dotnet_constructor = vybe_runtime::namespaces::lookup_type_ctor_target(
                         &self.profile.namespaces.type_scopes,
-                        bare_str,
+                        bare_src_str,
+                        self.tree_fold(),
                     );
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args {
@@ -4879,7 +4895,8 @@ impl Compiler {
                         // The ancestry is data the platform already declares.
                         if let Some(spec) = vybe_runtime::namespaces::lookup_type_ctor_spec(
                             &self.profile.namespaces.type_scopes,
-                            bare_str,
+                            bare_src_str,
+                            self.tree_fold(),
                         ) {
                             if !spec.ancestry.is_empty() {
                                 let line = self.line;
@@ -5558,11 +5575,15 @@ impl Compiler {
                 );
                 let names: Vec<Option<String>> =
                     fields.iter().map(|(name, _)| name.clone()).collect();
+                // The REGION's rule, read where the value is built — see
+                // `Directives::tuple_field_fold`.
+                let field_fold = self.directives().tuple_field_fold();
                 common::tuples::emit_named_tuple(
                     &mut self.chunks,
                     self.current,
                     &names,
                     type_name.as_deref(),
+                    field_fold,
                     line,
                 );
             }
@@ -5801,7 +5822,19 @@ impl Compiler {
                                 ..
                             } = &value.kind
                             {
-                                if self.profile.ecma_object_literals {
+                                // How the accessor's RECEIVER arrives — which
+                                // is `receiver_binding`, not a property of
+                                // object-literal semantics.
+                                //
+                                // This read `ecma_object_literals`, a profile
+                                // flag that also gates insertion-order key
+                                // tracking, method-shorthand compilation and
+                                // `fn.name` inference. Three of those are about
+                                // what an object literal IS; this one is about
+                                // where `this` comes from, and bundling them
+                                // meant a language could not have ECMA literals
+                                // without also having ambient accessors.
+                                if self.ambient_this() {
                                     self.compile_lambda_with_flags(
                                         params,
                                         &LambdaBody::Block(body.clone()),
@@ -5823,6 +5856,12 @@ impl Compiler {
                                         is_nullable: false,
                                     }];
                                     accessor_params.extend(params.iter().cloned());
+                                    // An object-literal accessor is compiled as
+                                    // a lambda with the receiver PREPENDED, so
+                                    // it is receiver-first like a class
+                                    // accessor — and anonymous, so the fact has
+                                    // to ride on the chunk rather than a name.
+                                    self.last_lambda_body_chunk = None;
                                     self.compile_lambda_with_flags(
                                         &accessor_params,
                                         &LambdaBody::Block(body.clone()),
@@ -5831,6 +5870,18 @@ impl Compiler {
                                         *is_generator,
                                         false,
                                     )?;
+                                    // The BODY chunk, not the factory — the
+                                    // factory's index is what `chunks.len()`
+                                    // before the call would have given, and
+                                    // stamping that tags the wrong function.
+                                    let accessor_chunk =
+                                        self.last_lambda_body_chunk.unwrap_or(usize::MAX);
+                                    if let Some(c) = self.chunks.get_mut(accessor_chunk) {
+                                        c.is_method = true;
+                                        c.handled_call_tags.push(
+                                            vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG.to_string(),
+                                        );
+                                    }
                                 }
                             } else {
                                 self.emit_null();
@@ -6277,11 +6328,8 @@ impl Compiler {
                     // same `ToString` role, coerces through the same `Int` role,
                     // and compares equal to `Color.Green` by identity.
                     //
-                    // It used to fold to the member's NAME STRING, behind
-                    // `use_dotnet` — the last non-GUI read of that gate. Both
-                    // halves were wrong: the string was a fourth representation
-                    // of one enum value, and the gate scoped an answer that is
-                    // not language-specific to the .NET languages alone.
+                    // A name STRING here would be a fourth representation of
+                    // one enum value, and the answer is not language-specific.
                     //
                     // It does NOT reach pascal, despite pascal having the same
                     // question. Pascal spells the conversion `TLevel(10)` — a
@@ -6859,6 +6907,60 @@ impl Compiler {
             // cmpxchg,fence,wait,notify}` — so the missing part is the
             // `AtomicOp` → primitive mapping, the shape `emit_chan` has for
             // `ChanOp`.
+            // ── Call Tags proposal ───────────────────────────────────────
+            // `[ti* funcref] -> [to*]`: arguments first, funcref on top —
+            // the proposal's operand order, which the VM's `call_with_tag`
+            // then reads directly. The tag immediate is a CHUNK-LOCAL index,
+            // resolved to a VM entity at load exactly as a `throw`'s tagidx is.
+            ExprKind::WasmCallWithTag {
+                tag,
+                callee,
+                args,
+                tail,
+                table,
+            } => {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.compile_expr(callee)?;
+                let line = self.line;
+                // Arity/results come from the tag's own declaration, so a call
+                // site cannot disagree with it — the declaration is the type.
+                // The immediate is the tag's NAME, as a constant-pool index.
+                //
+                // A chunk-local tag table cannot work here: a module's chunks
+                // are laid out after the prelude's, so the compiler's "chunk 0"
+                // and the VM's are different chunks, and a declaration recorded
+                // against one is invisible to a call resolved against the other.
+                // A tag's identity is its name — that is exactly what the
+                // load-time registry interns on — so naming it directly removes
+                // the indirection rather than trying to keep two numberings in
+                // step.
+                let tag_idx = self.str_const(tag);
+                match table {
+                    // `call_indirect_with_tag $table $tag` — the table is an
+                    // immediate and `callee` held the ELEMENT INDEX, which the
+                    // compile above already pushed.
+                    Some(t) => {
+                        let chunk = &mut self.chunks[self.current];
+                        chunk.emit_op_u16(Op::CALL_INDIRECT_WITH_TAG, *t as u16, line);
+                        chunk.emit((tag_idx >> 8) as u8, line);
+                        chunk.emit((tag_idx & 0xff) as u8, line);
+                        chunk.emit(args.len() as u8, line);
+                    }
+                    None => {
+                        let op = if *tail {
+                            Op::CALL_RETURN_WITH_TAG
+                        } else {
+                            Op::CALL_WITH_TAG
+                        };
+                        let chunk = &mut self.chunks[self.current];
+                        chunk.emit_op_u16(op, tag_idx, line);
+                        chunk.emit(args.len() as u8, line);
+                    }
+                }
+            }
+
             ExprKind::Atomic(op) => {
                 self.emit_atomic(op)?;
             }
@@ -8088,8 +8190,9 @@ impl Compiler {
         // then is to declare the operators as members and read the emit out of
         // the tree, the way the StringBuilder indexer does.
         let scopes = &self.profile.namespaces.type_scopes;
-        if !vybe_runtime::namespaces::is_registered_type(scopes, &left_type)
-            || !vybe_runtime::namespaces::is_registered_type(scopes, &right_type)
+        let fold = self.tree_fold();
+        if !vybe_runtime::namespaces::is_registered_type(scopes, &left_type, fold)
+            || !vybe_runtime::namespaces::is_registered_type(scopes, &right_type, fold)
         {
             return Ok(false);
         }
@@ -8747,20 +8850,8 @@ pub fn emit_rich_compare_locals(
     // discard the value it just computed — the outer consumer then read
     // whatever sat beneath it on the stack (measured: Null into an `if`).
     let done = chunk.emit_block_typed(line, 1);
-    // ONE probe on the Compare SLOT, not a synonym list.
-    //
-    // This used to try `["compare", "CompareTo", "compareTo", "__cmp__",
-    // "<=>"]` in turn — `cross_language_aliases` reincarnated, and the exact
-    // shape flexclassplan §2g says must not come back. Every live spelling is
-    // already bound to `ProtocolSlot::Compare` by its own language (go
-    // `compare`; csharp/vb/pascal/powershell `CompareTo`; dart/kotlin/java
-    // `compareTo`; ruby `<=>`), so the slot reaches all of them and reaches
-    // any language that binds it later without editing this list. `__cmp__`
-    // was bound by NOBODY — python 3 removed it — so it was dead weight that
-    // could only ever capture a user method of that name.
-    for slot in [vybe_ast::ProtocolSlot::Compare] {
-        let method_key =
-            chunk.add_constant(Value::String(Arc::from(vybe_ast::protocol_slot_key(slot))));
+    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
+        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_struct_field_op(Op::STRUCT_GET, 0, method_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);

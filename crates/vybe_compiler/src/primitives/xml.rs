@@ -42,6 +42,7 @@ pub fn register_namespace_tree() {
         ("load", "xml.load"),
         ("save", "xml.save"),
         ("elements", "xml.elements"),
+        ("attribute", "xml.attribute"),
     ] {
         tree.insert(name.into(), NamespaceNode::CommonEmit(emit.into()));
     }
@@ -318,6 +319,29 @@ pub fn emit_save(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// Stack: `[document/node, tag_name] -> [element_sequence]`.
 pub fn emit_elements(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let idx = chunks[current].add_import("web:dom-parser", "getElementsByTagName");
+    chunks[current].emit_call(idx, 2, line);
+}
+
+/// An element's ATTRIBUTE by name — the third XML axis, beside `elements`
+/// (child) and the descendant walk.
+///
+/// VB spells it `doc.@id`; the child and descendant axes were both here and
+/// this one was not, so every attribute read was a parse error in the only
+/// frontend that has XML literals.
+///
+/// ⛔ It reads through **`web:dom-parser`**, NOT `gui::DOM_MODULE`
+/// (`web:dom`). Both modules export `getAttribute`, so pointing at `web:dom`
+/// LINKED cleanly and silently read the wrong DOM: `web:dom` is the live
+/// document that `primitives/gui.rs` drives, while every node on this path is
+/// produced by `web:dom-parser` (`parse` above, or `createElement` in the
+/// dotnet `XElement` constructor, which also writes attributes with
+/// `web:dom-parser.setAttribute`). `doc.@id` therefore answered EMPTY for an
+/// attribute that was demonstrably in the document. The other four functions
+/// here were already on `web:dom-parser`; this was the odd one out.
+///
+/// Stack: `[element, name]` → `[value]`.
+pub fn emit_attribute(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom-parser", "getAttribute");
     chunks[current].emit_call(idx, 2, line);
 }
 

@@ -129,6 +129,7 @@ impl Compiler {
             &self.profile.namespaces.type_scopes,
             &class_name,
             field,
+            self.tree_fold(),
         )
     }
 
@@ -456,12 +457,13 @@ impl Compiler {
                                 .resolve_pending_class_name_for_type_hint(&receiver_type)
                                 .is_none()
                             {
-                                let class_name = Self::normalize_type_hint(&receiver_type);
+                                let class_name = Self::tree_type_key(&receiver_type);
                                 if let Some(return_type) =
                                     vybe_runtime::namespaces::lookup_type_member_return(
                                         &self.profile.namespaces.type_scopes,
                                         &class_name,
                                         field,
+                                        self.tree_fold(),
                                     )
                                 {
                                     return Some(return_type);
@@ -512,12 +514,13 @@ impl Compiler {
                             .resolve_pending_class_name_for_type_hint(&receiver_type)
                             .is_none()
                         {
-                            let class_name = Self::normalize_type_hint(&receiver_type);
+                            let class_name = Self::tree_type_key(&receiver_type);
                             if let Some(return_type) =
                                 vybe_runtime::namespaces::lookup_type_member_return(
                                     &self.profile.namespaces.type_scopes,
                                     &class_name,
                                     field,
+                                    self.tree_fold(),
                                 )
                             {
                                 return Some(return_type);

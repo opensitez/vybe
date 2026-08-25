@@ -262,11 +262,20 @@ pub const TYPENAME_TAG: &str = "__typename";
 /// positional values (as for a plain tuple). Adds the `__tuple` tag, a by-name
 /// key for each named field (`arr.name = arr[i]`), the ordered `__fields` name
 /// list, and `__typename` when `type_name` is set. Stack: `[arr] -> [arr]`.
+/// `field_fold` is the region's `Directives::tuple_field_fold()`.
+///
+/// ⛔ **The fold has to happen HERE, where the value is built.** A tuple field
+/// is a key on a value, not a name a scope can settle — so a case-insensitive
+/// language reading `t.Id` off a tuple whose key is `Id` asks for the folded
+/// spelling and misses. Writing the folded ALIAS alongside the declared key is
+/// what makes both reads land, and it leaves `__fields` carrying what the
+/// source wrote, so `_asdict` and the repr still report `Id`.
 pub fn emit_named_tuple(
     chunks: &mut [Chunk],
     current: usize,
     field_names: &[Option<String>],
     type_name: Option<&str>,
+    field_fold: Option<vybe_ast::CaseAlphabet>,
     line: u32,
 ) {
     // 1. Tuple tag — the value behaves / repr's / slices as a tuple.
@@ -283,6 +292,25 @@ pub fn emit_named_tuple(
         c.emit_op(Op::ARRAY_GET, line); // [arr, arr, arr[i]]
         let k = c.add_constant(Value::String(Arc::from(name.as_str())));
         c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, arr[i]]
+
+        // The folded alias, when the region says field names fold. Skipped
+        // when it would be the same key — an already-lowercase name needs no
+        // second write.
+        if let Some(alphabet) = field_fold {
+            let folded = match alphabet {
+                vybe_ast::CaseAlphabet::Ascii => name.to_ascii_lowercase(),
+                vybe_ast::CaseAlphabet::Unicode => name.to_lowercase(),
+            };
+            if folded != *name {
+                let c = &mut chunks[current];
+                c.emit_dup(line);
+                c.emit_dup(line);
+                core_wasm::i32_const(c, line, i as i32);
+                c.emit_op(Op::ARRAY_GET, line);
+                let k = c.add_constant(Value::String(Arc::from(folded.as_str())));
+                c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+            }
+        }
     }
 
     // 3. Ordered field-name list.

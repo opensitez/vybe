@@ -159,6 +159,60 @@ impl Compiler {
     /// as `handler(receiver, name)`.
     ///
     /// Stack: `[value] -> [value]`.
+    /// The WRITE twin of [`Self::emit_getattr_slot_probe`] — `ProtocolSlot::SetAttr`
+    /// (PHP `__set`, Python `__setattr__`).
+    ///
+    /// Stack: `[value] -> []`. Returns `true` when it emitted the probe, so the
+    /// caller knows the value was consumed and the ordinary store must be
+    /// skipped; `false` leaves the stack untouched.
+    ///
+    /// `SetAttr` had NO reader: it sat in the slot vocabulary while every
+    /// frontend that wanted a catch-all write synthesised a direct `__set`
+    /// member call in its own walker. This is the consumer that makes the
+    /// declaration mean something.
+    pub(super) fn emit_setattr_slot_probe(&mut self, obj_slot: u16, field_name: &str) -> bool {
+        if !self.program_has_setattr {
+            return false;
+        }
+        let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::SetAttr);
+        let line = self.line;
+        let value_slot = self.define_local("__setattr_value");
+        let handler_slot = self.define_local("__setattr_handler");
+
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+
+        // Only a real object can carry the slot — `is_object` gates the probe
+        // exactly as the read side does, because a `ecma:reflect.get` on a
+        // primitive is not a lookup that can succeed.
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        recipes::is_object(self.chunk(), line);
+        self.chunk().emit_if(line);
+        let get = self.import("ecma:reflect", "get");
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(slot_key.as_str())));
+        self.emit_host_call(get, 2);
+        self.emit_u16(Op::LOCAL_SET, handler_slot);
+
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        {
+            let undef = self.chunk().add_import("wasm:js-undefined", "test");
+            self.chunk().emit_call(undef, 1, line);
+        }
+        self.chunk().emit_op(Op::I32_EQZ, line);
+        self.chunk().emit_if(line);
+        // `handler(receiver, name, value)` — the same receiver-first shape the
+        // read probe uses, plus the value being written.
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(field_name)));
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 3, line);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+        true
+    }
+
     pub(super) fn emit_getattr_slot_probe(&mut self, obj_slot: u16, field_name: &str) {
         if !self.program_has_getattr {
             return;

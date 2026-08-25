@@ -404,6 +404,73 @@ pub fn emit_read_stream_handle(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Read ONE `own<T>` element WITHOUT suspending. Stack: [handle] → [rep | null].
+///
+/// The non-blocking twin of [`emit_read_stream_handle`], and what `O_NONBLOCK`
+/// actually means: `async` is canonopt 0x06 on the `canon stream.read` row, so
+/// the ASYNC form may answer `BLOCKED` where the synchronous one must suspend.
+/// `stream.read@0` names the async row by CANONIDX — the documented fallback
+/// for a front end with no binder concept. Nothing here is Component-Model
+/// specific: `compile_with_imports` lowers a canon section for every language.
+///
+/// ⚠ A BLOCKED read leaves the end COPYING — the copy IS in flight — and only
+/// `stream.cancel-read` returns it to IDLE. Skipping that makes the NEXT read
+/// on the same stream trap with "not IDLE", so the cancel is not optional
+/// tidying: EAGAIN is two calls, not one.
+pub fn emit_try_read_stream_handle(chunk: &mut Chunk, line: u32) {
+    const HANDLE_BYTES: i32 = 4;
+    const BLOCKED: i32 = -1;
+
+    let stream_read = chunk.add_import("canon", "stream.read@0");
+    let cancel_read = chunk.add_import("canon", "stream.cancel-read");
+    let resource_rep = chunk.add_import("canon", "resource.rep");
+
+    let handle = chunk.alloc_scratch(1);
+    let packed = chunk.alloc_scratch(1);
+    let n = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, handle, line);
+    chunk.emit_i32_const(HANDLE_BYTES, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n, line);
+    let ptr = crate::primitives::canon_marshal::emit_alloc(chunk, line, n);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, handle, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_call(stream_read, 3, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
+
+    // BLOCKED (0xffff_ffff) — nothing was queued. Reclaim the buffer so the
+    // end is IDLE again, then answer "no element".
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
+    chunk.emit_i32_const(BLOCKED, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, handle, line);
+        chunk.emit_call(cancel_read, 1, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+    chunk.emit_else(line);
+    {
+        // `result | (progress << 4)` — one element reads back as 0x10.
+        chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
+        chunk.emit_i32_const(4, line);
+        chunk.emit_op(Op::I32_SHR_U, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op(Op::I32_GT_S, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
+        chunk.emit_op(Op::I32_LOAD, line);
+        chunk.emit_call(resource_rep, 1, line);
+        chunk.emit_else(line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_end(line);
+}
+
 /// Hand a byte array over AS a Component Model `stream<u8>`.
 /// Stack: [bytes] → [readable handle].
 ///

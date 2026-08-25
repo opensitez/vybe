@@ -2619,6 +2619,7 @@ pub(crate) fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(idx, 2, line);
 }
 
+
 /// Stack: `[a, b] -> [bool]`.
 pub(crate) fn emit_str_equals(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "equals");

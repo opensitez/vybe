@@ -111,7 +111,7 @@ impl Compiler {
         // 3. Global namespace tree (platform surfaces register their
         //    descriptor data on first query; resolution logic stays here).
         register_platform_trees();
-        if let Some(target) = namespaces::resolve_path(&[key.as_str()]) {
+        if let Some(target) = namespaces::resolve_path(&[key.as_str()], self.tree_fold()) {
             return Some(Resolution::Tree(target));
         }
 
@@ -127,13 +127,15 @@ impl Compiler {
         //     Types with `ctor: None`, reaching construction via
         //     `lookup_constructor` + dotted chains instead), so mounting a
         //     `.NET` ambient root here never re-routes a bare `Console`.
-        let ambient_key = key.to_lowercase();
+        // Same rule as the rebase above: the tree folds at LOOKUP now, so a
+        // key handed to it keeps the spelling the source wrote.
+        let ambient_key = key.to_string();
         for root in &self.ambient_tree_roots {
             let mut expanded: Vec<String> = root.split('.').map(str::to_string).collect();
             expanded.push(ambient_key.clone());
             let refs: Vec<&str> = expanded.iter().map(String::as_str).collect();
             if let Some(target @ namespaces::ResolutionTarget::Ctor { spec: Some(_), .. }) =
-                namespaces::resolve_path(&refs)
+                namespaces::resolve_path(&refs, self.tree_fold())
             {
                 return Some(Resolution::Tree(target));
             }
@@ -198,25 +200,32 @@ impl Compiler {
         // 3. Global namespace tree walk (platform surfaces register their
         //    descriptor data on first query). A profile tree-mount rebases
         //    the chain onto its tree path first (`System.Math.Sin` →
-        //    `dotnet.system.math.sin`); rebased segments lowercase because
-        //    tree keys are lowercase-canonical and the mounted surfaces
-        //    (.NET CLS) resolve case-insensitively.
+        //    `dotnet.System.Math.Sin`).
+        //
+        //    ⛔ Rebased segments used to be LOWERCASED here, "because tree
+        //    keys are lowercase-canonical". That premise is gone: the tree
+        //    keeps the declared spelling and `fold_get` matches exact first,
+        //    folding only on a miss. Folding HERE instead destroys the
+        //    declared spelling before the tree ever sees it — and it does so
+        //    unconditionally, for every language, so a case-sensitive one
+        //    cannot opt out and a conditional fold downstream cannot repair
+        //    it. Pass the source's own segments and let the lookup decide.
         register_platform_trees();
         if let Some(base) = self.tree_mounts.get(&head_key) {
             let mut rebased: Vec<String> = base.split('.').map(str::to_string).collect();
-            rebased.extend(rest.iter().map(|s| s.to_lowercase()));
+            rebased.extend(rest.iter().map(|s| s.to_string()));
             let refs: Vec<&str> = rebased.iter().map(|s| s.as_str()).collect();
-            return namespaces::resolve_path(&refs).map(Resolution::Tree);
+            return namespaces::resolve_path(&refs, self.tree_fold()).map(Resolution::Tree);
         }
         // 3b. Ambient roots — .NET `Imports`/`using` context as data: a bare
         //     qualified chain (`Thread.Sleep`) searches under each ambient
         //     tree root in declaration order; first hit wins.
         for root in &self.ambient_tree_roots {
             let mut expanded: Vec<String> = root.split('.').map(str::to_string).collect();
-            expanded.push(head.to_lowercase());
-            expanded.extend(rest.iter().map(|s| s.to_lowercase()));
+            expanded.push(head.to_string());
+            expanded.extend(rest.iter().map(|s| s.to_string()));
             let refs: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-            if let Some(target) = namespaces::resolve_path(&refs) {
+            if let Some(target) = namespaces::resolve_path(&refs, self.tree_fold()) {
                 // Ambient expansion accepts only terminal callables/values —
                 // a namespace hit under an ambient root is ambiguous prefix
                 // noise, never a resolution (the legacy cascade had the same
@@ -228,7 +237,7 @@ impl Compiler {
         }
         let canon: Vec<String> = segments.iter().map(|s| self.canon(s)).collect();
         let refs: Vec<&str> = canon.iter().map(|s| s.as_str()).collect();
-        namespaces::resolve_path(&refs).map(Resolution::Tree)
+        namespaces::resolve_path(&refs, self.tree_fold()).map(Resolution::Tree)
     }
 
     /// Resolve a source-level type name against the `user.<unit>.*` root.
@@ -278,7 +287,7 @@ impl Compiler {
                 path.extend(prefix.split('.').filter(|s| !s.is_empty()));
             }
             path.extend_from_slice(&segments);
-            match namespaces::resolve_in(&tree, &path) {
+            match namespaces::resolve_in(&tree, &path, self.tree_fold()) {
                 Some(ResolutionTarget::UserGlobal { identity, kind }) if kind == want => {
                     Some(identity)
                 }

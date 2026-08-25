@@ -19,6 +19,15 @@ fn emit_f64_mul(chunk: &mut Chunk, line: u32) {
 fn emit_f64_div(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_DIV, line);
 }
+/// `a // b` — divide, then floor. The fallback behind `ProtocolSlot::FloorDiv`.
+fn emit_f64_floordiv(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::primitives::math::emit_floor(chunk, line);
+}
+/// `a ** b`. The fallback behind `ProtocolSlot::Pow`.
+fn emit_f64_pow(chunk: &mut Chunk, line: u32) {
+    crate::primitives::math::emit_pow(chunk, line);
+}
 
 impl Compiler {
     pub(super) fn emit_to_primitive(&mut self, hint: &str) {
@@ -676,13 +685,17 @@ impl Compiler {
     /// `a_known_num`/`b_known_num` would drop the unbox and let `as_i32`/
     /// `as_f64` coerce a boxed operand SILENTLY.
     ///
-    /// The whole safety condition is `TypeBinding::Converting`. A
-    /// `Descriptive` hint guarantees nothing about the next assignment, and
-    /// both of the cases that reach here are Descriptive by construction: a
-    /// python annotation (`x: int = "s"` runs) and the spelling
-    /// `compile_var_decl` infers from an untyped initializer, where
-    /// `let i = 0; i = "x"` is legal. So this fires on genuinely DECLARED
-    /// types — pascal `var i: Integer`, C# `int i` — and nowhere else.
+    /// The whole safety condition is `TypeBinding::Converting` OR
+    /// `TypeBinding::Checked` — a store that coerces, or one the language's
+    /// own compiler statically rejects when mistyped; either way the runtime
+    /// value is guaranteed. A `Descriptive` hint guarantees nothing about
+    /// the next assignment, and both of the cases that reach here are
+    /// Descriptive by construction: a python annotation (`x: int = "s"`
+    /// runs) and the spelling `compile_var_decl` infers from an untyped
+    /// initializer, where `let i = 0; i = "x"` is legal. So this fires on
+    /// genuinely DECLARED (or statically checked) types — pascal
+    /// `var i: Integer`, C# `int i`, kotlin `var i: Int`, go `i := 0` — and
+    /// nowhere else.
     /// A shift, under this region's [`ShiftOverflow`] policy.
     ///
     /// wasm masks the count — `i32.shl` takes it modulo 32 — so `Mask` is the
@@ -742,7 +755,10 @@ impl Compiler {
         let Some(declared) = self.lookup_var_declared(name) else {
             return false;
         };
-        if declared.binding != vybe_ast::TypeBinding::Converting {
+        if !matches!(
+            declared.binding,
+            vybe_ast::TypeBinding::Converting | vybe_ast::TypeBinding::Checked
+        ) {
             return false;
         }
         // A DECLARED spelling can name a user type where a literal never
@@ -758,6 +774,33 @@ impl Compiler {
             return false;
         }
         self.hint_is_builtin_number(declared.spelling())
+    }
+
+    /// The `both_provably_number` relational fold: the bare WASM compare,
+    /// then the boxing contract.
+    ///
+    /// A condition's i32 request is honoured on EVERY profile — the
+    /// soundness rule (`compile_condition_to_i32`) is "only emitters whose
+    /// result provably came from a WASM compare opcode honour it", and this
+    /// result is exactly that. The rich branch can never honour it (a user
+    /// `__lt__` may return any object); the fold exists because no user
+    /// operator is reachable. Without this, a folded loop condition was
+    /// boxed to `Bool` and immediately re-tested by the ~10-host-call
+    /// truthiness ladder, per iteration.
+    ///
+    /// In VALUE position: ECMA and `materialize_bool_results` profiles box
+    /// (both branches did); a profile with neither keeps the raw i32 exactly
+    /// as `emit_dyn_lt` would have.
+    fn emit_folded_numeric_compare(&mut self, op: Op) {
+        self.emit(op);
+        if std::mem::take(&mut self.want_i32_condition) {
+            self.gave_i32_condition = true;
+            return;
+        }
+        if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+            let line = self.line;
+            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        }
     }
 
     pub(super) fn compile_binop(&mut self, op: &BinOp) {
@@ -784,14 +827,39 @@ impl Compiler {
             None => (false, false),
         };
         // The WEAKER of the two facts — "is a number", not "is a constant this
-        // emitter just wrote". Only the rich-compare probe skip may read it;
-        // see `expr_is_provably_number`.
+        // emitter just wrote". See `expr_is_provably_number`: a literal, or a
+        // local whose DECLARED type the language's own `[builtin_types]`
+        // table classifies as Int/Double. No language names anywhere — a
+        // language that wants a numeric-ordering quirk states it as an AST
+        // directive (documentation/directives.md), and none does.
         let left_is_number = match operands {
             Some((left, _)) => self.expr_is_provably_number(left),
             None => false,
         };
+        let right_is_number = match operands {
+            Some((_, right)) => self.expr_is_provably_number(right),
+            None => false,
+        };
+        // builtinslotplan.md §2f's fold: both operands provably numeric ⇒ the
+        // rich-operator probe, the `compare3` binding and the whole dynamic
+        // type-test ladder are UNREACHABLE — number⋄number relational order
+        // and `+`/`-`/`*` are IEEE in every profile. The bare opcode pops via
+        // `Value::as_f64()`, the same coercion the untyped `F64_SUB`/`F64_MUL`
+        // arms already rely on, so any numeric representation (I32/I64/F64)
+        // compares correctly. MEASURED before this fold: `i < 2000000` with a
+        // declared-int `i` still ran the ~15-host-call `emit_dyn_lt` ladder
+        // per iteration — a bare 2M-iteration loop exceeded 60s in C, go and
+        // JS alike.
+        let both_provably_number = left_is_number && right_is_number;
         match op {
             BinOp::Add => {
+                // Two provable numbers cannot concatenate, carry a user
+                // `operator +`, or need ToPrimitive — every branch below
+                // reduces to the numeric add.
+                if both_provably_number {
+                    self.emit(Op::F64_ADD);
+                    return;
+                }
                 // `dynamic_add`: JS-style `+` — concatenates when either
                 // operand is a string, otherwise adds numerically. PHP,
                 // Python, Lua, etc. use `.` / `..` / other operators for
@@ -847,6 +915,12 @@ impl Compiler {
                 }
             }
             BinOp::Sub => {
+                // Provable numbers skip the dynamic dispatch and the rich
+                // probe — a number never carries a user `operator -`.
+                if both_provably_number {
+                    self.emit(Op::F64_SUB);
+                    return;
+                }
                 if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("sub", NumberArith::Sub);
                 } else if self.uses_rich_operators() {
@@ -859,6 +933,11 @@ impl Compiler {
                 }
             }
             BinOp::Mul => {
+                // Same fold as `Sub`.
+                if both_provably_number {
+                    self.emit(Op::F64_MUL);
+                    return;
+                }
                 if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("mul", NumberArith::Mul);
                 } else if self.uses_rich_operators() {
@@ -883,14 +962,40 @@ impl Compiler {
                 }
             }
             BinOp::IDiv => {
-                self.emit(Op::F64_DIV);
-                let l = self.line;
-                common::math::emit_trunc(self.chunk(), l);
+                // `ProtocolSlot::IDiv` had NO reader — exactly the defect
+                // recorded for `FloorDiv` below, one arm up. The arm went
+                // straight to `F64_DIV; trunc`, so a class that BINDS `IDiv`
+                // could never answer `\`, and the binding was inert.
+                //
+                // Measured on `System.Numerics.BigInteger`, whose value binds
+                // the slot: `a \ b` answered `NaN` because both operands went
+                // through the f64 path, while `a + b` (which does read its
+                // slot) was exact. A bound slot that nothing consults is a
+                // silent wrong answer, which is what flexclassplan §0's "every
+                // failure is loud" forbids.
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::IDiv, |chunk, line| {
+                        chunk.emit_op(Op::F64_DIV, line);
+                        common::math::emit_trunc(chunk, line);
+                    });
+                } else {
+                    self.emit(Op::F64_DIV);
+                    let l = self.line;
+                    common::math::emit_trunc(self.chunk(), l);
+                }
             }
             BinOp::FloorDiv => {
-                self.emit(Op::F64_DIV);
-                let l = self.line;
-                common::math::emit_floor(self.chunk(), l);
+                // `ProtocolSlot::FloorDiv` had NO reader — the arm went
+                // straight to `F64_DIV; floor`, so a user `__floordiv__` (or
+                // any language's alias) could never answer `//`. It reads the
+                // same way `Add`/`Sub`/`Mul`/`Div` do, gated by the same
+                // `uses_rich_operators` question.
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::FloorDiv, emit_f64_floordiv);
+                } else {
+                    let l = self.line;
+                    emit_f64_floordiv(self.chunk(), l);
+                }
             }
             BinOp::Mod => {
                 let l = self.line;
@@ -919,13 +1024,29 @@ impl Compiler {
                     }
                 } else if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("rem", NumberArith::Mod);
+                } else if self.uses_rich_operators() {
+                    // Same missing reader as `IDiv` above: a class binding
+                    // `ProtocolSlot::Mod` was never asked, so `a Mod b` on a
+                    // BigInteger fell to `fmod` and answered `NaN`. The
+                    // `[builtin_slots.int] mod` row still wins first — that is
+                    // a language stating what its `%` MEANS, which outranks an
+                    // operand's own operator.
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Mod, |chunk, line| {
+                        common::math::emit_c_fmod(chunk, line)
+                    });
                 } else {
                     common::math::emit_c_fmod(self.chunk(), l);
                 }
             }
             BinOp::Pow => {
-                let l = self.line;
-                common::math::emit_pow(self.chunk(), l);
+                // As with `FloorDiv`: `ProtocolSlot::Pow` had no reader.
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Pow, emit_f64_pow);
+                } else {
+                    // The numeric fallback answers to the `pow_semantics`
+                    // directive: ECMA's `1 ** ∞` is NaN, IEEE's is 1.
+                    self.emit_pow_for_region();
+                }
             }
             BinOp::Eq => {
                 // `[builtin_slots.string] eq` — the language's own `==`.
@@ -1110,6 +1231,10 @@ impl Compiler {
                 }
             }
             BinOp::Lt => {
+                if both_provably_number {
+                    self.emit_folded_numeric_compare(Op::F64_LT);
+                    return;
+                }
                 // builtinslotplan.md §2f — the language's three-way `Compare`
                 // decides, and this operator is its sign. Checked BEFORE
                 // `ecma_operator_coercion` per §2d: a language's own binding
@@ -1122,16 +1247,23 @@ impl Compiler {
                     return;
                 }
                 if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
+                    self.coerce_top_two_to_primitive(
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
+                    );
                 }
                 if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    // The known flags carry provably-numeric, not just
+                    // literal: ToPrimitive and ToNumber are the identity on a
+                    // Number, so a declared-number local skips its ladder side
+                    // exactly as a constant does.
                     let line = self.line;
                     crate::primitives::ops::emit_js_lt(
                         self.chunk(),
                         line,
-                        left_num_lit,
-                        right_num_lit,
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
                     );
                     // Ends in `f64.lt`, so the result IS an i32 — a condition
                     // can take it as-is instead of having it boxed and then
@@ -1159,6 +1291,10 @@ impl Compiler {
                 }
             }
             BinOp::Gt => {
+                if both_provably_number {
+                    self.emit_folded_numeric_compare(Op::F64_GT);
+                    return;
+                }
                 // builtinslotplan.md §2f — the language's three-way `Compare`
                 // decides, and this operator is its sign. Checked BEFORE
                 // `ecma_operator_coercion` per §2d: a language's own binding
@@ -1171,16 +1307,20 @@ impl Compiler {
                     return;
                 }
                 if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
+                    self.coerce_top_two_to_primitive(
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
+                    );
                 }
                 if self.profile.ecma_operator_coercion {
-                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
+                    // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
                     crate::primitives::ops::emit_js_gt(
                         self.chunk(),
                         line,
-                        left_num_lit,
-                        right_num_lit,
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
@@ -1205,6 +1345,10 @@ impl Compiler {
                 }
             }
             BinOp::LtEq => {
+                if both_provably_number {
+                    self.emit_folded_numeric_compare(Op::F64_LE);
+                    return;
+                }
                 // builtinslotplan.md §2f — the language's three-way `Compare`
                 // decides, and this operator is its sign. Checked BEFORE
                 // `ecma_operator_coercion` per §2d: a language's own binding
@@ -1217,16 +1361,20 @@ impl Compiler {
                     return;
                 }
                 if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
+                    self.coerce_top_two_to_primitive(
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
+                    );
                 }
                 if self.profile.ecma_operator_coercion {
-                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
+                    // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
                     crate::primitives::ops::emit_js_le(
                         self.chunk(),
                         line,
-                        left_num_lit,
-                        right_num_lit,
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
@@ -1251,6 +1399,10 @@ impl Compiler {
                 }
             }
             BinOp::GtEq => {
+                if both_provably_number {
+                    self.emit_folded_numeric_compare(Op::F64_GE);
+                    return;
+                }
                 // builtinslotplan.md §2f — the language's three-way `Compare`
                 // decides, and this operator is its sign. Checked BEFORE
                 // `ecma_operator_coercion` per §2d: a language's own binding
@@ -1263,16 +1415,20 @@ impl Compiler {
                     return;
                 }
                 if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
+                    self.coerce_top_two_to_primitive(
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
+                    );
                 }
                 if self.profile.ecma_operator_coercion {
-                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
+                    // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
+                    // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
                     crate::primitives::ops::emit_js_ge(
                         self.chunk(),
                         line,
-                        left_num_lit,
-                        right_num_lit,
+                        left_num_lit || left_is_number,
+                        right_num_lit || right_is_number,
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
@@ -1554,8 +1710,10 @@ impl Compiler {
                     self.emit_host_call(helper, 2);
                     self.chunk().emit_else(line);
                     let saved_this = self.save_js_this("__js_prev_this_hasinst");
-                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                    self.set_js_this_from_stack();
+                    if saved_this.is_some() {
+                        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+                        self.set_js_this_from_stack();
+                    }
                     self.emit_u16(Op::LOCAL_GET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, lhs_slot);
                     self.emit_direct_callable_invoke(1);
@@ -1680,8 +1838,8 @@ impl Compiler {
                 common::math::emit_c_fmod(self.chunk(), l);
             }
             CompoundOp::Pow => {
-                let l = self.line;
-                common::math::emit_pow(self.chunk(), l);
+                // `x **= y` is `x ** y` — same contract.
+                self.emit_pow_for_region();
             }
             CompoundOp::Concat => {
                 let l = self.line;

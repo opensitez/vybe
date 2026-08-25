@@ -16,9 +16,9 @@ use vybe_runtime::opcode::Op;
 // once, keyed by the CONCEPT rather than by anyone's spelling of it.
 //
 // It used to live in eleven places: a `[namespace_constants]` block in each
-// language profile, plus `platforms/dotnet`'s `NAMESPACE_CONSTANTS`, which the
-// profile parser merged in behind `use_dotnet`. That made the dotnet platform
-// the de-facto owner of `Math.PI` — and, for any language that reached the
+// language profile, plus `platforms/dotnet`'s `NAMESPACE_CONSTANTS` merged in
+// behind a language-family flag. That made the dotnet platform the de-facto
+// owner of `Math.PI` — and, for any language that reached the
 // merged table, a dependency on a platform it has nothing to do with.
 
 const CONSTANTS: &[(&str, f64)] = &[
@@ -217,9 +217,78 @@ pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
 
 // ── Host imports (standard math, same across all languages) ──
 /// Pow via direct ECMA host import. Stack: [base, exponent] → [result].
+/// ECMA-262 §6.1.6.1.3 `Number::exponentiate`. Stack: `[base, exponent]` → `[result]`.
+///
+/// The host `ecma:math.pow` IS the ECMA platform, so it answers ECMA — including
+/// the two cases the standard itself flags as deliberate divergences from IEEE:
+///
+/// > The result of _base_ `**` _exponent_ when _base_ is *1*𝔽 or *-1*𝔽 and
+/// > _exponent_ is *+∞*𝔽 or *-∞*𝔽, or when _base_ is *1*𝔽 and _exponent_ is
+/// > *NaN*, differs from IEEE 754-2019. The first edition of ECMAScript
+/// > specified a result of *NaN* for this operation, whereas later revisions of
+/// > IEEE 754 specified *1*𝔽. The historical ECMAScript behaviour is preserved
+/// > for compatibility reasons.
+///
+/// A language wanting the IEEE reading takes [`emit_pow_ieee`] instead.
 pub fn emit_pow(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:math", "pow");
     chunk.emit_call(idx, 2, line);
+}
+
+/// IEEE 754-2019 `pow`. Stack: `[base, exponent]` → `[result]`.
+///
+/// The same two cases [`emit_pow`] answers `NaN` for, folded back to `1`:
+///   - _exponent_ is NaN
+///   - abs(_base_) = 1 and _exponent_ is ±∞
+///
+/// Neither reading is a bug. C, Python, Fortran, Go, Lua, PHP, Pascal, COBOL
+/// and Ruby all answer `1` here; JS and Kotlin (via `java.lang.Math`) answer
+/// `NaN`. Which one a region wants is stated by the `pow_semantics` directive,
+/// so the choice lives in the AST rather than in whichever emitter happened to
+/// be reached — and neither language has to know the other exists.
+pub fn emit_pow_ieee(chunk: &mut Chunk, line: u32) {
+    let exponent = chunk.alloc_scratch(1);
+    let base = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, exponent, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, base, line);
+
+    // exponent != exponent — the NaN test that needs no helper.
+    chunk.emit_op_u16(Op::LOCAL_GET, exponent, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, exponent, line);
+    chunk.emit_op(Op::F64_NE, line);
+
+    // abs(base) == 1 && abs(exponent) == +∞
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, exponent, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(f64::INFINITY, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    // IEEE: `pow(1, anything)` is 1, and `pow(x, NaN)` is 1 only for x = 1 —
+    // but every case reaching here has abs(base) = 1 or a NaN exponent, and
+    // IEEE answers 1 for `pow(±1, ±∞)` and `pow(1, NaN)` alike. A NaN exponent
+    // with a base other than 1 still has to answer NaN, so the host decides
+    // that one rather than this guard.
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_else(line);
+    emit_nan(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, exponent, line);
+    emit_pow(chunk, line);
+    chunk.emit_end(line);
 }
 
 /// Stack: [value] → [result]

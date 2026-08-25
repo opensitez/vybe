@@ -17,6 +17,7 @@
 
 pub mod builtin_slots;
 pub mod builtin_types;
+pub mod canon;
 pub mod class_normalize;
 pub mod datetime;
 
@@ -34,6 +35,14 @@ pub struct Module {
     /// walker states its language's defaults here; a [`StmtKind::Directive`]
     /// in the body changes them from that point on. See [`Directives`].
     pub directives: Directives,
+    /// The component's CANON SECTION, in canonidx order — empty for every
+    /// language that is not a Component Model front end.
+    ///
+    /// Module-level metadata, not code: a canon definition has no execution
+    /// position and cannot be branched over, which is why it is a table here
+    /// rather than a [`Statement`]. Same category as the global index space.
+    /// See [`canon::CanonDecl`].
+    pub canon: canon::ComponentSection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -810,6 +819,56 @@ pub enum StmtKind {
         arity: u8,
     },
 
+    // ── Call Tags proposal (proposals/call-tags) ─────────────────────────────
+    // A CALL tag is a different entity from the exception tag above: that one
+    // names an exception TYPE, this one names a calling CONVENTION over a
+    // signature. Both are module entities, so both are declarations rather than
+    // expressions, and both key by name so a declaration and its uses meet at
+    // one entity.
+    /// `(call_tag $id (param t*) (result t*) (fallback $f)?)`.
+    ///
+    /// Without a fallback this is `call_tag.canon` — the canonical tag for the
+    /// signature, interned, and an unhandled call traps. With one it is
+    /// `call_tag.new`: a FRESH identity over a signature that may already have
+    /// a canonical tag, which is what lets two structurally identical functions
+    /// stay distinguishable after GC type canonicalisation.
+    WasmCallTagDecl {
+        /// Tag name (the `$id`), keying the entity.
+        name: String,
+        /// Signature shape — parameter and result counts.
+        params: u8,
+        results: u8,
+        /// `(canon)` — `call_tag.canon`, interned per signature. Otherwise this
+        /// is `call_tag.new`: a fresh identity over that signature.
+        canonical: bool,
+        /// `(fallback $f)`: the handler called when a `funcref` does not handle
+        /// this tag, receiving `[ti* funcref]`. `None` ⇒ canonical ⇒ trap.
+        fallback: Option<String>,
+    },
+
+    /// `(func_switch $id (case $tag $func)* (forward $other)?)` — the
+    /// Overview's "alternative to `func`". Has no type and cannot be called
+    /// directly; a `funcref` to it dispatches on the tag it is called with,
+    /// forwarding unmatched tags to `$other` when given.
+    WasmFuncSwitchDecl {
+        name: String,
+        /// `($call_tag $func)*`, matched in declaration order.
+        arms: Vec<(String, String)>,
+        /// The trailing `$func_switch?`.
+        forward: Option<String>,
+    },
+
+    /// `(func … (call_tag $t+))` — which call tags a func's `funcref` handles.
+    /// Declaring any REPLACES the default of its own canonical tag, which is
+    /// what gives the proposal its security property: a func that lists only
+    /// non-exported tags cannot be reached indirectly from outside the module.
+    WasmFuncCallTags {
+        /// The func being declared.
+        func: String,
+        /// Tag names it handles.
+        tags: Vec<String>,
+    },
+
     /// `throw $tag` — raise the WASM exception `$tag` with `args` as its
     /// payload (already popped off the stack machine in push order). Lowers to
     /// each arg followed by `THROW <tagidx>`.
@@ -1403,6 +1462,39 @@ pub enum ExprKind {
     /// Java/Kotlin `AtomicInteger` in walker tables, Pascal `TInterlocked`
     /// bound to nothing. Three of the five were not atomic at all.
     Atomic(AtomicOp),
+
+    /// `call_with_tag $tag` / `call_return_with_tag $tag` — Call Tags proposal.
+    ///
+    /// An ordinary `Call` cannot express this: the tag is not an argument, it
+    /// is which CONVENTION the call is made under, and the callee decides
+    /// whether it handles it. Same operand layout as `call_ref` — arguments
+    /// first, `funcref` on top (`[ti* funcref] -> [to*]`).
+    ///
+    /// `call_indirect_with_tag $table $tag` is not a separate node: the Overview
+    /// defines it as shorthand for `(call_with_tag $tag (table.get $table))`, so
+    /// the front end desugars it and there is one path to keep correct.
+    WasmCallWithTag {
+        /// The call tag's name, resolving to the same entity its declaration
+        /// created.
+        tag: String,
+        /// The `funcref` being called.
+        callee: Box<Expression>,
+        /// `ti*`, bottom-to-top.
+        args: Vec<Expression>,
+        /// `call_return_with_tag` — the tail-call form.
+        tail: bool,
+        /// `call_indirect_with_tag $table $tag`: the table index, with `callee`
+        /// holding the ELEMENT INDEX rather than a funcref.
+        ///
+        /// The Overview defines this as shorthand for
+        /// `(call_with_tag $tag (table.get $table))`, but there is no
+        /// funcref-yielding table expression to desugar into here — plain
+        /// `call_indirect` is itself a single opcode with the table as an
+        /// immediate. So the shorthand keeps its own opcode and this node
+        /// carries the immediate.
+        table: Option<u32>,
+    },
+
     Await(Box<Expression>),
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
@@ -1606,6 +1698,14 @@ pub enum TypeBinding {
     /// PEP 484 annotations; a type hint a dynamic language INFERRED for
     /// dispatch, which must not change what is stored.
     Descriptive,
+    /// The declaration never converts, but the LANGUAGE'S OWN COMPILER
+    /// statically enforces it — Kotlin's `var i: Int`, go's `i := 0`: a
+    /// program storing another type there does not compile, so the runtime
+    /// value is GUARANTEED without any coercion at the store. Distinct from
+    /// `Descriptive` precisely because a Python annotation carries no such
+    /// guarantee; a provable-type consumer (the numeric operator fold) may
+    /// trust `Checked` exactly as it trusts `Converting`.
+    Checked,
 }
 
 /// A declared type: its source spelling plus whether binding converts.
@@ -1634,6 +1734,16 @@ impl TypeHint {
         TypeHint {
             spelling: spelling.into(),
             binding: TypeBinding::Descriptive,
+        }
+    }
+
+    /// A declared type the language's own compiler statically enforces —
+    /// no conversion at the store, guaranteed value. See
+    /// [`TypeBinding::Checked`].
+    pub fn checked(spelling: impl Into<String>) -> Self {
+        TypeHint {
+            spelling: spelling.into(),
+            binding: TypeBinding::Checked,
         }
     }
 
@@ -2688,6 +2798,36 @@ pub enum AsyncOp {
 }
 
 impl AsyncOp {
+    /// Whether this operation PRODUCES an async value rather than consuming
+    /// one — i.e. whether the expression it forms is still a task/promise.
+    ///
+    /// ⛔ **The distinction is the whole point.** `Resolved`, `Spawn`, `Join`
+    /// and friends yield a pending value; `AwaitEager`, `BlockOn` and `Yield`
+    /// UNWRAP one, so their result is whatever the task carried. A frontend
+    /// that rewrites `Task.Run(…)` into an `AsyncOp` erases the .NET type the
+    /// declaration had, and its inference needs this back — otherwise
+    /// `Dim t = Task.Run(...)` then `t.Result` falls through to an ordinary
+    /// member read and answers `undefined` (measured: VB
+    /// `vb_task_run_exception_capture` 13 -> 17 while this was missing).
+    ///
+    /// It lives here rather than in each walker because it is a fact about the
+    /// NODE, and every typed frontend that normalises onto this vocabulary asks
+    /// the same question — C# already carries a private copy
+    /// (`csharp_task_valued_type`), which is one table in two places.
+    pub fn yields_async_value(&self) -> bool {
+        match self {
+            AsyncOp::Resolved(_)
+            | AsyncOp::Rejected(_)
+            | AsyncOp::Spawn(_)
+            | AsyncOp::Sleep(_)
+            | AsyncOp::Join { .. }
+            | AsyncOp::Continue { .. }
+            | AsyncOp::Cleanup { .. } => true,
+            // These CONSUME an async value; the result is what it carried.
+            AsyncOp::AwaitEager(_) | AsyncOp::BlockOn(_) | AsyncOp::Yield => false,
+        }
+    }
+
     /// Every child expression, in evaluation order — for the structural
     /// traversals (yield detection, span walks) that must not skip async
     /// operands.
@@ -4243,6 +4383,56 @@ pub struct Directives {
     /// STORE behaviour, which is what every language but php wants.
     pub reference_binding: Option<PassBy>,
 
+    /// How LOCAL and PARAMETER names compare in this region.
+    ///
+    /// `None` means [`CaseMatch::Exact`]: eleven of the seventeen languages
+    /// here, and the safe answer for a language that has not stated one.
+    /// [`CaseMatch::Folded`] is vb, pascal, cobol, fortran and powershell.
+    ///
+    /// ⛔ **Folding a variable name is a COMPILE-TIME normalisation, not a
+    /// runtime behaviour.** `Scope::resolve` answers with a SLOT, so a VB
+    /// reference to `MYVAR` is resolved once against the local declared
+    /// `myVar` and the runtime never sees either spelling. That is the whole
+    /// design: fix the name where the declaration is known, and there is no
+    /// case problem left downstream. A directive that made the RUNTIME fold
+    /// would be the opposite of this.
+    pub variable_case: Option<CaseMatch>,
+
+    /// How FUNCTION and CLASS names compare in this region.
+    ///
+    /// Separate from [`Self::variable_case`] because PHP splits them —
+    /// `$Foo` and `$foo` are different variables while `strlen` and `StrLen`
+    /// are the same function. A language whose variables fold necessarily
+    /// folds its callables too; the reverse does not hold, and that asymmetry
+    /// is the only reason this is a second field rather than one.
+    pub callable_case: Option<CaseMatch>,
+
+    /// How a NAMED TUPLE's field names compare in this region.
+    ///
+    /// ⛔ **A tuple field is not a namespace member and not a local.** It is a
+    /// key on a VALUE, resolved at run time against the shape the literal
+    /// built — so unlike [`Self::variable_case`], which `Scope::resolve`
+    /// settles at compile time into a slot, this one has to survive into the
+    /// emitted value. It is stated separately because a language can fold its
+    /// identifiers and still want the DECLARED spelling reported back:
+    /// `.ToString()` and `_asdict` read `__fields`, which keeps what the
+    /// source wrote.
+    ///
+    /// `None` means [`CaseMatch::Exact`] — C#, Dart and Python, whose tuple
+    /// fields are case-sensitive. VB states [`CaseMatch::Folded`]: `(Id:=2).id`
+    /// and `.ID` are the same field, because VB identifiers are.
+    pub tuple_field_case: Option<CaseMatch>,
+
+    /// Which alphabet [`CaseMatch::Folded`] folds. `None` means
+    /// [`CaseAlphabet::Ascii`], which is what every folding language in this
+    /// tree specifies and what `Scope` already implements.
+    ///
+    /// Stated separately from the two `CaseMatch` fields, rather than as extra
+    /// enum variants on them, so that "do we fold?" and "how wide is the fold?"
+    /// stay independent questions. A language answering the first differently
+    /// for variables and callables still answers the second once.
+    pub case_alphabet: Option<CaseAlphabet>,
+
     /// Declared contract for builtin sets in this region. The storage remains
     /// the common Set primitive; this records the source-language surface.
     pub set_semantics: Option<SetSemantics>,
@@ -4267,6 +4457,29 @@ pub struct Directives {
     /// a handful of languages want.
     pub receiver_binding: Option<ReceiverBinding>,
 
+    /// How this region decides whether a value is TRUE.
+    ///
+    /// Two genuinely different questions, and no node can tell them apart:
+    /// `if x` is the same shape in every language. ECMA §7.1.2 ToBoolean asks
+    /// the VALUE — `null`/`false`/`0`/`""` are false and every object is true.
+    /// CPython §3.3.1 asks the OBJECT — [`ProtocolSlot::Bool`] first, then
+    /// [`ProtocolSlot::Len`], and only a value that answers neither is true.
+    /// The two disagree on `[]`, `{}`, `set()` and on any class defining
+    /// `__bool__`/`__len__`.
+    ///
+    /// It belongs here for the reason [`Self::receiver_binding`] does: it is
+    /// uniform within a language and the program itself could never see it.
+    /// It replaced `truthiness_via_dunder_or_length`, a PROFILE property that
+    /// one language declared and three shared sites read — and because those
+    /// sites each decided separately, they drifted: `if`, `bool()` and
+    /// `not not` applied the protocol while `emit_dyn_not` did not, so a
+    /// hand-built `Unary{Not}` (which is what `assert` desugars to) answered
+    /// `[]` truthy and `assert []` silently passed.
+    ///
+    /// `None` inherits [`Truthiness::Value`] — ECMA's rule, which is what every
+    /// language but the protocol ones wants.
+    pub truthiness: Option<Truthiness>,
+
     /// What a shift or rotate count outside `[0, width)` does in this region.
     ///
     /// Genuinely lexical policy: the operand's declared type does NOT
@@ -4278,6 +4491,20 @@ pub struct Directives {
     /// `None` inherits [`ShiftOverflow::Mask`], which is what every language
     /// but Fortran wants and what the compiler already emitted.
     pub shift_overflow: Option<ShiftOverflow>,
+
+    /// Which `pow` contract this region wants for the two cases where the two
+    /// standards genuinely disagree.
+    ///
+    /// Sibling of [`Self::shift_overflow`], and the same kind of fact: a
+    /// numeric edge case the operand's TYPE cannot distinguish, only the
+    /// language can. ECMA-262 §6.1.6.1.3 answers `NaN` for `1 ** ±∞` and
+    /// `1 ** NaN`; IEEE 754-2019 answers `1`, and the standard says so in its
+    /// own note. Neither is a bug: JS and Java want the first, C, Python,
+    /// Fortran, Go and Lua want the second.
+    ///
+    /// `None` inherits [`PowSemantics::Ieee`] — what `f64::powf` already gave
+    /// every language, so declaring nothing keeps today's behaviour.
+    pub pow_semantics: Option<PowSemantics>,
 
     /// Does this program present a user interface?
     ///
@@ -4399,7 +4626,113 @@ pub enum ReceiverBinding {
     Ambient,
 }
 
+/// Which `pow` contract a region wants — see [`Directives::pow_semantics`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PowSemantics {
+    /// IEEE 754-2019: `pow(1, ±∞)` and `pow(1, NaN)` are `1`. C, Python,
+    /// Fortran, Go, Lua — and what `f64::powf` does natively.
+    #[default]
+    Ieee,
+    /// ECMA-262 §6.1.6.1.3: those same cases are `NaN`. Kept by the standard
+    /// "for compatibility reasons" with the first edition. JS, Java.
+    Ecma,
+}
+
+/// How a value's truth is decided — see [`Directives::truthiness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Truthiness {
+    /// Ask the VALUE. ECMA §7.1.2 ToBoolean: `null`, `false`, `0`, `NaN` and
+    /// `""` are false; every object — an empty array included — is true.
+    #[default]
+    Value,
+    /// Ask the OBJECT, then fall back to the value. CPython §3.3.1: try
+    /// [`ProtocolSlot::Bool`], then [`ProtocolSlot::Len`] (`!= 0`), and only
+    /// then the value itself.
+    ///
+    /// Stated as a protocol rather than as "empty collections are falsy"
+    /// deliberately: a builtin `[]` is falsy for exactly the reason a user
+    /// class with `__len__` returning 0 is, so one rule covers both and a
+    /// class in ANY language gets it by binding the slot.
+    Protocol,
+}
+
+/// How two identifiers are compared for equality in this region.
+///
+/// ⛔ **This is a property of the NAME KIND, not of the language.** PHP is the
+/// proof: its *variables* are case-sensitive while its *function and class
+/// names* are not. A single per-language boolean cannot state that, which is
+/// why [`Directives`] carries `variable_case` and `callable_case` separately.
+/// The previous carrier was a `self.name == "php"` check inside the VM crate's
+/// `lookup_builtin` — a language-name gate, which is what this replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseMatch {
+    /// Byte-exact. Every language that does not say otherwise.
+    Exact,
+    /// Case-insensitive, folding the alphabet [`CaseAlphabet`] names.
+    Folded,
+}
+
+/// Which alphabet a [`CaseMatch::Folded`] comparison folds.
+///
+/// ⛔ **The tree already disagrees with itself about this**, which is why it is
+/// stated rather than assumed. `primitives/scope.rs` folds with
+/// `eq_ignore_ascii_case`; `vybe_runtime::namespaces` folds with
+/// `to_lowercase()`, which is Unicode. So a Turkish dotted `I` resolves one way
+/// as a local and another way as a namespace path *in the same program*, and
+/// nothing reports the disagreement because the two are never compared.
+///
+/// Every case-insensitive language in this tree — vb, pascal, cobol, fortran,
+/// powershell, and PHP's callables — specifies ASCII folding for identifiers,
+/// so `Ascii` is the answer for all of them today. `Unicode` exists because the
+/// AST has to be able to STATE the other answer: a language whose identifiers
+/// fold beyond ASCII is expressible without another carrier being invented for
+/// it later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseAlphabet {
+    /// `A`-`Z` only. Nothing outside ASCII folds.
+    Ascii,
+    /// Unicode simple case folding.
+    Unicode,
+}
+
 impl Directives {
+    /// Whether a LOCAL/PARAMETER reference folds here, and over which alphabet.
+    ///
+    /// One accessor rather than two `Option` reads, because the defaults have
+    /// to be applied together and applying them at each call site is how
+    /// `case_sensitive` went wrong: it was a compiler flag, so all 33 sites had
+    /// to remember `!self.case_sensitive &&` and **23 did not**, silently
+    /// breaking Go. Anything that needs the policy reads it from here.
+    pub fn variable_fold(&self) -> Option<CaseAlphabet> {
+        match self.variable_case.unwrap_or(CaseMatch::Exact) {
+            CaseMatch::Exact => None,
+            CaseMatch::Folded => Some(self.case_alphabet.unwrap_or(CaseAlphabet::Ascii)),
+        }
+    }
+
+    /// Whether a NAMED TUPLE field reference folds here, and over which
+    /// alphabet. Same contract as [`Self::variable_fold`].
+    ///
+    /// ⛔ Read where the tuple is BUILT, not where it is read. `variable_case`
+    /// can be settled at compile time because `Scope::resolve` answers with a
+    /// slot; a tuple field is a key on a value, so the folded spelling has to
+    /// be on the value before it travels anywhere.
+    pub fn tuple_field_fold(&self) -> Option<CaseAlphabet> {
+        match self.tuple_field_case.unwrap_or(CaseMatch::Exact) {
+            CaseMatch::Exact => None,
+            CaseMatch::Folded => Some(self.case_alphabet.unwrap_or(CaseAlphabet::Ascii)),
+        }
+    }
+
+    /// Whether a FUNCTION/CLASS reference folds here, and over which alphabet.
+    /// Same contract as [`Self::variable_fold`].
+    pub fn callable_fold(&self) -> Option<CaseAlphabet> {
+        match self.callable_case.unwrap_or(CaseMatch::Exact) {
+            CaseMatch::Exact => None,
+            CaseMatch::Folded => Some(self.case_alphabet.unwrap_or(CaseAlphabet::Ascii)),
+        }
+    }
+
     /// Nothing stated.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
@@ -4413,6 +4746,15 @@ impl Directives {
         }
         if other.reference_binding.is_some() {
             self.reference_binding = other.reference_binding;
+        }
+        if other.variable_case.is_some() {
+            self.variable_case = other.variable_case;
+        }
+        if other.callable_case.is_some() {
+            self.callable_case = other.callable_case;
+        }
+        if other.case_alphabet.is_some() {
+            self.case_alphabet = other.case_alphabet;
         }
         if other.set_semantics.is_some() {
             self.set_semantics = other.set_semantics;

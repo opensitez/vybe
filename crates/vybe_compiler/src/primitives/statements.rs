@@ -15,6 +15,16 @@ impl Compiler {
             .expect("directive stack always has the module frame")
     }
 
+    /// The case policy the namespace tree must use for THIS module's lookups.
+    ///
+    /// `None` — the language spells names exactly, so a miss is a miss. `Some`
+    /// — the language folds case, so the tree may retry a miss folded. Both
+    /// answers come from the `callable_case` directive, never from a language
+    /// name, so a new folding language needs no code here.
+    pub(crate) fn tree_fold(&self) -> vybe_runtime::namespaces::Fold {
+        super::scope::tree_fold(self.directives())
+    }
+
     /// Is the receiver ambient `this` here, rather than an explicit leading
     /// parameter?
     ///
@@ -25,6 +35,30 @@ impl Compiler {
     /// `case_sensitive` had, where 23 of 33 sites forgot.
     pub(crate) fn ambient_this(&self) -> bool {
         self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::Ambient)
+    }
+
+    /// Does this region decide truth by asking the OBJECT — `ProtocolSlot::Bool`
+    /// then `ProtocolSlot::Len` — rather than by ECMA ToBoolean?
+    ///
+    /// Read it wherever a value becomes a condition. Every site that answers
+    /// "is this true" must answer it the SAME way: the three that used to
+    /// decide separately disagreed, and `assert []` passed because of it.
+    pub(crate) fn protocol_truthiness(&self) -> bool {
+        self.directives().truthiness == Some(vybe_ast::Truthiness::Protocol)
+    }
+
+    /// Emit `pow` under the contract this region declared — ECMA's `NaN` for
+    /// `1 ** ±∞` / `1 ** NaN`, or IEEE's `1`. Read it at EVERY pow site (`**`
+    /// and `Math.pow` alike), or the two spellings disagree within one program.
+    pub(crate) fn emit_pow_for_region(&mut self) {
+        let line = self.line;
+        // Declaring nothing means IEEE — what every language got before the
+        // host became ECMA-compliant, so silence cannot move a language.
+        if self.directives().pow_semantics == Some(vybe_ast::PowSemantics::Ecma) {
+            crate::primitives::math::emit_pow(self.chunk(), line);
+        } else {
+            crate::primitives::math::emit_pow_ieee(self.chunk(), line);
+        }
     }
 
     /// Does this body declare anything? A frame is pushed only when it does,
@@ -142,38 +176,6 @@ impl Compiler {
 
     fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), String> {
         self.line = stmt.span.start_line;
-        if std::env::var("VYBE_DBG_CTRL").is_ok() {
-            let what = match &stmt.kind {
-                StmtKind::Assign { targets, .. } => format!(
-                    "Assign targets={:?}",
-                    targets
-                        .iter()
-                        .map(|t| match &t.kind {
-                            ExprKind::Ident(n) => format!("Ident({n})"),
-                            ExprKind::Member { object, field, .. } => format!(
-                                "Member({}.{field})",
-                                match &object.kind {
-                                    ExprKind::Ident(n) => n.clone(),
-                                    other => format!("{other:?}").chars().take(24).collect(),
-                                }
-                            ),
-                            other => format!("{other:?}").chars().take(32).collect::<String>(),
-                        })
-                        .collect::<Vec<_>>()
-                ),
-                StmtKind::Expr(e) => {
-                    format!(
-                        "Expr({})",
-                        format!("{:?}", e.kind).chars().take(60).collect::<String>()
-                    )
-                }
-                other => format!("{other:?}").chars().take(40).collect::<String>(),
-            };
-            eprintln!(
-                "[stmt] line={} class={:?} {}",
-                self.line, self.current_class, what
-            );
-        }
         // Runtime-prelude boundary marker: a frontend that prepends a prelude
         // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
         // before the user's own code. Record the current bytecode offset on the
@@ -3841,6 +3843,48 @@ impl Compiler {
                 // entity. Nothing is emitted into the instruction stream.
                 self.chunks[self.current].import_exception_tag(format!("wast:tag:{name}"), *arity);
             }
+            // ── Call Tags proposal ───────────────────────────────────────
+            // All three are DECLARATIONS: module entities recorded on the
+            // chunk and resolved into VM entities at load, like exception
+            // tags. Nothing enters the instruction stream.
+            StmtKind::WasmCallTagDecl {
+                name,
+                params,
+                results,
+                canonical,
+                fallback,
+            } => {
+                // Recorded on the chunk being compiled. WHICH chunk does not
+                // matter: the load-time pass scans every chunk's declarations
+                // and interns them by NAME, so a declaration here and a
+                // `call_with_tag` naming it anywhere else meet at one entity.
+                // (Pinning this to `chunks[0]` was an attempt to keep two
+                // numberings aligned, from before resolution went by name — and
+                // chunk 0 is the prelude's, not the module's.)
+                self.chunks[self.current].declare_call_tag(
+                    name.clone(),
+                    *params,
+                    *results,
+                    fallback.clone(),
+                    *canonical,
+                );
+            }
+            StmtKind::WasmFuncSwitchDecl {
+                name,
+                arms,
+                forward,
+            } => {
+                self.chunks[self.current].func_switch_decls.push((
+                    name.clone(),
+                    arms.clone(),
+                    forward.clone(),
+                ));
+            }
+            StmtKind::WasmFuncCallTags { func, tags } => {
+                self.chunks[self.current]
+                    .func_call_tag_decls
+                    .push((func.clone(), tags.clone()));
+            }
             StmtKind::WasmThrow { tag, args } => {
                 let line = self.line;
                 for a in args {
@@ -4588,6 +4632,7 @@ impl Compiler {
                             || vybe_runtime::namespaces::is_registered_type(
                                 &self.profile.namespaces.type_scopes,
                                 &resolved_init,
+                                self.tree_fold(),
                             );
                         if declares_a_type {
                             inferred_type_hint = Some(resolved_init);
@@ -4827,7 +4872,7 @@ impl Compiler {
                         // hint from the normalized string would silently
                         // reset it to the `Converting` default.
                         let mut normalized = declared.clone();
-                        normalized.set_spelling(Self::normalize_type_hint(declared.spelling()));
+                        normalized.set_spelling(Self::tree_type_key(declared.spelling()));
                         self.global_type_hints.insert(cn.clone(), normalized);
                     }
                     if *kind == VarDeclKind::Const && self.profile.ecma_lexical_declarations {
@@ -5196,24 +5241,21 @@ impl Compiler {
                 let is_local =
                     self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
 
-                // Implicit self field write (only if NOT a local)
-                if !is_local && self.is_class_field(name) {
-                    let tmp = self.define_local("__field_tmp");
-                    self.emit_u16(Op::LOCAL_SET, tmp);
-                    if self.emit_self_ref() {
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        let field_name = self
-                            .current_class
-                            .as_deref()
-                            .and_then(|class_name| {
-                                self.visible_instance_field_storage_name_for_class(class_name, name)
-                            })
-                            .unwrap_or_else(|| self.canon(name));
-                        let idx = self.str_const(&field_name);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                        return Ok(());
-                    }
-                    self.emit_u16(Op::LOCAL_GET, tmp);
+                // Implicit self member write (only if NOT a local): compile
+                // exactly as the explicit `this.name = value` the author could
+                // have written — ONE property-aware path, so an
+                // accessor-backed property reaches its setter/backing field
+                // instead of a raw struct slot (or, worse, a global). The old
+                // inline STRUCT_SET here was a second, property-blind copy of
+                // the member-assign arm, and `val y: Int; init { y = … }`
+                // wrote a global `y` through it.
+                if !is_local && (self.is_class_field(name) || self.is_class_instance_member(name)) {
+                    let this_member = Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: name.clone(),
+                        null_safe: false,
+                    });
+                    return self.compile_assign_target_valued(&this_member, source);
                 }
                 let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
                 self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
@@ -5292,27 +5334,26 @@ impl Compiler {
                 // instance. Checked FIRST because every later path assumes an
                 // object with a method table, and an element has none — that
                 // lookup is what resolved to `undefined` for every Pascal form.
-                if std::env::var("VYBE_DBG_CTRL").is_ok() {
-                    let hint = self.infer_expr_type_hint(object);
-                    eprintln!(
-                        "[ctrl] set .{} class={:?} hint={:?} elem={:?} implicit_self={} current_class={:?}",
-                        field,
-                        self.current_class,
-                        hint,
-                        hint.as_deref()
-                            .map(Self::normalize_type_hint)
-                            .and_then(|c| {
-                                common::gui::registered_control_element(
-                                    &self.profile.namespaces.type_scopes,
-                                    &c,
-                                )
-                                .map(|e| e.tag.to_string())
-                            }),
-                        self.current_class_implicit_self,
-                        self.current_class,
-                    );
-                }
-                if let Some(type_hint) = self.infer_expr_type_hint(object) {
+                // ONE receiver-typing path, the same one the member-read site
+                // uses (`expressions.rs`): `resolve_receiver_type_hint` is a
+                // strict superset of `infer_expr_type_hint` — it adds scope
+                // types, global hints, STATIC fields and type aliases before
+                // falling back to it.
+                //
+                // Asking only the narrower one lost every control held in a
+                // module-level field. A VB `Module`'s members are static, so
+                // `link.rs` records them in `static_field_types`, and the
+                // walker qualifies a bare `display` to `Program.display` — a
+                // `Member`, whose arm in `infer_expr_type_hint` reads
+                // `instance_field_types` and nothing else. With no receiver
+                // type the control test below failed and `display.Text = "0"`
+                // compiled to a plain `struct.set` on the object instead of a
+                // DOM property write: the element rendered at its UA default
+                // size with no value, and nothing errored.
+                let receiver_type_hint =
+                    crate::primitives::calls::resolve_receiver_type_hint(self, object)
+                        .or_else(|| self.infer_expr_type_hint(object));
+                if let Some(type_hint) = receiver_type_hint {
                     let class_name = Self::normalize_type_hint(&type_hint);
                     if self.control_element_for_type(&class_name).is_some()
                         && !self.is_declared_instance_field(&class_name, field)
@@ -5367,7 +5408,7 @@ impl Compiler {
                 // its controls answers here.
                 if !self.expr_user_value_type_name(object).is_some() {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
-                        let class_name = Self::normalize_type_hint(&type_hint);
+                        let class_name = Self::tree_type_key(&type_hint);
                         if self.control_element_for_type(&class_name).is_some()
                             && !self.is_declared_instance_field(&class_name, field)
                         {
@@ -5394,14 +5435,14 @@ impl Compiler {
                 // value).
                 // Gated on whether the language HAS namespace type scopes, not
                 // on which platform is loaded: the lookup itself answers "is
-                // this a declared platform property", and `use_dotnet` only
-                // excluded every other GUI language from an answer it could
-                // give. Mirrors the getter site, which was already structural.
+                // this a declared platform property". A language-family gate
+                // here would exclude every other GUI language from an answer it
+                // can give. Mirrors the getter site, which is also structural.
                 if !self.profile.namespaces.type_scopes.is_empty()
                     && !self.expr_user_value_type_name(object).is_some()
                 {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
-                        let class_name = Self::normalize_type_hint(&type_hint);
+                        let class_name = Self::tree_type_key(&type_hint);
                         // A user declaration owns its own members — the same
                         // shadow the GETTER site applies, which this one was
                         // missing. With only the getter guarded, `Class Point`
@@ -5413,14 +5454,19 @@ impl Compiler {
                         // shadowed name simply has no platform target, so this
                         // falls out to the ordinary member-assign path below,
                         // which is what a plain field write already uses.
-                        // Case-blind, like `lookup_type_property_setter_target`
-                        // — see `user_owns_type_spelling`.
+                        // `user_owns_type_spelling` compares case-blind, so a
+                        // user class shadows the platform type whatever the
+                        // language's case rules. The TREE lookup beside it does
+                        // NOT: it is handed `tree_type_key`, the source's own
+                        // spelling, and folds only where the language declares
+                        // a fold.
                         if let Some(target) = (!self.user_owns_type_spelling(&class_name))
                             .then(|| {
                                 vybe_runtime::namespaces::lookup_type_property_setter_target(
                                     &self.profile.namespaces.type_scopes,
                                     &class_name,
                                     field,
+                                    self.tree_fold(),
                                 )
                             })
                             .flatten()
@@ -5662,8 +5708,10 @@ impl Compiler {
                     let obj_slot = self.define_local("__js_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     let saved_this = self.save_js_this("__js_prev_this_set");
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.set_js_this_from_stack();
+                    if saved_this.is_some() {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.set_js_this_from_stack();
+                    }
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_const(Value::String(Arc::from(field_name.as_str())));
                     self.emit_u16(Op::LOCAL_GET, tmp);

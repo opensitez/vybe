@@ -91,11 +91,11 @@ impl Compiler {
         let hint = self
             .infer_expr_type_hint(object)
             .as_deref()
-            .map(Self::normalize_type_hint)?;
+            .map(Self::tree_type_key)?;
         let scopes = &self.profile.namespaces.type_scopes;
         let (Target::Common { emit: get }, Target::Common { emit: set }) = (
-            vybe_runtime::namespaces::lookup_type_property_target(scopes, &hint, "Item")?,
-            vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, &hint, "Item")?,
+            vybe_runtime::namespaces::lookup_type_property_target(scopes, &hint, "Item", self.tree_fold())?,
+            vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, &hint, "Item", self.tree_fold())?,
         ) else {
             return None;
         };
@@ -108,17 +108,16 @@ impl Compiler {
     /// is a delegate: a delegate type is the one kind that is declared and then
     /// never appears as a real type anywhere.
     ///
-    /// This replaces a `use_dotnet` conjunct that appeared TWICE, verbatim, with
-    /// the scalar list inline both times. The tree test is new and strictly
-    /// sharpens it — a REGISTERED type (`StringBuilder`, `Button`) used to
-    /// satisfy the old "not a defined class" rule and be mistaken for a
-    /// delegate.
+    /// The tree test is what sharpens this: a REGISTERED type
+    /// (`StringBuilder`, `Button`) satisfies a bare "not a defined class" rule
+    /// and would otherwise be mistaken for a delegate.
     pub(super) fn type_hint_is_delegate_like(&self, type_hint: &str) -> bool {
-        let normalized = Self::normalize_type_hint(type_hint);
+        let normalized = Self::tree_type_key(type_hint);
         !self.defined_classes.contains(&self.canon(&normalized))
             && !vybe_runtime::namespaces::is_registered_type(
                 &self.profile.namespaces.type_scopes,
                 &normalized,
+                self.tree_fold(),
             )
             && !matches!(
                 normalized.to_ascii_lowercase().as_str(),
@@ -399,7 +398,7 @@ impl Compiler {
         type_hint: Option<String>,
     ) -> Result<StaticLocalBinding, String> {
         let canon_name = self.canon(name);
-        let normalized_type_hint = type_hint.as_deref().map(Self::normalize_type_hint);
+        let normalized_type_hint = type_hint.as_deref().map(Self::tree_type_key);
 
         if let Some(existing) = self
             .static_local_bindings

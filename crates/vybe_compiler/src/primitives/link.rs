@@ -446,6 +446,9 @@ impl Compiler {
                                     vybe_ast::ProtocolSlot::GetAttr => {
                                         self.program_has_getattr = true;
                                     }
+                                    vybe_ast::ProtocolSlot::SetAttr => {
+                                        self.program_has_setattr = true;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -515,6 +518,9 @@ impl Compiler {
                                     }
                                     vybe_ast::ProtocolSlot::GetAttr => {
                                         self.program_has_getattr = true;
+                                    }
+                                    vybe_ast::ProtocolSlot::SetAttr => {
+                                        self.program_has_setattr = true;
                                     }
                                     _ => {}
                                 }
@@ -775,7 +781,9 @@ impl Compiler {
             {
                 continue;
             }
-            if let Some(spec) = vybe_runtime::namespaces::lookup_type_ctor_spec(&scope, &parent) {
+            if let Some(spec) =
+                vybe_runtime::namespaces::lookup_type_ctor_spec(&scope, &parent, self.tree_fold())
+            {
                 if let Some(nc) = self.normalized_classes.get_mut(&name) {
                     nc.platform_base = Some(platform_base_spec_from_ctor_spec(spec));
                 }
@@ -1124,7 +1132,7 @@ impl Compiler {
                         static_fields.push(field_name.clone());
                         if let Some(type_hint) = type_hint.as_ref() {
                             static_field_types
-                                .insert(field_name, Self::normalize_type_hint(type_hint));
+                                .insert(field_name, Self::tree_type_key(type_hint));
                         }
                     } else {
                         fields.push(field_name.clone());
@@ -1214,7 +1222,7 @@ impl Compiler {
                     module_static_fields.push(field_name.clone());
                     if let Some(type_hint) = type_hint.as_ref() {
                         module_static_field_types
-                            .insert(field_name, Self::normalize_type_hint(type_hint));
+                            .insert(field_name, Self::tree_type_key(type_hint));
                     }
                 }
                 ClassMember::Const {
@@ -1224,7 +1232,7 @@ impl Compiler {
                     module_static_fields.push(const_name.clone());
                     if let Some(type_hint) = type_hint.as_ref() {
                         module_static_field_types
-                            .insert(const_name, Self::normalize_type_hint(type_hint));
+                            .insert(const_name, Self::tree_type_key(type_hint));
                     }
                 }
                 ClassMember::Method(stmt) => {
@@ -1461,7 +1469,7 @@ impl Compiler {
                                 .collect();
                             segments.push(n.name.as_str());
                             if let Some(target) =
-                                crate::primitives::namespaces::resolve_path(&segments)
+                                crate::primitives::namespaces::resolve_path(&segments, self.tree_fold())
                             {
                                 self.bind_namespace_import_target(key, target);
                                 continue;

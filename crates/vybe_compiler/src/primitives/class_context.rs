@@ -156,6 +156,36 @@ impl Compiler {
             .is_some()
     }
 
+    /// Whether the current class (or an ancestor) declares `name` as an
+    /// INSTANCE member of any kind — field, property, or method. This is the
+    /// implicit-self question for members that are NOT plain fields: an
+    /// accessor-backed property (`val y: Int` with a synthesized getter) has
+    /// no entry in `fields`/`field_storage_names`, so `is_class_field` says
+    /// no — yet a bare `y = …` in an init block is a write to `this.y` all
+    /// the same, and must reach the property machinery, not a global.
+    pub(super) fn is_class_instance_member(&self, name: &str) -> bool {
+        if !self.current_class_implicit_self {
+            return false;
+        }
+        let canon = self.canon(name);
+        let mut current = self.current_class.as_deref().map(|c| self.canon(c));
+        let mut guard = 0;
+        while let Some(class_key) = current {
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            let Some(pending) = self.pending_classes.get(&class_key) else {
+                break;
+            };
+            if pending.instance_member_names.iter().any(|m| m == &canon) {
+                return true;
+            }
+            current = pending.parent.as_ref().map(|p| self.canon(p));
+        }
+        false
+    }
+
     pub(super) fn emit_self_ref(&mut self) -> bool {
         let self_kw = self.profile.self_keyword.clone();
         if let Some(self_slot) = self.scope().resolve(&self_kw) {
@@ -298,40 +328,97 @@ impl Compiler {
         Ok(())
     }
 
+    /// Turn the value on the stack into an i32 truth, by the rule the
+    /// `truthiness` DIRECTIVE states.
+    ///
+    /// This is the ONE place that answers "is this true". Every site that turns
+    /// a value into a condition routes here — `if`, `while`, `and`/`or`,
+    /// `bool()`, and `Unary{Not}`. They used to decide separately and drifted:
+    /// `emit_dyn_not` never asked, so `assert []`, which desugars to a
+    /// hand-built `Unary{Not}`, silently passed under a protocol language.
+    ///
+    /// Under [`Truthiness::Protocol`] the ladder is CPython §3.3.1 verbatim —
+    /// [`ProtocolSlot::Bool`], then [`ProtocolSlot::Len`], then the value. A
+    /// builtin `[]` is falsy through the SAME `Len` rung a user class with
+    /// `__len__` uses, so there is no "empty collections" special case and a
+    /// class in any language earns the behaviour by binding the slot.
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
-        // Only Python needs a custom rule here — empty str/list/dict/set are
-        // falsy, which no primitive coercion expresses.
-        //
-        // PHP used to branch here too, onto a check that read the REMOVED
-        // `__keys`/`vybe$assoc_keys_csv` side-band and corrupted the stack. The
-        // side-band went away and array truthiness moved to the `empty()`/
-        // `isset()` call sites via the Map-aware emitter, but the dead branch
-        // outlived both. `emit_dyn_to_bool` is correct for every language that
-        // is not Python.
-        if !self.profile.truthiness_via_dunder_or_length {
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            };
+        if !self.protocol_truthiness() {
+            let line = self.line;
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             return;
         }
 
         let line = self.line;
-
-        let value_slot = self.define_local("__py_truth_value");
+        let value_slot = self.define_local("__truth_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
-        // Python: empty str/list/dict/set are falsy; numbers/bool/None use dyn_to_bool.
-        // Reuse collections::emit_len (ecma:array.length / ecma:map.size / string length).
-        let typeof_idx = self.import("ecma:value", "typeof");
-        let is_object_slot = self.define_local("__py_truth_is_object");
+        // ── rung 0: absent is false ─────────────────────────────────────
+        // Nothing below can run on a null: `ecma:value.typeof` traps on one,
+        // so the very first probe took the whole ladder down and `if None:`
+        // never reached the coercion that would have answered it.
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::REF_IS_NULL);
+        self.chunk().emit_if_value(line);
+        inst!(self, core_wasm::i32_const, 0);
+        self.chunk().emit_else(line);
 
+        // STRUCT_GET traps on a primitive, so every slot probe sits behind the
+        // object test — the same gate `emit_rich_unary` uses.
+        let typeof_idx = self.import("ecma:value", "typeof");
+        let is_object_slot = self.define_local("__truth_is_object");
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("object")));
         fn_call!(self, "wasm:js-string", "equals", 2);
         self.emit_u16(Op::LOCAL_SET, is_object_slot);
 
+        // ── rung 1: ProtocolSlot::Bool ──────────────────────────────────
+        let bool_key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Bool));
+        let bool_method = self.define_local("__truth_bool_method");
+        self.emit_ref_null_local(bool_method);
+        self.emit_u16(Op::LOCAL_GET, is_object_slot);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, bool_key);
+        self.emit_u16(Op::LOCAL_SET, bool_method);
+        self.chunk().emit_end(line);
+
+        self.emit_u16(Op::LOCAL_GET, bool_method);
+        self.emit(Op::REF_IS_NULL);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, bool_method);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_else(line);
+
+        // ── rung 2: ProtocolSlot::Len on a user class ───────────────────
+        let len_key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len));
+        let len_method = self.define_local("__truth_len_method");
+        self.emit_ref_null_local(len_method);
+        self.emit_u16(Op::LOCAL_GET, is_object_slot);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, len_key);
+        self.emit_u16(Op::LOCAL_SET, len_method);
+        self.chunk().emit_end(line);
+
+        self.emit_u16(Op::LOCAL_GET, len_method);
+        self.emit(Op::REF_IS_NULL);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, len_method);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        fn_call!(self, "wasm:js-number", "toI32", 1);
+        inst!(self, core_wasm::i32_const, 0);
+        self.chunk().emit_op(Op::I32_NE, line);
+        self.chunk().emit_else(line);
+
+        // ── rung 3: the builtin length — a str/array/map answers `Len`
+        //            intrinsically, so this is the same rung, not a case ──
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("string")));
@@ -339,16 +426,29 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
         self.chunk().emit_op(Op::I32_OR, line);
         self.chunk().emit_if_value(line);
-
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::primitives::collections::emit_len(&mut self.chunks, self.current, line);
         inst!(self, core_wasm::i32_const, 0);
         self.chunk().emit_op(Op::I32_NE, line);
 
+        // ── rung 4: the value itself ────────────────────────────────────
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_end(line);
+
+        self.chunk().emit_end(line); // rung 2 (Len slot)
+        self.chunk().emit_end(line); // rung 1 (Bool slot)
+        self.chunk().emit_end(line); // rung 0 (null)
+    }
+
+    /// `local = null` — a slot probe starts empty so the non-object path skips
+    /// the `STRUCT_GET` without leaving the local undefined.
+    fn emit_ref_null_local(&mut self, slot: u16) {
+        let line = self.line;
+        self.chunk()
+            .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        self.emit_u16(Op::LOCAL_SET, slot);
     }
 
     pub(super) fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
@@ -370,7 +470,7 @@ impl Compiler {
     /// A constructor reads its receiver from `__js_this` and allocates only
     /// when that global is absent — `struct.new_default` sits in the `else` of
     /// a null test at the top of every `__<Class>_ctor_N`. Every other
-    /// `save_js_this` site pairs the save with a `set_js_this_from_stack`; the
+    /// `save_js_this` site pairs the save with a `bind_js_this_from_local`; the
     /// `New` emit was the one that saved and restored without ever writing a
     /// value in between, so inside an instance method the constructor found the
     /// enclosing receiver, skipped the allocation, and wrote its fields into
@@ -391,10 +491,36 @@ impl Compiler {
         self.emit_global_write("__js_this");
     }
 
+    /// Write the ambient receiver from the value on the stack.
+    ///
+    /// **Emits unconditionally.** The `receiver_binding` directive is answered
+    /// ONCE, by `save_js_this`, whose `Option` says whether this language has an
+    /// ambient receiver at all; a site that got `None` must not compute a
+    /// receiver, must not push one, and must not call this. There is no second
+    /// decision here and no silent no-op to fall into.
+    ///
+    /// This used to decide for itself — `if !self.ambient_this() { return; }` —
+    /// while every caller pushed unconditionally:
+    ///
+    /// ```ignore
+    /// let saved = self.save_js_this("__js_prev_this_member");
+    /// self.emit_u16(Op::LOCAL_GET, obj_slot);   // ALWAYS pushed
+    /// self.set_js_this_from_stack();            // popped only if Ambient
+    /// ```
+    ///
+    /// `ReceiverBinding::Ambient` is declared by js and dart ONLY, so the other
+    /// fourteen languages leaked one operand per member read, at ten sites. The
+    /// stray is invisible while nothing live sits under it — a statement
+    /// boundary truncates it — and fatal where something does: `W(self.v)`
+    /// inside a method left the ctor ref buried and `CALL_REF` took the stray as
+    /// the callee (`Not a function`), and `{'k': self.v}` compiled to
+    /// `{<V object>: 5}` — the stray DISPLACED the key, silently.
+    ///
+    /// A guard that emits nothing is dead code for the language it fires on,
+    /// and dead code that is *also* half a pair is how the two halves drifted.
+    /// `restore_js_this(None)` reads the same `Option`, so all three members of
+    /// the save/bind/restore triple now agree by construction.
     pub(super) fn set_js_this_from_stack(&mut self) {
-        if !self.ambient_this() {
-            return;
-        }
         self.emit_global_write("__js_this");
     }
 

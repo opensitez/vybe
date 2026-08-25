@@ -1730,17 +1730,13 @@ impl Compiler {
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
             }
-            "dyn_to_bool" => {
-                let line = self.line;
-                if self.profile.truthiness_via_dunder_or_length {
-                    self.emit_condition_truthiness_from_stack();
-                } else {
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                }
-            }
+            "dyn_to_bool" => self.emit_condition_truthiness_from_stack(),
             "dyn_not" => {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+                // Negating a truth is still deciding a truth, so it folds the
+                // same way — `emit_dyn_not` is ECMA ToBoolean and cannot see a
+                // `Bool`/`Len` slot.
+                self.emit_condition_truthiness_from_stack();
+                self.emit(Op::I32_EQZ);
             }
             "ref_is_array" => fn_call!(self, "ecma:array", "isArray", 1),
             "ref_typeof" => fn_call!(self, "ecma:value", "typeof", 1),
@@ -2041,7 +2037,9 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    common::math::emit_pow(self.chunk(), line);
+                    // `Math.pow(1, Infinity)` must agree with `1 ** Infinity`
+                    // — same contract, same directive.
+                    self.emit_pow_for_region();
                 }
             }
             "log" => {
@@ -2112,14 +2110,7 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                {
-                    let line = self.line;
-                    if self.profile.truthiness_via_dunder_or_length {
-                        self.emit_condition_truthiness_from_stack();
-                    } else {
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    }
-                }
+                self.emit_condition_truthiness_from_stack();
             }
             "ref_is_array" => {
                 for a in args {
@@ -2894,9 +2885,22 @@ impl Compiler {
                 self.emit_const(Value::I32(0));
             }
             "asc" => {
+                // `Asc`/`AscW` takes an operand of UNKNOWN type, so it must go
+                // through the guarded primitive rather than raw `charCodeAt`.
+                //
+                // `wasm:js-string.charCodeAt` TRAPS on a non-string, and a char
+                // is not always a string here: the dotnet constant table is
+                // f64-only, so `Char.MaxValue` arrives as a NUMBER and
+                // `AscW(Char.MaxValue)` trapped on exactly the values a limit
+                // test feeds it. `strings::emit_char_code` tests
+                // `wasm:js-string.test` first and coerces anything else through
+                // `ecma:number` + `F64_TRUNC`.
+                //
+                // It supplies its own index 0, so the explicit `i32.const 0`
+                // that the two-argument `charCodeAt` needed is gone with it.
                 self.compile_expr(args[0])?;
-                inst!(self, core_wasm::i32_const, 0);
-                fn_call!(self, "wasm:js-string", "charCodeAt", 2);
+                let l = self.line;
+                crate::primitives::strings::emit_char_code(self.chunk(), l);
             }
             "space" => {
                 self.emit_const(Value::String(Arc::from(" ")));

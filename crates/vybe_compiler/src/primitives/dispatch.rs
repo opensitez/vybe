@@ -159,6 +159,7 @@ pub fn emit_common(
         "stream.drain_bytes" => io::emit_read_stream_to_bytes(&mut chunks[current], line),
         "stream.from_bytes" => io::emit_bytes_to_stream(&mut chunks[current], line),
         "stream.read_handle" => io::emit_read_stream_handle(&mut chunks[current], line),
+        "stream.try_read_handle" => io::emit_try_read_stream_handle(&mut chunks[current], line),
 
         "filesystem.read_file" => fs_path::emit_read_file(&mut chunks[current], line),
         "filesystem.read_file_bytes" => fs_path::emit_read_file_bytes(&mut chunks[current], line),
@@ -557,6 +558,7 @@ pub fn emit_common(
         "xml.load" => xml::emit_load(chunks, current, argc, line),
         "xml.save" => xml::emit_save(chunks, current, argc, line),
         "xml.elements" => xml::emit_elements(chunks, current, argc, line),
+        "xml.attribute" => xml::emit_attribute(chunks, current, argc, line),
 
         // ── Collection ops (route through ecma:array imports; the helper
         // registers on chunks[current] — the chunk it emits into — for the

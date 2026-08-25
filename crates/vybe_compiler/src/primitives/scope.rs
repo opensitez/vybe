@@ -81,7 +81,10 @@ pub struct Scope {
     /// under [`ScopeResolution::Chain`], where everything is open anyway.
     pub open_names: std::collections::HashSet<String>,
     /// Whether two names differing only in ASCII case are the SAME name here.
-    /// True for vb, pascal, cobol and fortran; false everywhere else.
+    /// `None` folds nothing; `Some(alphabet)` folds over that alphabet.
+    /// Stated by the module's `Directives::variable_case` — vb, pascal, cobol,
+    /// fortran and powershell say `Folded`; everything else says nothing and
+    /// gets `Exact`.
     ///
     /// This is a resolution POLICY and belongs beside `resolution`, for the
     /// same reason: it used to be a bare `resolve_ci` scan with the
@@ -93,9 +96,14 @@ pub struct Scope {
     ///
     /// Folding is per NAME KIND, not per language: PHP variables are
     /// case-sensitive while its function and class names are not, which is why
-    /// this covers locals only. Callable/type folding is
-    /// `LanguageProfile::fold_callable_names`.
-    pub fold_case: bool,
+    /// this covers locals only and why `Directives` carries `variable_case`
+    /// and `callable_case` as two fields.
+    ///
+    /// ⛔ It carries the ALPHABET, not a bool, because the two folds already in
+    /// this pipeline disagree: here it is ASCII, in
+    /// `vybe_runtime::namespaces` it is Unicode `to_lowercase()`. A bool cannot
+    /// state which one a language meant.
+    pub fold: Option<vybe_ast::CaseAlphabet>,
     pub depth: u32,
     pub next_slot: u16,
     /// Debug accumulator: every `(slot, name)` ever defined in this function,
@@ -109,17 +117,17 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// `fold_case` is required rather than defaulted: a scope that silently
-    /// stopped folding would mis-resolve every vb/pascal/cobol/fortran local,
-    /// and the compiler cannot catch that. Passing it makes a missed
-    /// construction site a build error instead.
-    pub fn new(fold_case: bool) -> Self {
+    /// `fold` is required rather than defaulted: a scope that silently stopped
+    /// folding would mis-resolve every vb/pascal/cobol/fortran/powershell
+    /// local, and the compiler cannot catch that. Passing it makes a missed
+    /// construction site a build error instead. Keep it that way.
+    pub fn new(fold: Option<vybe_ast::CaseAlphabet>) -> Self {
         Self {
             locals: Vec::new(),
             upvalues: Vec::new(),
             resolution: ScopeResolution::Chain,
             open_names: std::collections::HashSet::new(),
-            fold_case,
+            fold,
             depth: 0,
             next_slot: 0,
             defined_names: Vec::new(),
@@ -127,10 +135,10 @@ impl Scope {
         }
     }
 
-    pub fn new_function(fold_case: bool) -> Self {
+    pub fn new_function(fold: Option<vybe_ast::CaseAlphabet>) -> Self {
         // WASM convention: slot 0 is the first argument (not a reserved callee).
         // User-visible locals (params and additional locals) start at slot 0.
-        Self::new(fold_case)
+        Self::new(fold)
     }
 
     /// A function scope that inherits the enclosing scope's resolution.
@@ -139,10 +147,13 @@ impl Scope {
     /// closure sees no more of the module than the function it sits in. Its own
     /// `open_names` start empty: `global $x;` binds one function, not the
     /// lambdas nested inside it.
-    pub fn new_function_like(enclosing: ScopeResolution, fold_case: bool) -> Self {
+    pub fn new_function_like(
+        enclosing: ScopeResolution,
+        fold: Option<vybe_ast::CaseAlphabet>,
+    ) -> Self {
         Scope {
             resolution: enclosing,
-            ..Self::new_function(fold_case)
+            ..Self::new_function(fold)
         }
     }
 
@@ -304,28 +315,22 @@ impl Scope {
         if let Some(l) = self.locals.iter().rev().find(|l| l.name == name) {
             return Some(l);
         }
-        if self.fold_case {
-            return self
-                .locals
-                .iter()
-                .rev()
-                .find(|l| l.name.eq_ignore_ascii_case(name));
-        }
-        None
+        let fold = self.fold?;
+        self.locals
+            .iter()
+            .rev()
+            .find(|l| names_equal(fold, &l.name, name))
     }
 
     fn resolve_local_mut(&mut self, name: &str) -> Option<&mut Local> {
         if self.locals.iter().rev().any(|l| l.name == name) {
             return self.locals.iter_mut().rev().find(|l| l.name == name);
         }
-        if self.fold_case {
-            return self
-                .locals
-                .iter_mut()
-                .rev()
-                .find(|l| l.name.eq_ignore_ascii_case(name));
-        }
-        None
+        let fold = self.fold?;
+        self.locals
+            .iter_mut()
+            .rev()
+            .find(|l| names_equal(fold, &l.name, name))
     }
 
     /// Does this name denote a binding HERE that holds a reference?
@@ -373,11 +378,10 @@ impl Scope {
                 return l.type_hint.as_deref();
             }
         }
-        if self.fold_case {
-            for l in self.locals.iter().rev() {
-                if l.name.eq_ignore_ascii_case(name) {
-                    return l.type_hint.as_deref();
-                }
+        let fold = self.fold?;
+        for l in self.locals.iter().rev() {
+            if names_equal(fold, &l.name, name) {
+                return l.type_hint.as_deref();
             }
         }
         None
@@ -392,11 +396,10 @@ impl Scope {
                 return l.type_hint.as_ref();
             }
         }
-        if self.fold_case {
-            for l in self.locals.iter().rev() {
-                if l.name.eq_ignore_ascii_case(name) {
-                    return l.type_hint.as_ref();
-                }
+        let fold = self.fold?;
+        for l in self.locals.iter().rev() {
+            if names_equal(fold, &l.name, name) {
+                return l.type_hint.as_ref();
             }
         }
         None
@@ -435,4 +438,53 @@ impl Scope {
         self.upvalues.push(UpvalueDesc { index, is_local });
         idx
     }
+}
+
+/// Compare a DECLARED identifier against a REFERENCE under a stated alphabet.
+///
+/// ⛔ ONE function, so the alphabets cannot drift apart the way this pipeline's
+/// two already have: scopes fold ASCII (`eq_ignore_ascii_case`) while
+/// `vybe_runtime::namespaces` folds Unicode (`to_lowercase`), in the same
+/// program, with nothing comparing the two to notice.
+///
+/// Argument order is `declared, reference` and not the reverse because that is
+/// the direction normalisation runs: the answer is the DECLARED spelling, which
+/// is what the reference is rewritten to.
+fn names_equal(fold: vybe_ast::CaseAlphabet, declared: &str, reference: &str) -> bool {
+    match fold {
+        vybe_ast::CaseAlphabet::Ascii => declared.eq_ignore_ascii_case(reference),
+        vybe_ast::CaseAlphabet::Unicode => declared.to_lowercase() == reference.to_lowercase(),
+    }
+}
+
+/// The folding policy a profile implies, for the ONE moment a module is not yet
+/// in hand: `Compiler::with_profile` builds a root scope at construction, before
+/// `compile_with_imports` has seen `Module.directives`.
+///
+/// ⛔ Every other site reads the DIRECTIVE. This exists so the root scope is not
+/// silently non-folding for the instant before the module arrives; the module
+/// then overwrites it. If the two ever disagree the directive wins, because it
+/// is the one that knows which unit of a multi-language bundle is compiling.
+pub fn profile_variable_fold(
+    profile: &vybe_runtime::profile::LanguageProfile,
+) -> Option<vybe_ast::CaseAlphabet> {
+    if profile.case_sensitive {
+        None
+    } else {
+        Some(vybe_ast::CaseAlphabet::Ascii)
+    }
+}
+
+/// The namespace-tree lookup policy this module declares.
+///
+/// ⛔ ONE accessor, so no call site decides for itself whether the tree may
+/// fold. That is the same rule `Directives::variable_fold()` follows for
+/// scopes, and the reason is the one this codebase already paid for: when
+/// `case_sensitive` was a flag every site had to consult, 23 of 33 forgot.
+///
+/// It reads `callable_fold()` rather than `variable_fold()` because a tree
+/// lookup resolves a TYPE or a MEMBER, never a local — and PHP folds its
+/// callables while its variables are exact.
+pub fn tree_fold(d: &vybe_ast::Directives) -> vybe_runtime::namespaces::Fold {
+    d.callable_fold()
 }

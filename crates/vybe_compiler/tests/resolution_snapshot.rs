@@ -57,6 +57,7 @@ fn resolution_snapshots_are_stable() {
             }
         };
         let module = Module {
+            canon: Default::default(),
             name: "snapshot".into(),
             language: lang_enum(lang.name),
             body: Vec::new(),

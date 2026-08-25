@@ -103,8 +103,6 @@ impl Target {
                 "wasi:clocks/system-clock".into(),
                 "wasi:clocks/monotonic-clock".into(),
                 "wasi:clocks/timezone".into(),
-                "wasi:io/streams".into(),
-                "wasi:io/poll".into(),
                 // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
                 // `tcp-create-socket`, `udp` and `udp-create-socket` into one
                 // `types` interface. `ip-name-lookup` is the only sibling that
@@ -156,8 +154,6 @@ impl Target {
                 "wasi:clocks/system-clock".into(),
                 "wasi:clocks/monotonic-clock".into(),
                 "wasi:clocks/timezone".into(),
-                "wasi:io/streams".into(),
-                "wasi:io/poll".into(),
                 // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
                 // `tcp-create-socket`, `udp` and `udp-create-socket` into one
                 // `types` interface. `ip-name-lookup` is the only sibling that

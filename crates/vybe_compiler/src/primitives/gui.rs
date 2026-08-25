@@ -315,6 +315,35 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             },
             None,
         ),
+        // **A control that is BORN WITH CHILDREN does not paint its `Text`.**
+        //
+        // `textContent =` REPLACES a node's children (DOM §4.4 "string replace
+        // all"), so a composite control whose chrome is its subtree loses that
+        // subtree the moment anyone writes its caption — and a designer file
+        // writes one on every control it generates. A `BindingNavigator` built
+        // its five standard items and then became the single text node
+        // `bnav1`; so did a `SplitContainer` and its two panes.
+        //
+        // Not painting it is also what the control does: WinForms' navigator,
+        // split container and month calendar all INHERIT `Text` from `Control`
+        // and none of them draws it — `vybe_widgets` agrees, showing `0 of 0`
+        // where the caption would be. So the write is kept, off the text node
+        // and on an attribute, where a property with no visual counterpart
+        // belongs and where it still round-trips.
+        //
+        // ⚠ The LATE-BOUND read path (`emit_late_bound_property_get`) resolves
+        // its role from the property name at runtime, with no type to consult,
+        // so a `.Text` read reached that way still reads `textContent` and
+        // answers with the chrome's own words. A typed read is correct.
+        "unpaintedtext" => (
+            DOM_MODULE,
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
+            Some("data-text"),
+        ),
         // The line count is DERIVED from the text — the DOM has no property
         // for it, and inventing a host function to answer it would put a
         // toolkit's question into `web:*`. So it reads the text like any other
@@ -1601,6 +1630,23 @@ pub struct ControlElement {
     /// `setStyleProperty` a program would use, so it cascades, serializes into
     /// the `style` attribute, and a browser would do the same thing with it.
     pub declares: Vec<(String, String)>,
+    /// Content ATTRIBUTES the control is born with, written `@name=value` in
+    /// the declaration (`@multiple` alone for a boolean one).
+    ///
+    /// CSS could not express these and they are not children, so neither of the
+    /// other two channels reached them. The case that forced it: HTML's list
+    /// box IS `<select>` — with `size` above one or `multiple`, which is the
+    /// only thing separating a list from a dropdown (HTML §4.10.7). `ListBox`
+    /// was a `<ul>`, an element with no selection model at all, which is why it
+    /// rendered its items and could not select one while `ComboBox` — the same
+    /// control, one attribute apart — worked.
+    pub attributes: Vec<(String, String)>,
+    /// The children the control is BORN with — see `CtorSpec::inner_html`.
+    ///
+    /// Not parsed out of the declaration string beside the CSS: markup is full
+    /// of `;` and `:`, which are exactly the two characters that grammar splits
+    /// on, so it travels in its own field instead of behind an escape.
+    pub inner_html: Option<String>,
 }
 
 impl ControlElement {
@@ -1626,7 +1672,22 @@ impl ControlElement {
         let mut parts = decl.split(';');
         let head = parts.next().unwrap_or("");
         let (tag, input_type) = head.split_once(':').unwrap_or((head, ""));
-        let declares = parts
+        // `@name=value` is a content ATTRIBUTE, anything else a CSS declaration.
+        // `@` cannot begin a property name, so the two never collide, and a
+        // bare `@name` is a boolean attribute — present, empty value, which is
+        // how HTML spells `multiple` and `disabled`.
+        let (attribute_parts, style_parts): (Vec<&str>, Vec<&str>) =
+            parts.partition(|part| part.trim_start().starts_with('@'));
+        let attributes = attribute_parts
+            .into_iter()
+            .map(|attribute| {
+                let attribute = attribute.trim().trim_start_matches('@');
+                let (name, value) = attribute.split_once('=').unwrap_or((attribute, ""));
+                (name.trim().to_ascii_lowercase(), value.trim().to_string())
+            })
+            .collect();
+        let declares = style_parts
+            .into_iter()
             .filter_map(|d| d.split_once(':'))
             .map(|(prop, value)| {
                 (
@@ -1639,6 +1700,8 @@ impl ControlElement {
             tag: tag.trim().to_ascii_lowercase(),
             input_type: input_type.trim().to_ascii_lowercase(),
             declares,
+            attributes,
+            inner_html: None,
         }
     }
 
@@ -1721,6 +1784,8 @@ impl ControlElement {
             tag: format!("vybe-{}", if bare.is_empty() { "control" } else { &bare }),
             input_type: String::new(),
             declares: Vec::new(),
+            attributes: Vec::new(),
+            inner_html: None,
         }
     }
 }
@@ -1730,14 +1795,18 @@ impl ControlElement {
 pub fn registered_control_element(
     type_scopes: &[String],
     type_name: &str,
+    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<ControlElement> {
-    let spec = vybe_runtime::namespaces::lookup_type_ctor_spec(type_scopes, type_name)?;
+    let spec = vybe_runtime::namespaces::lookup_type_ctor_spec(type_scopes, type_name, fold)?;
+    let inner_html = spec.inner_html.clone();
     let decl = spec.control_fn?;
-    Some(if decl.starts_with("new_") {
+    let mut element = if decl.starts_with("new_") {
         ControlElement::custom(type_name)
     } else {
         ControlElement::parse(&decl)
-    })
+    };
+    element.inner_html = inner_html;
+    Some(element)
 }
 
 impl Compiler {
@@ -1780,7 +1849,11 @@ impl Compiler {
         let user_owns_spelling = self.user_owns_type_spelling(type_name);
         if !user_owns_spelling {
             if let Some(element) =
-                registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+                registered_control_element(
+                    &self.profile.namespaces.type_scopes,
+                    type_name,
+                    self.tree_fold(),
+                )
             {
                 return Some(element);
             }
@@ -1790,7 +1863,11 @@ impl Compiler {
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
             if let Some(element) =
-                registered_control_element(&self.profile.namespaces.type_scopes, &parent)
+                registered_control_element(
+                    &self.profile.namespaces.type_scopes,
+                    &parent,
+                    self.tree_fold(),
+                )
             {
                 return Some(element);
             }
@@ -1875,7 +1952,7 @@ impl Compiler {
         if self.shadows_builtin_type(last) || self.defined_functions.contains(&canon_last) {
             return None;
         }
-        vybe_runtime::namespaces::is_registered_type(&self.profile.namespaces.type_scopes, last)
+        vybe_runtime::namespaces::is_registered_type(&self.profile.namespaces.type_scopes, last, self.tree_fold())
             .then_some(canon_last)
     }
 
@@ -1898,11 +1975,12 @@ impl Compiler {
     /// receiver's static type is the subclass.
     fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
         let scopes = &self.profile.namespaces.type_scopes;
+        let fold = self.tree_fold();
         let declared = |name: &str| {
             let target = if setting {
-                vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, name, prop)
+                vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, name, prop, fold)
             } else {
-                vybe_runtime::namespaces::lookup_type_property_target(scopes, name, prop)
+                vybe_runtime::namespaces::lookup_type_property_target(scopes, name, prop, fold)
             }?;
             match target {
                 vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => emit
@@ -1995,7 +2073,7 @@ impl Compiler {
         match self.infer_expr_type_hint(object) {
             None => true,
             Some(hint) => {
-                let class_name = Self::normalize_type_hint(&hint);
+                let class_name = Self::tree_type_key(&hint);
                 let scopes = &self.profile.namespaces.type_scopes;
                 // The test is "does the receiver's type DECLARE this member",
                 // not "is the type registered". `Object` IS registered — it is
@@ -2010,18 +2088,21 @@ impl Compiler {
                         scopes,
                         &class_name,
                         field,
+                        self.tree_fold(),
                     )
                     .is_none()
                     && vybe_runtime::namespaces::lookup_type_property_setter_target(
                         scopes,
                         &class_name,
                         field,
+                        self.tree_fold(),
                     )
                     .is_none()
                     && vybe_runtime::namespaces::lookup_type_instance_member(
                         scopes,
                         &class_name,
                         field,
+                        self.tree_fold(),
                     )
                     .is_none()
                     && !self.is_declared_instance_field(&class_name, field)
@@ -2140,9 +2221,23 @@ impl Compiler {
         // RENAMED property to `setAttribute("clientwidth", …)`, which no widget
         // reads, with no error to show for it.
         let prop = prop.to_ascii_lowercase();
-        let role = self
+        let mut role = self
             .declared_property_role(type_name, &prop, true)
             .unwrap_or_else(|| prop.clone());
+        // A caption written onto a control that is born with children would
+        // replace them — see the `unpaintedtext` arm in `property_op`. Asked of
+        // the ELEMENT rather than of a control list, so a control acquires the
+        // behaviour by declaring chrome and nothing has to be kept in step.
+        if matches!(role.as_str(), "text" | "caption")
+            && registered_control_element(
+                &self.profile.namespaces.type_scopes,
+                type_name,
+                self.tree_fold(),
+            )
+            .is_some_and(|element| element.inner_html.is_some())
+        {
+            role = "unpaintedtext".to_string();
+        }
         self.compile_expr(object)?;
         self.emit_u16(Op::LOCAL_GET, value_tmp);
         self.emit_gui_property_set(&role, line);
@@ -2155,7 +2250,11 @@ impl Compiler {
         // serialization read. A control that set only `id` would look right
         // and submit nothing, so set both.
         let form_associated =
-            registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+            registered_control_element(
+                    &self.profile.namespaces.type_scopes,
+                    type_name,
+                    self.tree_fold(),
+                )
                 .map(|e| e.is_form_associated())
                 .unwrap_or(false);
         if prop == "name" && form_associated {
@@ -2196,7 +2295,11 @@ impl Compiler {
     ///
     /// Stack on exit: [element]
     pub fn emit_control_element(&mut self, type_name: &str, argc: u8, line: u32) {
-        let element = registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+        let element = registered_control_element(
+                    &self.profile.namespaces.type_scopes,
+                    type_name,
+                    self.tree_fold(),
+                )
             .unwrap_or_else(|| ControlElement::custom(type_name));
         for _ in 0..argc {
             self.chunk().emit_op(Op::DROP, line);
@@ -2234,9 +2337,59 @@ impl Compiler {
         // it a containing block for its own children, so VCL and WinForms keep
         // exactly the nesting they had, and a box that is not placed stays in
         // flow where it belongs.
+        for (name, value) in &element.attributes {
+            self.emit_declared_attribute(name, value, line);
+        }
         for (prop, value) in &element.declares {
             self.emit_declared_style(prop, value, line);
         }
+        if let Some(html) = &element.inner_html {
+            self.emit_declared_markup(html, line);
+        }
+    }
+
+    /// One content attribute a control is BORN with
+    /// (`ControlElement::attributes`).
+    ///
+    /// A content attribute, not a property, so it is in the markup a
+    /// serialization would show and a selector could match — the same thing
+    /// authoring `<select size=4>` gives you.
+    fn emit_declared_attribute(&mut self, name: &str, value: &str, line: u32) {
+        let element = self.define_local("__gui_declared_attribute");
+        self.emit_u16(Op::LOCAL_TEE, element);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, element);
+        emit_string_const(self.chunk(), name, line);
+        emit_string_const(self.chunk(), value, line);
+        let set_idx = self.import(DOM_MODULE, "setAttribute");
+        self.emit_host_call(set_idx, 4);
+        self.chunk().emit_op(Op::DROP, line);
+    }
+
+    /// The children a control is BORN with (`ControlElement::inner_html`).
+    ///
+    /// Set here, at creation, for the same reason the declared CSS is: a
+    /// control whose chrome only appeared once something else ran would be
+    /// empty for every program that just constructs it — which is precisely
+    /// what a designer file does.
+    ///
+    /// Goes through `setInnerHtml`, so the markup is PARSED, by the same
+    /// parser and tree-builder a script's `innerHTML =` uses. The subtree is
+    /// therefore ordinary elements: addressable by selector, stylable by the
+    /// cascade, and able to carry listeners — not an opaque widget.
+    fn emit_declared_markup(&mut self, html: &str, line: u32) {
+        let element = self.define_local("__gui_declared_markup");
+        self.emit_u16(Op::LOCAL_TEE, element);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, element);
+        emit_string_const(self.chunk(), html, line);
+        let set_idx = self.import(DOM_MODULE, "setInnerHtml");
+        self.emit_host_call(set_idx, 3);
+        // Same contract as the declared-style emit: the host call's one result
+        // is dropped so this leaves exactly the element.
+        self.chunk().emit_op(Op::DROP, line);
     }
 
     /// One piece of CSS a control is BORN with (`ControlElement::declares`).

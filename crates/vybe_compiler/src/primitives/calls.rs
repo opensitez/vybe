@@ -130,20 +130,28 @@ fn is_dotnet_linq_method_name(name: &str) -> bool {
     )
 }
 
-fn dotnet_factory_return_type(scope: &[String], callee: &Expression) -> Option<String> {
+fn dotnet_factory_return_type(
+    scope: &[String],
+    callee: &Expression,
+    fold: vybe_runtime::namespaces::Fold,
+) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field)
+    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field, fold)
 }
 
-fn dotnet_static_member_return_type(scope: &[String], expr: &Expression) -> Option<String> {
+fn dotnet_static_member_return_type(
+    scope: &[String],
+    expr: &Expression,
+    fold: vybe_runtime::namespaces::Fold,
+) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &expr.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field)
+    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field, fold)
 }
 
 fn js_dynamic_import_alias(module: &str) -> String {
@@ -407,7 +415,11 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Member { object, field, .. } => {
             if let Some(type_name) =
-                dotnet_static_member_return_type(&compiler.profile.namespaces.type_scopes, recv)
+                dotnet_static_member_return_type(
+                    &compiler.profile.namespaces.type_scopes,
+                    recv,
+                    compiler.tree_fold(),
+                )
             {
                 return Some(type_name);
             }
@@ -457,16 +469,18 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                 // reachable only in the languages that fold no case.
                 let mut current = compiler
                     .resolve_pending_class_name_for_type_hint(&receiver_type)
-                    .unwrap_or_else(|| Compiler::normalize_type_hint(&receiver_type));
+                    .unwrap_or_else(|| Compiler::tree_type_key(&receiver_type));
                 loop {
                     if vybe_runtime::namespaces::is_registered_type(
                         &compiler.profile.namespaces.type_scopes,
                         &current,
+                        compiler.tree_fold(),
                     ) {
                         return vybe_runtime::namespaces::lookup_type_member_return(
                             &compiler.profile.namespaces.type_scopes,
-                            &Compiler::normalize_type_hint(&current),
+                            &Compiler::tree_type_key(&current),
                             field,
+                            compiler.tree_fold(),
                         );
                     }
                     let pending = compiler.pending_classes.get(&current)?;
@@ -530,7 +544,8 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             let resolved = compiler.resolve_source_type_alias(type_name);
             vybe_runtime::namespaces::is_registered_type(
                 &compiler.profile.namespaces.type_scopes,
-                &Compiler::normalize_type_hint(&resolved),
+                &Compiler::tree_type_key(&resolved),
+                compiler.tree_fold(),
             )
             .then_some(resolved)
         }
@@ -564,12 +579,13 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                             .resolve_pending_class_name_for_type_hint(&receiver_type)
                             .is_none()
                         {
-                            let class_name = Compiler::normalize_type_hint(&receiver_type);
+                            let class_name = Compiler::tree_type_key(&receiver_type);
                             if let Some(return_type) =
                                 vybe_runtime::namespaces::lookup_type_member_return(
                                     &compiler.profile.namespaces.type_scopes,
                                     &class_name,
                                     field,
+                                    compiler.tree_fold(),
                                 )
                             {
                                 return Some(return_type);
@@ -582,7 +598,11 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             let inferred = compiler
                 .infer_function_return_type(callee)
                 .or_else(|| {
-                    dotnet_factory_return_type(&compiler.profile.namespaces.type_scopes, callee)
+                    dotnet_factory_return_type(
+                        &compiler.profile.namespaces.type_scopes,
+                        callee,
+                        compiler.tree_fold(),
+                    )
                 })
                 .or_else(|| match &callee.kind {
                     ExprKind::Ident(name) => {
@@ -590,6 +610,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         vybe_runtime::namespaces::lookup_type_ctor_target(
                             &compiler.profile.namespaces.type_scopes,
                             &resolved,
+                            compiler.tree_fold(),
                         )
                         .map(|_| resolved)
                     }
@@ -598,6 +619,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         vybe_runtime::namespaces::lookup_type_ctor_target(
                             &compiler.profile.namespaces.type_scopes,
                             &resolved,
+                            compiler.tree_fold(),
                         )
                         .map(|_| resolved)
                     }
@@ -640,13 +662,14 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         // surface. The test is whether the language's OWN registered tree
         // declares that type — `component_classes_linq` registers it under the
         // dotnet scope, and a jvm/flutter/plib scope does not, so this answers
-        // exactly where the `use_dotnet` family check used to and nowhere else.
+        // there and nowhere else.
         // Ruby `.select` and JS array HOFs keep their own semantics because
         // their profiles declare no `type_scopes` at all.
         ExprKind::Array(_)
             if vybe_runtime::namespaces::is_registered_type(
                 &compiler.profile.namespaces.type_scopes,
                 "IEnumerable",
+                compiler.tree_fold(),
             ) =>
         {
             Some("IEnumerable".to_string())
@@ -1106,15 +1129,16 @@ impl Compiler {
         let scope = &self.profile.namespaces.type_scopes;
         let mut current = self
             .resolve_pending_class_name_for_type_hint(type_hint)
-            .unwrap_or_else(|| Self::normalize_type_hint(type_hint));
+            .unwrap_or_else(|| Self::tree_type_key(type_hint));
         loop {
-            if vybe_runtime::namespaces::is_registered_type(scope, &current) {
+            if vybe_runtime::namespaces::is_registered_type(scope, &current, self.tree_fold()) {
                 // Platform class — its registered members finish the chain.
                 return vybe_runtime::namespaces::lookup_type_instance_target(
                     scope,
                     &current,
                     method_name,
                     arg_count,
+                    self.tree_fold(),
                 )
                 .map(|_| current);
             }
@@ -2467,7 +2491,7 @@ impl Compiler {
             common::functions::create_function_chunk("<js_promise_chain>", params.len() as u8);
         chunk.is_async = true;
         self.chunks.push(chunk);
-        self.scopes.push(Scope::new_function(!self.case_sensitive));
+        self.scopes.push(Scope::new_function(self.directives().variable_fold()));
 
         let saved_current = self.current;
         self.current = func_idx;
@@ -3947,6 +3971,7 @@ impl Compiler {
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     2,
+                    self.tree_fold(),
                 )
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
@@ -3966,12 +3991,13 @@ impl Compiler {
                     // User-defined classes win over shared .NET surface names
                     // like `Stack`, `Queue`, or `Dictionary`.
                 } else {
-                    let class_name = Self::normalize_type_hint(&class_name);
+                    let class_name = Self::tree_type_key(&class_name);
                     if let Some(target) = vybe_runtime::namespaces::lookup_type_instance_target(
                         &self.profile.namespaces.type_scopes,
                         &class_name,
                         field,
                         arg_exprs.len() as u8,
+                        self.tree_fold(),
                     ) {
                         // `owner[key].Add(v)` — the element is read, appended to,
                         // and written back. The profile's own collection scope
@@ -3983,6 +4009,7 @@ impl Compiler {
                                 &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                                 field,
                                 arg_exprs.len() as u8,
+                                self.tree_fold(),
                             )
                         {
                             if let ExprKind::Index {
@@ -4624,7 +4651,7 @@ impl Compiler {
             }
         }
 
-        // ── Dotted name resolution FIRST (uses compiler_common::dotnet when use_dotnet) ──
+        // ── Dotted name resolution FIRST ──
         // Must run before value methods because value methods like "add" would
         // intercept "Controls.Add" which needs special GUI handling.
         if let ExprKind::Member { .. } = &callee.kind {
@@ -4691,6 +4718,7 @@ impl Compiler {
                         &self.profile.namespaces.type_scopes,
                         &class_parts.join("."),
                         &method_name,
+                        self.tree_fold(),
                     )
                     .and_then(|member| {
                         vybe_runtime::namespaces::select_overload(&member, arg_exprs.len() as u8)
@@ -5161,6 +5189,7 @@ impl Compiler {
                                             &self.profile.namespaces.type_scopes,
                                             name,
                                             name,
+                                            self.tree_fold(),
                                         )
                                         .is_some()
                                     })
@@ -5532,8 +5561,10 @@ impl Compiler {
                         }
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                         let saved_js_this = self.save_js_this("__js_prev_this_static_method");
-                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                        self.set_js_this_from_stack();
+                        if saved_js_this.is_some() {
+                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                            self.set_js_this_from_stack();
+                        }
                         let qualified_method = self.canon(&format!("{}.{}", canon, field));
                         if let Some(param_modes) = self
                             .function_param_modes
@@ -5928,6 +5959,7 @@ impl Compiler {
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     2,
+                    self.tree_fold(),
                 )
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
@@ -5969,7 +6001,7 @@ impl Compiler {
                 // Array.Reverse) — the exact "dotnet adapter leaked into
                 // compiler core" disease namespaceplan.md documents.
                 Some(cn) if !self.profile.namespaces.type_scopes.is_empty() => {
-                    Some(Self::normalize_type_hint(cn))
+                    Some(Self::tree_type_key(cn))
                 }
                 Some(_) => None,
                 // Same structural test as the array-literal arm in
@@ -5978,6 +6010,7 @@ impl Compiler {
                 None if vybe_runtime::namespaces::is_registered_type(
                     &self.profile.namespaces.type_scopes,
                     "IEnumerable",
+                    self.tree_fold(),
                 ) && !self.direct_receiver_has_own_pending_method(object, field)
                     && (is_dotnet_linq_method_name(field)
                         || !self.defined_class_methods.contains(&self.canon(field)))
@@ -5986,6 +6019,7 @@ impl Compiler {
                             &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                             field,
                             arg_exprs.len() as u8,
+                            self.tree_fold(),
                         )) =>
                 {
                     Some("IEnumerable".to_string())
@@ -6014,6 +6048,7 @@ impl Compiler {
                             "IEnumerable",
                             field,
                             arg_exprs.len() as u8,
+                            self.tree_fold(),
                         )
                     } else {
                         vybe_runtime::namespaces::lookup_type_instance_target(
@@ -6021,6 +6056,7 @@ impl Compiler {
                             &owner,
                             field,
                             arg_exprs.len() as u8,
+                            self.tree_fold(),
                         )
                     }
                     .or_else(|| {
@@ -6032,6 +6068,7 @@ impl Compiler {
                                 "IEnumerable",
                                 field,
                                 arg_exprs.len() as u8,
+                                self.tree_fold(),
                             )
                         } else {
                             None
@@ -6464,12 +6501,12 @@ impl Compiler {
                 // Map/Set receivers away from runtime method dispatch.
                 // `runtime_collection_scope` IS the gate: `scope_declares_member_arity`
                 // answers false on an empty scope, and only a language that declares
-                // that scope has one. The `use_dotnet` conjunct that used to lead
-                // here could not change the outcome.
+                // that scope has one.
             } else if vybe_runtime::namespaces::scope_declares_member_arity(
                 &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                 field,
                 arg_exprs.len() as u8,
+                self.tree_fold(),
             ) && !prefer_dotnet_adapter
                 && !(receiver_is_known_string && matched_value_method.is_some())
             {
@@ -7515,8 +7552,10 @@ impl Compiler {
                 }
 
                 let saved_js_this = self.save_js_this("__js_prev_this_private_call");
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.set_js_this_from_stack();
+                if saved_js_this.is_some() {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.set_js_this_from_stack();
+                }
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 for arg in &arg_exprs {
                     self.compile_expr(arg)?;
@@ -8225,8 +8264,10 @@ impl Compiler {
                         self.resolve_unique_static_method_chunk_for_class(&class_name, field)
                     {
                         let saved_js_this = self.save_js_this("__js_prev_this_private_static_call");
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.set_js_this_from_stack();
+                        if saved_js_this.is_some() {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.set_js_this_from_stack();
+                        }
                         let line = self.line;
                         self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
                         self.chunk().emit(0, line);
@@ -8389,6 +8430,7 @@ impl Compiler {
                         &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                         field,
                         0,
+                        self.tree_fold(),
                     )
                 {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -8819,6 +8861,7 @@ impl Compiler {
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     0,
+                    self.tree_fold(),
                 )
             {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -9934,6 +9977,7 @@ impl Compiler {
                                     &owner,
                                     name,
                                     arg_exprs.len() as u8,
+                                    self.tree_fold(),
                                 );
                                 if let Some(target) = target {
                                     if self.emit_self_ref() {
@@ -10645,8 +10689,15 @@ impl Compiler {
                 // Bind `this` = receiver for the call only. Stack is
                 // [callee, ..args, receiver]; GLOBAL_SET pops the receiver,
                 // leaving [callee, ..args] for CALL_REF.
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.set_js_this_from_stack();
+                //
+                // Which is why the push has to be gated: without an ambient
+                // receiver nothing emits the GLOBAL_SET, the receiver stays on
+                // the stack, and CALL_REF reads [callee, ..args, receiver] with
+                // everything shifted by one.
+                if saved_js_this.is_some() {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.set_js_this_from_stack();
+                }
                 self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);

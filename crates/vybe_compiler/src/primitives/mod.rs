@@ -44,6 +44,7 @@ pub mod fs_path;
 pub mod functions;
 pub mod generators;
 pub mod generics;
+pub mod canon;
 pub mod globals;
 pub mod gui;
 pub mod heap;
@@ -469,6 +470,9 @@ pub struct Compiler {
     pub(crate) chunks: Vec<Chunk>,
     scopes: Vec<Scope>,
     pub(crate) current: usize,
+    /// Chunk index of the most recently compiled lambda BODY (not its factory).
+    /// The only handle a caller has on an anonymous lambda's chunk.
+    pub(crate) last_lambda_body_chunk: Option<usize>,
     loops: Vec<LoopCtx>,
     loop_states: Vec<LoopState>,
     label_depth: u32,
@@ -500,6 +504,16 @@ pub struct Compiler {
     /// is what makes Pascal's `{$R+}` outlive the procedure it appeared in
     /// while JS's `"use strict"` does not. See `vybe_ast::Directives`.
     directives: Vec<vybe_ast::Directives>,
+    /// The module's canon section, lowered from `Module::canon` at the start of
+    /// the compile and published to every chunk at emission. Empty for every
+    /// language that is not a Component Model front end.
+    canon_section: Vec<vybe_runtime::canon_def::CanonDef>,
+    /// The DECLARED rows, kept alongside the lowered ones because a
+    /// `CoreExport` callee can only be resolved once every chunk exists.
+    canon_decls: Vec<vybe_ast::canon::CanonDecl>,
+    canon_functypes: Vec<Option<vybe_runtime::canon_def::CanonFuncType>>,
+    canon_valtypes: Vec<Option<vybe_runtime::component::ValType>>,
+    component_funcs: Vec<Option<u32>>,
     /// True while compiling the operand of a `typeof`. `typeof undeclaredName`
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
     /// ReferenceError in `emit_var_get` is suppressed in this context.
@@ -574,6 +588,16 @@ pub struct Compiler {
     /// dynamically-typed language, so a hint-keyed gate would miss the case it
     /// exists for. Programs that bind the role nowhere pay nothing.
     pub(crate) program_has_getattr: bool,
+    /// The WRITE half of the same role: any class binds `ProtocolSlot::SetAttr`
+    /// (PHP `__set`, Python `__setattr__`).
+    ///
+    /// `SetAttr` was in the slot vocabulary with NO reader anywhere — the
+    /// frontends declared it and nothing consumed it, so a language wanting a
+    /// catch-all property write had to synthesise a direct `__set` member call
+    /// in its walker instead. Same program-level gating as its read twin, for
+    /// the same reason: the receiver's type is unknown exactly where this
+    /// matters, and programs binding the role nowhere pay nothing.
+    pub(crate) program_has_setattr: bool,
     /// Any class in this program exposes its index role as an ACCESSOR pair
     /// (`__get___index__` / `__set___index__`) rather than as a slot-bound
     /// method. A program-level flag for the same reason as
@@ -2729,8 +2753,9 @@ impl Compiler {
 
     pub fn with_profile(profile: LanguageProfile) -> Self {
         Self {
+            last_lambda_body_chunk: None,
             chunks: vec![Chunk::new("<script>")],
-            scopes: vec![Scope::new(!profile.case_sensitive)],
+            scopes: vec![Scope::new(scope::profile_variable_fold(&profile))],
             current: 0,
             loops: Vec::new(),
             loop_states: Vec::new(),
@@ -2744,6 +2769,11 @@ impl Compiler {
             global_const_values: std::collections::HashMap::new(),
             in_strict: false,
             directives: vec![vybe_ast::Directives::default()],
+            canon_section: Vec::new(),
+            canon_decls: Vec::new(),
+            canon_functypes: Vec::new(),
+            canon_valtypes: Vec::new(),
+            component_funcs: Vec::new(),
             in_typeof_operand: false,
             want_i32_condition: false,
             gave_i32_condition: false,
@@ -2765,6 +2795,7 @@ impl Compiler {
             classes_with_indexer: HashSet::new(),
             classes_with_index_setter: HashSet::new(),
             program_has_getattr: false,
+            program_has_setattr: false,
             program_has_index_accessor: false,
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
@@ -2922,18 +2953,35 @@ impl Compiler {
     /// followed by `const f = X` works, and to synthesize Module
     /// Namespace Objects for `import * as ns` reflective access.
     pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
-        self.case_sensitive = self.profile.case_sensitive;
+        // ⛔ THE MODULE'S DECLARED POLICY, NOT THE PROFILE'S. `variable_case`
+        // is stated by the walker on `Module.directives`, so a multi-language
+        // bundle gets the right answer per UNIT rather than per whichever
+        // profile happens to be installed. `variable_fold()` applies the
+        // default in ONE place, which is the whole lesson of the flag this
+        // replaces: 33 sites had to write `!self.case_sensitive &&` and 23
+        // forgot.
+        let fold = module.directives.variable_fold();
+        self.case_sensitive = fold.is_none();
         // The profile can be swapped after construction (multi-language
         // bundles), so the ROOT scope's folding policy has to follow it — it
         // was built from whatever profile `with_profile` saw.
         for scope in &mut self.scopes {
-            scope.fold_case = !self.case_sensitive;
+            scope.fold = fold;
         }
         // This module's declared policy is in force from its first statement.
         // Nothing carries over from a previously compiled module: each unit of
         // a multi-language program is compiled on its own terms, so Pascal
         // never inherits what PHP declared.
         self.directives = vec![module.directives.clone()];
+        // The canon section is module-level DATA, not policy and not code: it
+        // has no execution position, so it is captured here rather than
+        // emitted, and published to the chunks once compilation is done.
+        self.canon_section = common::canon::lower_section(&module.canon.defs)?;
+        self.canon_decls = module.canon.defs.clone();
+        let (fts, vts) = common::canon::lower_types(&module.canon.types)?;
+        self.canon_functypes = fts;
+        self.canon_valtypes = vts;
+        self.component_funcs = module.canon.funcs.clone();
         self.current_module_imports = module.imports.clone();
         // Whether a global holds a pointer cell is a WHOLE-MODULE property, but
         // compilation is one forward pass: `function r(){ global $g; echo $g; }`
@@ -3251,6 +3299,17 @@ impl Compiler {
         // and rewrite the operands into it. Must follow the line above,
         // which decides the import half.
         common::globals::normalize_global_table(&mut self.chunks);
+        // The canon section, published to every chunk on the same principle as
+        // the global index space above: a chunk carrying a canonidx must be
+        // able to say what that index means.
+        let mut canon = std::mem::take(&mut self.canon_section);
+        let decls = std::mem::take(&mut self.canon_decls);
+        common::canon::resolve_core_export_callees(&mut self.chunks, &decls, &mut canon)?;
+        common::canon::install_canon_section(&mut self.chunks, &canon);
+        let fts = std::mem::take(&mut self.canon_functypes);
+        let vts = std::mem::take(&mut self.canon_valtypes);
+        let cfuncs = std::mem::take(&mut self.component_funcs);
+        common::canon::install_type_space(&mut self.chunks, &fts, &vts, &cfuncs);
         let host_imports = self.collected_host_imports();
         // Frame 0 is the module's own declaration (installed above from
         // `module.directives`); an in-source `Directive` with `Module` scope
