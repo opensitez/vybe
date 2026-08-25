@@ -1,4 +1,10 @@
-                    GNU GENERAL PUBLIC LICENSE
+LICENSE
+This software is dual-licensed.
+
+Under the GNU General Public License v3.0 (GPL-3.0). See below for the full text.
+Under a Commercial License for proprietary use. Please go to https://opensitez.com/ for commercial licensing details.
+
+GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
