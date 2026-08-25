@@ -6395,7 +6395,7 @@ impl Document {
     /// `element.style` is resolved against layout. The resolved answer moved to
     /// `computed_style_property` below rather than being deleted.
     ///
-    /// The split is also what makes the engines interchangeable — htmlbox
+    /// The split is also what makes the engines interchangeable — webcore
     /// always answered the declared value, so a single op could only ever have
     /// been right for one of the two engines.
     pub fn get_style_property(&mut self, node: NodeId, property: &str) -> String {
@@ -12483,8 +12483,8 @@ mod tests {
 
     // ── The methods that arrived with the second engine ────────────────────
     //
-    // `rhtmledit` carries these same tests under the same names, in
-    // `crates/htmlbox/src/tests/test_dom_api.rs`. The two engines are meant to
+    // `webcore` carries these same tests under the same names, in
+    // `crates/webcore/src/tests/test_dom_api.rs`. The two engines are meant to
     // be swappable, and a shared SIGNATURE proves nothing about shared
     // BEHAVIOUR — only a pair of tests that assert the same thing does.
     // The setup differs because this engine has no HTML parser; the assertions

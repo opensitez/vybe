@@ -14,7 +14,7 @@
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
-//!   --engine NAME     Browser engine: `widgets` (default) or `htmlbox`.
+//!   --engine NAME     Browser engine: `widgets` (default) or `webcore`.
 //!                     Also settable with VYBE_ENGINE; the flag wins.
 //!   --capture FILE    Render one GUI frame to a PNG instead of opening a window
 //!   --capture-control N  Crop --capture to a single control
@@ -300,7 +300,7 @@ pub fn run() {
             // starting anyway would silently give you the other engine.
             "--engine" => {
                 let Some(name) = iter.next() else {
-                    eprintln!("Missing value for --engine (try: widgets, htmlbox)");
+                    eprintln!("Missing value for --engine (try: widgets, webcore)");
                     std::process::exit(1);
                 };
                 let Some(engine) = vybe_platform_web::engine_select::Engine::parse(name) else {
@@ -1014,7 +1014,7 @@ fn print_usage() {
     eprintln!("      --dap-port N  Debug Adapter Protocol server on 127.0.0.1:N (VS Code attach)");
     eprintln!("  -W, --watch       Re-run on source change (Phase-1 hot reload)");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
-    eprintln!("      --engine NAME Browser engine: widgets (default) or htmlbox");
+    eprintln!("      --engine NAME Browser engine: widgets (default) or webcore");
     eprintln!("                    Also settable with VYBE_ENGINE; the flag wins");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
     eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");

@@ -30,7 +30,7 @@ pub fn render_into(pixmap: &mut Pixmap, scale: f32) {
     fill_background(pixmap, 240, 240, 240, 255);
     // Through `platforms/web`, which forwards to whichever engine is live.
     // This used to call `vybe_widgets::dom` directly — around the intermediary
-    // rather than through it — so `--engine htmlbox` swapped the engine and
+    // rather than through it — so `--engine webcore` swapped the engine and
     // left the renderer pointed at the toolkit's empty tree.
     //
     // `gui_document::active()` rather than `html::active_document()`: the

@@ -1,6 +1,6 @@
 //! CSS declarations: storage, parsing, and the typed view layout reads.
 //!
-//! Lifted and adapted from the `osz-htmledit` HTML editor's `css.rs`. That
+//! Lifted and adapted from the `osz-webcore` HTML editor's `css.rs`. That
 //! project renders through GTK text tags; this one renders through our own
 //! widgets, so only the toolkit-independent half came across — the declaration
 //! parser, the length/shorthand rules, and the property record. None of the

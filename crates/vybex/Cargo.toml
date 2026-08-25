@@ -35,10 +35,10 @@ vybe_platform_libc = { workspace = true }
 vybe_platform_plib = { workspace = true }
 vybe_platform_ecma = { workspace = true }
 # `gui` installs `vybe_widgets` as the DOM behind `web:html`.
-# BOTH engines, so `VYBE_ENGINE=htmlbox` is a restart and not a rebuild.
-# `engine-htmlbox` implies `gui`, so this is additive: widgets is still the
+# BOTH engines, so `VYBE_ENGINE=webcore` is a restart and not a rebuild.
+# `engine-webcore` implies `gui`, so this is additive: widgets is still the
 # default, and `engine_select` picks between them at startup.
-vybe_platform_web = { workspace = true, features = ["engine-htmlbox"] }
+vybe_platform_web = { workspace = true, features = ["engine-webcore"] }
 vybe_platform_wasi = { workspace = true }
 vybe_platform_node = { workspace = true }
 vybe_widgets = { workspace = true }

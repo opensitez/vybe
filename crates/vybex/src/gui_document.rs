@@ -82,8 +82,8 @@ pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
 pub fn has_content() -> bool {
     // Through `platforms/web`, so the answer is about the LIVE engine's
     // document. `with_live` below still names the toolkit, which is why this
-    // no longer goes through it: under `--engine htmlbox` that asks the wrong
-    // tree and reports an empty UI for a form htmlbox laid out perfectly well.
+    // no longer goes through it: under `--engine webcore` that asks the wrong
+    // tree and reports an empty UI for a form webcore laid out perfectly well.
     vybe_platform_web::present::has_content(active())
 }
 
@@ -182,8 +182,8 @@ pub fn html() -> Option<String> {
 ///
 /// `with_live` borrows `vybe_widgets::dom` directly, which is the toolkit
 /// whether or not the toolkit is the live engine. Every GUI command in the step
-/// debugger went through it, so under `--engine htmlbox` they reported an empty
-/// tree for a document htmlbox had built perfectly well — the debugger was
+/// debugger went through it, so under `--engine webcore` they reported an empty
+/// tree for a document webcore had built perfectly well — the debugger was
 /// inspecting the engine that was NOT running.
 ///
 /// `outerHTML` on the document is the one question that needs no toolkit type
@@ -209,8 +209,8 @@ pub fn engine_html() -> String {
 pub fn viewport() -> Option<(u32, u32)> {
     // `window.innerWidth` / `innerHeight` — asked through the seam, in the
     // vocabulary both engines already answer, rather than by borrowing the
-    // toolkit's document. Under `--engine htmlbox` the toolkit's is empty, so
-    // this reported "no live document to capture" for a form htmlbox had laid
+    // toolkit's document. Under `--engine webcore` the toolkit's is empty, so
+    // this reported "no live document to capture" for a form webcore had laid
     // out perfectly well.
     if !vybe_platform_web::present::has_content(active()) {
         return None;
@@ -319,7 +319,7 @@ pub fn controls() -> Vec<DomControl> {
 pub fn node_by_id(name: &str) -> Option<NodeId> {
     // Through the seam, so the inspector answers for whichever engine is live.
     // This walked `vybe_widgets`' document directly, which is the toolkit
-    // whether or not the toolkit is running — so under `--engine htmlbox`
+    // whether or not the toolkit is running — so under `--engine webcore`
     // every `css`/`attr`/`text` command reported "no control named X" for
     // controls that were plainly in the tree. `html` was fixed first and made
     // that obvious: the dump listed the element the next command denied.

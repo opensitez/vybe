@@ -1,7 +1,7 @@
 cosmic_editor
 ===============
 
-This is a scaffold for a pure‑Rust code editor prototype (keeps the htmledit codebase separate).
+This is a scaffold for a pure‑Rust code editor prototype (keeps the webcore codebase separate).
 
 Goals
 - Use `cosmic-text` for text layout and shaping

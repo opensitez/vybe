@@ -104,7 +104,7 @@ impl Application for FormApp {
             // Through the seam, so the LIVE engine hit-tests it. This called
             // `vybe_widgets`' form directly, which is the toolkit whether or
             // not the toolkit is the engine in use — so under
-            // `--engine htmlbox` every click was hit-tested against an empty
+            // `--engine webcore` every click was hit-tested against an empty
             // tree and nothing at all happened.
             //
             // The SAME W3C fields the queue above is given: one translation
