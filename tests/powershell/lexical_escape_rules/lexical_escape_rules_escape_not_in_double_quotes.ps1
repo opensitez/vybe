@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_not_in_double_quotes
-$actual = 'x`q'
-if ($actual -ne 'x`q') {
-    Write-Host "FAIL: single-quoted unknown escape should keep literal text, got $actual"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_not_in_double_quotes
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

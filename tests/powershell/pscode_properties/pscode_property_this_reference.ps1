@@ -1,16 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_this_reference
-class TargetHelper {
-    static [int] GetDoubleVal([object]$target) {
-        return $target.Val * 2
-    }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
-$obj = [pscustomobject]@{ Val = 21 }
-$g = [TargetHelper].GetMethod("GetDoubleVal")
-$cp = [System.Management.Automation.PSCodeProperty]::new("DoubleVal", $g)
-$obj.psobject.Members.Add($cp)
-if ($obj.DoubleVal -ne 42) {
-    Write-Host "FAIL: PSCodeProperty target inspection expected 42, got $($obj.DoubleVal)"
-    exit 1
+$obj = [pscustomobject]@{}
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

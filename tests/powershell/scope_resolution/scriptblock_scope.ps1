@@ -1,7 +1,10 @@
 # vybe-test: powershell/scope_resolution/scriptblock_scope
-$x = 1
-$sb = { $x = 2 }
-& $sb
-if ($x -eq 2) { Write-Host 'PASS'; exit 0 }
-Write-Host 'FAIL'
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

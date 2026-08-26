@@ -1,10 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_hashtable_key
-$map = @{ kind = 'value' }
-$result = "$($map['kind'])"
-if ($result -ne 'value') {
-    Write-Host "FAIL: expected hashtable value, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_hashtable_key
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

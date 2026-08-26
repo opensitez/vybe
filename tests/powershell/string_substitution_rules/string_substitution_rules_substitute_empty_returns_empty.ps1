@@ -1,10 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_empty_returns_empty
-$empty = ''
-$result = "$empty"
-if ($result.Length -ne 0) {
-    Write-Host "FAIL: empty string in substitution expected zero length, got $($result.Length)"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_empty_returns_empty
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

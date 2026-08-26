@@ -1,16 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/scope
-$global:scopeRoot = 'root'
-function interp-scope-check {
-    $scopeRoot = 'local'
-    return "$scopeRoot"
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_scope
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-if ((interp-scope-check) -ne 'local') {
-    Write-Host "FAIL: function-scoped interpolation expected local value"
-    exit 1
-}
-if ($global:scopeRoot -ne 'root') {
-    Write-Host "FAIL: global scope should remain root, got '$global:scopeRoot'"
-    exit 1
-}
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

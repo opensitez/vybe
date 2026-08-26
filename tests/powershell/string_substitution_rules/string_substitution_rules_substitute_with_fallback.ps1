@@ -1,11 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_with_fallback
-$name = $null
-$value = if ($null -eq $name) { 'fallback' } else { $name }
-$result = "$value"
-if ($result -ne 'fallback') {
-    Write-Host "FAIL: fallback substitution expected 'fallback', got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_with_fallback
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,9 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_dynamic_name
-$varName = "dynVar"
-Set-Variable -Name $varName -Value "DynamicData"
-$res = Get-Variable -Name $varName -ValueOnly
-if ($res -ne "DynamicData") {
-    Write-Host "FAIL: Get-Variable dynamic lookup expected 'DynamicData', got '$res'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

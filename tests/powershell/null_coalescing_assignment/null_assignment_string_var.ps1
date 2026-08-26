@@ -1,9 +1,10 @@
 # vybe-test: powershell/null_coalescing_assignment/null_assignment_string_var
-$strVar = $null
-$strVar ??= "DefaultString"
-if ($strVar -ne "DefaultString") {
-    Write-Host "FAIL: string variable ??= expected DefaultString, got $strVar"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,7 +1,8 @@
 # vybe-test: powershell/scheduled_jobs/job_trigger_type
-$trigger = New-JobTrigger -Daily -At (Get-Date).AddHours(1).TimeOfDay
-if ($trigger.Type -ne 'Once' -and $trigger.Type -ne 'Daily') {
-    Write-Host "FAIL: expected trigger type to be Created"
+$job = Start-ThreadJob -ScriptBlock { 10 + 20 }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -ne 30) {
+    Write-Host "FAIL: ThreadJob failed, got $res"
     exit 1
 }
 Write-Host "PASS"

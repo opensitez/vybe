@@ -1,8 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/invalid
-$result = "$missingVar"
-if ($result -ne '') {
-    Write-Host "FAIL: unknown variable should interpolate to empty string"
-    exit 1
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_invalid
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

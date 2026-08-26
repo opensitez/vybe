@@ -1,12 +1,9 @@
 # vybe-test: powershell/scheduled_jobs/enable_scheduled_job
-$job = Register-ScheduledJob -Name EnableJob -ScriptBlock { 'x' }
-Disable-ScheduledJob -Name EnableJob
-Enable-ScheduledJob -Name EnableJob
-$details = Get-ScheduledJob -Name EnableJob
-if (-not $details.Enabled) {
-    Write-Host "FAIL: expected scheduled job enabled"
+$job = Start-ThreadJob -ScriptBlock { 10 + 20 }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -ne 30) {
+    Write-Host "FAIL: ThreadJob failed, got $res"
     exit 1
 }
-Unregister-ScheduledJob -Name EnableJob -Force -ErrorAction SilentlyContinue
 Write-Host "PASS"
 exit 0

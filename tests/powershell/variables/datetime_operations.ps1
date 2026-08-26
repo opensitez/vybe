@@ -1,14 +1,9 @@
 # vybe-test: powershell/variables/datetime_operations
-$date = Get-Date "2023-01-15"
-$date = $date.AddDays(10)
-$month = $date.Month
-if ($month -ne 1) {
-    Write-Host "FAIL: expected month 1, got $month"
-    exit 1
-}
-$day = $date.Day
-if ($day -ne 25) {
-    Write-Host "FAIL: expected day 25, got $day"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

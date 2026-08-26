@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_ref_parameter
 $capturedRef = 100
-$sb = { param([ref]$r) $r.Value += $capturedRef }.GetClosure()
+$sb = { param([ref]$r) $r.Value += $capturedRef }.GetNewClosure()
 $val = 50
 &$sb ([ref]$val)
 if ($val -ne 150) {

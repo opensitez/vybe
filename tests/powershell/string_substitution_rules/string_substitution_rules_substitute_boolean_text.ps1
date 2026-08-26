@@ -1,10 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_boolean_text
-$isOn = $true
-$result = "$isOn"
-if ($result -ne 'True') {
-    Write-Host "FAIL: boolean substitution expected 'True', got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_boolean_text
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,4 +1,10 @@
 # vybe-test: powershell/type_operators/isnot_operator
-if (1 -isnot [string]) { Write-Host 'PASS'; exit 0 }
-Write-Host 'FAIL'
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

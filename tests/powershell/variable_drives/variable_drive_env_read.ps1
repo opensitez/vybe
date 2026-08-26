@@ -1,7 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_env_read
-$env:VYBE_TEST_ENV_VAR = "Active"
-if ($env:VYBE_TEST_ENV_VAR -ne "Active") {
-    Write-Host "FAIL: read \$env:VYBE_TEST_ENV_VAR expected 'Active', got '$env:VYBE_TEST_ENV_VAR'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

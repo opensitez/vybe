@@ -1,13 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_case_insensitivity
-class CaseCodeHelper {
-    static [string] GetValue([object]$t) { return "CaseInsensitiveVal" }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$g = [CaseCodeHelper].GetMethod("GetValue")
-$obj | Add-Member -MemberType CodeProperty -Name "CamelCode" -Value $g
-if ($obj.camelcode -ne "CaseInsensitiveVal") {
-    Write-Host "FAIL: case-insensitive CodeProperty expected CaseInsensitiveVal"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

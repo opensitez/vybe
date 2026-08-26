@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_engine_context
 class IdentityTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$engineData, [object]$inputData) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$engineData, [object]$inputData) {
         return $inputData
     }
 }

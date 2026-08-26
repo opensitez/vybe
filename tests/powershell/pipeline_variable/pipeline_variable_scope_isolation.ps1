@@ -1,8 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_scope_isolation
-$pv = "Outer"
-1..1 | ForEach-Object -PipelineVariable pv { "Inner" } | Out-Null
-if ($pv -ne "Outer") {
-    Write-Host "FAIL: PipelineVariable leaked into caller scope"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

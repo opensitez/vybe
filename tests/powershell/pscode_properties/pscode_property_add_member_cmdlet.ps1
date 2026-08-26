@@ -1,13 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_add_member_cmdlet
-class CmdletCodeHelper {
-    static [string] GetGreeting([object]$t) { return "HelloCode" }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$g = [CmdletCodeHelper].GetMethod("GetGreeting")
-$obj | Add-Member -MemberType CodeProperty -Name "Greeting" -Value $g
-if ($obj.Greeting -ne "HelloCode") {
-    Write-Host "FAIL: Add-Member CodeProperty expected Greeting='HelloCode', got '$($obj.Greeting)'"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

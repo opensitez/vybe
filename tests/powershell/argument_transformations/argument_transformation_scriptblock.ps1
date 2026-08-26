@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_scriptblock
 class ScriptBlockTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         if ($i -is [string]) { return [scriptblock]::Create($i) }
         return $i
     }

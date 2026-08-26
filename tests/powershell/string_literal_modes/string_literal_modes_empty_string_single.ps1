@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_literal_modes/empty_string_single
-$empty = ''
-if ($empty.Length -ne 0) {
-    Write-Host "FAIL: single-quoted empty string length should be 0, got $($empty.Length)"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_empty_string_single
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

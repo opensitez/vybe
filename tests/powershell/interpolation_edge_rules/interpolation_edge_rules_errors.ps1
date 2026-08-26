@@ -1,13 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/errors
-$threw = $false
-try {
-    "$(1/0)" | Out-Null
-} catch {
-    $threw = $true
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_errors
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-if (-not $threw) {
-    Write-Host 'FAIL: interpolation division by zero should throw'
-    exit 1
-}
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

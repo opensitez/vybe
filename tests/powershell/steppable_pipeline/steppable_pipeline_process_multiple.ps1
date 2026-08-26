@@ -1,13 +1,14 @@
 # vybe-test: powershell/steppable_pipeline/steppable_pipeline_process_multiple
-$sb = { process { "ITEM:$_" } }
-$sp = $sb.GetSteppablePipeline()
+$sb = { ForEach-Object { $_ * 2 } }
+$sp = $sb.GetSteppablePipeline([System.Management.Automation.CommandOrigin]::Internal)
 $sp.Begin($true)
-$outs = @()
-1..3 | ForEach-Object { $script:outs += $sp.Process($_) }
-$sp.End()
-if ($outs[0] -ne "ITEM:1" -or $outs[2] -ne "ITEM:3") {
-    Write-Host "FAIL: SteppablePipeline multiple Process calls expected ITEM:1, ITEM:2, ITEM:3"
-    exit 1
+$r1 = @($sp.Process(5))
+$r2 = @($sp.Process(10))
+$null = $sp.End()
+$sp.Dispose()
+if ($r1[0] -eq 10 -and $r2[0] -eq 20) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

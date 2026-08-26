@@ -1,7 +1,7 @@
 # vybe-test: powershell/scriptblock_closures/closure_multiple_variables_capture
 $a = 10
 $b = 20
-$sb = { $a + $b }.GetClosure()
+$sb = { $a + $b }.GetNewClosure()
 $a = 100
 $b = 200
 $res = &$sb

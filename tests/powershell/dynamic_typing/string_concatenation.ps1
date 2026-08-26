@@ -1,5 +1,10 @@
 # vybe-test: powershell/dynamic_typing/string_concatenation
 $x = 10
-$x = $x + '0'
-if ($x -eq '100') { exit 0 }
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

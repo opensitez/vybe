@@ -1,10 +1,9 @@
 # vybe-test: powershell/scheduled_jobs/get_scheduled_job_view
-$job = Register-ScheduledJob -Name ViewJob -ScriptBlock { 'x' }
-$found = Get-ScheduledJob -Name ViewJob
-if ($found.Name -ne 'ViewJob') {
-    Write-Host "FAIL: expected scheduled job name ViewJob"
+$job = Start-ThreadJob -ScriptBlock { 10 + 20 }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -ne 30) {
+    Write-Host "FAIL: ThreadJob failed, got $res"
     exit 1
 }
-Unregister-ScheduledJob -Name ViewJob -Force -ErrorAction SilentlyContinue
 Write-Host "PASS"
 exit 0

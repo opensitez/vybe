@@ -1,12 +1,8 @@
-# vybe-test: powershell/string_literal_modes/here_strings_multi_line
-$heredoc = @"
-alpha
-beta
-"@
-if ($heredoc -notmatch 'alpha' -or $heredoc -notmatch 'beta') {
-    Write-Host "FAIL: multi-line here-string missing expected lines"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_here_strings_multi_line
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

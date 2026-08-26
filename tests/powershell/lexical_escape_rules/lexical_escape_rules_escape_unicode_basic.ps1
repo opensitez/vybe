@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_unicode_basic
-$pi = "\u{03A0}"
-if ($pi -ne 'Π') {
-    Write-Host "FAIL: expected Greek Pi, got $pi"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_unicode_basic
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

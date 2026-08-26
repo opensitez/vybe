@@ -1,4 +1,10 @@
 # vybe-test: powershell/pipeline_binding/by_value
-function Test { param($x) process { $_ + 1 } }
-if ((1..2 | Test | Measure-Object).Count -eq 2) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

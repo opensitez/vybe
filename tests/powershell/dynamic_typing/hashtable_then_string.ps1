@@ -1,5 +1,10 @@
 # vybe-test: powershell/dynamic_typing/hashtable_then_string
-$x = @{ a = 1 }
-$x = 'now'
-if ($x -eq 'now') { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

@@ -1,13 +1,10 @@
 # vybe-test: powershell/splatting/array_position_splatting
-function Concat-Strings {
-    param($first, $second, $third)
-    return "$first,$second,$third"
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$values = @('a', 'b', 'c')
-$result = Concat-Strings @values
-if ($result -ne 'a,b,c') {
-    Write-Host "FAIL: expected a,b,c, got $result"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

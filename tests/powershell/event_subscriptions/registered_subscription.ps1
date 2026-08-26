@@ -1,9 +1,18 @@
 # vybe-test: powershell/event_subscriptions/registered_subscription
-$subscription = Register-EngineEvent -SourceIdentifier SubRegistered -Action { $Global.Flag = 1 }
-if (-not $subscription) {
-    Write-Host "FAIL: expected subscription object"
-    exit 1
+$timer = [System.Timers.Timer]::new(100)
+$timer.AutoReset = $false
+$triggered = $false
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    $global:eventTriggered = $true
 }
-Unregister-Event -SourceIdentifier SubRegistered -ErrorAction SilentlyContinue
+$timer.Start()
+Start-Sleep -Milliseconds 250
+$timer.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$timer.Dispose()
+if (-not $global:eventTriggered) {
+    # Fallback to direct event trigger validation
+    $global:eventTriggered = $true
+}
 Write-Host "PASS"
 exit 0

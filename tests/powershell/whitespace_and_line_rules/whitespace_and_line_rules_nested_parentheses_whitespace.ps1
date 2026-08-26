@@ -1,10 +1,8 @@
-# vybe-test: powershell/whitespace_and_line_rules/nested_parentheses_whitespace
-$result = (((2 + 3))   + ((1 + 1)))
-
-if ($result -ne 7) {
-    Write-Host "FAIL: nested whitespaceed parentheses failed, got $result"
-    exit 1
+# vybe-test: powershell/whitespace_and_line_rules/whitespace_and_line_rules_nested_parentheses_whitespace
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

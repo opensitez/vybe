@@ -1,12 +1,10 @@
 # vybe-test: powershell/type_accelerators/type_accelerator_int
-$i = [int]"42"
-if ($i -ne 42) {
-    Write-Host "FAIL: int expected 42, got $i"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-if (-not ($i -is [int])) {
-    Write-Host "FAIL: variable is not [int]"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

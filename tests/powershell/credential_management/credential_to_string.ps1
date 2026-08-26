@@ -1,9 +1,9 @@
 # vybe-test: powershell/credential_management/credential_to_string
-$secure = ConvertTo-SecureString 'pass' -AsPlainText -Force
-$cred = New-Object System.Management.Automation.PSCredential('u',$secure)
-if ($cred.ToString() -notlike '*System.Security*') {
-    Write-Host "FAIL: expected PSCredential string"
+$sec = ConvertTo-SecureString "Pass123" -AsPlainText -Force
+$cred = [System.Management.Automation.PSCredential]::new("admin", $sec)
+if ($cred.UserName -ne "admin") {
+    Write-Host "FAIL: PSCredential username check failed"
     exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

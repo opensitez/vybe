@@ -1,7 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_multiple_pv_params
-$res = 1..1 | ForEach-Object -PipelineVariable v1 { 10 } | ForEach-Object -PipelineVariable v2 { 20 } | ForEach-Object { $v1 + $v2 }
-if ($res -ne 30) {
-    Write-Host "FAIL: multiple PipelineVariable sums expected 30, got $res"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

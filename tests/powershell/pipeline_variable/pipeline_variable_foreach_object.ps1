@@ -1,8 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_foreach_object
-$sum = 0
-1..4 | ForEach-Object -PipelineVariable v { $_ * 2 } | ForEach-Object { $script:sum += $v }
-if ($sum -ne 20) {
-    Write-Host "FAIL: PipelineVariable accumulator expected 20, got $sum"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

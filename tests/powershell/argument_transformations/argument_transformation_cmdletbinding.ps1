@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_cmdletbinding
 class PrefixTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         return "PRE_$i"
     }
 }

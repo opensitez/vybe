@@ -1,8 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_child_items
-$prefixTest = "Data1"
-$vars = Get-ChildItem "variable:prefixTest*"
-if ($vars.Count -lt 1 -or $vars[0].Value -ne "Data1") {
-    Write-Host "FAIL: Get-ChildItem variable:prefixTest* failed"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

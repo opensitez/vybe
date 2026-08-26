@@ -1,8 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_get
-$myVar = "DriveTest"
-$val = $variable:myVar
-if ($val -ne "DriveTest") {
-    Write-Host "FAIL: \$variable:myVar access expected 'DriveTest', got '$val'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

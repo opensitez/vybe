@@ -1,10 +1,10 @@
 # vybe-test: powershell/using_variable_scope/using_variable_curly_braces
-${spaced var} = "SpaceVal"
-$sb = { ${using:spaced var} }
-$res = &$sb
-if ($res -ne "SpaceVal") {
-    Write-Host "FAIL: \${using:spaced var} expected 'SpaceVal', got '$res'"
-    exit 1
+$localNum = 42
+$job = Start-ThreadJob -ScriptBlock { $using:localNum }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

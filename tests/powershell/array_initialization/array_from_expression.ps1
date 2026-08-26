@@ -1,5 +1,8 @@
 # vybe-test: powershell/array_initialization/array_from_expression
-$arr = @(1 + 1, 2 + 2)
-if ($arr[0] -eq 2 -and $arr[1] -eq 4) { Write-Host 'PASS'; exit 0 }
-Write-Host 'FAIL'
-exit 1
+$arr = @(1..5)
+if ($arr.Length -ne 5 -or $arr[4] -ne 5) {
+    Write-Host "FAIL: Array init from expression failed"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

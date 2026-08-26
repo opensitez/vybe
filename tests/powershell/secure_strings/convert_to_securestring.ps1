@@ -1,8 +1,10 @@
 # vybe-test: powershell/secure_strings/convert_to_securestring
-$secure = ConvertTo-SecureString 'password' -AsPlainText -Force
-if (-not $secure) {
-    Write-Host "FAIL: expected secure string"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

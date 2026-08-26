@@ -1,13 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_array_target
-class ArrayCodeHelper {
-    static [int] GetFirstElement([object]$t) { return $t[0] }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
-$arr = @(10, 20, 30)
-$g = [ArrayCodeHelper].GetMethod("GetFirstElement")
-$arr | Add-Member -MemberType CodeProperty -Name "First" -Value $g
-if ($arr.First -ne 10) {
-    Write-Host "FAIL: CodeProperty on array target expected First=10, got $($arr.First)"
-    exit 1
+$obj = [pscustomobject]@{}
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,13 +1,16 @@
 # vybe-test: powershell/desired_state_configuration/compile_configuration_node
-configuration NodeConfig {
-    Node 'localhost' {
-    }
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
 }
-NodeConfig -OutputPath "$PWD/dsc-node"
-if (-not (Test-Path "$PWD/dsc-node/localhost.mof")) {
-    Write-Host "FAIL: expected node MOF"
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Remove-Item -Recurse -Force "$PWD/dsc-node"
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

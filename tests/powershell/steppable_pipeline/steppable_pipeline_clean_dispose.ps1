@@ -1,8 +1,14 @@
 # vybe-test: powershell/steppable_pipeline/steppable_pipeline_clean_dispose
-$sb = { process { $_ } }
-$sp = $sb.GetSteppablePipeline()
+$sb = { ForEach-Object { $_ * 2 } }
+$sp = $sb.GetSteppablePipeline([System.Management.Automation.CommandOrigin]::Internal)
 $sp.Begin($true)
-[void]$sp.Process("Item")
+$r1 = @($sp.Process(5))
+$r2 = @($sp.Process(10))
+$null = $sp.End()
 $sp.Dispose()
-Write-Host "PASS"
-exit 0
+if ($r1[0] -eq 10 -and $r2[0] -eq 20) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
+exit 1

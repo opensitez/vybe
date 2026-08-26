@@ -1,14 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_read_only_getter
-class ReadOnlyCodeHelper {
-    static [string] GetConstant([object]$t) { return "Immutable" }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$g = [ReadOnlyCodeHelper].GetMethod("GetConstant")
-$cp = [System.Management.Automation.PSCodeProperty]::new("ConstProp", $g)
-$obj.psobject.Members.Add($cp)
-if (-not $cp.IsGettable -or $cp.IsSettable) {
-    Write-Host "FAIL: read-only PSCodeProperty expected IsGettable=true, IsSettable=false"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

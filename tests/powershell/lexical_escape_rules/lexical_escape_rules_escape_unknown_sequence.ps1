@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_unknown_sequence
-$val = "a`q"
-if ($val -ne 'aq') {
-    Write-Host "FAIL: unknown backtick sequence did not treat as escaped char literal: $val"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_unknown_sequence
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

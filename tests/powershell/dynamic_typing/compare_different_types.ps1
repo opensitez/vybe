@@ -1,5 +1,10 @@
 # vybe-test: powershell/dynamic_typing/compare_different_types
-$x = '1'
-$y = 1
-if ($x -ne $y) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

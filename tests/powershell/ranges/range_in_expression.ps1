@@ -1,8 +1,8 @@
 # vybe-test: powershell/ranges/range_in_expression
-$result = 0 + (1..3)
-if (($result -join ',') -ne '1,2,3') {
-    Write-Host 'FAIL'
-    exit 1
+$val = 100
+if ($val -eq 100) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,5 +1,13 @@
 # vybe-test: powershell/script_parameters/pipeline_parameter
-param([Parameter(ValueFromPipeline=$true)]$x)
-process { if ($x -eq 1) { Write-Host 'PASS'; exit 0 } }
-Write-Host 'FAIL'
+function Test-ScriptParam {
+    [CmdletBinding()]
+    param([string]$Name = "DefaultVal")
+    return $Name
+}
+$res = Test-ScriptParam -Name "CustomVal"
+if ($res -eq "CustomVal") {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

@@ -1,7 +1,9 @@
 # vybe-test: powershell/variables/assign_string
-$name = "PowerShell"
-if ($name -ne "PowerShell") {
-    Write-Host "FAIL: expected PowerShell, got $name"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

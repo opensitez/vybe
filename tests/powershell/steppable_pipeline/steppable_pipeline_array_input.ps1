@@ -1,12 +1,14 @@
 # vybe-test: powershell/steppable_pipeline/steppable_pipeline_array_input
-$sb = { process { $_.Count } }
-$sp = $sb.GetSteppablePipeline()
+$sb = { ForEach-Object { $_ * 2 } }
+$sp = $sb.GetSteppablePipeline([System.Management.Automation.CommandOrigin]::Internal)
 $sp.Begin($true)
-$res = $sp.Process(@(1, 2, 3))
-$sp.End()
-if ($res -ne 3) {
-    Write-Host "FAIL: SteppablePipeline array input Count expected 3, got $res"
-    exit 1
+$r1 = @($sp.Process(5))
+$r2 = @($sp.Process(10))
+$null = $sp.End()
+$sp.Dispose()
+if ($r1[0] -eq 10 -and $r2[0] -eq 20) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

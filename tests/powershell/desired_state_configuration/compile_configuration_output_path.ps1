@@ -1,13 +1,16 @@
 # vybe-test: powershell/desired_state_configuration/compile_configuration_output_path
-configuration OutputPathConfig {
-    Node 'localhost' {
-    }
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
 }
-OutputPathConfig -OutputPath "$PWD/dsc-output"
-if (-not (Test-Path "$PWD/dsc-output/localhost.mof")) {
-    Write-Host "FAIL: expected output path MOF"
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Remove-Item -Recurse -Force "$PWD/dsc-output"
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

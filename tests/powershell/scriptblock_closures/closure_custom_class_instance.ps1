@@ -3,7 +3,7 @@ class ConfigObj {
     [string]$Mode = "Fast"
 }
 $cfg = [ConfigObj]::new()
-$sb = { $cfg.Mode }.GetClosure()
+$sb = { $cfg.Mode }.GetNewClosure()
 $res = &$sb
 if ($res -ne "Fast") {
     Write-Host "FAIL: custom class instance capture in closure expected 'Fast', got '$res'"

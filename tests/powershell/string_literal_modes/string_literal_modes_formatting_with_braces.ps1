@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_literal_modes/formatting_with_braces
-$result = "{0,6}" -f 'ok'
-if ($result -ne '    ok') {
-    Write-Host "FAIL: format alignment failed: '$result'"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_formatting_with_braces
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

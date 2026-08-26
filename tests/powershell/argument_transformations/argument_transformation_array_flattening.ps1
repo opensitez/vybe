@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_array_flattening
 class FlattenTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         $flat = @()
         foreach ($elem in $i) { $flat += $elem }
         return $flat

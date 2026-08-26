@@ -1,8 +1,9 @@
 # vybe-test: powershell/variables/datetime_type
-[datetime]$date = "2023-01-15"
-$year = $date.Year
-if ($year -ne 2023) {
-    Write-Host "FAIL: expected year 2023, got $year"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

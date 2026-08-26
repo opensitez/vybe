@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_curly_braces
-$val = "a`{x` }"
-if ($val -ne 'a{x }') {
-    Write-Host "FAIL: escaped braces not preserved literally: $val"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_curly_braces
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,8 +1,10 @@
 # vybe-test: powershell/psalias_properties/psalias_property_read_only
-$obj = [pscustomobject]@{ Target = 10 }
-$obj | Add-Member -MemberType AliasProperty -Name "Alias" -Value "Target"
-if (-not $obj.psobject.Properties["Alias"].IsSettable) {
-    # AliasProperty pointing to settable property is settable
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

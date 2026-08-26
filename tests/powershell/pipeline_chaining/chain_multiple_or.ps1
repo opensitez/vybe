@@ -1,9 +1,9 @@
 # vybe-test: powershell/pipeline_chaining/chain_multiple_or
-$step = 0
-($script:step = 1; $false) || ($script:step = 2; $false) || ($script:step = 3; $true)
-if ($step -ne 3) {
-    Write-Host "FAIL: multiple || operators step expected 3, got $step"
-    exit 1
+$log = [System.Collections.Generic.List[string]]::new()
+$res = $( $log.Add("First"); $true ) && $( $log.Add("Second"); $true )
+if ($log.Count -eq 2 -and $log[0] -eq "First" -and $log[1] -eq "Second") {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

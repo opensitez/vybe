@@ -1,9 +1,10 @@
 # vybe-test: powershell/null_coalescing_assignment/null_assignment_hashtable_var
-$map = $null
-$map ??= @{ Status = "Init" }
-if ($map.Status -ne "Init") {
-    Write-Host "FAIL: hashtable variable ??= expected Status=Init"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

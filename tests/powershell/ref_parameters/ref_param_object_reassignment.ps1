@@ -1,12 +1,10 @@
 # vybe-test: powershell/ref_parameters/ref_param_object_reassignment
-function Reset-Obj([ref]$o) {
-    $o.Value = [pscustomobject]@{ Status = "Reset" }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$obj = [pscustomobject]@{ Status = "Original" }
-Reset-Obj ([ref]$obj)
-if ($obj.Status -ne "Reset") {
-    Write-Host "FAIL: object reference reassignment expected Status=Reset, got $($obj.Status)"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

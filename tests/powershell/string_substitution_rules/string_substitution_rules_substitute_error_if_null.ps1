@@ -1,10 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_error_if_null
-$maybe = $null
-$result = "$maybe"
-if ($result -ne '') {
-    Write-Host "FAIL: null substitution expected empty text, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_error_if_null
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

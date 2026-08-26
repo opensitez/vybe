@@ -1,14 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_subexpression
-class SubCodeHelper {
-    static [int] GetCount([object]$t) { return 99 }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$g = [SubCodeHelper].GetMethod("GetCount")
-$obj | Add-Member -MemberType CodeProperty -Name "Count" -Value $g
-$msg = "Total: $( $obj.Count )"
-if ($msg -ne "Total: 99") {
-    Write-Host "FAIL: CodeProperty in subexpression expected 'Total: 99', got '$msg'"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

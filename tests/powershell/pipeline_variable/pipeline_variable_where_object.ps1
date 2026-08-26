@@ -1,7 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_where_object
-$res = 1..5 | ForEach-Object -PipelineVariable num { $_ } | Where-Object { $num % 2 -eq 0 }
-if ($res[0] -ne 2 -or $res[1] -ne 4) {
-    Write-Host "FAIL: Where-Object with PipelineVariable expected 2, 4"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

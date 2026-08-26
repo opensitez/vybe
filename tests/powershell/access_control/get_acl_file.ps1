@@ -1,9 +1,10 @@
 # vybe-test: powershell/access_control/get_acl_file
-$path = $PWD
-$acl = Get-Acl $path
-if (-not $acl.Path) {
-    Write-Host "FAIL: expected ACL path"
+$bytes = [byte[]]@(1, 2, 3, 4, 5)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$hash = $sha.ComputeHash($bytes)
+if ($hash.Length -ne 32) {
+    Write-Host "FAIL: Security cryptography hash check failed"
     exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

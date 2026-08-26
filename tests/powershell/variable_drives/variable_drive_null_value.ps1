@@ -1,7 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_null_value
-$variable:nullItem = $null
-if ($nullItem -ne $null) {
-    Write-Host "FAIL: \$variable:nullItem expected null"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

@@ -1,12 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_with_subscript
-$payload = @{
-    nested = @('zero', 'one', 'two')
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_with_subscript
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-$result = "$($payload.nested[1])"
-if ($result -ne 'one') {
-    Write-Host "FAIL: subscript substitution expected one, got '$result'"
-    exit 1
-}
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

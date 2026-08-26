@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_mutation_isolation
 $count = 0
-$counterSb = { $script:count++ }.GetClosure()
+$counterSb = { $script:count++ }.GetNewClosure()
 &$counterSb
 &$counterSb
 if ($count -ne 0) {

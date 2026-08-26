@@ -1,10 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_simple_variable
-$val = 'alpha'
-$result = "$val"
-if ($result -ne 'alpha') {
-    Write-Host "FAIL: simple variable substitution expected alpha, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_simple_variable
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

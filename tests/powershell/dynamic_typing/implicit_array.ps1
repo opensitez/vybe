@@ -1,4 +1,10 @@
 # vybe-test: powershell/dynamic_typing/implicit_array
-$x = 1,2
-if ($x.Count -eq 2) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

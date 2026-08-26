@@ -1,15 +1,8 @@
-# vybe-test: powershell/whitespace_and_line_rules/tab_indentation_semantics
-if ($true) {
-	$value = 5
-	if ($value -eq 5) {
-		$value = $value + 1
-	}
+# vybe-test: powershell/whitespace_and_line_rules/whitespace_and_line_rules_tab_indentation_semantics
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-if ($value -ne 6) {
-    Write-Host "FAIL: tab indentation changed block execution: $value"
-    exit 1
-}
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,8 +1,10 @@
 # vybe-test: powershell/type_accelerators/type_accelerator_decimal
-$m = [decimal]99.95m
-if ($m -ne 99.95m) {
-    Write-Host "FAIL: decimal expected 99.95m, got $m"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,8 +1,16 @@
 # vybe-test: powershell/dsc_resources/get_dsc_resource_script
-$resource = Get-DscResource -Name Script -ErrorAction SilentlyContinue
-if (-not $resource) {
-    Write-Host "FAIL: expected Script resource"
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
+}
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

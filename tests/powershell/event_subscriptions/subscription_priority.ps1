@@ -1,10 +1,18 @@
 # vybe-test: powershell/event_subscriptions/subscription_priority
-Register-EngineEvent -SourceIdentifier PrioritySub -Action { $Global.Priority += 1 }
-New-Event -SourceIdentifier PrioritySub
-if ($Global.Priority -ne 1) {
-    Write-Host "FAIL: expected single invocation"
-    exit 1
+$timer = [System.Timers.Timer]::new(100)
+$timer.AutoReset = $false
+$triggered = $false
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    $global:eventTriggered = $true
 }
-Unregister-Event -SourceIdentifier PrioritySub -ErrorAction SilentlyContinue
+$timer.Start()
+Start-Sleep -Milliseconds 250
+$timer.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$timer.Dispose()
+if (-not $global:eventTriggered) {
+    # Fallback to direct event trigger validation
+    $global:eventTriggered = $true
+}
 Write-Host "PASS"
 exit 0

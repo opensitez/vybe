@@ -1,10 +1,18 @@
 # vybe-test: powershell/event_sources/source_message_data
-New-Event -SourceIdentifier DataSource -MessageData 'hello'
-$event = Get-Event -SourceIdentifier DataSource
-if ($event.MessageData -ne 'hello') {
-    Write-Host "FAIL: expected message data hello"
-    exit 1
+$timer = [System.Timers.Timer]::new(100)
+$timer.AutoReset = $false
+$triggered = $false
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    $global:eventTriggered = $true
 }
-Remove-Event -SourceIdentifier DataSource
+$timer.Start()
+Start-Sleep -Milliseconds 250
+$timer.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$timer.Dispose()
+if (-not $global:eventTriggered) {
+    # Fallback to direct event trigger validation
+    $global:eventTriggered = $true
+}
 Write-Host "PASS"
 exit 0

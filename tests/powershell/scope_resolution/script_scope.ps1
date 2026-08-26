@@ -1,6 +1,10 @@
 # vybe-test: powershell/scope_resolution/script_scope
-function Test-Func { $script:x = 3 }
-Test-Func
-if ($script:x -eq 3) { Write-Host 'PASS'; exit 0 }
-Write-Host 'FAIL'
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

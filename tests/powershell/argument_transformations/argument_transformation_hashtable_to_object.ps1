@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_hashtable_to_object
 class ObjTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         if ($i -is [hashtable]) { return [pscustomobject]$i }
         return $i
     }

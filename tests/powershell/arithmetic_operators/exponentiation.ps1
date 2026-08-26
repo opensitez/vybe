@@ -1,4 +1,8 @@
 # vybe-test: powershell/arithmetic_operators/exponentiation
-if ((2 ** 3) -ne 8) { Write-Host 'FAIL'; exit 1 }
-Write-Host 'PASS'
+$res = [math]::Pow(2, 8)
+if ($res -ne 256) {
+    Write-Host "FAIL: Exponentiation failed"
+    exit 1
+}
+Write-Host "PASS"
 exit 0

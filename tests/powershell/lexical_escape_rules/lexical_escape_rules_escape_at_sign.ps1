@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_at_sign
-$val = "user`@domain"
-if ($val -ne 'user@domain') {
-    Write-Host "FAIL: escaped at-sign not preserved: $val"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_at_sign
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

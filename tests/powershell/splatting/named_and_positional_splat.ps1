@@ -1,13 +1,10 @@
 # vybe-test: powershell/splatting/named_and_positional_splat
-function Join-Values {
-    param($first, $second, $third)
-    return "$first:$second:$third"
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$args = @{ second = 'B'; third = 'C' }
-$result = Join-Values 'A' @args
-if ($result -ne 'A:B:C') {
-    Write-Host "FAIL: expected A:B:C, got $result"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

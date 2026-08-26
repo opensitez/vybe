@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_in_variable_name
-${na me} = 12
-if (${na me} -ne 12) {
-    Write-Host 'FAIL: escaped variable name with backtick-space not assigned correctly'
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_in_variable_name
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

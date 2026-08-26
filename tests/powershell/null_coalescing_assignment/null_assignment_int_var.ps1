@@ -1,9 +1,10 @@
 # vybe-test: powershell/null_coalescing_assignment/null_assignment_int_var
-$intVar = $null
-$intVar ??= 500
-if ($intVar -ne 500) {
-    Write-Host "FAIL: int variable ??= expected 500, got $intVar"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

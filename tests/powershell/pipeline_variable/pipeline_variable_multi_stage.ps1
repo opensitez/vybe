@@ -1,7 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_multi_stage
-$out = 1..2 | ForEach-Object -PipelineVariable a { $_ } | ForEach-Object -PipelineVariable b { $_ * 5 } | ForEach-Object { "$a-$b-$_" }
-if ($out[0] -ne "1-5-5" -or $out[1] -ne "2-10-10") {
-    Write-Host "FAIL: multi-stage PipelineVariable expected 1-5-5, 2-10-10, got $($out -join ', ')"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

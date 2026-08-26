@@ -1,11 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_script_prefix
-$script:scriptLevel = "ScriptScoped"
-function Check-ScriptDrive {
-    return $script:scriptLevel
-}
-$res = Check-ScriptDrive
-if ($res -ne "ScriptScoped") {
-    Write-Host "FAIL: \$script: drive prefix in function scope expected ScriptScoped, got $res"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

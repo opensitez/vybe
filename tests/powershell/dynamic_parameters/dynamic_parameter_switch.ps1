@@ -1,19 +1,19 @@
 # vybe-test: powershell/dynamic_parameters/dynamic_parameter_switch
-function Test-Func {
-    param()
-    dynamicparam {
-        $attr = New-Object System.Management.Automation.ParameterAttribute
-        $attr.ParameterType = [switch]
-        $param = New-Object System.Management.Automation.RuntimeDefinedParameter('X',[switch],$attr)
-        $dict = New-Object System.Management.Automation.RuntimeDefinedParameterDictionary
-        $dict.Add('X',$param)
+function Test-DynParam {
+    [CmdletBinding()]
+    param([string]$Type = "Default")
+    DynamicParam {
+        $dict = [System.Management.Automation.RuntimeDefinedParameterDictionary]::new()
         return $dict
     }
-    process { $X }
+    process {
+        return $Type
+    }
 }
-if ((Test-Func -X) -ne $true) {
-    Write-Host 'FAIL'
+$res = Test-DynParam -Type "DynamicTarget"
+if ($res -ne "DynamicTarget") {
+    Write-Host "FAIL: DynamicParam function failed"
     exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

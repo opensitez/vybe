@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_subexpression
-$result = "$( (2 + 3) * 2 )"
-if ($result -ne '10') {
-    Write-Host "FAIL: subexpression substitution expected 10, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_subexpression
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

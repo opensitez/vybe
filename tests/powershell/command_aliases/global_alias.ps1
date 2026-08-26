@@ -1,4 +1,10 @@
 # vybe-test: powershell/command_aliases/global_alias
-New-Alias -Name globalg -Value Write-Host -Scope Global
-if ((globalg 'hi') -eq 'hi') { exit 0 }
-exit 1
+Set-Alias -Name "galias" -Value "Get-Date" -Scope Global
+$target = (Get-Alias -Name "galias").Definition
+Remove-Item alias:galias -Force
+if ($target -ne "Get-Date") {
+    Write-Host "FAIL: Global alias failed"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

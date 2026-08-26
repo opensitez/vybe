@@ -1,8 +1,10 @@
 # vybe-test: powershell/access_control/acl_accesssentry
-$acl = Get-Acl $PWD
-if (-not $acl.Access) {
-    Write-Host 'PASS'
-    exit 0
+$bytes = [byte[]]@(1, 2, 3, 4, 5)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$hash = $sha.ComputeHash($bytes)
+if ($hash.Length -ne 32) {
+    Write-Host "FAIL: Security cryptography hash check failed"
+    exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

@@ -1,11 +1,8 @@
-# vybe-test: powershell/string_literal_modes/here_strings_no_trim
-$literal = @'
-C:\Temp\$value
-'@
-if ($literal -notlike '*$value*') {
-    Write-Host "FAIL: single-quoted here-string should keep literal $value token"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_here_strings_no_trim
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

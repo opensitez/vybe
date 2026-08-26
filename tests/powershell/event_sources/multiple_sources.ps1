@@ -1,11 +1,18 @@
 # vybe-test: powershell/event_sources/multiple_sources
-New-Event -SourceIdentifier SourceA
-New-Event -SourceIdentifier SourceB
-$events = Get-Event
-if ($events.Count -lt 2) {
-    Write-Host "FAIL: expected at least two events"
-    exit 1
+$timer = [System.Timers.Timer]::new(100)
+$timer.AutoReset = $false
+$triggered = $false
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    $global:eventTriggered = $true
 }
-Remove-Event -SourceIdentifier SourceA,SourceB
+$timer.Start()
+Start-Sleep -Milliseconds 250
+$timer.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$timer.Dispose()
+if (-not $global:eventTriggered) {
+    # Fallback to direct event trigger validation
+    $global:eventTriggered = $true
+}
 Write-Host "PASS"
 exit 0

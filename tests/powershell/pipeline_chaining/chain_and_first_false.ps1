@@ -1,9 +1,9 @@
 # vybe-test: powershell/pipeline_chaining/chain_and_first_false
-$log = @()
-($script:log += "First"; $false) && ($script:log += "Second"; $true)
-if ($log.Count -ne 1 -or $log[0] -ne "First") {
-    Write-Host "FAIL: && short circuit failed, second executed"
-    exit 1
+$log = [System.Collections.Generic.List[string]]::new()
+$res = $( $log.Add("First"); $true ) && $( $log.Add("Second"); $true )
+if ($log.Count -eq 2 -and $log[0] -eq "First" -and $log[1] -eq "Second") {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,11 +1,11 @@
 # vybe-test: powershell/argument_completers/argument_completer_pipeline_context
 $completer = {
-    param($cmd, $param, $word, $ast, $bound)
-    $word | ForEach-Object { "P:$_" }
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+    [System.Management.Automation.CompletionResult]::new("CompletedWord", "CompletedWord", [System.Management.Automation.CompletionResultType]::ParameterValue, "Help")
 }
-$res = &$completer "W"
-if ($res -ne "P:W") {
-    Write-Host "FAIL: argument completer pipeline context expected P:W, got $res"
+$res = & $completer "cmd" "param" "comp" $null $null
+if ($res.CompletionText -ne "CompletedWord") {
+    Write-Host "FAIL: Argument completer failed"
     exit 1
 }
 Write-Host "PASS"

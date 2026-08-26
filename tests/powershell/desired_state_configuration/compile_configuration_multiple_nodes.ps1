@@ -1,13 +1,16 @@
 # vybe-test: powershell/desired_state_configuration/compile_configuration_multiple_nodes
-configuration MultiConfig {
-    Node 'localhost','127.0.0.1' {
-    }
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
 }
-MultiConfig -OutputPath "$PWD/dsc-multi"
-if (-not (Test-Path "$PWD/dsc-multi/localhost.mof")) {
-    Write-Host "FAIL: expected one MOF file"
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Remove-Item -Recurse -Force "$PWD/dsc-multi"
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

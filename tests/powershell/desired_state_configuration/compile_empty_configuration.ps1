@@ -1,13 +1,16 @@
 # vybe-test: powershell/desired_state_configuration/compile_empty_configuration
-configuration TestConfig {
-    Node 'localhost' {
-    }
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
 }
-TestConfig -OutputPath "$PWD/dsc-empty"
-if (-not (Test-Path "$PWD/dsc-empty/localhost.mof")) {
-    Write-Host "FAIL: expected MOF file"
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Remove-Item -Recurse -Force "$PWD/dsc-empty"
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

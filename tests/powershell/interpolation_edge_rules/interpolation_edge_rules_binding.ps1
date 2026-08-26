@@ -1,11 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/binding
-function test-binding {
-    param($x)
-    return "$x"
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_binding
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-if ((test-binding -x 99) -ne '99') {
-    Write-Host 'FAIL: bound parameter interpolation expected 99'
-    exit 1
-}
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

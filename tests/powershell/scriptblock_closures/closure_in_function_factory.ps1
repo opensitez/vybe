@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_in_function_factory
 function New-Multiplier([int]$factor) {
-    return { param($val) $val * $factor }.GetClosure()
+    return { param($val) $val * $factor }.GetNewClosure()
 }
 $triple = New-Multiplier 3
 $quad = New-Multiplier 4

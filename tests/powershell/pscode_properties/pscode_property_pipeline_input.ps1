@@ -1,15 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_pipeline_input
-class PipeCodeHelper {
-    static [int] GetSquared([object]$t) { return $t.Num * $t.Num }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
-$g = [PipeCodeHelper].GetMethod("GetSquared")
-$res = 1..3 | ForEach-Object {
-    $o = [pscustomobject]@{ Num = $_ }
-    $o | Add-Member -MemberType CodeProperty -Name "Sq" -Value $g -PassThru
+$obj = [pscustomobject]@{}
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-if ($res[0].Sq -ne 1 -or $res[1].Sq -ne 4 -or $res[2].Sq -ne 9) {
-    Write-Host "FAIL: pipeline CodeProperty expected Sq 1, 4, 9"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

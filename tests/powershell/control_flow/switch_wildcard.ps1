@@ -1,13 +1,12 @@
 # vybe-test: powershell/control_flow/switch_wildcard
-$value = "PowerShell"
-$result = ""
-switch -wildcard ($value) {
-    "Power*" { $result = "starts with Power" }
-    "*Shell" { $result = "ends with Shell" }
-    default { $result = "no match" }
+$val = "PowerShell"
+$matched = ""
+switch -Wildcard ($val) {
+    "Power*" { $matched = "starts with Power"; break }
+    "*Shell" { $matched = "ends with Shell"; break }
 }
-if ($result -ne "starts with Power") {
-    Write-Host "FAIL: expected 'starts with Power', got '$result'"
+if ($matched -ne "starts with Power") {
+    Write-Host "FAIL: Switch wildcard match failed"
     exit 1
 }
 Write-Host "PASS"

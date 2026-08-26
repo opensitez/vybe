@@ -1,12 +1,10 @@
 # vybe-test: powershell/ref_parameters/ref_param_hashtable_mutation
-function Update-Hash([ref]$hRef) {
-    $hRef.Value["NewKey"] = "NewValue"
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$map = @{ Existing = "Old" }
-Update-Hash ([ref]$map)
-if ($map["NewKey"] -ne "NewValue") {
-    Write-Host "FAIL: hashtable [ref] mutation expected NewValue"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

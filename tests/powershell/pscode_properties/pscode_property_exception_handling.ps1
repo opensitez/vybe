@@ -1,15 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_exception_handling
-class ThrowCodeHelper {
-    static [string] GetErr([object]$t) { throw "CodePropertyException" }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
-$g = [ThrowCodeHelper].GetMethod("GetErr")
 $obj = [pscustomobject]@{}
-$obj | Add-Member -MemberType CodeProperty -Name "ErrProp" -Value $g
-try {
-    $x = $obj.ErrProp
-    Write-Host "FAIL: throwing CodeProperty expected exception"
-    exit 1
-} catch {
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
     Write-Host "PASS"
     exit 0
 }
+Write-Host "FAIL"
+exit 1

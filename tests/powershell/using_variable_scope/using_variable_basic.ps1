@@ -1,10 +1,10 @@
 # vybe-test: powershell/using_variable_scope/using_variable_basic
 $localNum = 42
-$sb = { $using:localNum }
-$res = &$sb
-if ($res -ne 42) {
-    Write-Host "FAIL: \$using:localNum basic resolution expected 42, got $res"
-    exit 1
+$job = Start-ThreadJob -ScriptBlock { $using:localNum }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

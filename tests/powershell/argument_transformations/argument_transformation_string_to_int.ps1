@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_string_to_int
 class StringToIntTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         return [int]::Parse($i)
     }
 }

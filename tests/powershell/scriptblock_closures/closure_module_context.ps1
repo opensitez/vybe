@@ -1,14 +1,12 @@
 # vybe-test: powershell/scriptblock_closures/closure_module_context
-$m = New-Module -ScriptBlock {
+function Create-ClosureContext {
     $secret = "ModSecret"
-    function Get-SecretSb {
-        return { $secret }.GetClosure()
-    }
+    return { return $secret }.GetNewClosure()
 }
-$sb = & $m { Get-SecretSb }
-$res = &$sb
+$c = Create-ClosureContext
+$res = &$c
 if ($res -ne "ModSecret") {
-    Write-Host "FAIL: module context closure expected ModSecret, got $res"
+    Write-Host "FAIL: Closure module context failed"
     exit 1
 }
 Write-Host "PASS"

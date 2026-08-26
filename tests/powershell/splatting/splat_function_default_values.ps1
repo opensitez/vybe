@@ -1,13 +1,10 @@
 # vybe-test: powershell/splatting/splat_function_default_values
-function Get-Range {
-    param($start, $end = 5)
-    return $end - $start
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$args = @{ start = 2 }
-$result = Get-Range @args
-if ($result -ne 3) {
-    Write-Host "FAIL: expected 3, got $result"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

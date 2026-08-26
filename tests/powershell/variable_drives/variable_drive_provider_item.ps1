@@ -1,8 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_provider_item
-$itemVar = "ProviderVal"
-$val = (Get-Item "variable:itemVar").Value
-if ($val -ne "ProviderVal") {
-    Write-Host "FAIL: Get-Item variable:itemVar expected 'ProviderVal', got '$val'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

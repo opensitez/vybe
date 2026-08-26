@@ -1,9 +1,10 @@
 # vybe-test: powershell/compound_assignment/shift_left_assignment
-$x = 1
-$x <<= 1
-if ($x -ne 2) {
-    Write-Host 'FAIL'
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

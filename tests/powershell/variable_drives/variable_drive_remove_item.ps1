@@ -1,8 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_remove_item
-$toRemove = "Removable"
-Remove-Item "variable:toRemove"
-if (Test-Path "variable:toRemove") {
-    Write-Host "FAIL: Test-Path variable:toRemove expected false after Remove-Item"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

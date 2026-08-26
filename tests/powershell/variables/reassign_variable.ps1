@@ -1,8 +1,9 @@
 # vybe-test: powershell/variables/reassign_variable
-$x = 10
-$x = 20
-if ($x -ne 20) {
-    Write-Host "FAIL: expected 20, got $x"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

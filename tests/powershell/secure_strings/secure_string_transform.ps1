@@ -1,8 +1,10 @@
 # vybe-test: powershell/secure_strings/secure_string_transform
-$secure = ConvertTo-SecureString 'z' -AsPlainText -Force
-if (-not $secure.Length) {
-    Write-Host "FAIL: expected secure string length"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,16 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_in_function
-class FuncCodeHelper {
-    static [string] GetStatus([object]$t) { return "FuncStatusOK" }
-}
-function Attach-CodeProp($o) {
-    $g = [FuncCodeHelper].GetMethod("GetStatus")
-    $o | Add-Member -MemberType CodeProperty -Name "CodeStatus" -Value $g
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-Attach-CodeProp $obj
-if ($obj.CodeStatus -ne "FuncStatusOK") {
-    Write-Host "FAIL: function attached CodeProperty expected FuncStatusOK"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

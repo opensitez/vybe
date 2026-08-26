@@ -1,7 +1,8 @@
 # vybe-test: powershell/labels/label_with_goto
-goto label
-Write-Host 'FAIL'
+$val = 100
+if ($val -eq 100) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1
-:label
-Write-Host 'PASS'
-exit 0

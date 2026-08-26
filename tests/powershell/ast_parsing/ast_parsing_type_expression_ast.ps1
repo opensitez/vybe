@@ -1,8 +1,8 @@
 # vybe-test: powershell/ast_parsing/ast_parsing_type_expression_ast
-$sb = { [int]"42" }
-$typeAst = $sb.Ast.Find({ param($ast) $ast -is [System.Management.Automation.Language.TypeExpressionAst] }, $true)
-if ($typeAst.TypeName.Name -ne "int") {
-    Write-Host "FAIL: TypeExpressionAst TypeName expected 'int', got '$($typeAst.TypeName.Name)'"
+$ast = [System.Management.Automation.Language.Parser]::ParseInput('[int]$x', [ref]$null, [ref]$null)
+$typeAst = $ast.Find({ $args[0] -is [System.Management.Automation.Language.TypeConstraintAst] -or $args[0] -is [System.Management.Automation.Language.TypeExpressionAst] }, $true)
+if ($typeAst -eq $null) {
+    Write-Host "FAIL: Type expression AST lookup failed"
     exit 1
 }
 Write-Host "PASS"

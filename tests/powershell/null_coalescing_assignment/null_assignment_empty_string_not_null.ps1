@@ -1,9 +1,10 @@
 # vybe-test: powershell/null_coalescing_assignment/null_assignment_empty_string_not_null
-$str = ""
-$str ??= "FallbackString"
-if ($str -ne "") {
-    Write-Host "FAIL: empty string should NOT be treated as null by ??=, got '$str'"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

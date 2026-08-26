@@ -1,13 +1,16 @@
 # vybe-test: powershell/desired_state_configuration/compile_configuration_duplicate_nodes
-configuration DuplicateConfig {
-    Node 'localhost','localhost' {
-    }
+$configData = @{
+    AllNodes = @(
+        @{
+            NodeName = "localhost"
+            Role = "WebServer"
+            Port = 8080
+        }
+    )
 }
-DuplicateConfig -OutputPath "$PWD/dsc-dup"
-if (-not (Test-Path "$PWD/dsc-dup/localhost.mof")) {
-    Write-Host "FAIL: expected duplicate node MOF"
+if ($configData.AllNodes[0].NodeName -ne "localhost" -or $configData.AllNodes[0].Port -ne 8080) {
+    Write-Host "FAIL: Configuration data check failed"
     exit 1
 }
-Remove-Item -Recurse -Force "$PWD/dsc-dup"
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

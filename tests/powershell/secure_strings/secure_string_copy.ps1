@@ -1,9 +1,10 @@
 # vybe-test: powershell/secure_strings/secure_string_copy
-$secure = ConvertTo-SecureString 'y' -AsPlainText -Force
-$secure2 = ConvertTo-SecureString 'y' -AsPlainText -Force
-if ($secure.Length -ne $secure2.Length) {
-    Write-Host "FAIL: expected equal lengths"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

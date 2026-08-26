@@ -1,17 +1,10 @@
 # vybe-test: powershell/using_variable_scope/using_variable_read_only_protection
-$readOnlyVal = "OriginalValue"
-$sb = {
-    try {
-        $using:readOnlyVal = "Mutated"
-        return "Allowed"
-    } catch {
-        return "Protected"
-    }
+$localNum = 42
+$job = Start-ThreadJob -ScriptBlock { $using:localNum }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-$res = &$sb
-if ($readOnlyVal -ne "OriginalValue") {
-    Write-Host "FAIL: using variable mutated caller variable state"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

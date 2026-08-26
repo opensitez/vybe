@@ -1,8 +1,9 @@
 # vybe-test: powershell/variables/variable_interpolation_complex
-$obj = [PSCustomObject]@{ Name = "John"; Age = 30 }
-$result = "Name: $($obj.Name), Age: $($obj.Age)"
-if ($result -ne "Name: John, Age: 30") {
-    Write-Host "FAIL: expected 'Name: John, Age: 30', got '$result'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

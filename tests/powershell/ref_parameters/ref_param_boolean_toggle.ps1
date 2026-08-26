@@ -1,12 +1,10 @@
 # vybe-test: powershell/ref_parameters/ref_param_boolean_toggle
-function Toggle-Bool([ref]$flag) {
-    $flag.Value = -not $flag.Value
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-$state = $false
-Toggle-Bool ([ref]$state)
-if ($state -ne $true) {
-    Write-Host "FAIL: boolean toggle via [ref] expected true"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

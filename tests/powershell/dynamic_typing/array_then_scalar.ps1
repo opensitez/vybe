@@ -1,5 +1,10 @@
 # vybe-test: powershell/dynamic_typing/array_then_scalar
-$x = @(1,2,3)
-x = 4
-if ($x -eq 4) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

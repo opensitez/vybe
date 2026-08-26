@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_reference_type_mutation
 $dict = @{ Count = 0 }
-$sb = { $dict.Count++ }.GetClosure()
+$sb = { $dict.Count++ }.GetNewClosure()
 &$sb
 &$sb
 if ($dict.Count -ne 2) {

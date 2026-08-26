@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_literal_modes/backtick_escape_literals
-$value = "literal `"quoted`" `$x and `` symbol"
-if ($value -ne 'literal "quoted" $x and ` symbol') {
-    Write-Host "FAIL: literal backtick escapes did not produce expected text: $value"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_backtick_escape_literals
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

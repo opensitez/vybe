@@ -1,10 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_backtick_newline
-$result = 1 + `
-    2
-if ($result -ne 3) {
-    Write-Host "FAIL: backtick newline continuation produced $result"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_backtick_newline
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

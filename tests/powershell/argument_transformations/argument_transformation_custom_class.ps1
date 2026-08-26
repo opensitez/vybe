@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_custom_class
 class MultiplyByTen : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$engine, [object]$input) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$engine, [object]$input) {
         return [int]$input * 10
     }
 }

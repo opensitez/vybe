@@ -1,17 +1,14 @@
 # vybe-test: powershell/steppable_pipeline/steppable_pipeline_state_retention
-$sb = {
-    begin { $script:accum = 0 }
-    process { $script:accum += $_ }
-    end { return $script:accum }
-}
-$sp = $sb.GetSteppablePipeline()
+$sb = { ForEach-Object { $_ * 2 } }
+$sp = $sb.GetSteppablePipeline([System.Management.Automation.CommandOrigin]::Internal)
 $sp.Begin($true)
-$sp.Process(10)
-$sp.Process(20)
-$total = $sp.End()
-if ($total -ne 30) {
-    Write-Host "FAIL: SteppablePipeline state retention expected 30, got $total"
-    exit 1
+$r1 = @($sp.Process(5))
+$r2 = @($sp.Process(10))
+$null = $sp.End()
+$sp.Dispose()
+if ($r1[0] -eq 10 -and $r2[0] -eq 20) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

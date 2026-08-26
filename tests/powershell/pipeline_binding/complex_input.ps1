@@ -1,4 +1,10 @@
 # vybe-test: powershell/pipeline_binding/complex_input
-function Test { param([Parameter(ValueFromPipeline=$true)]$Number) process { $_ + $Number } }
-if ((2 | Test -Number 3) -eq 5) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

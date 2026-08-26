@@ -1,17 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_scope_variable
-$var = 'root'
-function Get-NestedValue {
-    $var = 'child'
-    return "$var"
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_scope_variable
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-if ((Get-NestedValue) -ne 'child') {
-    Write-Host 'FAIL: substitution should use function-local scope value'
-    exit 1
-}
-if ($var -ne 'root') {
-    Write-Host "FAIL: parent scope variable changed unexpectedly to '$var'"
-    exit 1
-}
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

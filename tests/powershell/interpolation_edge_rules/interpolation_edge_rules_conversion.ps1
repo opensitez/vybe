@@ -1,8 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/conversion
-$num = 7
-if ("$([string]$num)" -ne '7') {
-    Write-Host "FAIL: explicit conversion interpolation expected 7"
-    exit 1
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_conversion
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

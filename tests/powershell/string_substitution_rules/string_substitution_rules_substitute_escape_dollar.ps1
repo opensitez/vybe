@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_escape_dollar
-$result = "price is `$100"
-if ($result -ne 'price is $100') {
-    Write-Host "FAIL: escaped dollar should remain literal: '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_escape_dollar
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

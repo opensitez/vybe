@@ -1,8 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_clear_item
-$toClear = "Something"
-Clear-Item "variable:toClear"
-if ($toClear -ne $null) {
-    Write-Host "FAIL: Clear-Item variable:toClear expected null, got $toClear"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

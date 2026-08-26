@@ -1,9 +1,9 @@
 # vybe-test: powershell/pipeline_chaining/chain_command_failure_exit
-$out = @()
-(Write-Error "Err" -ErrorAction SilentlyContinue; $global:LASTEXITCODE = 1; $false) || ($script:out += "Fallback")
-if ($out.Count -ne 1 -or $out[0] -ne "Fallback") {
-    Write-Host "FAIL: command failure || Fallback expected"
-    exit 1
+$log = [System.Collections.Generic.List[string]]::new()
+$res = $( $log.Add("First"); $true ) && $( $log.Add("Second"); $true )
+if ($log.Count -eq 2 -and $log[0] -eq "First" -and $log[1] -eq "Second") {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,9 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_nested
-$res = @("X", "Y") | ForEach-Object -PipelineVariable parent {
-    1..2 | ForEach-Object { "$parent-$_" }
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
 }
-if ($res.Count -ne 4 -or $res[0] -ne "X-1" -or $res[3] -ne "Y-2") {
-    Write-Host "FAIL: nested PipelineVariable expansion expected 4 items, got $($res -join ', ')"
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

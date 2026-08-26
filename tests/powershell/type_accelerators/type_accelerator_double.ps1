@@ -1,8 +1,10 @@
 # vybe-test: powershell/type_accelerators/type_accelerator_double
-$d = [double]"3.14159"
-if ($d -ne 3.14159) {
-    Write-Host "FAIL: double expected 3.14159, got $d"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

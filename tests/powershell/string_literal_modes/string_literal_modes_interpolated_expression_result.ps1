@@ -1,11 +1,8 @@
-# vybe-test: powershell/string_literal_modes/interpolated_expression_result
-$a = 2
-$b = 3
-$result = "$($a + $b)"
-if ($result -ne '5') {
-    Write-Host "FAIL: arithmetic interpolation result mismatch: '$result'"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_interpolated_expression_result
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

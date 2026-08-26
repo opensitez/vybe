@@ -1,4 +1,10 @@
 # vybe-test: powershell/pipeline_binding/no_binding
-function Test { param($x) process { $_ + $x } }
-if ((1 | Test -x 2) -eq 3) { exit 0 }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

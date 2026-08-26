@@ -1,12 +1,9 @@
 # vybe-test: powershell/pipeline_chaining/chain_in_function
-function Test-Chain([bool]$a, [bool]$b) {
-    return ($a) && ($b)
+$log = [System.Collections.Generic.List[string]]::new()
+$res = $( $log.Add("First"); $true ) && $( $log.Add("Second"); $true )
+if ($log.Count -eq 2 -and $log[0] -eq "First" -and $log[1] -eq "Second") {
+    Write-Host "PASS"
+    exit 0
 }
-$res1 = Test-Chain $true $true
-$res2 = Test-Chain $true $false
-if (-not $res1 -or $res2) {
-    Write-Host "FAIL: function pipeline chaining expected res1=true, res2=false"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

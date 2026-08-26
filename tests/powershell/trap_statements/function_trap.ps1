@@ -1,8 +1,13 @@
 # vybe-test: powershell/trap_statements/function_trap
-$caught = $false
-trap { $caught = $true; continue }
-function Test-Func { throw 'ERR' }
-Test-Func
-if ($caught) { Write-Host 'PASS'; exit 0 }
-Write-Host 'FAIL'
-exit 1
+$trapped = $false
+function Test-FuncTrap {
+    trap { $script:trapped = $true; continue }
+    throw "TrapError"
+}
+Test-FuncTrap
+if (-not $trapped) {
+    Write-Host "FAIL: Function trap failed"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

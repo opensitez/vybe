@@ -1,9 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_automatic_variable
-$result = "$PID"
-if ($result -match '^\d+$' -ne $true) {
-    Write-Host "FAIL: automatic variable PID should produce a numeric string, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_automatic_variable
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,14 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_basic
-class CodeHelper {
-    static [int] GetVal([object]$target) { return 42 }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$getter = [CodeHelper].GetMethod("GetVal")
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
 $cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
-$obj.psobject.Members.Add($cp)
-if ($obj.DynamicVal -ne 42) {
-    Write-Host "FAIL: PSCodeProperty GetVal expected 42, got $($obj.DynamicVal)"
-    exit 1
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

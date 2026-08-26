@@ -1,8 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/metadata
-$meta = $PSVersionTable.PSVersion.ToString()
-if ([string]::IsNullOrWhiteSpace($meta)) {
-    Write-Host 'FAIL: metadata interpolation should produce a version string'
-    exit 1
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_metadata
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

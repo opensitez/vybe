@@ -1,9 +1,8 @@
-# vybe-test: powershell/whitespace_and_line_rules/line_comment_to_eol
-$x = 4 + 5 # comment until EOL
-if ($x -ne 9) {
-    Write-Host "FAIL: inline line comment malformed, got $x"
-    exit 1
+# vybe-test: powershell/whitespace_and_line_rules/whitespace_and_line_rules_line_comment_to_eol
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

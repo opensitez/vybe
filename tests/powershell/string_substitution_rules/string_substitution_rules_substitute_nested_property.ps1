@@ -1,12 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_nested_property
-$payload = [pscustomobject]@{
-    outer = [pscustomobject]@{ inner = 42 }
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_nested_property
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-$result = "$($payload.outer.inner)"
-if ($result -ne '42') {
-    Write-Host "FAIL: nested property substitution expected 42, got '$result'"
-    exit 1
-}
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

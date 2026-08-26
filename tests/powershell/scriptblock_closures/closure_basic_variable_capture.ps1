@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_basic_variable_capture
 $outerVal = 42
-$sb = { $outerVal }.GetClosure()
+$sb = { $outerVal }.GetNewClosure()
 $outerVal = 99
 $res = &$sb
 if ($res -ne 42) {

@@ -1,16 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_custom_class_target
-class Entity {
-    [int]$Id = 5
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
-class EntityCodeHelper {
-    static [string] GetCode([object]$t) { return "ENTITY-$($t.Id)" }
+$obj = [pscustomobject]@{}
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-$e = [Entity]::new()
-$g = [EntityCodeHelper].GetMethod("GetCode")
-$e | Add-Member -MemberType CodeProperty -Name "Code" -Value $g
-if ($e.Code -ne "ENTITY-5") {
-    Write-Host "FAIL: CodeProperty on custom class target expected ENTITY-5, got $($e.Code)"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

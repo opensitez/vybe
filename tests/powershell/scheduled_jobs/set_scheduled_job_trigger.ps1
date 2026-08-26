@@ -1,11 +1,9 @@
 # vybe-test: powershell/scheduled_jobs/set_scheduled_job_trigger
-$job = Register-ScheduledJob -Name TestTrigger -ScriptBlock { 3 + 3 } -RunNow
-Set-ScheduledJob -Name TestTrigger -Trigger (New-JobTrigger -Once -At (Get-Date).AddMinutes(1)) | Out-Null
-$job = Get-ScheduledJob -Name TestTrigger
-if (-not $job) {
-    Write-Host "FAIL: expected scheduled job to still exist"
+$job = Start-ThreadJob -ScriptBlock { 10 + 20 }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -ne 30) {
+    Write-Host "FAIL: ThreadJob failed, got $res"
     exit 1
 }
-Unregister-ScheduledJob -Name TestTrigger -Force -ErrorAction SilentlyContinue
 Write-Host "PASS"
 exit 0

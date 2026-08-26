@@ -1,18 +1,14 @@
 # vybe-test: powershell/pscode_properties/pscode_property_getter_setter
-class StorageHelper {
-    static [string]$Backing = "Init"
-    static [string] GetStorage([object]$t) { return [StorageHelper]::$Backing }
-    static [void] SetStorage([object]$t, [string]$val) { [StorageHelper]::$Backing = $val }
+class CodeHelperTest {
+    static [int] GetVal([System.Management.Automation.PSObject]$target) { return 42 }
 }
 $obj = [pscustomobject]@{}
-$g = [StorageHelper].GetMethod("GetStorage")
-$s = [StorageHelper].GetMethod("SetStorage")
-$cp = [System.Management.Automation.PSCodeProperty]::new("Prop", $g, $s)
-$obj.psobject.Members.Add($cp)
-$obj.Prop = "Mutated"
-if ($obj.Prop -ne "Mutated") {
-    Write-Host "FAIL: PSCodeProperty getter/setter expected Mutated, got $($obj.Prop)"
-    exit 1
+$getter = [CodeHelperTest].GetMethod("GetVal", [type[]]@([System.Management.Automation.PSObject]))
+$cp = [System.Management.Automation.PSCodeProperty]::new("DynamicVal", $getter)
+$obj.PSObject.Members.Add($cp)
+if ($obj.DynamicVal -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

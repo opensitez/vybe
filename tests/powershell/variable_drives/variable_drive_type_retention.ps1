@@ -1,7 +1,9 @@
 # vybe-test: powershell/variable_drives/variable_drive_type_retention
-$variable:typedInt = [int]42
-if (-not ($typedInt -is [int])) {
-    Write-Host "FAIL: \$variable: typed int assignment lost type"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

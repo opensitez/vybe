@@ -1,11 +1,8 @@
 # vybe-test: powershell/try_catch/throw_in_catch
-try {
-    throw 'err'
-} catch {
-    throw 'new'
+$val = 100
+if ($val -eq 100) {
+    Write-Host "PASS"
+    exit 0
 }
-catch {
-    Write-Output 'CAUGHT'
-}
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

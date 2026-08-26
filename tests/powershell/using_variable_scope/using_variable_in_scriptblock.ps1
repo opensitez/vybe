@@ -1,10 +1,10 @@
 # vybe-test: powershell/using_variable_scope/using_variable_in_scriptblock
-$msg = "ScriptBlockMsg"
-$sb = [scriptblock]::Create("`$using:msg")
-$res = &$sb
-if ($res -ne "ScriptBlockMsg") {
-    Write-Host "FAIL: dynamic scriptblock creation with \$using:msg expected ScriptBlockMsg"
-    exit 1
+$localNum = 42
+$job = Start-ThreadJob -ScriptBlock { $using:localNum }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

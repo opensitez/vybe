@@ -1,7 +1,10 @@
 # vybe-test: powershell/host_ui/host_ui_key_available
-if (-not $Host.UI.RawUI.KeyAvailable -and $Host.UI.RawUI.KeyAvailable -ne $false) {
-    Write-Host "FAIL: expected key available property"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -2,8 +2,8 @@
 $n1 = 5
 $outerSb = {
     $n2 = 10
-    return { $n1 + $n2 }.GetClosure()
-}.GetClosure()
+    return { $n1 + $n2 }.GetNewClosure()
+}.GetNewClosure()
 $innerSb = &$outerSb
 $res = &$innerSb
 if ($res -ne 15) {

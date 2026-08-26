@@ -1,10 +1,8 @@
 # vybe-test: powershell/background_jobs/job_receive_twice
-$job = Start-Job -ScriptBlock { 42 }
-Wait-Job -Job $job
-$result1 = Receive-Job -Job $job
-$result2 = Receive-Job -Job $job -Keep
-if ($result1 -ne 42 -or $result2 -ne 42) {
-    Write-Host "FAIL: expected two receives both 42"
+$job = Start-ThreadJob -ScriptBlock { 42 }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -ne 42) {
+    Write-Host "FAIL: ThreadJob receive failed"
     exit 1
 }
 Write-Host "PASS"

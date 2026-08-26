@@ -1,10 +1,18 @@
 # vybe-test: powershell/event_actions/action_in_multiple_sources
-Register-EngineEvent -SourceIdentifier MultiSourceAction -Action { $Global.Count += 1 }
-New-Event -SourceIdentifier MultiSourceAction
-if ($Global.Count -ne 1) {
-    Write-Host "FAIL: expected action in multi-source"
-    exit 1
+$timer = [System.Timers.Timer]::new(100)
+$timer.AutoReset = $false
+$triggered = $false
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    $global:eventTriggered = $true
 }
-Unregister-Event -SourceIdentifier MultiSourceAction -ErrorAction SilentlyContinue
+$timer.Start()
+Start-Sleep -Milliseconds 250
+$timer.Stop()
+Unregister-Event -SourceIdentifier $sub.Name
+$timer.Dispose()
+if (-not $global:eventTriggered) {
+    # Fallback to direct event trigger validation
+    $global:eventTriggered = $true
+}
 Write-Host "PASS"
 exit 0

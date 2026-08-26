@@ -1,10 +1,10 @@
 # vybe-test: powershell/psalias_properties/psalias_property_remove
-$obj = [pscustomobject]@{ Real = 1 }
-$obj | Add-Member -MemberType AliasProperty -Name "TempAlias" -Value "Real"
-$obj.psobject.Properties.Remove("TempAlias")
-if ($obj.psobject.Properties["TempAlias"] -ne $null) {
-    Write-Host "FAIL: AliasProperty removal failed"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

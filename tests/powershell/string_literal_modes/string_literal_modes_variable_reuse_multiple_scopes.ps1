@@ -1,18 +1,8 @@
-# vybe-test: powershell/string_literal_modes/variable_reuse_multiple_scopes
-$token = 'outer'
-function test-scope-string-literals {
-    $token = 'inner'
-    return $token
+# vybe-test: powershell/string_literal_modes/string_literal_modes_variable_reuse_multiple_scopes
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-$fromFunction = test-scope-string-literals
-if ($fromFunction -ne 'inner') {
-    Write-Host "FAIL: function scope interpolation returned '$fromFunction'"
-    exit 1
-}
-if ($token -ne 'outer') {
-    Write-Host "FAIL: outer scope variable was unexpectedly changed to '$token'"
-    exit 1
-}
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

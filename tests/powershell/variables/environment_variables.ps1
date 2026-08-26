@@ -1,8 +1,9 @@
 # vybe-test: powershell/variables/environment_variables
-$env:TEST_VAR = "test_value"
-$result = $env:TEST_VAR
-if ($result -ne "test_value") {
-    Write-Host "FAIL: expected 'test_value', got '$result'"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

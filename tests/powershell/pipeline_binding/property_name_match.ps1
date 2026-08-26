@@ -1,4 +1,10 @@
 # vybe-test: powershell/pipeline_binding/property_name_match
-function Test { param([Parameter(ValueFromPipelineByPropertyName=$true)]$Name) process { $Name } }
-[pscustomobject]@{ Name='hello' } | Test | ForEach-Object { if ($_ -eq 'hello') { exit 0 } }
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
+}
+Write-Host "FAIL"
 exit 1

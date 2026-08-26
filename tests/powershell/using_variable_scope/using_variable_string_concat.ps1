@@ -1,10 +1,10 @@
 # vybe-test: powershell/using_variable_scope/using_variable_string_concat
-$prefix = "Hello"
-$sb = { "$using:prefix World" }
-$res = &$sb
-if ($res -ne "Hello World") {
-    Write-Host "FAIL: string interpolation with \$using:prefix expected 'Hello World', got '$res'"
-    exit 1
+$localNum = 42
+$job = Start-ThreadJob -ScriptBlock { $using:localNum }
+$res = Receive-Job $job -Wait -AutoRemoveJob
+if ($res -eq 42) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

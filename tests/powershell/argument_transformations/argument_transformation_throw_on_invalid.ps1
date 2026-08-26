@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_throw_on_invalid
 class PositiveOnlyTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         $val = [int]$i
         if ($val -le 0) { throw "Must be positive" }
         return $val

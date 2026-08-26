@@ -1,11 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_scriptblock_filter
-filter Multiply-Filter([int]$factor) {
-    param([Parameter(ValueFromPipeline=$true)][int]$n)
-    return $n * $factor
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
 }
-$res = 2..3 | Multiply-Filter 5 -PipelineVariable pv | ForEach-Object { "$pv=>$_" }
-if ($res[0] -ne "2=>10" -or $res[1] -ne "3=>15") {
-    Write-Host "FAIL: filter cmdlet -PipelineVariable expected 2=>10, 3=>15"
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

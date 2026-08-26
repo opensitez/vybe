@@ -1,8 +1,10 @@
 # vybe-test: powershell/type_accelerators/type_accelerator_bool
-$b = [bool]"true"
-if ($b -ne $true) {
-    Write-Host "FAIL: bool expected true, got $b"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

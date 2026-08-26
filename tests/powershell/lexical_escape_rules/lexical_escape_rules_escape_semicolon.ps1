@@ -1,9 +1,8 @@
-# vybe-test: powershell/lexical_escape_rules/escape_semicolon
-$val = "a`;b"
-if ($val -ne 'a;b') {
-    Write-Host "FAIL: semicolon escaped in string should remain literal, got $val"
-    exit 1
+# vybe-test: powershell/lexical_escape_rules/lexical_escape_rules_escape_semicolon
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

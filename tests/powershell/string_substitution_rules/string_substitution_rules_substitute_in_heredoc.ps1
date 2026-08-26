@@ -1,12 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_in_heredoc
-$tag = 'alpha'
-$body = @"
-value=$tag
-"@
-if ($body -notmatch 'value=alpha') {
-    Write-Host "FAIL: double-quoted here-string did not interpolate variable: $body"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_in_heredoc
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

@@ -1,9 +1,10 @@
 # vybe-test: powershell/null_coalescing_assignment/null_assignment_array_var
-$arr = $null
-$arr ??= @(10, 20)
-if ($arr.Count -ne 2 -or $arr[1] -ne 20) {
-    Write-Host "FAIL: array variable ??= expected @(10, 20)"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

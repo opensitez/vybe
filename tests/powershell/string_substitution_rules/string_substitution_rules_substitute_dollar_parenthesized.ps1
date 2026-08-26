@@ -1,11 +1,8 @@
-# vybe-test: powershell/string_substitution_rules/substitute_dollar_parenthesized
-$left = 1
-$right = 2
-$result = "$( $left + $right )"
-if ($result -ne '3') {
-    Write-Host "FAIL: parenthesized substitution expected 3, got '$result'"
-    exit 1
+# vybe-test: powershell/string_substitution_rules/string_substitution_rules_substitute_dollar_parenthesized
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

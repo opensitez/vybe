@@ -1,9 +1,16 @@
 # vybe-test: powershell/certificates/certificate_export_der
-$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-$bytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-if ($bytes.Length -lt 0) {
-    Write-Host "FAIL: expected bytes array"
+$rsa = [System.Security.Cryptography.RSA]::Create(2048)
+$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+    "CN=ExportTest",
+    $rsa,
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+)
+$cert = $req.CreateSelfSigned([datetimeoffset]::UtcNow, [datetimeoffset]::UtcNow.AddDays(1))
+$rawBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+if ($rawBytes.Length -eq 0) {
+    Write-Host "FAIL: Certificate Export DER bytes empty"
     exit 1
 }
-Write-Host 'PASS'
+Write-Host "PASS"
 exit 0

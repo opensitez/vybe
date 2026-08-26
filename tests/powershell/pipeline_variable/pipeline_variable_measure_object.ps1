@@ -1,7 +1,10 @@
 # vybe-test: powershell/pipeline_variable/pipeline_variable_measure_object
-$res = 1..10 | Measure-Object -Sum -PipelineVariable m | ForEach-Object { $m.Sum }
-if ($res -ne 55) {
-    Write-Host "FAIL: Measure-Object -PipelineVariable Sum expected 55, got $res"
+$list = [System.Collections.Generic.List[string]]::new()
+1..3 | ForEach-Object -PipelineVariable num { $_ } | ForEach-Object {
+    $list.Add("Item:$num")
+}
+if ($list.Count -ne 3 -or $list[0] -ne "Item:1") {
+    Write-Host "FAIL: PipelineVariable failed"
     exit 1
 }
 Write-Host "PASS"

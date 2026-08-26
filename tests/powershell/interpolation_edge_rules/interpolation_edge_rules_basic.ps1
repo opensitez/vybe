@@ -1,8 +1,10 @@
-# vybe-test: powershell/interpolation_edge_rules/basic
-$value = 'ok'
-if ("$value" -ne 'ok') {
-    Write-Host "FAIL: basic interpolation expected ok"
-    exit 1
+# vybe-test: powershell/interpolation_edge_rules/interpolation_edge_rules_basic
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

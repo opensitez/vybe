@@ -1,6 +1,6 @@
 # vybe-test: powershell/scriptblock_closures/closure_exception_handling
 $errMessage = "ClosureThrow"
-$sb = { throw $errMessage }.GetClosure()
+$sb = { throw $errMessage }.GetNewClosure()
 try {
     &$sb
     Write-Host "FAIL: throwing closure expected exception"

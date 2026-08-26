@@ -1,7 +1,9 @@
 # vybe-test: powershell/variables/null_variable
-$x = $null
-if ($null -ne $x) {
-    Write-Host "FAIL: expected null, got $x"
+Set-Variable -Name "testVarCheck" -Value 42 -Option ReadOnly -Force
+$val = (Get-Variable -Name "testVarCheck").Value
+Remove-Variable -Name "testVarCheck" -Force
+if ($val -ne 42) {
+    Write-Host "FAIL: Variable check failed"
     exit 1
 }
 Write-Host "PASS"

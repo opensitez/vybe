@@ -1,6 +1,6 @@
 # vybe-test: powershell/argument_transformations/argument_transformation_datetime_parse
 class DateParseTransform : System.Management.Automation.ArgumentTransformationAttribute {
-    [object] Transform([System.Management.Automation.EngineIntrospector]$e, [object]$i) {
+    [object] Transform([System.Management.Automation.EngineIntrinsics]$e, [object]$i) {
         return [datetime]::ParseExact($i, "yyyyMMdd", $null)
     }
 }

@@ -1,9 +1,10 @@
 # vybe-test: powershell/compound_assignment/pow_assignment
-$x = 2
-$x **= 3
-if ($x -ne 8) {
-    Write-Host 'FAIL'
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

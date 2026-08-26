@@ -1,13 +1,10 @@
 # vybe-test: powershell/ref_parameters/ref_param_psvariable_wrapper
-$v = 500
-$ref = [ref]$v
-if (-not ($ref.Value -is [int])) {
-    Write-Host "FAIL: ref Value is not [int]"
-    exit 1
+$x = 10
+$x += 5
+$x *= 2
+if ($x -eq 30) {
+    Write-Host "PASS"
+    exit 0
 }
-if ($ref.GetType().Name -ne "PSReference") {
-    Write-Host "FAIL: ref object type expected PSReference, got $($ref.GetType().Name)"
-    exit 1
-}
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1

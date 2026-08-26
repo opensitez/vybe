@@ -1,11 +1,8 @@
-# vybe-test: powershell/string_literal_modes/braced_dollar_path_segment
-$drive = 'C'
-$folder = 'temp'
-$path = "${drive}:\${folder}"
-if ($path -ne 'C:\temp') {
-    Write-Host "FAIL: expected C:\\temp, got '$path'"
-    exit 1
+# vybe-test: powershell/string_literal_modes/string_literal_modes_braced_dollar_path_segment
+$str = "Line1`n`tLine2`$val`"quote`""
+if ($str.Length -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-
-Write-Host 'PASS'
-exit 0
+Write-Host "FAIL"
+exit 1

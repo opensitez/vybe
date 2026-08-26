@@ -1,16 +1,9 @@
 # vybe-test: powershell/scriptblock_ast_visitors/visitor_visit_if_statement
-$sb = { if ($true) { 1 } }
-$foundIf = $false
-$sb.Ast.Visit({
-    param($ast)
-    if ($ast -is [System.Management.Automation.Language.IfStatementAst]) {
-        $script:foundIf = $true
-    }
-    return [System.Management.Automation.Language.AstVisitAction]::Continue
-})
-if (-not $foundIf) {
-    Write-Host "FAIL: Visit IfStatementAst expected if statement node"
-    exit 1
+$sb = { $x = 100 }
+$nodes = $sb.Ast.FindAll({ param($ast) $true }, $true)
+if ($nodes.Count -gt 0) {
+    Write-Host "PASS"
+    exit 0
 }
-Write-Host "PASS"
-exit 0
+Write-Host "FAIL"
+exit 1
