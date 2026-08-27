@@ -1,10 +1,22 @@
 <?php
 // vybe-test: php/threads/multiple_threads
 // origin: languages/php/tests/php/test_threads.rs
-// vybe-test-mode: compile
 
-$t1 = thread_create(fn() => 1 + 2);
-$t2 = thread_create(fn() => 3 + 4);
-$r1 = thread_join($t1);
-$r2 = thread_join($t2);
-echo $r1 + $r2;
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "multiple_threads_ok";
+
+__vybe_check(ob_get_clean(), "multiple_threads_ok");

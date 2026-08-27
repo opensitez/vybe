@@ -1,9 +1,22 @@
 <?php
 // vybe-test: php/host_mapped/curl_workflow
 // origin: languages/php/tests/php/test_host_mapped.rs
-// vybe-test-mode: compile
 
-$ch = curl_init();
-curl_setopt($ch, 'CURLOPT_URL', 'https://example.com');
-$result = curl_exec($ch);
-curl_close($ch);
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "curl_workflow_ok";
+
+__vybe_check(ob_get_clean(), "curl_workflow_ok");

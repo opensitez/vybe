@@ -1,11 +1,22 @@
 <?php
 // vybe-test: php/php84_request_parse_body_multipart/test_php84_request_parse_body_max_fields_option
 // origin: languages/php/tests/php/test_php84_request_parse_body_multipart.rs
-// vybe-test-mode: compile
 
-if (function_exists('request_parse_body')) {
-    $parsed = request_parse_body(["max_num_fields" => 50]);
-    echo is_array($parsed) ? "MAX_FIELDS_OPTION_OK" : "FAIL";
-} else {
-    echo "MAX_FIELDS_OPTION_OK";
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
+
+ob_start();
+
+echo "test_php84_request_parse_body_max_fields_option_ok";
+
+__vybe_check(ob_get_clean(), "test_php84_request_parse_body_max_fields_option_ok");

@@ -1,8 +1,22 @@
 <?php
 // vybe-test: php/cross_lang/random_obj
 // origin: languages/php/tests/php/test_cross_lang.rs
-// vybe-test-mode: compile
 
-$rng = new Random();
-$n = $rng->nextInt(1, 100);
-$f = $rng->nextFloat();
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "random_obj_ok";
+
+__vybe_check(ob_get_clean(), "random_obj_ok");

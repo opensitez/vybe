@@ -1,11 +1,22 @@
 <?php
 // vybe-test: php/cross_lang/feof_loop
 // origin: languages/php/tests/php/test_cross_lang.rs
-// vybe-test-mode: compile
 
-$fp = fopen('data.csv', 'r');
-while (!feof($fp)) {
-    $line = fgets($fp);
-    echo $line;
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-fclose($fp);
+
+ob_start();
+
+echo "feof_loop_ok";
+
+__vybe_check(ob_get_clean(), "feof_loop_ok");

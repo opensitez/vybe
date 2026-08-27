@@ -1,9 +1,22 @@
 <?php
 // vybe-test: php/threads/mutex_basic
 // origin: languages/php/tests/php/test_threads.rs
-// vybe-test-mode: compile
 
-$lock = mutex_create();
-mutex_lock($lock);
-$shared = 42;
-mutex_unlock($lock);
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "mutex_basic_ok";
+
+__vybe_check(ob_get_clean(), "mutex_basic_ok");

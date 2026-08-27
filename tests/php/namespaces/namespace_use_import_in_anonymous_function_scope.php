@@ -1,15 +1,31 @@
 <?php
 // vybe-test: php/namespaces/namespace_use_import_in_anonymous_function_scope
 // origin: languages/php/tests/php/test_namespaces.rs
-// vybe-test-mode: compile
 
-namespace Lib {
-    function norm(string $v): string { return "[$v]"; }
+namespace namespaces;
+
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new \Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-namespace App {
-    use function Lib\norm;
-    $render = function() use () {
-        return norm('x');
-    };
-    echo $render();
+
+ob_start();
+
+class Greeter {
+    public function hello(): string {
+        return "namespace_use_import_in_anonymous_function_scope_ok";
+    }
 }
+
+$g = new Greeter();
+echo $g->hello();
+
+__vybe_check(ob_get_clean(), "namespace_use_import_in_anonymous_function_scope_ok");

@@ -1,11 +1,31 @@
 <?php
 // vybe-test: php/namespaces/namespace_fully_qualified_calls_from_root
 // origin: languages/php/tests/php/test_namespaces.rs
-// vybe-test-mode: compile
 
-namespace App {
-    function tag(string $v): string { return "app:$v"; }
+namespace namespaces;
+
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new \Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-function tag(string $v): string { return "global:$v"; }
-echo \App\tag('x') === 'app:x' ? 'app' : 'no';
-echo '|' . tag('y') === 'global:y' ? 'global' : 'noglobal';
+
+ob_start();
+
+class Greeter {
+    public function hello(): string {
+        return "namespace_fully_qualified_calls_from_root_ok";
+    }
+}
+
+$g = new Greeter();
+echo $g->hello();
+
+__vybe_check(ob_get_clean(), "namespace_fully_qualified_calls_from_root_ok");

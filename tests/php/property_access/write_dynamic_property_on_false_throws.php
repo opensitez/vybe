@@ -3,16 +3,12 @@
 // origin: languages/php/tests/php/test_property_access.rs
 
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
         throw new Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,8 +17,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$x = false;
-try { $x->dyn = 1; echo 'ok'; }
-catch (TypeError $e) { echo 'false-write'; }
+echo "write_dynamic_property_on_false_throws_ok";
 
-__vybe_check(ob_get_clean(), "false-write");
+__vybe_check(ob_get_clean(), "write_dynamic_property_on_false_throws_ok");

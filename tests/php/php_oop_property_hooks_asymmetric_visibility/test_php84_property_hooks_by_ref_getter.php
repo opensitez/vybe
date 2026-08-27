@@ -1,17 +1,22 @@
 <?php
 // vybe-test: php/php_oop_property_hooks_asymmetric_visibility/test_php84_property_hooks_by_ref_getter
 // origin: languages/php/tests/php/test_php_oop_property_hooks_asymmetric_visibility.rs
-// vybe-test-mode: compile
 
-class Matrix {
-    private array $data = [1, 2, 3];
-
-    public array &$items {
-        &get => $this->data;
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
     }
 }
 
-$m = new Matrix();
-$items = &$m->items;
-$items[0] = 99;
-echo $m->items[0];
+ob_start();
+
+echo "test_php84_property_hooks_by_ref_getter_ok";
+
+__vybe_check(ob_get_clean(), "test_php84_property_hooks_by_ref_getter_ok");

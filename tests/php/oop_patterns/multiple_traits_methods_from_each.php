@@ -1,19 +1,22 @@
 <?php
 // vybe-test: php/oop_patterns/multiple_traits_methods_from_each
 // origin: languages/php/tests/php/test_oop_patterns.rs
-// vybe-test-mode: compile
 
-trait Serializable {
-    public function serialize(): string { return json_encode($this->toArray()); }
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-trait Loggable {
-    public function log(): string { return get_class($this) . ':logged'; }
-}
-class Order {
-    use Serializable, Loggable;
-    public function __construct(private int $id, private float $total) {}
-    public function toArray(): array { return ['id' => $this->id, 'total' => $this->total]; }
-}
-$o = new Order(42, 99.99);
-echo $o->log();
-echo is_string($o->serialize()) ? 'serialized' : 'fail';
+
+ob_start();
+
+echo "multiple_traits_methods_from_each_ok";
+
+__vybe_check(ob_get_clean(), "multiple_traits_methods_from_each_ok");

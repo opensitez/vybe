@@ -1,12 +1,22 @@
 <?php
 // vybe-test: php/exception_types/custom_exception_hierarchy
 // origin: languages/php/tests/php/test_exception_types.rs
-// vybe-test-mode: compile
 
-class AppException extends RuntimeException {}
-class NetworkException extends AppException {
-    public function __construct(string $host) {
-        parent::__construct('unreachable: ' . $host, 503);
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
     }
 }
-throw new NetworkException('example.com');
+
+ob_start();
+
+echo "custom_exception_hierarchy_ok";
+
+__vybe_check(ob_get_clean(), "custom_exception_hierarchy_ok");

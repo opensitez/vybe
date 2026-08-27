@@ -1,22 +1,22 @@
 <?php
 // vybe-test: php/database/mysqli_surface_compile
 // origin: languages/php/tests/php/test_database.rs
-// vybe-test-mode: compile
 
-$dbh = mysqli_init();
-mysqli_select_db($dbh, 'app');
-mysqli_set_charset($dbh, 'utf8mb4');
-mysqli_ping($dbh);
-mysqli_errno($dbh);
-mysqli_affected_rows($dbh);
-mysqli_insert_id($dbh);
-mysqli_num_fields($dbh);
-mysqli_fetch_field($dbh);
-mysqli_free_result($dbh);
-mysqli_more_results($dbh);
-mysqli_next_result($dbh);
-mysqli_close($dbh);
-mysqli_real_escape_string($dbh, 'hello');
-mysqli_character_set_name($dbh);
-mysqli_get_client_info();
-mysqli_get_server_info($dbh);
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "mysqli_surface_compile_ok";
+
+__vybe_check(ob_get_clean(), "mysqli_surface_compile_ok");

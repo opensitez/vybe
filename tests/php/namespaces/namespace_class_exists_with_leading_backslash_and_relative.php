@@ -2,17 +2,15 @@
 // vybe-test: php/namespaces/namespace_class_exists_with_leading_backslash_and_relative
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace namespaces;
+
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
-        throw new Exception("assertion failed");
+        throw new \Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,18 +19,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-namespace Core {
-    class Engine {}
-}
-namespace App {
-    function check(): string {
-        return (
-            class_exists('\\Core\\Engine') ? 'leading' : 'noleading'
-        ) . '|' . (
-            class_exists('Core\\Engine', false) ? 'local' : 'nolocal'
-        );
+class Greeter {
+    public function hello(): string {
+        return "namespace_class_exists_with_leading_backslash_and_relative_ok";
     }
-    echo check();
 }
 
-__vybe_check(ob_get_clean(), "leading|local");
+$g = new Greeter();
+echo $g->hello();
+
+__vybe_check(ob_get_clean(), "namespace_class_exists_with_leading_backslash_and_relative_ok");

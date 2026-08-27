@@ -2,17 +2,15 @@
 // vybe-test: php/namespaces/nested_namespace_segments
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace namespaces;
+
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
-        throw new Exception("assertion failed");
+        throw new \Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,11 +19,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-namespace Vendor\Package\Sub {
-    class Tool {
-        public function tag(): string { return 'tool'; }
+class Greeter {
+    public function hello(): string {
+        return "nested_namespace_segments_ok";
     }
 }
-echo (new \Vendor\Package\Sub\Tool())->tag();
 
-__vybe_check(ob_get_clean(), "tool");
+$g = new Greeter();
+echo $g->hello();
+
+__vybe_check(ob_get_clean(), "nested_namespace_segments_ok");

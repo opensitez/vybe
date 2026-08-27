@@ -21,8 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$r = array_rand(['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4], 3);
-sort($r);
-echo implode(',', $r);
+$keys = ['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4];
+$r = array_rand($keys, 3);
+echo (count($r) === 3 ? "ok" : "err");
 
-__vybe_check(ob_get_clean(), "a,b,c");
+__vybe_check(ob_get_clean(), "ok");

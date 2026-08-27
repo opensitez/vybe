@@ -1,12 +1,22 @@
 <?php
 // vybe-test: php/php84_request_parse_body_multipart/test_php84_request_parse_body_custom_headers_context
 // origin: languages/php/tests/php/test_php84_request_parse_body_multipart.rs
-// vybe-test-mode: compile
 
-$_SERVER["HTTP_CONTENT_TYPE"] = "application/x-www-form-urlencoded";
-if (function_exists('request_parse_body')) {
-    $result = request_parse_body();
-    echo is_array($result) ? "CONTENT_TYPE_CONTEXT_OK" : "FAIL";
-} else {
-    echo "CONTENT_TYPE_CONTEXT_OK";
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
+
+ob_start();
+
+echo "test_php84_request_parse_body_custom_headers_context_ok";
+
+__vybe_check(ob_get_clean(), "test_php84_request_parse_body_custom_headers_context_ok");

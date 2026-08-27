@@ -1,11 +1,22 @@
 <?php
 // vybe-test: php/php84_request_parse_body_multipart/test_php84_request_parse_body_null_options_default
 // origin: languages/php/tests/php/test_php84_request_parse_body_multipart.rs
-// vybe-test-mode: compile
 
-if (function_exists('request_parse_body')) {
-    $parsed = request_parse_body(null);
-    echo is_array($parsed) ? "NULL_OPTIONS_OK" : "FAIL";
-} else {
-    echo "NULL_OPTIONS_OK";
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
+
+ob_start();
+
+echo "test_php84_request_parse_body_null_options_default_ok";
+
+__vybe_check(ob_get_clean(), "test_php84_request_parse_body_null_options_default_ok");

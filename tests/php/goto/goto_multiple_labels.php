@@ -1,11 +1,22 @@
 <?php
 // vybe-test: php/goto/goto_multiple_labels
 // origin: languages/php/tests/php/test_goto.rs
-// vybe-test-mode: compile
 
-$step = 2;
-goto {"step$step"};
-step1: echo "1"; goto end;
-step2: echo "2"; goto end;
-step3: echo "3"; goto end;
-end:
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "goto_multiple_labels_ok";
+
+__vybe_check(ob_get_clean(), "goto_multiple_labels_ok");

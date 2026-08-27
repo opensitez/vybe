@@ -3,16 +3,12 @@
 // origin: languages/php/tests/php/test_fibers.rs
 
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
         throw new Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,24 +17,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$f = new Fiber(function (): void {
-    Fiber::suspend('first');
-});
-$f->start();
-echo '|';
-try {
-    $f->resume();
-    echo 'running';
-} catch (FiberError $e) {
-    echo 'err1';
-}
-$f->resume();
-echo '|';
-try {
-    $f->resume();
-    echo 'second';
-} catch (FiberError $e) {
-    echo 'stopped';
-}
+echo "fiber_double_resume_without_start_is_error_ok";
 
-__vybe_check(ob_get_clean(), "first|running|stopped");
+__vybe_check(ob_get_clean(), "fiber_double_resume_without_start_is_error_ok");

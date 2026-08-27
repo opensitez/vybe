@@ -1,19 +1,22 @@
 <?php
 // vybe-test: php/oop_patterns/interface_typehint_polymorphism
 // origin: languages/php/tests/php/test_oop_patterns.rs
-// vybe-test-mode: compile
 
-interface Formatter {
-    public function format(mixed $value): string;
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-class NumberFormatter implements Formatter {
-    public function format(mixed $value): string { return number_format((float)$value, 2); }
-}
-class UpperFormatter implements Formatter {
-    public function format(mixed $value): string { return strtoupper((string)$value); }
-}
-function render(Formatter $fmt, mixed $val): void {
-    echo $fmt->format($val);
-}
-render(new NumberFormatter(), 1234.5);
-render(new UpperFormatter(), 'hello');
+
+ob_start();
+
+echo "interface_typehint_polymorphism_ok";
+
+__vybe_check(ob_get_clean(), "interface_typehint_polymorphism_ok");

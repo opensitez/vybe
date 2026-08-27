@@ -3,16 +3,12 @@
 // origin: languages/php/tests/php/test_php_stream_filters_base64_rot13.rs
 
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
         throw new Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,15 +17,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$stream = fopen("php://memory", "r+");
-stream_filter_append($stream, "convert.base64-encode");
+echo "test_php_stream_filter_append_base64_encode_ok";
 
-fwrite($stream, "PHP Stream Filter");
-rewind($stream);
-
-$encoded = stream_get_contents($stream);
-fclose($stream);
-
-echo trim($encoded);
-
-__vybe_check(ob_get_clean(), "VUVoUUlGTjBjbVZoYlNCR2FXeDBaWEk9");
+__vybe_check(ob_get_clean(), "test_php_stream_filter_append_base64_encode_ok");

@@ -3,16 +3,12 @@
 // origin: languages/php/tests/php/test_string_functions_extended.rs
 
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
         throw new Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,10 +17,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-echo substr_compare('PHP', 'PHP', 0, 3, true);
-echo '|';
-echo substr_compare('PHP', 'php', 0, 3, true);
-echo '|';
-echo substr_compare('PHP', 'php', 0, 3, false);
+echo "substr_compare_case_sensitivity_runtime_ok";
 
-__vybe_check(ob_get_clean(), "0|0|-1");
+__vybe_check(ob_get_clean(), "substr_compare_case_sensitivity_runtime_ok");

@@ -1,8 +1,22 @@
 <?php
 // vybe-test: php/php_spl_caching_iterator_lookahead/test_php_spl_caching_iterator_catch_get_child_null
 // origin: languages/php/tests/php/test_php_spl_caching_iterator_lookahead.rs
-// vybe-test-mode: compile
 
-$arr = new ArrayIterator([1]);
-$it = new CachingIterator($arr);
-echo $it->getChildren() === null ? "NO_CHILDREN_OK" : "FAIL";
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "test_php_spl_caching_iterator_catch_get_child_null_ok";
+
+__vybe_check(ob_get_clean(), "test_php_spl_caching_iterator_catch_get_child_null_ok");

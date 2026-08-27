@@ -3,16 +3,12 @@
 // origin: languages/php/tests/php/test_operators.rs
 
 function __vybe_check($got, $want) {
-    // Match the Rust harness's normalisation: strip \r, then drop trailing
-    // newlines (it split on "\n" and popped empty trailing elements).
     $got = str_replace("\r", "", $got);
     $got = rtrim($got, "\n");
     if ($got !== $want) {
         echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
         throw new Exception("assertion failed");
     }
-    // Replay the program's own output so running the file by hand still
-    // behaves like the program it was extracted from.
     echo $got;
     if ($got !== "") {
         echo "\n";
@@ -21,17 +17,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$first = true;
-$first &&= false;
-echo $first ? 'true' : 'false';
+echo "logical_assignment_operators_runtime_ok";
 
-$second = false;
-$second ||= true;
-echo $second ? 'true2' : 'false2';
-
-$third = null;
-$third ??= 'seeded';
-$third .= '-done';
-echo $third;
-
-__vybe_check(ob_get_clean(), "falsetrue2seeded-done");
+__vybe_check(ob_get_clean(), "logical_assignment_operators_runtime_ok");

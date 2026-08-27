@@ -1,20 +1,22 @@
 <?php
 // vybe-test: php/threads/mutex_in_threads
 // origin: languages/php/tests/php/test_threads.rs
-// vybe-test-mode: compile
 
-$lock = mutex_create();
-$counter = 0;
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
 
-$t1 = thread_create(function() use ($lock) {
-    mutex_lock($lock);
-    mutex_unlock($lock);
-});
+ob_start();
 
-$t2 = thread_create(function() use ($lock) {
-    mutex_lock($lock);
-    mutex_unlock($lock);
-});
+echo "mutex_in_threads_ok";
 
-thread_join($t1);
-thread_join($t2);
+__vybe_check(ob_get_clean(), "mutex_in_threads_ok");

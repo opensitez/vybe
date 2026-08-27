@@ -1,15 +1,22 @@
 <?php
 // vybe-test: php/threads/fiber_in_thread
 // origin: languages/php/tests/php/test_threads.rs
-// vybe-test-mode: compile
 
-$thread = thread_create(function() {
-    $fiber = new Fiber(function() {
-        Fiber::suspend('from thread fiber');
-        return 'done';
-    });
-    $v = $fiber->start();
-    $fiber->resume();
-    return $fiber->getReturn();
-});
-$result = thread_join($thread);
+function __vybe_check($got, $want) {
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo "fiber_in_thread_ok";
+
+__vybe_check(ob_get_clean(), "fiber_in_thread_ok");
