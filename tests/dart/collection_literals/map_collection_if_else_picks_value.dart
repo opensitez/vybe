@@ -21,8 +21,11 @@ void __check(String want) {
 }
 
 void __vybeMain() {
+  // Damaged test repaired: dart 3.10.4 rejects `if` in a map VALUE position
+  // ("Expected an identifier, but got 'if'"); collection-`if` is an ELEMENT,
+  // so the whole entry is what the branches choose.
   var debug = false;
-  var m = {'level': if (debug) 0 else 1};
+  var m = {if (debug) 'level': 0 else 'level': 1};
   __p(m['level']);
 }
 

@@ -25,5 +25,8 @@ void __vybeMain() { var a = Account(); a.deposit(100); __p(a.balance); }
 
 void main() {
   __vybeMain();
-  __check('100');
+  // Damaged test repaired: `_balance` is a `double`, and dart 3.10.4 renders
+  // a double as "100.0" (measured) — the expectation asserted the int
+  // spelling and failed under real dart.
+  __check('100.0');
 }
