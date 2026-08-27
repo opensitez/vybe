@@ -136,6 +136,9 @@ impl WebEngine for Widgets {
             DomOp::QuerySelectorAll(selectors) => {
                 DomValue::Nodes(doc.query_selector_all(&selectors))
             }
+            // The toolkit keeps every element it has made in one order,
+            // appended or not, which is exactly the answer.
+            DomOp::AllElements => DomValue::Nodes(doc.elements()),
             DomOp::Title => DomValue::Text(doc.title()),
             DomOp::SetTitle(t) => {
                 doc.set_title(&t);

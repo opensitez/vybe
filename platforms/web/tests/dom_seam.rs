@@ -1088,3 +1088,327 @@ fn casing_is_tolerated_where_html_says_and_not_where_it_does_not() {
         "an id lookup folded the case — ids are case-SENSITIVE"
     );
 }
+
+// ─── Interaction: a click has to MOVE the control's value ───────────────────
+//
+// Everything above drives the DOM programmatically. These drive the POINTER,
+// which is the half a user exercises and the half that was reported broken:
+// a list box that would not select, a dropdown that would not open, a
+// scrollbar that would not move.
+
+/// Click a point in document coordinates, both edges, as the shell does.
+///
+/// The companion of `click_at`, which can only reach a node's CENTRE. A list
+/// box's rows are all inside one element, so selecting the third one is a
+/// question about WHERE in the box the pointer went — a centre click cannot
+/// ask it.
+fn click_point(doc: u64, node: u64, x: f32, y: f32) {
+    // Same reason as `click_at`: hit-testing needs layout, and asking for a
+    // resolved value is the page-level way to force it.
+    apply(doc, DomOp::ComputedStyleProperty(node, "width".into()));
+    for kind in ["mousedown", "mouseup"] {
+        apply(
+            doc,
+            DomOp::DispatchPointer {
+                kind: kind.to_string(),
+                client_x: x,
+                client_y: y,
+                button: 0,
+            },
+        );
+    }
+}
+
+fn rect(doc: u64, node: u64) -> (f32, f32, f32, f32) {
+    match apply(doc, DomOp::BoundingClientRect(node)) {
+        DomValue::Rect { x, y, width, height } => {
+            (x as f32, y as f32, width as f32, height as f32)
+        }
+        other => panic!("getBoundingClientRect answered {other:?}"),
+    }
+}
+
+fn selected(doc: u64, node: u64) -> i32 {
+    match apply(doc, DomOp::SelectedIndex(node)) {
+        DomValue::Number(n) => n as i32,
+        other => panic!("selectedIndex answered {other:?}"),
+    }
+}
+
+/// A LIST BOX — `<select>` with `size` above one (HTML §4.10.7) — shows its
+/// options as rows, and clicking a row selects THAT row.
+///
+/// This is the control a WinForms `ListBox` and a VCL `TListBox` become, so
+/// "the list box will not select" is exactly this assertion.
+///
+/// ⛔ The ONE test in this file that is not engine-agnostic. Aiming at a row
+/// needs the row HEIGHT, and the seam has no operation that answers it — a
+/// row is not a node, so it has no rect to ask for. Taking the metric from
+/// webcore is what keeps the aim honest rather than quartering the box, and
+/// that is a webcore symbol, so the test compiles only with that engine. The
+/// rest of the file states the WHATWG contract and runs against either.
+#[cfg(feature = "engine-webcore")]
+#[test]
+fn clicking_a_list_box_row_selects_that_row() {
+    let doc = setup();
+    let s = create(doc, "select", "");
+    apply(doc, DomOp::SetAttribute(s, "size".into(), "4".into()));
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: s });
+    for label in ["one", "two", "three", "four"] {
+        apply(doc, DomOp::AddItem(s, label.into()));
+    }
+    // ⛔ −1, not 0. The selectedness setting algorithm auto-selects the first
+    // option only at a display size of 1, so a LIST BOX rests with nothing
+    // selected. Asserting 0 here applied the drop-down's rule to a list box.
+    assert_eq!(selected(doc, s), -1, "a fresh list box has no selection");
+
+    let (x, y, w, h) = rect(doc, s);
+    assert!(w > 0.0 && h > 0.0, "the list box has no geometry to click: {w}x{h}");
+    // The THIRD of four rows, off the ENGINE's own row metric. Quartering the
+    // box happens to agree only while the box is exactly four rows tall — it
+    // is not what decides which row a click lands on.
+    let row_h = webcore::html::forms::list_box_row_height(16.0);
+    click_point(doc, s, x + w / 2.0, y + webcore::html::forms::LIST_BOX_PADDING + row_h * 2.5);
+
+    assert_eq!(
+        selected(doc, s),
+        2,
+        "clicking the third row must select the third option"
+    );
+}
+
+/// A DROPDOWN is the same element without `size`, and clicking it must open
+/// its list rather than do nothing.
+///
+/// Openness is not in the DOM — HTML gives `<select>` no `open` IDL member,
+/// unlike `<dialog>` and `<details>` — so what is asserted is the observable
+/// consequence: the click reaches the control and comes back as a DOM event on
+/// it. A dropdown that "does nothing" fails here.
+///
+/// ⛔ Ignored under the WIDGETS engine, and only there: it fires no `click`
+/// when a `<select>` is activated, so a program with a handler on its combo
+/// box hears nothing. webcore answers this correctly and runs the test for
+/// real. The assertion is the WHATWG contract for both — this states which
+/// engine does not meet it yet rather than deleting the question.
+#[cfg_attr(
+    not(feature = "engine-webcore"),
+    ignore = "widgets fires no click when a <select> is activated"
+)]
+#[test]
+fn clicking_a_dropdown_reaches_the_control() {
+    let doc = setup();
+    let s = create(doc, "select", "");
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: s });
+    for label in ["alpha", "beta"] {
+        apply(doc, DomOp::AddItem(s, label.into()));
+    }
+    // Drain what building the tree may have queued, so what is asserted below
+    // is this click and not a leftover.
+    apply(doc, DomOp::DrainEvents);
+
+    click_at(doc, s);
+
+    let DomValue::Events(events) = apply(doc, DomOp::DrainEvents) else {
+        panic!("DrainEvents must answer with events");
+    };
+    assert!(
+        events.iter().any(|(n, k)| *n == s && k == "click"),
+        "a click on a dropdown never reached it, got {events:?}"
+    );
+    // ⛔ EXACTLY one. `any()` cannot tell one click from two, and two is what a
+    // control gets when a generic click path and a per-control one both fire:
+    // a handler that counts, toggles or appends would do it twice for one press.
+    assert_eq!(
+        events.iter().filter(|(_, k)| k == "click").count(),
+        1,
+        "one press is one click, got {events:?}"
+    );
+}
+
+/// One press is one `click`, whatever kind of element it lands on.
+///
+/// The generic path and the per-control paths both live in the mouse-up arm,
+/// and nothing structural stops both from firing. This counts.
+#[cfg_attr(
+    not(feature = "engine-webcore"),
+    ignore = "widgets fires click only for form controls — a <div> listener never runs"
+)]
+#[test]
+fn one_press_is_one_click_on_every_kind_of_element() {
+    let doc = setup();
+    for (tag, input_type) in [("div", ""), ("button", ""), ("input", "checkbox"), ("select", "")] {
+        let e = create(doc, tag, input_type);
+        apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: e });
+        apply(doc, DomOp::SetTextContent(e, "xx".into()));
+        apply(doc, DomOp::DrainEvents);
+
+        click_at(doc, e);
+
+        let DomValue::Events(events) = apply(doc, DomOp::DrainEvents) else {
+            panic!("DrainEvents must answer with events");
+        };
+        let clicks = events.iter().filter(|(_, k)| k == "click").count();
+        assert_eq!(clicks, 1, "<{tag}> reported {clicks} clicks for one press: {events:?}");
+        apply(doc, DomOp::RemoveChild { parent: DOCUMENT, child: e });
+    }
+}
+
+/// A SCROLLBAR is `<input type=range>` — a value in a range — and clicking
+/// along its track moves the value there.
+///
+/// This is what `HScrollBar`/`VScrollBar` and `TrackBar` become, so "the
+/// scrollbars do not work" is this assertion for the horizontal case.
+#[test]
+fn clicking_a_range_track_moves_its_value() {
+    let doc = setup();
+    let r = create(doc, "input", "range");
+    apply(doc, DomOp::SetAttribute(r, "min".into(), "0".into()));
+    apply(doc, DomOp::SetAttribute(r, "max".into(), "100".into()));
+    apply(doc, DomOp::SetValue(r, "0".into()));
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: r });
+
+    let (x, y, w, h) = rect(doc, r);
+    assert!(w > 0.0 && h > 0.0, "the range has no geometry to click: {w}x{h}");
+    // Three quarters along the track. Not the exact end, because a thumb has
+    // width and the last pixel is not reachable by its centre.
+    click_point(doc, r, x + w * 0.75, y + h / 2.0);
+
+    let after: f32 = text(apply(doc, DomOp::Value(r))).parse().unwrap_or(-1.0);
+    assert!(
+        after > 50.0,
+        "clicking three quarters along the track left the value at {after}"
+    );
+}
+
+/// **Every element the seam inserts has to OCCUPY SPACE.**
+///
+/// A box with no geometry cannot be hit-tested, so a control that lays out to
+/// 0x0 is unclickable however well its event path works — which makes this the
+/// question to ask before any "the click did nothing" report is believed.
+#[test]
+fn an_inserted_control_has_geometry() {
+    let doc = setup();
+    for (tag, input_type) in [
+        ("button", ""),
+        ("input", "text"),
+        ("input", "range"),
+        ("select", ""),
+        ("div", ""),
+    ] {
+        let e = create(doc, tag, input_type);
+        apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: e });
+        apply(doc, DomOp::SetTextContent(e, "xx".into()));
+        let (_, _, w, h) = rect(doc, e);
+        assert!(
+            w > 0.0 && h > 0.0,
+            "<{tag} type={input_type}> laid out to {w}x{h} — nothing can click it"
+        );
+    }
+}
+
+/// `el.innerHTML = ""` EMPTIES the element — including children that were
+/// appended one at a time rather than parsed in.
+///
+/// This is how a page clears itself before redrawing, and a control that
+/// rebuilds its own contents does exactly that. If the clear silently keeps
+/// what was appended, every redraw stacks another copy on top of the last —
+/// which looks like a rendering bug and is a DOM one.
+#[cfg_attr(
+    not(feature = "engine-webcore"),
+    ignore = "widgets does not update its selector index when a subtree is removed"
+)]
+#[test]
+fn clearing_inner_html_empties_an_element_that_was_built_by_appending() {
+    let doc = setup();
+    let box_ = create(doc, "div", "");
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: box_ });
+    for _ in 0..3 {
+        let kid = create(doc, "span", "");
+        apply(doc, DomOp::AppendChild { parent: box_, child: kid });
+        // ⛔ NESTED, not three flat spans. A control that rebuilds itself has a
+        // subtree, not a row of leaves, and "remove the children" has to mean
+        // the whole of each one.
+        let grandkid = create(doc, "b", "");
+        apply(doc, DomOp::SetAttribute(grandkid, "class".into(), "gone".into()));
+        apply(doc, DomOp::SetTextContent(grandkid, "x".into()));
+        apply(doc, DomOp::AppendChild { parent: kid, child: grandkid });
+    }
+    let before = match apply(doc, DomOp::ChildNodes(box_)) {
+        DomValue::Nodes(n) => n.len(),
+        other => panic!("expected children, got {other:?}"),
+    };
+    assert_eq!(before, 3, "the fixture must have children to clear");
+
+    apply(doc, DomOp::SetInnerHtml { node: box_, html: String::new() });
+
+    let after = match apply(doc, DomOp::ChildNodes(box_)) {
+        DomValue::Nodes(n) => n.len(),
+        other => panic!("expected children, got {other:?}"),
+    };
+    assert_eq!(after, 0, "innerHTML = \"\" must leave the element empty");
+
+    // ⛔ AND THE SELECTOR ENGINE MUST AGREE. `childNodes` reading empty while
+    // `querySelectorAll` still matches the removed subtree is two stores
+    // disagreeing about one document, and it is invisible until something
+    // rebuilds itself and appears to double.
+    assert!(
+        nodes_matching(doc, ".gone").is_empty(),
+        "a removed subtree must not still match a selector"
+    );
+}
+
+fn nodes_matching(doc: u64, selector: &str) -> Vec<u64> {
+    match apply(doc, DomOp::QuerySelectorAll(selector.to_string())) {
+        DomValue::Nodes(n) => n,
+        other => panic!("expected a node list, got {other:?}"),
+    }
+}
+
+/// A control BUILT BEFORE IT IS APPENDED, then cleared and rebuilt — the exact
+/// lifecycle of any control that fills itself in at construction.
+///
+/// `New MonthCalendar()` builds its whole month while the element is still
+/// detached, and only then does `Controls.Add` put it in the document. Every
+/// later redraw clears it and builds again. If the clear misses the copy the
+/// selector engine walks, each redraw appears to ADD a calendar rather than
+/// replace one — which reads as a rendering bug and is a store-consistency one.
+#[cfg_attr(
+    not(feature = "engine-webcore"),
+    ignore = "widgets does not update its selector index when a subtree is removed"
+)]
+#[test]
+fn a_subtree_built_while_detached_can_still_be_cleared_once_appended() {
+    let doc = setup();
+    let host = create(doc, "div", "");
+
+    // Built DETACHED, exactly as a control fills itself in at construction.
+    for _ in 0..2 {
+        let part = create(doc, "section", "");
+        apply(doc, DomOp::SetAttribute(part, "class".into(), "first-pass".into()));
+        let leaf = create(doc, "b", "");
+        apply(doc, DomOp::SetAttribute(leaf, "class".into(), "first-leaf".into()));
+        apply(doc, DomOp::AppendChild { parent: part, child: leaf });
+        apply(doc, DomOp::AppendChild { parent: host, child: part });
+    }
+    // …and only now put in the document.
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: host });
+    assert_eq!(nodes_matching(doc, ".first-leaf").len(), 2, "the fixture must be built");
+
+    // The redraw: clear, then build again.
+    apply(doc, DomOp::SetTextContent(host, String::new()));
+    for _ in 0..2 {
+        let part = create(doc, "section", "");
+        apply(doc, DomOp::SetAttribute(part, "class".into(), "second-pass".into()));
+        apply(doc, DomOp::AppendChild { parent: host, child: part });
+    }
+
+    assert!(
+        nodes_matching(doc, ".first-pass").is_empty(),
+        "the cleared subtree must not still match a selector"
+    );
+    assert!(
+        nodes_matching(doc, ".first-leaf").is_empty(),
+        "nor must anything inside it"
+    );
+    assert_eq!(nodes_matching(doc, ".second-pass").len(), 2, "the rebuild is what is there now");
+}

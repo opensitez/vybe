@@ -329,6 +329,9 @@ impl WebEngine for WebCore {
                     let nodes = doc.query_selector_all(&sel);
                     DomValue::Nodes(nodes.iter().map(|n| from_hb(doc, *n)).collect())
                 }
+                DomOp::AllElements => DomValue::Nodes(
+                    doc.all_elements().iter().map(|n| from_hb(doc, *n)).collect(),
+                ),
                 DomOp::Title => DomValue::Text(doc.title()),
                 DomOp::SetTitle(t) => {
                     doc.set_title(&t);
@@ -562,6 +565,10 @@ impl WebEngine for WebCore {
                 }
 
                 DomOp::BoundingClientRect(node) => {
+                    // A geometry question flushes layout first — the whole
+                    // reason `getBoundingClientRect` is specified to return a
+                    // box rather than a cached number.
+                    doc.flush_layout();
                     match doc.get_bounding_client_rect(to_hb(doc, node)) {
                         Some(rect) => DomValue::Rect {
                             x: rect.x as f64,
@@ -572,20 +579,21 @@ impl WebEngine for WebCore {
                         None => DomValue::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
                     }
                 }
-                DomOp::CanvasSize(node) => match doc.get_bounding_client_rect(to_hb(doc, node)) {
+                DomOp::CanvasSize(node) => match {
+                    doc.flush_layout();
+                    doc.get_bounding_client_rect(to_hb(doc, node))
+                } {
                     Some(r) => DomValue::Pair(f64::from(r.w), f64::from(r.h)),
                     None => DomValue::None,
                 },
 
                 // ── Not yet covered by this engine ──
                 //
-                // Each of these is a GAP, listed rather than quietly answered:
+                // Each of these is a GAP, listed rather than quietly answered.
+                // Nothing else falls here: of `DomOp`'s 64 variants these are
+                // the only ones without an arm above, so a symptom that looks
+                // like missing wiring is a bug in the arm, not an absence.
                 //
-                //   select/option — `SelectedIndex`, `SetSelectedIndex`,
-                //     `ItemText`, `SetItemText`, `AddItem`, `RemoveItem`,
-                //     `ClearItems`. webcore has `widgets/select.rs` with
-                //     `select_index`/`selected_text`, but no DOM spelling over
-                //     `<option>` children yet.
                 //   `ShowPicker` — needs the UA's own file/colour chooser.
                 //   XML — the namespace, PI and CDATA ops. `NodeType` has no
                 //     variant for them, so this is a missing MODEL, not a

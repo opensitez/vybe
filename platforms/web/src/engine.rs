@@ -110,6 +110,16 @@ pub enum DomOp {
     /// rather than every element — the spec throws `SyntaxError` and there is
     /// no exception channel here, so it fails in the safe direction.
     QuerySelectorAll(String),
+    /// Every element the document holds, **appended or not** — the inspector's
+    /// question, which no selector can ask.
+    ///
+    /// ⛔ NOT `querySelectorAll("*")`. Selectors match what is IN the document,
+    /// so a created-and-never-appended control is invisible to them — and that
+    /// control is the single most common way a GUI silently renders nothing.
+    /// Without this, a tool can only report "no control named X" for an element
+    /// that plainly exists, collapsing a missing `appendChild` into a typo.
+    /// Pair it with [`DomOp::IsConnected`] to tell the two apart.
+    AllElements,
     /// `document.title`
     Title,
     SetTitle(String),
