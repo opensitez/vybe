@@ -254,59 +254,102 @@ pub struct DomControl {
 
 /// Every element the guest put in the document, with its geometry, its
 /// observable properties and its wired listeners.
+/// ⛔ Through the SEAM, not through `widgets`' document.
+///
+/// This walked the toolkit's tree directly, which is the toolkit whether or
+/// not the toolkit is the live engine — so under `--engine webcore` it saw an
+/// empty form and every caller inherited that: `--capture-control` answered
+/// "no control named X" for controls webcore had laid out perfectly well, and
+/// the debugger's control list came back blank. `node_by_id` and `has_content`
+/// were moved for the same reason; this was the last one reaching past the
+/// surface that owns the document.
 pub fn controls() -> Vec<DomControl> {
+    use vybe_platform_web::engine::{DomOp, DomValue, apply};
+
     let document = active();
     let mut listener_types: std::collections::HashMap<NodeId, Vec<String>> =
         std::collections::HashMap::new();
+    // Listeners stay with the toolkit on purpose: `EventOp` is host
+    // bookkeeping that BOTH engines delegate to it, so this is the one place
+    // where the toolkit IS the authority.
     for (node, kind, _) in html::document_listeners(document) {
         listener_types.entry(node).or_default().push(kind);
     }
-    with_live(|d| {
-        // Every element, not only the named ones — `Name` is optional, and a
-        // form that builds its buttons in a loop has none.
-        let named: std::collections::HashMap<NodeId, String> =
-            d.elements_with_id().into_iter().collect();
-        let mut out = Vec::new();
-        for node in d.elements() {
-            let id = named.get(&node).cloned().unwrap_or_default();
-            // The widget the element renders as is named after the node — the
-            // convention `Document::node_for_widget` parses back the other way.
-            let rect = d.get_bounding_client_rect(node);
-            let tag = d.node(node).map(|n| n.tag.clone()).unwrap_or_default();
-            let mut properties = Vec::new();
-            let text = d.text_content(node);
-            if !text.is_empty() {
-                properties.push(("textContent".to_string(), text));
-            }
-            let value = d.value(node);
-            if !value.is_empty() {
-                properties.push(("value".to_string(), value));
-            }
-            if d.checked(node) {
-                properties.push(("checked".to_string(), "true".to_string()));
-            }
-            for css in ["left", "top", "width", "height"] {
-                let v = d.get_style_property(node, css);
-                if !v.is_empty() {
-                    properties.push((css.to_string(), v));
-                }
-            }
-            let mut events = listener_types.get(&node).cloned().unwrap_or_default();
-            events.sort();
-            let connected = d.is_connected(node);
-            out.push(DomControl {
-                node,
-                id,
-                tag,
-                rect,
-                connected,
-                properties,
-                events,
-            });
+
+    let text_of = |node: NodeId, op: DomOp| match apply(document, op) {
+        DomValue::Text(s) => s,
+        _ => {
+            let _ = node;
+            String::new()
         }
-        out
-    })
-    .unwrap_or_default()
+    };
+
+    // Every element, not only the named ones — `Name` is optional, and a form
+    // that builds its buttons in a loop has none.
+    //
+    // ⛔ `AllElements`, NOT `querySelectorAll("*")`. A selector matches only
+    // what is IN the document, so a created-and-never-appended control would
+    // vanish from this list — and `DomControl::connected` exists precisely to
+    // report that control. Listing only the tree turns "you forgot
+    // `Controls.Add`" into "no control named X", which is a different bug.
+    let DomValue::Nodes(nodes) = apply(document, DomOp::AllElements) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for node in nodes {
+        let tag = text_of(node, DomOp::NodeName(node)).to_ascii_lowercase();
+        // The document's own skeleton is not a control, and listing it would
+        // bury a form's five buttons under the page that contains them.
+        //
+        // ⛔ `body` is NOT in this list. A form IS the body — `emit_control_element`
+        // special-cases the tag for exactly that reason — so a designer's
+        // `Form1` is the body element and filtering it out would make the whole
+        // form unaddressable by its own name.
+        if matches!(tag.as_str(), "html" | "head" | "title" | "style" | "meta" | "script" | "link") {
+            continue;
+        }
+        let id = text_of(node, DomOp::GetAttribute(node, "id".into()));
+        // A zero-area box is "present and never laid out", which is a
+        // different bug from "never appended" — `connected` separates them,
+        // and `control_rect` says which one it found.
+        let rect = match apply(document, DomOp::BoundingClientRect(node)) {
+            DomValue::Rect { x, y, width, height } if width > 0.0 || height > 0.0 => {
+                Some(LayoutRect::new(x as f32, y as f32, width as f32, height as f32))
+            }
+            _ => None,
+        };
+        let mut properties = Vec::new();
+        let text = text_of(node, DomOp::TextContent(node));
+        if !text.is_empty() {
+            properties.push(("textContent".to_string(), text));
+        }
+        let value = text_of(node, DomOp::Value(node));
+        if !value.is_empty() {
+            properties.push(("value".to_string(), value));
+        }
+        if matches!(apply(document, DomOp::Checked(node)), DomValue::Bool(true)) {
+            properties.push(("checked".to_string(), "true".to_string()));
+        }
+        for css in ["left", "top", "width", "height"] {
+            let v = text_of(node, DomOp::GetStyleProperty(node, css.to_string()));
+            if !v.is_empty() {
+                properties.push((css.to_string(), v));
+            }
+        }
+        let mut events = listener_types.get(&node).cloned().unwrap_or_default();
+        events.sort();
+        let connected = matches!(apply(document, DomOp::IsConnected(node)), DomValue::Bool(true));
+        out.push(DomControl {
+            node,
+            id,
+            tag,
+            rect,
+            connected,
+            properties,
+            events,
+        });
+    }
+    out
 }
 
 /// Resolve a control name the way a debugger user types it — the `id`

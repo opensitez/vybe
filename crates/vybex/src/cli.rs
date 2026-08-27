@@ -5,6 +5,8 @@
 //! Flags:
 //!   --dump, -d        Disassemble bytecode and exit (no run)
 //!   --dump-ast        Parse and print the prepared common AST, then exit
+//!   --dump-classes    Print the class table the declaration pass BUILT from
+//!                     that AST — the stage between --dump-ast and --dump
 //!   --emit-wasm, -w   Compile to .wasm binary and exit
 //!   --entry, -e NAME  Override the entry symbol (ld -e style; Class.Method for static methods)
 //!   --eval CODE       Compile and run source from a string
@@ -206,6 +208,7 @@ pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
     let mut dump_ast = false;
+    let mut dump_classes = false;
     let mut emit_wasm = false;
     // `--check` compiles the program and reports diagnostics WITHOUT running it,
     // exiting non-zero on any parse/compile error. Intended for editors and CI.
@@ -248,6 +251,7 @@ pub fn run() {
         match arg.as_str() {
             "--dump" | "-d" => dump = true,
             "--dump-ast" => dump_ast = true,
+            "--dump-classes" => dump_classes = true,
             "--check" | "-c" => check = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
             "--entry" | "-e" => {
@@ -625,6 +629,9 @@ pub fn run() {
     }
 
     // ── Compile ─────────────────────────────────────────────────────────────
+    // Set before the first compile: the class table is printed as each unit
+    // finishes, so a bundle shows one section per unit.
+    vybe_compiler::primitives::set_dump_classes(dump_classes);
     eprintln!("[vybex] Preparing and compiling module...");
     let compiled = {
         let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
@@ -997,7 +1004,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
-    eprintln!("      --dump-ast    Parse and print the prepared common AST");
+    eprintln!("      --dump-ast    Parse and print the prepared common AST
+      --dump-classes  Print the class table the declaration pass built");
     eprintln!("  -c, --check       Compile and report errors without running (exit 1 on error)");
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
     eprintln!("      --eval CODE   Compile source from a string");
