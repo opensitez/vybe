@@ -407,10 +407,19 @@ export_desc = {
 // element expressions (`(ref.func $f)`, `(ref.null func)`).
 table_field = {
     "(" ~ "table" ~ id? ~ export_inline* ~ import_inline? ~ table_type ~ folded_instr? ~ ")"
-  | "(" ~ "table" ~ id? ~ export_inline* ~ ref_val_type ~ "(" ~ "elem" ~ (elem_item+ | index*) ~ ")" ~ ")"
+  | "(" ~ "table" ~ id? ~ export_inline* ~ addr_type? ~ ref_val_type ~ "(" ~ "elem" ~ (elem_item+ | index*) ~ ")" ~ ")"
 }
 
-table_type = { integer ~ integer? ~ ref_val_type }
+// A table, like a memory, may state its INDEX type (`(table i64 1 funcref)` —
+// memory64). Same bare-literal treatment as `mem_type`: the limits are what the
+// walker reads, and the keyword must not be mistaken for one.
+table_type = { addr_type? ~ integer ~ integer? ~ ref_val_type }
+
+// `i64` = the memory64 proposal's 64-bit index space, `i32` = the default.
+// CAPTURED, not silent: the walker records it on the declaration so every
+// address, count and `memory.size`/`table.size` result is read at the right
+// width. The trailing guard stops it matching the head of a longer word.
+addr_type = @{ ("i64" | "i32") ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 
@@ -418,7 +427,7 @@ table_type = { integer ~ integer? ~ ref_val_type }
 // exactly the data plus an active segment at offset 0 (start, float_exprs).
 memory_field = {
     "(" ~ "memory" ~ id? ~ export_inline* ~ import_inline? ~ mem_type ~ ")"
-  | "(" ~ "memory" ~ id? ~ export_inline* ~ inline_memory_data ~ ")"
+  | "(" ~ "memory" ~ id? ~ export_inline* ~ addr_type? ~ inline_memory_data ~ ")"
 }
 
 inline_memory_data = { "(" ~ "data" ~ string* ~ ")" }
@@ -426,7 +435,7 @@ inline_memory_data = { "(" ~ "data" ~ string* ~ ")" }
 // Optional address-type keyword (`i64` = memory64 proposal, `i32` = default),
 // then the min (and optional max) page limits. The keyword is a bare literal so
 // it doesn't appear as a captured pair — the walker still reads just the limits.
-mem_type = { ("i64" | "i32")? ~ integer ~ integer? }
+mem_type = { addr_type? ~ integer ~ integer? }
 
 // ── Global ────────────────────────────────────────────────────────────────────
 
@@ -535,7 +544,10 @@ array_subtype  = { "(" ~ "array_subtype" ~ (field_def | storage_type) ~ index ~ 
 cont_type      = { "(" ~ "cont" ~ index ~ ")" }
 // `(field t1 t2 t3)` is the abbreviation for three consecutive unnamed fields
 // (a NAMED field declares exactly one).
-field_def      = { "(" ~ "field" ~ id? ~ storage_type+ ~ ")" }
+// A NAMED field declares exactly one; an unnamed `(field)` is the abbreviation
+// for ZERO fields, which `(struct (field))` uses and `struct_type`'s `field_def*`
+// then contributes nothing for.
+field_def      = { "(" ~ "field" ~ (id ~ storage_type | storage_type*) ~ ")" }
 storage_type   = { "(" ~ "mut" ~ (val_type | packed_type | ref_val_type) ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
 ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
@@ -628,12 +640,23 @@ result_val = {
   // The heap type is optional: a bare `(ref.null)` expects "null of ANY heap
   // type", the reftype-agnostic spelling used by ref_null / select.
   | "(" ~ "ref.null"   ~ heap_type? ~ ")"
-  | "(" ~ "ref.extern" ~ integer ~ ")"
+  | "(" ~ "ref.extern" ~ integer? ~ ")"
+  // A HOST reference carries the same payload as `ref.extern` — `externalize`
+  // and `internalize` move a value between the two spellings (gc/extern).
+  | "(" ~ "ref.host"   ~ integer? ~ ")"
   | "(" ~ "ref.func"   ~ ")"
+  // Abstract heap-type expectations: "a non-null reference OF THIS KIND",
+  // with no payload to compare. `ref.array`/`ref.struct` must precede the
+  // shorter `ref.any` etc. only if one were a prefix of another; they are not.
+  | "(" ~ ("ref.array" | "ref.struct" | "ref.i31" | "ref.eq" | "ref.any" | "ref.exn") ~ ")"
   | "(" ~ "f32.const"  ~ "nan:canonical" ~ ")"
   | "(" ~ "f32.const"  ~ "nan:arithmetic" ~ ")"
   | "(" ~ "f64.const"  ~ "nan:canonical" ~ ")"
   | "(" ~ "f64.const"  ~ "nan:arithmetic" ~ ")"
+  // `(either r1 r2 …)` — the relaxed-simd proposal's NONDETERMINISM: the
+  // implementation may answer any one of the listed results and be conforming.
+  // Listed last so a concrete result is always matched first.
+  | "(" ~ "either" ~ result_val* ~ ")"
 }
 
 // Lane type for v128.const in result_val
@@ -652,6 +675,7 @@ expr = {
   | "(" ~ "v128.const" ~ val_lane_type ~ (float | integer)+ ~ ")"
   | "(" ~ "ref.null"   ~ heap_type ~ ")"
   | "(" ~ "ref.extern" ~ integer ~ ")"
+  | "(" ~ "ref.host"   ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ index ~ ")"
 }
 
