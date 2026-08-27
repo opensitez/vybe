@@ -4802,9 +4802,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut normalized_source = None;
     let mut pairs = if should_normalize_first {
         let normalized = normalize_mixed_php_source(source);
-        if std::env::var_os("VYBEX_DEBUG_WRITE_NORMALIZED_PHP").is_some() {
-            let _ = std::fs::write("/tmp/vybex_normalized.php", &normalized);
-        }
         normalized_source = Some(normalized);
         PhpParser::parse(
             Rule::program_pure,
@@ -14046,61 +14043,107 @@ fn parse_unary_op(s: &str) -> UnaryOp {
     }
 }
 
+/// `$$name`, `${expr}` and the stacked spellings — a read of the variable whose
+/// NAME is itself computed.
+///
+/// The key is built by WALKING the inner pair rather than by slicing `$` off the
+/// source text. `$$$k` is `$` applied to `$$k`, and only recursion gets that
+/// right: a text prefix-strip peeled exactly one level and handed back the
+/// intermediate NAME as though it were the value (`$$$k` read `x`, not `5`).
+///
+/// A key that is a known literal still compiles to a DIRECT variable reference.
+/// That is not an optimisation — it is what keeps `$$name` correct inside a
+/// function, where the target is a LOCAL and the global namespace does not hold
+/// it. Every other key indexes the global namespace, which routes to
+/// `globals::emit_global_namespace_index_get` / `_set` — the primitive that
+/// already answers a computed key, php's `$`-marked members included.
+///
+/// ⛔ The old fallback indexed `__php_var_vars`, a table this walker invented and
+/// NOTHING ever populated, so a non-foldable name read null and a write to one
+/// vanished silently. See `primitives/globals.rs`, which names that table and the
+/// blank read it produced.
 fn walk_php_variable_expr(__php_w: &mut PhpWalker, pair: Pair<Rule>, span: Span) -> Result<Expression, String> {
     let raw = pair.as_str();
-    if let Some(rest) = raw.strip_prefix("$$") {
-        if let Some(target) = lookup_simple_string_var(__php_w, rest) {
-            return Ok(Expression::with_span(
-                ExprKind::Ident(format!("${target}")),
-                span,
-            ));
+    let inner = pair.clone().into_inner().next();
+    if let Some(inner) = inner {
+        if matches!(inner.as_rule(), Rule::dynamic_variable) {
+            return php_computed_variable_expr(__php_w, inner, span);
         }
-        let key_expr = if rest.starts_with('$') {
-            Expression::with_span(ExprKind::Ident(rest.to_string()), span.clone())
-        } else {
-            Expression::with_span(ExprKind::Lit(Literal::Str(rest.to_string())), span.clone())
-        };
-        return Ok(Expression::with_span(
-            ExprKind::Index {
-                object: Box::new(Expression::with_span(
-                    ExprKind::Ident("__php_var_vars".to_string()),
-                    span.clone(),
-                )),
-                index: Box::new(key_expr),
-                null_safe: false,
-            },
-            span,
-        ));
-    }
-
-    let mut inner = pair.clone().into_inner();
-    if let Some(first) = inner.next() {
-        if matches!(first.as_rule(), Rule::expression) {
-            let key_expr = walk_expression(__php_w, first)?;
-            if let ExprKind::Ident(name) = &key_expr.kind {
-                if let Some(target) = lookup_simple_string_var(__php_w, name) {
-                    return Ok(Expression::with_span(
-                        ExprKind::Ident(format!("${target}")),
-                        span,
-                    ));
-                }
-            }
-            return Ok(Expression::with_span(
-                ExprKind::Index {
-                    object: Box::new(Expression::with_span(
-                        ExprKind::Ident("__php_var_vars".to_string()),
-                        span.clone(),
-                    )),
-                    index: Box::new(key_expr),
-                    null_safe: false,
-                },
-                span,
-            ));
+        if matches!(inner.as_rule(), Rule::expression) {
+            let key = walk_expression(__php_w, inner)?;
+            return php_computed_variable_from_key(__php_w, key, span);
         }
     }
 
     Ok(Expression::with_span(
         ExprKind::Ident(strip_dollar(raw).to_string()),
+        span,
+    ))
+}
+
+/// One `$` applied to an inner form that yields the NAME to read.
+///
+/// The three inner spellings the grammar admits — `$$x`, `${expr}` and the
+/// stacked `$$$x` — differ only in how the name is produced, so each is walked
+/// to an ordinary expression and they converge on one key.
+fn php_computed_variable_expr(
+    __php_w: &mut PhpWalker,
+    pair: Pair<Rule>,
+    span: Span,
+) -> Result<Expression, String> {
+    let Some(inner) = pair.clone().into_inner().next() else {
+        return Ok(Expression::with_span(
+            ExprKind::Ident(pair.as_str().to_string()),
+            span,
+        ));
+    };
+    let key = match inner.as_rule() {
+        // `$name` here is READ for its value; that value is the name to look up.
+        Rule::simple_variable => {
+            Expression::with_span(ExprKind::Ident(inner.as_str().to_string()), span.clone())
+        }
+        Rule::dynamic_variable => php_computed_variable_expr(__php_w, inner, span.clone())?,
+        _ => walk_expression(__php_w, inner)?,
+    };
+    php_computed_variable_from_key(__php_w, key, span)
+}
+
+/// Turn a resolved NAME expression into the variable access it denotes.
+///
+/// A name known at walk time becomes a direct reference, which is the only form
+/// that reaches a FUNCTION LOCAL. Anything else indexes the global namespace and
+/// is lowered by the shared computed-key primitive.
+fn php_computed_variable_from_key(
+    __php_w: &mut PhpWalker,
+    key: Expression,
+    span: Span,
+) -> Result<Expression, String> {
+    match &key.kind {
+        ExprKind::Lit(Literal::Str(name)) => {
+            return Ok(Expression::with_span(
+                ExprKind::Ident(format!("${}", name.trim_start_matches('$'))),
+                span,
+            ));
+        }
+        ExprKind::Ident(name) => {
+            if let Some(target) = lookup_simple_string_var(__php_w, name) {
+                return Ok(Expression::with_span(
+                    ExprKind::Ident(format!("${target}")),
+                    span,
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(Expression::with_span(
+        ExprKind::Index {
+            object: Box::new(Expression::with_span(
+                ExprKind::Ident("$GLOBALS".to_string()),
+                span.clone(),
+            )),
+            index: Box::new(key),
+            null_safe: false,
+        },
         span,
     ))
 }

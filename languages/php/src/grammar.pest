@@ -197,13 +197,22 @@ reserved = _{
 
 identifier = @{ !reserved ~ (ASCII_ALPHA | "_") ~ ident_cont* }
 
-// `$varname`, `$$name`, `${expr}`.
+// `$varname`, `$$name`, `${expr}`, and the nested forms `$$$name` / `$${expr}`.
+// The recursion is what makes a `$` prefix stackable; it cannot be left-recursive
+// because the `"$"` is consumed before `dynamic_variable` is re-entered.
 simple_variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
-dynamic_variable = { "$" ~ (simple_variable | "{" ~ expression ~ "}") }
+dynamic_variable = { "$" ~ (dynamic_variable | simple_variable | "{" ~ expression ~ "}") }
 variable = { dynamic_variable | simple_variable }
 
 // PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
-qualified_name = @{ "\\"* ~ identifier ~ ("\\"+ ~ identifier)* }
+//
+// A namespace SEGMENT may spell a reserved word — `new Fn\Service()` is valid php,
+// because `fn` is only the arrow-function keyword at the start of an expression, and
+// a following `\` settles that it is a name here. So the multi-segment branch takes
+// bare segments while a lone name still goes through `identifier`, which keeps every
+// reserved word reserved when it stands alone.
+name_segment = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
+qualified_name = @{ "\\"* ~ (name_segment ~ ("\\"+ ~ name_segment)+ | identifier) }
 
 // PHP 7.4 numeric separators: 1_000_000, 0xFF_FF, etc. The walker
 // strips underscores before parsing.
@@ -943,8 +952,10 @@ closure_use = {
 
 closure_use_var = { "&"? ~ variable }
 
+// `fn&() => $x` returns by reference — the `&` binds to the arrow function itself,
+// exactly as it does on `function &f()`, and is spelled between `fn` and the params.
 arrow_function = {
-    kw_static? ~ kw_fn ~ "(" ~ param_list? ~ ")" ~ return_type_annotation?
+    kw_static? ~ kw_fn ~ "&"? ~ "(" ~ param_list? ~ ")" ~ return_type_annotation?
     ~ closure_use?
     ~ "=>" ~ expression
 }

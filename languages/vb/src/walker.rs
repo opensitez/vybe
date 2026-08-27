@@ -233,7 +233,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_nested_member_arg_calls(&mut module);
     normalize_vb_zero_arg_field_member_calls(&mut module.body);
     normalize_vb_task_surface(&mut module);
-    normalize_vb_binary_writer_writes(&mut module);
+    normalize_vb_binary_writer_writes(&mut module.body);
     // LAST: the reflection passes above still need `ExprKind::TypeOf` intact.
     normalize_vb_enum_type_tokens(&mut module);
     Ok(module)
@@ -312,12 +312,25 @@ fn vb_write_arg_type(expr: &Expression) -> Option<&'static str> {
 /// `bw.Write(65000US)` → `bw.WriteUInt16(65000US)`.
 ///
 /// Only rewrites when the argument states a width — an unannotated `Write(42)`
-/// keeps its spelling so the adapter's runtime default applies. The method name
-/// alone is not enough to know the receiver is a `BinaryWriter`, so the
-/// ANNOTATION is what gates this: nothing else passes a width-cast argument to
-/// a one-argument `Write`.
-fn normalize_vb_binary_writer_writes(module: &mut Module) {
-    for stmt in &mut module.body {
+/// keeps its spelling so the adapter's runtime default applies.
+///
+/// ⛔ GATED ON THE RECEIVER, not on the method name and not on the annotation.
+/// A bare `3.14` also parses as `Cast{…, "Double"}`, so annotation alone
+/// renamed `sw.Write(3.14)` on a `StringWriter` — which has no `WriteDouble` —
+/// and `sw.Write("A"c)` with it. The declaration in this same body is what
+/// says the receiver is a `BinaryWriter`.
+///
+/// ⛔ RUN IT AT PARSE TIME (`normalize_vb_local_type_body`), not from the pass
+/// pipeline. The local-type pass replaces a `Cast` over a non-identifier
+/// operand with the operand itself, and it runs from `parse_sub_decl`, so by
+/// the time the pipeline starts every `65000US` is an unannotated `Lit(Int)`.
+fn normalize_vb_binary_writer_writes(body: &mut [Statement]) {
+    let mut writers = HashSet::new();
+    collect_vb_binary_writer_locals(body, &mut writers);
+    if writers.is_empty() {
+        return;
+    }
+    for stmt in body {
         stmt.walk_exprs_mut(&mut |expr| {
             let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
                 return;
@@ -325,10 +338,16 @@ fn normalize_vb_binary_writer_writes(module: &mut Module) {
             if args.len() != 1 {
                 return;
             }
-            let ExprKind::Member { field, .. } = &mut callee.kind else {
+            let ExprKind::Member { object, field, .. } = &mut callee.kind else {
                 return;
             };
             if !field.eq_ignore_ascii_case("Write") {
+                return;
+            }
+            let ExprKind::Ident(receiver) = &object.kind else {
+                return;
+            };
+            if !writers.contains(&receiver.to_ascii_lowercase()) {
                 return;
             }
             if let Some(spelling) = vb_write_arg_type(&args[0].value) {
@@ -336,6 +355,102 @@ fn normalize_vb_binary_writer_writes(module: &mut Module) {
             }
         });
     }
+}
+
+/// The locals in this body that hold a `BinaryWriter`, by folded name.
+fn collect_vb_binary_writer_locals(body: &[Statement], writers: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    let BindingPattern::Ident(name) = &decl.pattern else {
+                        continue;
+                    };
+                    let declared = decl
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(|hint| vb_type_name_ends(hint, "BinaryWriter"));
+                    if declared
+                        || decl.init.as_ref().is_some_and(vb_expr_is_new_binary_writer)
+                    {
+                        writers.insert(name.to_ascii_lowercase());
+                    }
+                }
+            }
+            StmtKind::Using {
+                var,
+                resource,
+                body,
+            } => {
+                if vb_expr_is_new_binary_writer(resource) {
+                    writers.insert(var.to_ascii_lowercase());
+                }
+                collect_vb_binary_writer_locals(body, writers);
+            }
+            StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::Lock { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::For { body, .. } => {
+                collect_vb_binary_writer_locals(body, writers);
+            }
+            StmtKind::While { body, else_body, .. }
+            | StmtKind::ForIn {
+                body, else_body, ..
+            } => {
+                collect_vb_binary_writer_locals(body, writers);
+                if let Some(else_body) = else_body {
+                    collect_vb_binary_writer_locals(else_body, writers);
+                }
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_vb_binary_writer_locals(then_body, writers);
+                for (_, elif_body) in elifs {
+                    collect_vb_binary_writer_locals(elif_body, writers);
+                }
+                if let Some(else_body) = else_body {
+                    collect_vb_binary_writer_locals(else_body, writers);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                collect_vb_binary_writer_locals(body, writers);
+                for catch in catches {
+                    collect_vb_binary_writer_locals(&catch.body, writers);
+                }
+                if let Some(else_body) = else_body {
+                    collect_vb_binary_writer_locals(else_body, writers);
+                }
+                if let Some(finally) = finally {
+                    collect_vb_binary_writer_locals(finally, writers);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_vb_binary_writer_locals(&case.body, writers);
+                }
+                if let Some(default) = default {
+                    collect_vb_binary_writer_locals(default, writers);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn vb_expr_is_new_binary_writer(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::New { class, .. }
+        if vb_expr_tail_name(class)
+            .is_some_and(|name| name.eq_ignore_ascii_case("BinaryWriter")))
 }
 
 /// `Task` as the bare identifier or the fully-qualified chain — both spellings
@@ -451,6 +566,28 @@ fn normalize_vb_task_expr(expr: &mut Expression) {
             // so nothing drove the loop and `.Result` read an unsettled
             // promise. `AsyncOp::BlockOn` is the sync-to-async boundary that
             // actually suspends the fiber.
+            // `x.Result` PARSED AS A ZERO-ARG CALL, so the property rewrite
+            // lands on the CALLEE and the invocation stays wrapped around it:
+            // `Call { callee: Async(BlockOn(tcs.Task)), args: [] }` awaited the
+            // task and then INVOKED its value — `tcs.Task.Result` died with
+            // `string is not callable (type: R)`.
+            //
+            // ⛔ MATCHED ON THE REWRITTEN SHAPE, not on `Member { field:
+            // "Result" }`. This pass runs BOTTOM-UP: by the time the `Call`
+            // node is visited its callee is ALREADY an `Async` node, so an arm
+            // keyed on the original spelling can never fire. A zero-arg call of
+            // a value that blocks IS that value.
+            } else if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Async(AsyncOp::BlockOn(_)))
+            {
+                let ExprKind::Async(AsyncOp::BlockOn(source)) = &mut callee.kind else {
+                    return;
+                };
+                let source = std::mem::replace(
+                    &mut **source,
+                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                );
+                Some(AsyncOp::BlockOn(Box::new(source)))
             } else if args.len() == 1
                 && matches!(&callee.kind,
                     ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("ContinueWith"))
@@ -9785,11 +9922,51 @@ fn expr_is_vb_int_zero(expr: &Expression, locals: &HashMap<String, String>) -> b
     eval_vb_int_const_expr(expr, locals) == Some(0)
 }
 
+/// Whether the constant fold behind [`expr_contains_vb_int_overflow`] is
+/// reading `Integer` operands — the only width whose range it tests.
+///
+/// ⛔ `eval_vb_int_const_expr` answers for ANY local carrying a recorded
+/// constant, whatever its declared type. `Dim a As BigInteger = 2147483646`
+/// followed by `Dim s = a + 3` therefore folded to a value outside Int32 and
+/// the ENTIRE declaration was replaced by a `Throw` — the statement vanished
+/// and every later `s` read an undefined local. `Long` overflowed the same way.
+///
+/// A literal outside Int32 is a `Long` in VB, so it answers `false` too:
+/// `2147483648 + 1` is Long arithmetic and does not overflow.
+fn vb_int_overflow_operands_are_int32(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => {
+            *value >= i64::from(i32::MIN) && *value <= i64::from(i32::MAX)
+        }
+        ExprKind::Ident(name) => match locals.get(&name.to_ascii_lowercase()) {
+            Some(declared) => declared.eq_ignore_ascii_case("Int32"),
+            None => true,
+        },
+        ExprKind::Unary { expr, .. } => vb_int_overflow_operands_are_int32(expr, locals),
+        ExprKind::Binary { left, right, .. } => {
+            vb_int_overflow_operands_are_int32(left, locals)
+                && vb_int_overflow_operands_are_int32(right, locals)
+        }
+        // A cast names the arithmetic's width outright: `CInt(x) + 1` is Int32,
+        // `CLng(x) + 1` is not. An unrecognised target reports NOT-Int32, which
+        // costs a missed throw rather than an invented one.
+        ExprKind::Cast { type_name, .. } => {
+            vb_canonical_type_name(type_name).eq_ignore_ascii_case("Int32")
+        }
+        _ => true,
+    }
+}
+
 fn expr_contains_vb_int_overflow(expr: &Expression, locals: &HashMap<String, String>) -> bool {
     match &expr.kind {
         ExprKind::Binary { left, right, .. } => {
-            eval_vb_int_const_expr(expr, locals)
-                .is_some_and(|value| value < i64::from(i32::MIN) || value > i64::from(i32::MAX))
+            (vb_int_overflow_operands_are_int32(expr, locals)
+                && eval_vb_int_const_expr(expr, locals).is_some_and(|value| {
+                    value < i64::from(i32::MIN) || value > i64::from(i32::MAX)
+                }))
                 || expr_contains_vb_int_overflow(left, locals)
                 || expr_contains_vb_int_overflow(right, locals)
         }
@@ -13076,7 +13253,11 @@ fn literal_bool(expr: &Expression) -> Option<bool> {
 fn literal_string(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
-        ExprKind::Cast { expr, type_name } if type_name.eq_ignore_ascii_case("Date") => {
+        // `#…#` parses as a Date cast and `"A"c` as a Char cast; both wrap a
+        // string LITERAL, and every reader of one wants the text.
+        ExprKind::Cast { expr, type_name }
+            if type_name.eq_ignore_ascii_case("Date") || type_name.eq_ignore_ascii_case("Char") =>
+        {
             literal_string(expr)
         }
         _ => None,
@@ -13146,6 +13327,96 @@ fn split_vb_numeric_suffix(raw: &str) -> (&str, &str) {
     (raw, "")
 }
 
+/// One `{…}` of an interpolated string — `{expr}`, `{expr,alignment}`,
+/// `{expr:format}` or both.
+///
+/// ⛔ The alignment and the format specifier are NOT dropped. They are .NET
+/// composite-format spellings, so the hole becomes `String.Format("{0,a:f}",
+/// expr)` — the same leaf `value.ToString(format, width)` reaches, and the same
+/// lowering C# already uses (`csharp/walker.rs::parse_interpolated_hole_text`).
+/// Rebuilding the composite here rather than interpreting the specifier is what
+/// keeps ONE renderer for both spellings.
+fn vb_interpolation_hole_expr(text: &str) -> Expression {
+    let (expr_src, alignment, format_spec) = split_vb_interpolation_hole(text);
+    let value = match parse_expression_str(expr_src) {
+        Ok(expr) => expr,
+        Err(_) => Expression::ident(expr_src.trim()),
+    };
+    if alignment.is_none() && format_spec.is_none() {
+        return value;
+    }
+    let mut composite = "{0".to_string();
+    if let Some(alignment) = alignment {
+        composite.push(',');
+        composite.push_str(alignment.trim());
+    }
+    if let Some(format_spec) = format_spec {
+        composite.push(':');
+        composite.push_str(format_spec.trim());
+    }
+    composite.push('}');
+    call_expr(
+        build_dotted_expr("String.Format"),
+        vec![
+            Argument::positional(Expression::string(&composite)),
+            Argument::positional(value),
+        ],
+    )
+}
+
+/// `expr[,alignment][:format]` — split at the TOP level only.
+fn split_vb_interpolation_hole(text: &str) -> (&str, Option<&str>, Option<&str>) {
+    let trimmed = text.trim();
+    let comma = find_vb_interpolation_separator(trimmed, ',');
+    let colon = find_vb_interpolation_separator(trimmed, ':');
+    // ⛔ A COLON BEFORE THE COMMA means the comma is INSIDE the format —
+    // `{d:MMM d, yyyy}` is one date pattern, not an alignment.
+    match (comma, colon) {
+        (Some(c), Some(k)) if c < k => (
+            &trimmed[..c],
+            Some(&trimmed[c + 1..k]),
+            Some(&trimmed[k + 1..]),
+        ),
+        (_, Some(k)) => (&trimmed[..k], None, Some(&trimmed[k + 1..])),
+        (Some(c), None) => (&trimmed[..c], Some(&trimmed[c + 1..]), None),
+        _ => (trimmed, None, None),
+    }
+}
+
+/// The first `needle` outside every bracket and string in an interpolation
+/// hole. `If(score >= 90, "A", If(…))` carries commas AND quotes that are not
+/// separators, and a `Dictionary(Of String, Integer)` lookup carries a comma
+/// inside parentheses.
+fn find_vb_interpolation_separator(text: &str, needle: char) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut in_string = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            // VB escapes a quote by DOUBLING it; either way the state flips
+            // twice and lands back inside the string.
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            c if c == needle && paren == 0 && bracket == 0 && brace == 0 => return Some(idx),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_vb_numeric_literal(raw: &str) -> Expression {
     let raw = raw.trim();
     let (body, suffix) = split_vb_numeric_suffix(raw);
@@ -13175,7 +13446,14 @@ fn parse_vb_numeric_literal(raw: &str) -> Expression {
         ExprKind::Lit(Literal::Float(value))
     } else {
         let value = body_clean.parse::<i128>().unwrap_or(0);
-        ExprKind::Lit(Literal::Int(i64::try_from(value).unwrap_or(i64::MAX)))
+        // ⛔ A `UInt64` above `i64::MAX` is a REAL VB literal
+        // (`18000000000000000000UL`), and clamping it to `i64::MAX` answered a
+        // different number. `Literal::Int` cannot hold it, so it becomes the
+        // float that can — the same value .NET's `UInt64` prints.
+        match i64::try_from(value) {
+            Ok(fitted) => ExprKind::Lit(Literal::Int(fitted)),
+            Err(_) => ExprKind::Lit(Literal::Float(value as f64)),
+        }
     };
     let expr = Expression::new(kind);
     if let Some(type_name) = vb_type_name_from_suffix(suffix, has_decimal) {
@@ -14186,18 +14464,6 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 field: name.to_string(),
                 null_safe: false,
             });
-        }
-        if matches!(
-            path.to_ascii_lowercase().as_str(),
-            "double" | "system.double" | "single" | "system.single"
-        ) {
-            match name.to_ascii_lowercase().as_str() {
-                "nan" => return Expression::float(f64::NAN),
-                "positiveinfinity" => return Expression::float(f64::INFINITY),
-                "negativeinfinity" => return Expression::float(f64::NEG_INFINITY),
-                "epsilon" => return Expression::float(f64::MIN_POSITIVE),
-                _ => {}
-            }
         }
         if (path.eq_ignore_ascii_case("Thread")
             || path.eq_ignore_ascii_case("System.Threading.Thread"))
@@ -16929,6 +17195,19 @@ fn vb_task_valued_type(expr: &Expression) -> Option<&'static str> {
                 ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("ContinueWith"))
             .then_some(TASK)
         }
+        // `tcs.Task` — the consumer half of a `TaskCompletionSource`, which is
+        // the one member read that HANDS BACK a task. Without this arm
+        // `tcs.Task.Result` never became a `BlockOn`: the receiver answered
+        // "not task-valued", the `.Result` rewrite below declined, and the read
+        // fell through to a plain member access that answers `undefined`.
+        //
+        // ⛔ KEYED ON THE FIELD NAME, because this runs before type inference
+        // and no locals table is in scope here — the same standard the
+        // `ContinueWith` arm above already holds. A user class with its own
+        // `Task` property is therefore also read as task-valued; that is the
+        // narrowest rule available at this point in the pass, and it only
+        // changes behaviour where a `.Result` or an `Await` follows.
+        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Task") => Some(TASK),
         _ => None,
     }
 }
@@ -17585,6 +17864,14 @@ fn format_vb_number(value: f64) -> String {
 }
 
 fn normalize_vb_local_type_body(body: &mut Vec<Statement>) {
+    // ⛔ BEFORE the local-type pass: its `Cast` arm REPLACES a cast over a
+    // non-identifier operand with the operand itself, so `65000US`, `1.5F` and
+    // `CType(x, Short)` have lost their declared width by the time any pipeline
+    // pass runs — which is why the `BinaryWriter.Write` spelling cannot be
+    // decided there. This body runs at PARSE time, from `parse_sub_decl` /
+    // `parse_function_decl` / the operator decl, which is the only point where
+    // the annotation still exists.
+    normalize_vb_binary_writer_writes(body);
     let mut locals = HashMap::new();
     normalize_vb_local_type_statements(body, &mut locals);
 }
@@ -21532,11 +21819,16 @@ fn normalize_vb_dotnet_collection_statement(
             normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
             normalize_vb_dotnet_collection_expr(cond, locals);
         }
-        StmtKind::Using {
-            resource, body, ..
-        } => {
+        StmtKind::Using { var, resource, body } => {
             normalize_vb_dotnet_collection_expr(resource, locals);
-            normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
+            // A `Using` variable is TYPED BY ITS RESOURCE, and nothing else
+            // records it — so every receiver test inside the block read an
+            // untyped local and fell through.
+            let mut body_locals = locals.clone();
+            if let Some(type_name) = vb_infer_expr_type(resource, locals) {
+                body_locals.insert(var.to_ascii_lowercase(), type_name);
+            }
+            normalize_vb_dotnet_collection_statements(body, &mut body_locals);
         }
         StmtKind::Lock { expr, body } => {
             normalize_vb_dotnet_collection_expr(expr, locals);
@@ -23233,9 +23525,21 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                         return;
                     }
                 }
+                // ⛔ GATED ON THE RECEIVER. `x.CopyTo(dest, 0)` copies
+                // ELEMENTS — an array's, and `ICollection.CopyTo(array,
+                // index)` for a Queue/Stack/List, which is why the gate is not
+                // "is an array". On a STREAM the second argument is a
+                // bufferSize, not an index, and rewriting
+                // `stream.CopyTo(dest, 0)` into an array copy answered
+                // "Destination array was not long enough" where .NET throws
+                // `ArgumentOutOfRangeException`. Every .NET stream type ends in
+                // `Stream`, so the name answers it without a table.
                 if field.eq_ignore_ascii_case("CopyTo")
                     && args.len() == 2
                     && vb_is_zero_literal(&args[1].value)
+                    && !vb_infer_expr_type(object, locals).is_some_and(|type_name| {
+                        type_name.trim_end().to_ascii_lowercase().ends_with("stream")
+                    })
                 {
                     let source = (**object).clone();
                     let dest = args[0].clone();
@@ -27575,6 +27879,34 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
             }
             if let Some(finally) = finally {
                 normalize_vb_local_type_statements(finally, &mut locals.clone());
+            }
+        }
+        // ⛔ A `Select Case` body was NOT reached by this pass, so nothing it
+        // normalizes — the literal-cast fold included — happened inside one.
+        // `Case "a"c To "m"c` reached the compiler as a `Char` CAST and matched
+        // nothing.
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            normalize_vb_local_type_expr(expr, locals);
+            for case in cases {
+                for cond in &mut case.conditions {
+                    match cond {
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            normalize_vb_local_type_expr(expr, locals);
+                        }
+                        CaseCondition::Range { from, to } => {
+                            normalize_vb_local_type_expr(from, locals);
+                            normalize_vb_local_type_expr(to, locals);
+                        }
+                    }
+                }
+                normalize_vb_local_type_statements(&mut case.body, &mut locals.clone());
+            }
+            if let Some(default) = default {
+                normalize_vb_local_type_statements(default, &mut locals.clone());
             }
         }
         _ => {}
@@ -35605,12 +35937,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             }
                             expr_text.push(c);
                         }
-                        match parse_expression_str(&expr_text) {
-                            Ok(expr) => parts.push(InterpolPart::Expr(expr)),
-                            Err(_) => {
-                                parts.push(InterpolPart::Expr(Expression::ident(expr_text.trim())))
-                            }
-                        }
+                        parts.push(InterpolPart::Expr(vb_interpolation_hole_expr(&expr_text)));
                     } else if ch == '}' {
                         if chars.peek() == Some(&'}') {
                             chars.next();
@@ -35638,10 +35965,21 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::string_literal => {
-                let s = pair
-                    .as_str()
-                    .trim_end_matches(|c: char| c == 'c' || c == 'C');
-                ExprKind::Lit(Literal::Str(s[1..s.len() - 1].replace("\"\"", "\"")))
+                let raw = pair.as_str();
+                let text = raw.trim_end_matches(|c: char| c == 'c' || c == 'C');
+                let literal =
+                    Expression::string(&text[1..text.len() - 1].replace("\"\"", "\""));
+                if text.len() < raw.len() {
+                    // `"A"c` is a Char and `"A"` is a String. At run time both
+                    // are a one-character string, so the DECLARED type is the
+                    // only thing that separates them — and `BinaryWriter.Write`
+                    // picks a different overload for each.
+                    return Ok(Expression::new(ExprKind::Cast {
+                        expr: Box::new(literal),
+                        type_name: "Char".to_string(),
+                    }));
+                }
+                literal.kind
             }
             Rule::numeric_literal => {
                 return Ok(parse_vb_numeric_literal(pair.as_str()));
@@ -36824,6 +37162,18 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                         return Ok(rewritten);
                     }
                 }
+                if field.eq_ignore_ascii_case("DivRem") && arguments.len() == 3 {
+                    let recv = dotted_expr_name(object);
+                    if let Some(rewritten) = dotnet_vb::div_rem_desugar(
+                        recv.as_deref(),
+                        &expr,
+                        &arguments[0].value,
+                        &arguments[1].value,
+                        &arguments[2].value,
+                    ) {
+                        return Ok(rewritten);
+                    }
+                }
                 if field.eq_ignore_ascii_case("TryCreate") && arguments.len() == 3 {
                     let recv = dotted_expr_name(object);
                     if let Some(rewritten) = dotnet_vb::try_create_desugar(
@@ -36858,6 +37208,21 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                 // one-argument core answers the SEGMENT, and a non-null is the
                 // `True`.
                 if field.eq_ignore_ascii_case("TryGetBuffer") && arguments.len() == 1 {
+                    let core = call_expr(expr.clone(), vec![]);
+                    return Ok(Expression::new(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(Expression::new(ExprKind::Assign {
+                            target: Box::new(arguments[0].value.clone()),
+                            value: Box::new(core),
+                        })),
+                        right: Box::new(Expression::null()),
+                    }));
+                }
+                // `wr.TryGetTarget(out)` — the same out-param shape as
+                // `TryGetBuffer` above: the zero-argument core answers the
+                // TARGET, and a non-null is the `True`. The core is registered
+                // at arity ZERO for exactly this reason.
+                if field.eq_ignore_ascii_case("TryGetTarget") && arguments.len() == 1 {
                     let core = call_expr(expr.clone(), vec![]);
                     return Ok(Expression::new(ExprKind::Binary {
                         op: BinOp::NotEq,
@@ -36984,6 +37349,23 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     return Ok(rewritten);
                 }
             }
+            if name.eq_ignore_ascii_case("DivRem") && arguments.len() == 3 {
+                let recv = dotted_expr_name(&expr);
+                let callee = Expression::new(ExprKind::Member {
+                    object: Box::new(expr.clone()),
+                    field: name.clone(),
+                    null_safe: false,
+                });
+                if let Some(rewritten) = dotnet_vb::div_rem_desugar(
+                    recv.as_deref(),
+                    &callee,
+                    &arguments[0].value,
+                    &arguments[1].value,
+                    &arguments[2].value,
+                ) {
+                    return Ok(rewritten);
+                }
+            }
             if name.eq_ignore_ascii_case("TryCreate") && arguments.len() == 3 {
                 let recv = dotted_expr_name(&expr);
                 let callee = Expression::new(ExprKind::Member {
@@ -37018,6 +37400,29 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     &arguments[0].value,
                     &arguments[1].value,
                 ));
+            }
+            // ⛔ THE SECOND REGION. This walker rewrites a call in TWO places —
+            // the `Member` callee region above and this name+args one — and a
+            // hook added to only one fires for only some receivers. Registered
+            // in both, `b.TryGetTarget(t)` answered `undefined` from the
+            // generic spelling while the non-generic one worked.
+            if name.eq_ignore_ascii_case("TryGetTarget") && arguments.len() == 1 {
+                let core = call_expr(
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(expr.clone()),
+                        field: name.clone(),
+                        null_safe: false,
+                    }),
+                    vec![],
+                );
+                return Ok(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::new(ExprKind::Assign {
+                        target: Box::new(arguments[0].value.clone()),
+                        value: Box::new(core),
+                    })),
+                    right: Box::new(Expression::null()),
+                }));
             }
             if name.eq_ignore_ascii_case("TryGetBuffer") && arguments.len() == 1 {
                 let core = call_expr(
@@ -37357,8 +37762,36 @@ fn parse_lambda_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         .next()
         .ok_or_else(|| "Lambda missing body".to_string())?;
 
+    // ⛔ THE HEADER IS THREE OPTIONAL PARTS, and each one that goes unread ends
+    // up in front of the body, where the body `match` reports
+    // `Unexpected rule: <that part>`. `Async` and the `As T` return clause are
+    // ordinary VB on a lambda — `Task.Run(Async Function() …)`,
+    // `Function(x As Integer) As Integer` — and the grammar accepting them is
+    // only half the job.
+    let mut is_async = false;
+    if next_pair.as_rule() == Rule::async_kw {
+        is_async = true;
+        next_pair = inner
+            .next()
+            .ok_or_else(|| "Lambda missing body".to_string())?;
+    }
+
     if next_pair.as_rule() == Rule::param_list {
         params = parse_param_list(next_pair)?;
+        next_pair = inner
+            .next()
+            .ok_or_else(|| "Lambda missing body".to_string())?;
+    }
+
+    // The declared return type. A lambda's body needs no help from it — the
+    // value it returns already carries its own type — so it is consumed and
+    // dropped rather than recorded.
+    if next_pair.as_rule() == Rule::as_kw {
+        next_pair = inner
+            .next()
+            .ok_or_else(|| "Lambda missing body".to_string())?;
+    }
+    if next_pair.as_rule() == Rule::type_name {
         next_pair = inner
             .next()
             .ok_or_else(|| "Lambda missing body".to_string())?;
@@ -37402,7 +37835,7 @@ fn parse_lambda_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         ExprKind::Lambda {
             params,
             body,
-            is_async: false,
+            is_async,
             captures: vec![],
         },
         span,
@@ -37598,8 +38031,16 @@ fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => {}
                     }
                 }
-                let resource = resource_expr
-                    .ok_or_else(|| "Using statement missing resource expression".to_string())?;
+                // `Using r` with no `As`/`=` clause acquires an ALREADY-BOUND
+                // resource: the identifier itself is the resource expression,
+                // and the block still disposes it on exit.
+                let resource = match resource_expr {
+                    Some(expr) => expr,
+                    None if !var_name.is_empty() => Expression::ident(&var_name),
+                    None => {
+                        return Err("Using statement missing resource expression".to_string());
+                    }
+                };
                 resources.push((var_name, resource));
             }
             Rule::statement_line => {

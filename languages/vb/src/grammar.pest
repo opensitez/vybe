@@ -574,9 +574,24 @@ set_end = { ^"End" ~ ^"Set" }
 // Expressions
 
 // Lambda Expressions
+// ⛔ `Async` AND a return type are BOTH part of the lambda header. A lambda
+// declares them exactly as `function_decl` does — `Task.Run(Async Function() …)`
+// and `Function(x As Integer) As Integer` are ordinary VB — and neither was
+// accepted, so the whole enclosing STATEMENT failed to parse. Ten corpus files
+// die on the `Async` form alone, most of them `xs.Select(Async Function(n) …)`.
+// ⛔ `as_kw`, NOT a bare `^"As"`. A lambda's body follows the header with
+// nothing between them, so an unanchored `As` matched the first two letters of
+// `AscW(c)` and the return-type clause swallowed the call:
+// `Array.ConvertAll(chars, Function(c) AscW(c))` parsed as params `(c)`,
+// return type `cW`, body `(c)` — and answered `A,B,C` instead of `65,66,67`.
+// A wrong ANSWER, not a parse failure. `function_decl` has the same bare form
+// and gets away with it only because a declaration never puts an expression
+// right after the parameter list.
+as_kw = @{ ^"As" ~ !(ASCII_ALPHANUMERIC | "_") }
+
 lambda_expression = {
-    (^"Function" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (expression | (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end))
-    | (^"Sub" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (sub_end | statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
+    (async_kw? ~ ^"Function" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (as_kw ~ type_name)? ~ (expression | (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end))
+    | (async_kw? ~ ^"Sub" ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (sub_end | statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
 }
 
 expression = { logical_imp }
@@ -821,7 +836,12 @@ nothing_literal = { ^"Nothing" }
 
 date_literal = @{ "#" ~ (!"#" ~ ANY)+ ~ "#" }
 // Interpolated string: $"text {expr} text" — captured as raw token, decomposed in Rust parser
-interpolated_string = @{ "$\"" ~ ("\"\"" | (!("\"") ~ ANY))* ~ "\"" }
+// ⛔ A HOLE MAY CONTAIN QUOTES: `$"{If(b, "yes", "no")}"` is valid VB, and
+// scanning for the next `"` ended the literal at `"yes` — the whole statement
+// then failed to parse. `{{`/`}}` come FIRST so an escaped brace is not read
+// as the start of a hole.
+interpolated_string = @{ "$\"" ~ ("{{" | "}}" | interpolation_hole | "\"\"" | (!("\"") ~ ANY))* ~ "\"" }
+interpolation_hole = @{ "{" ~ ("{{" | "}}" | (!"}" ~ ANY))* ~ "}" }
 string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" ~ (^"C")? }
 // Numeric literals: decimal/hex/octal/binary, separators, exponent, and VB type chars.
 numeric_literal = @{
