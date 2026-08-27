@@ -190,7 +190,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: Some(it_slot),
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len(),
+            finally_depth: self.frame_cf().active_finally_blocks.len(),
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -334,7 +334,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: None,
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len(),
+            finally_depth: self.frame_cf().active_finally_blocks.len(),
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -1413,16 +1413,16 @@ impl Compiler {
     }
 
     pub(super) fn emit_active_finally_blocks(&mut self) -> Result<(), String> {
-        if self.active_finally_blocks.is_empty() {
+        if self.frame_cf().active_finally_blocks.is_empty() {
             return Ok(());
         }
 
-        let original = self.active_finally_blocks.clone();
+        let original = self.frame_cf().active_finally_blocks.clone();
         for idx in (0..original.len()).rev() {
-            self.active_finally_blocks = original[..idx].to_vec();
+            self.frame_cf_mut().active_finally_blocks = original[..idx].to_vec();
             self.emit_finally_action(&original[idx])?;
         }
-        self.active_finally_blocks = original;
+        self.frame_cf_mut().active_finally_blocks = original;
         Ok(())
     }
 
@@ -1447,7 +1447,7 @@ impl Compiler {
         // sequenced finally would be skipped by this throw). Finallys with
         // LIVE runtime handlers (enclosing try bodies) are run by the
         // runtime on unwind — inlining them here executed them twice.
-        if self.fired_finally_indices.is_empty() {
+        if self.frame_cf().fired_finally_indices.is_empty() {
             let line = self.line;
             common::errors::emit_throw(self.chunk(), line);
             return Ok(());
@@ -1457,16 +1457,16 @@ impl Compiler {
         // control-flow statements INSIDE a finally see the right stack.
         let exc_slot = self.define_local("__throw_finally_exc");
         self.emit_u16(Op::LOCAL_SET, exc_slot);
-        let fired = self.fired_finally_indices.clone();
-        let original = self.active_finally_blocks.clone();
+        let fired = self.frame_cf().fired_finally_indices.clone();
+        let original = self.frame_cf().active_finally_blocks.clone();
         for &idx in fired.iter().rev() {
             if idx >= original.len() {
                 continue;
             }
-            self.active_finally_blocks = original[..idx].to_vec();
+            self.frame_cf_mut().active_finally_blocks = original[..idx].to_vec();
             self.emit_finally_action(&original[idx])?;
         }
-        self.active_finally_blocks = original;
+        self.frame_cf_mut().active_finally_blocks = original;
         self.emit_u16(Op::LOCAL_GET, exc_slot);
         let line = self.line;
         common::errors::emit_throw(self.chunk(), line);
@@ -1485,8 +1485,8 @@ impl Compiler {
         let ref_out_slots = self.current_ref_out_params.clone().unwrap_or_default();
         if result_count == 1
             && ref_out_slots.is_empty()
-            && !self.finally_joins.is_empty()
-            && self.finally_joins.len() == self.active_finally_blocks.len()
+            && !self.frame_cf().finally_joins.is_empty()
+            && self.frame_cf().finally_joins.len() == self.frame_cf().active_finally_blocks.len()
         {
             let val_slot = self.define_local("__return_val_0");
             self.emit_u16(Op::LOCAL_SET, val_slot);
@@ -1501,7 +1501,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, slots[idx]);
         }
 
-        if !self.active_finally_blocks.is_empty() {
+        if !self.frame_cf().active_finally_blocks.is_empty() {
             self.emit_active_finally_blocks()?;
         }
 
@@ -1548,7 +1548,7 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self
+            let nested_finally_count = self.frame_cf()
                 .active_finally_blocks
                 .len()
                 .saturating_sub(target_finally_depth);
@@ -1568,12 +1568,12 @@ impl Compiler {
                 // Fallback (labeled exit, or a `using`/mixed finally without a
                 // join): inline the finally bodies. The exited `try_table`
                 // handlers are popped structurally by the `br` below.
-                let original = self.active_finally_blocks.clone();
+                let original = self.frame_cf().active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
-                    self.active_finally_blocks = original[..idx].to_vec();
+                    self.frame_cf_mut().active_finally_blocks = original[..idx].to_vec();
                     self.emit_finally_action(&original[idx])?;
                 }
-                self.active_finally_blocks = original;
+                self.frame_cf_mut().active_finally_blocks = original;
             }
         }
 
@@ -1589,19 +1589,19 @@ impl Compiler {
     /// (so the completion-code route can chain through them). False if any is a
     /// `using`/dispose without a registered join — then the caller inlines.
     fn finally_join_route(&self, break_label_depth: u32, nested_finally_count: usize) -> bool {
-        let joins_between = self
+        let joins_between = self.frame_cf()
             .finally_joins
             .iter()
             .filter(|j| j.join_label_depth > break_label_depth)
             .count();
-        joins_between == nested_finally_count && !self.finally_joins.is_empty()
+        joins_between == nested_finally_count && !self.frame_cf().finally_joins.is_empty()
     }
 
     /// Store `code` in the innermost join's completion slot (plus save the
     /// return value into its `ret_slot` when `ret` is given) and `br` to that
     /// join, where `finally` runs outside the handler and dispatches onward.
     fn emit_completion_br(&mut self, code: f64, ret: Option<u16>) {
-        let join = self.finally_joins.last().expect("join present");
+        let join = self.frame_cf().finally_joins.last().expect("join present");
         let completion_slot = join.completion_slot;
         let ret_slot = join.ret_slot;
         let join_label_depth = join.join_label_depth;
@@ -1631,7 +1631,7 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self
+            let nested_finally_count = self.frame_cf()
                 .active_finally_blocks
                 .len()
                 .saturating_sub(target_finally_depth);
@@ -1643,12 +1643,12 @@ impl Compiler {
                     return Ok(());
                 }
                 // Fallback: inline finally bodies (labeled / using / mixed).
-                let original = self.active_finally_blocks.clone();
+                let original = self.frame_cf().active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
-                    self.active_finally_blocks = original[..idx].to_vec();
+                    self.frame_cf_mut().active_finally_blocks = original[..idx].to_vec();
                     self.emit_finally_action(&original[idx])?;
                 }
-                self.active_finally_blocks = original;
+                self.frame_cf_mut().active_finally_blocks = original;
             }
         }
 

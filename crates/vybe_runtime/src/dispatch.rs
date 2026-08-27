@@ -7408,12 +7408,17 @@ impl VM {
                     let argc = self.read_byte() as usize;
                     let tableidx = self.read_byte() as usize;
                     let expected_results = self.read_byte() as usize;
-                    // Spec `call_indirect`: `[t* i32] → [t'*]` — the i32 table
-                    // index is on TOP of the stack, above the `argc` call
-                    // arguments. Pop it, resolve the funcref, then splice the
-                    // funcref in below the args so `call_value` sees
-                    // `[funcref, args…]`.
-                    let raw_idx = self.pop().as_f64();
+                    // Spec `call_indirect`: `[t* i32] → [t'*]` — the table index
+                    // is on TOP of the stack, above the `argc` call arguments.
+                    // Pop it, resolve the funcref, then splice the funcref in
+                    // below the args so `call_value` sees `[funcref, args…]`.
+                    //
+                    // A table64 (`(table i64 …)`) is addressed with an i64, and
+                    // `i64.const` lowers to `Literal::BigInt` — whose `as_f64`
+                    // is NaN, which surfaced as "table index NaN out of
+                    // bounds". `pop_table_count` reads either width through
+                    // `as_i64`, the same route the neighbouring table ops take.
+                    let raw_idx = self.pop_table_count(self.tbl_is_64(tableidx)) as f64;
                     let funcref = {
                         let table = self
                             .table_ref(tableidx)

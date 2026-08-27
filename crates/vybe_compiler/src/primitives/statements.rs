@@ -751,7 +751,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len(),
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
                 self.compile_condition_to_i32(cond)?;
                 let line = self.line;
@@ -834,7 +834,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len(),
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
                     self.capture_by_value_vars.push(loop_capture_name);
@@ -1182,7 +1182,7 @@ impl Compiler {
                         did_break_slot,
                         iterator_close_slot: None,
                         is_continuable: true,
-                        finally_depth: self.active_finally_blocks.len(),
+                        finally_depth: self.frame_cf().active_finally_blocks.len(),
                     });
                     for s in body {
                         self.compile_stmt(s)?;
@@ -1244,7 +1244,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len(),
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
                 for s in body {
                     self.compile_stmt(s)?;
@@ -1301,7 +1301,7 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: false,
-                    finally_depth: self.active_finally_blocks.len(),
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
 
                 // Merge legacy `default` field into the cases list.
@@ -1550,8 +1550,9 @@ impl Compiler {
                 // outside every handler. `label_depth - join_label_depth` from
                 // any point in the body is the `br` depth to reach it.
                 if let Some((completion_slot, ret_slot)) = completion {
-                    self.finally_joins.push(FinallyJoin {
-                        join_label_depth: self.label_depth,
+                    let join_label_depth = self.label_depth;
+                    self.frame_cf_mut().finally_joins.push(FinallyJoin {
+                        join_label_depth,
                         completion_slot,
                         ret_slot,
                     });
@@ -1565,7 +1566,8 @@ impl Compiler {
                 // normal-path `br` below, so the catch arms see it closed.
                 self.label_depth += 2;
                 if let Some(fin) = finally.clone() {
-                    self.active_finally_blocks
+                    self.frame_cf_mut()
+                        .active_finally_blocks
                         .push(FinallyAction::Statements(fin));
                 }
                 let saved_try_strict = self.in_strict;
@@ -1604,8 +1606,8 @@ impl Compiler {
                 // finallys still have LIVE handlers and must NOT be inlined
                 // (the runtime runs them; inlining doubled the finally).
                 let fired_finally = if finally.is_some() && !catches.is_empty() {
-                    let idx = self.active_finally_blocks.len() - 1;
-                    self.fired_finally_indices.push(idx);
+                    let idx = self.frame_cf().active_finally_blocks.len() - 1;
+                    self.frame_cf_mut().fired_finally_indices.push(idx);
                     true
                 } else {
                     false
@@ -1750,11 +1752,11 @@ impl Compiler {
                             self.label_depth += 1;
                         }
 
-                        self.catch_depth += 1;
+                        self.frame_cf_mut().catch_depth += 1;
                         for s in &c.body {
                             self.compile_stmt(s)?;
                         }
-                        self.catch_depth = self.catch_depth.saturating_sub(1);
+                        self.frame_cf_mut().catch_depth = self.frame_cf().catch_depth.saturating_sub(1);
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, handled_slot);
                         if c.when_clause.is_some() {
@@ -1781,17 +1783,17 @@ impl Compiler {
                 self.chunk().patch_block(after_try_block);
                 self.label_depth -= 1;
                 if fired_finally {
-                    self.fired_finally_indices.pop();
+                    self.frame_cf_mut().fired_finally_indices.pop();
                 }
                 if finally.is_some() {
-                    self.active_finally_blocks.pop();
+                    self.frame_cf_mut().active_finally_blocks.pop();
                 }
                 // Pop the join BEFORE emitting the `finally` body: a
                 // `break`/`continue`/`return` inside `finally` itself belongs
                 // to the ENCLOSING try/loop, not this one (whose finally is
                 // now running).
                 if finally.is_some() {
-                    self.finally_joins.pop();
+                    self.frame_cf_mut().finally_joins.pop();
                 }
                 if let Some(fin) = finally {
                     for s in fin {
@@ -1827,7 +1829,7 @@ impl Compiler {
                     self.chunk().emit_end(line);
                 }
                 if let Some(exc_slot) = finally_exc_slot {
-                    if self.catch_depth > 0 {
+                    if self.frame_cf().catch_depth > 0 {
                         return Ok(());
                     }
                     self.emit_u16(Op::LOCAL_GET, exc_slot);
@@ -1973,7 +1975,7 @@ impl Compiler {
                 // Inside a catch arm, the VM exception handler is no longer active for
                 // this try block, so we must inline the finally block before throwing.
                 // In the try body, the VM routes exceptions to the catch handler first.
-                if self.catch_depth > 0 {
+                if self.frame_cf().catch_depth > 0 {
                     self.emit_throw_through_finally()?;
                 } else {
                     let line = self.line;
@@ -2583,7 +2585,8 @@ impl Compiler {
                 // Handler block + `try_table` — two levels while compiling the
                 // protected body (see the main `try` site above).
                 self.label_depth += 2;
-                self.active_finally_blocks
+                self.frame_cf_mut()
+                    .active_finally_blocks
                     .push(FinallyAction::ResourceDispose {
                         slot,
                         method: "Dispose".to_string(),
@@ -2592,7 +2595,7 @@ impl Compiler {
                 for s in body {
                     self.compile_stmt(s)?;
                 }
-                self.active_finally_blocks.pop();
+                self.frame_cf_mut().active_finally_blocks.pop();
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.label_depth -= 1;
                 // `br 1` — the handler block sits between here and
@@ -3505,7 +3508,7 @@ impl Compiler {
                         did_break_slot: None,
                         iterator_close_slot: None,
                         is_continuable: false,
-                        finally_depth: self.active_finally_blocks.len(),
+                        finally_depth: self.frame_cf().active_finally_blocks.len(),
                     });
                     Some(bp)
                 } else {
@@ -3803,13 +3806,22 @@ impl Compiler {
             StmtKind::MemoryDecl {
                 min_pages,
                 max_pages,
+                is_64,
             } => {
                 self.chunks[0].memory_min_pages.push(*min_pages);
                 self.chunks[0].memory_max_pages.push(*max_pages);
+                // Aligns by position with `memory_min_pages` — the VM reads it
+                // per memory index to widen addresses and counts.
+                self.chunks[0].memory_is_64.push(*is_64);
             }
-            StmtKind::TableDecl { min_size, max_size } => {
+            StmtKind::TableDecl {
+                min_size,
+                max_size,
+                is_64,
+            } => {
                 self.chunks[0].table_min_sizes.push(*min_size);
                 self.chunks[0].table_max_sizes.push(*max_size);
+                self.chunks[0].table_is_64.push(*is_64);
             }
             StmtKind::DataSegment {
                 memory_index,

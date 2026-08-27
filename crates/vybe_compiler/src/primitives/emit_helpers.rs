@@ -298,6 +298,85 @@ impl Compiler {
                 .any(|g| g.eq_ignore_ascii_case(name))
     }
 
+    /// Whether the receiver's own class DECLARES this member.
+    ///
+    /// A class owns its members: `Class Counter` with a `Count` property must
+    /// read ITS `Count`, never a generic collection length. The uppercase
+    /// heuristic used to hide this by accident — VB spells locals and `Me` in
+    /// PascalCase, so capitalised receivers were excluded wholesale and the
+    /// declared member survived. Asking the real question covers the lowercase
+    /// receivers that heuristic never protected.
+    pub(crate) fn receiver_class_declares_member(
+        &self,
+        receiver: &Expression,
+        field: &str,
+    ) -> bool {
+        let Some(type_hint) =
+            crate::primitives::calls::resolve_receiver_type_hint(self, receiver)
+                .or_else(|| self.infer_expr_type_hint(receiver))
+        else {
+            return false;
+        };
+        let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&type_hint) else {
+            return false;
+        };
+        let mut current = Some(class_name);
+        while let Some(name) = current {
+            let Some(pending) = self.pending_classes.get(&name) else {
+                return false;
+            };
+            let key = self.js_member_storage_name_for_class(&name, field);
+            // ⛔ A PROPERTY is declared under NEITHER name. `Public Property
+            // Count` lands as the backing FIELD `_count` plus the accessor
+            // `__set_count` — so asking for `count` in both maps misses it, and
+            // the class's own property lost to the generic collection length.
+            // `--dump-classes` shows exactly that: `fields: _count`,
+            // `members: __set_count`, and no `count` anywhere.
+            let setter = format!("__set_{key}");
+            let getter = format!("__get_{key}");
+            if pending.instance_field_types.contains_key(&key)
+                || pending
+                    .instance_member_names
+                    .iter()
+                    .any(|n| n == &key || n == &setter || n == &getter)
+            {
+                return true;
+            }
+            current = pending.parent.clone();
+        }
+        false
+    }
+
+    /// Whether a receiver expression NAMES A TYPE rather than denoting a value.
+    ///
+    /// `Foo.Count` where `Foo` is a class is a STATIC access; `foo.Count` on an
+    /// instance is a member read. The two need different code, and the question
+    /// is "does this identifier resolve to a type" — asked here as a real
+    /// lookup.
+    ///
+    /// ⛔ This replaces `name.chars().next().is_ascii_uppercase()`, which used
+    /// PascalCase as a proxy for "is a type". That is a NAMING CONVENTION doing
+    /// a semantic job — a language check in disguise, in the same shape as the
+    /// `!case_sensitive` ones. It is wrong in both directions: a lowercase type
+    /// name is not recognised, and a local named `Total` is mistaken for a type.
+    ///
+    /// A binding in scope wins: a local SHADOWS a type of the same spelling, so
+    /// a name that resolves to a slot is a value no matter what else shares it.
+    pub(crate) fn receiver_names_a_type(&self, receiver: &Expression) -> bool {
+        let ExprKind::Ident(name) = &receiver.kind else {
+            return false;
+        };
+        if self.scope().resolve(name).is_some() {
+            return false;
+        }
+        self.user_owns_type_spelling(name)
+            || vybe_runtime::namespaces::is_registered_type(
+                &self.profile.namespaces.type_scopes,
+                &Self::tree_type_key(name),
+                self.tree_fold(),
+            )
+    }
+
     pub(super) fn normalize_type_hint(type_hint: &str) -> String {
         type_hint.trim().to_lowercase()
     }
@@ -318,11 +397,10 @@ impl Compiler {
     /// function with a flag.
     pub(super) fn tree_type_key(type_hint: &str) -> String {
         // ⛔ Generic ARGUMENTS are not part of the key. A platform registers
-        // `HashMap`, never `HashMap<String, Integer>`, so a hint that carries
-        // its arguments finds nothing — which is what made a STATIC field
-        // typed `java.util.HashMap<String,Integer>` unable to answer `.put`
-        // while the same type in a LOCAL worked, the local path having erased
-        // them on the way through `resolve_source_type_alias`.
+        // `HashMap`, never `HashMap<String, Integer>`, so a hint that still
+        // carries its arguments finds nothing. `resolve_source_type_alias`
+        // erases them on the paths that go through it; a hint read straight
+        // out of a declaration has not been through it yet.
         crate::primitives::generics::generic_base_name(type_hint.trim()).to_string()
     }
 

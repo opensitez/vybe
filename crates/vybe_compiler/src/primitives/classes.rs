@@ -1155,7 +1155,6 @@ impl Compiler {
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
         // inherit the enclosing async body's try depth, or its returns pop
         // the caller's handlers off the shared runtime handler stack.
-        let saved_async_try_depth = std::mem::take(&mut self.active_async_try_depth);
         // Function body opens fresh wrt the runtime label_stack —
         // emit_return drains back to this base. Save+restore so nested
         // function decls compose.
@@ -1434,7 +1433,7 @@ impl Compiler {
             None
         };
         if async_try.is_some() {
-            self.active_async_try_depth += 1;
+            self.frame_cf_mut().active_async_try_depth += 1;
         }
 
         if self.ambient_this() && crate::primitives::closures_in_body_reference_this(body) {
@@ -1532,7 +1531,8 @@ impl Compiler {
         }
 
         if async_try.is_some() {
-            self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
+            let cf = self.frame_cf_mut();
+        cf.active_async_try_depth = cf.active_async_try_depth.saturating_sub(1);
         }
 
         if async_try.is_some() {
@@ -1586,7 +1586,6 @@ impl Compiler {
         self.scopes.pop();
         self.static_local_bindings.pop();
         self.current = saved;
-        self.active_async_try_depth = saved_async_try_depth;
         self.function_label_base = saved_label_base;
 
         let line = self.line;
@@ -2128,7 +2127,7 @@ impl Compiler {
                                 self.js_member_storage_name_for_class(&class.name, &f.name)
                             }),
                         FieldType {
-                            hint: Self::normalize_type_hint(t),
+                            hint: t.trim().to_string(),
                             value_type: f.value_type.clone(),
                         },
                     )
@@ -2145,7 +2144,7 @@ impl Compiler {
                     instance_field_types
                         .entry(self.canon(name))
                         .or_insert_with(|| FieldType {
-                            hint: Self::normalize_type_hint(type_hint),
+                            hint: type_hint.trim().to_string(),
                             value_type: None,
                         });
                 }
@@ -2162,7 +2161,7 @@ impl Compiler {
                     instance_field_types
                         .entry(self.canon(name))
                         .or_insert_with(|| FieldType {
-                            hint: Self::normalize_type_hint(type_hint),
+                            hint: type_hint.trim().to_string(),
                             value_type: None,
                         });
                 }
@@ -2762,7 +2761,7 @@ impl Compiler {
                 None
             };
             if async_try.is_some() {
-                cc.active_async_try_depth += 1;
+                cc.frame_cf_mut().active_async_try_depth += 1;
             }
 
             if is_ctor {
@@ -2817,7 +2816,8 @@ impl Compiler {
             }
 
             if async_try.is_some() {
-                cc.active_async_try_depth = cc.active_async_try_depth.saturating_sub(1);
+                let cf = cc.frame_cf_mut();
+                cf.active_async_try_depth = cf.active_async_try_depth.saturating_sub(1);
             }
             if async_try.is_some() {
                 let line = cc.line;

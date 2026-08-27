@@ -778,6 +778,11 @@ pub enum StmtKind {
         min_pages: u64,
         /// Maximum size in pages; `None` = unbounded.
         max_pages: Option<u64>,
+        /// The INDEX type: `(memory i64 …)` (memory64) addresses with i64,
+        /// the default with i32. It adds no opcodes — every load, store and
+        /// `memory.*` op reads it to decide the width of its address and
+        /// count operands, and of the value `memory.size`/`grow` answer.
+        is_64: bool,
     },
 
     /// `(table $id? min max? funcref)` — a reference-table declaration.
@@ -787,6 +792,10 @@ pub enum StmtKind {
         min_size: u64,
         /// Maximum element count; `None` = unbounded.
         max_size: Option<u64>,
+        /// The INDEX type: `(table i64 …)` addresses with i64. Same role as
+        /// `MemoryDecl::is_64`, for `table.size`/`grow`/`fill`/`copy`/`init`
+        /// and `call_indirect`.
+        is_64: bool,
     },
 
     /// `(data (offset) "bytes")` (active) or `(data "bytes")` (passive). Active

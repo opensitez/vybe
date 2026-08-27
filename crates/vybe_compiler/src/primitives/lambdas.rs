@@ -238,12 +238,6 @@ impl Compiler {
             .push(Scope::new_function_like(enclosing, self.directives().variable_fold()));
         let saved = self.current;
         self.current = ci;
-        // Runtime TRY_END counts are per-FRAME: a nested chunk must not
-        // inherit the enclosing async body's try depth, or its returns pop the
-        // CALLER's handlers off the shared runtime handler stack (a lambda
-        // compiled inline inside an async fn emitted TRY_END × 2, silently
-        // removing the user's enclosing try/catch).
-        let saved_async_try_depth = std::mem::take(&mut self.active_async_try_depth);
         let saved_fn = self.current_func_name.replace("<lambda>".into());
         let frame_books = self.enter_closure_frame(&parent_shared_env_names);
         // ECMA-262 §11.2.2: strict mode is inherited by nested functions and
@@ -417,7 +411,7 @@ impl Compiler {
             None
         };
         if async_try.is_some() {
-            self.active_async_try_depth += 1;
+            self.frame_cf_mut().active_async_try_depth += 1;
         }
 
         match body {
@@ -439,7 +433,7 @@ impl Compiler {
         }
 
         if async_try.is_some() {
-            self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
+            self.frame_cf_mut().active_async_try_depth = self.frame_cf().active_async_try_depth.saturating_sub(1);
         }
 
         if async_try.is_some() {
@@ -485,7 +479,6 @@ impl Compiler {
             .collect();
         self.scopes.pop();
         self.current = saved;
-        self.active_async_try_depth = saved_async_try_depth;
         self.exit_closure_frame(frame_books);
         let parent_locals = self.scope().locals.clone();
         let line = self.line;

@@ -485,7 +485,26 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                     }
                     let pending = compiler.pending_classes.get(&current)?;
                     let key = compiler.js_member_storage_name_for_class(&current, field);
+                    // A FIELD the class declares answers with its own declared
+                    // type. `instance_member_names` lists members, not plain
+                    // fields, so the check below never fired for one and the
+                    // walk fell out to `parent` and then to `None` — the chain
+                    // lost its type at the field hop, and `h.lst.Add(x)`
+                    // resolved `Add` against nothing while the identical
+                    // `t = h.lst; t.Add(x)` worked, that hop having gone
+                    // through a declared local. Only a receiver whose declared
+                    // type is a TREE type needs this: a user-class field is
+                    // dispatched off the value's own brand and already worked.
+                    // `infer_expr_type_hint` answers from this same map.
+                    //
+                    // Keyed by `key`, which is what `classes.rs` BUILDS the map
+                    // with, so a private field answers here too.
+                    if let Some(declared) = pending.instance_field_types.get(&key) {
+                        return Some(compiler.resolve_source_type_alias(&declared.hint));
+                    }
                     if pending.instance_member_names.iter().any(|name| name == &key) {
+                        // An override is the class's business, not the
+                        // framework's — answering here would shadow it.
                         return None;
                     }
                     current = pending.parent.clone()?;
@@ -1261,17 +1280,6 @@ impl Compiler {
     fn value_receiver_slot(&mut self, class_name: &str, method: &str, obj_tmp: u16) -> u16 {
         if !self.profile.pointer_receiver_methods {
             return obj_tmp;
-        }
-        if std::env::var_os("VYBE_DBG_RECV").is_some() {
-            eprintln!(
-                "[vrs] class={class_name:?} method={method:?} fields={:?} ptr={:?}",
-                self.pending_classes
-                    .get(class_name)
-                    .map(|p| p.fields.clone()),
-                self.pending_classes
-                    .get(class_name)
-                    .map(|p| p.instance_pointer_method_names.clone()),
-            );
         }
         let takes_copy = self.pending_classes.get(class_name).is_some_and(|pending| {
             !pending
@@ -2120,13 +2128,13 @@ impl Compiler {
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunk().emit_if_value(line);
-        self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
+        self.emit_method_miss_or_invoke(obj_slot, lookup_slot, method_name, arg_slots);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, lookup_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
         self.chunk().emit_if_value(line);
-        self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
+        self.emit_method_miss_or_invoke(obj_slot, lookup_slot, method_name, arg_slots);
         self.chunk().emit_else(line);
         // A method resolved from a TYPE's vtable is a host function whose first
         // parameter IS the receiver — `web:dom.createElement(document, tag)`,
@@ -2168,6 +2176,32 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         Ok(())
+    }
+
+    /// The method did not resolve on the receiver.
+    ///
+    /// When some class in the program binds `ProtocolSlot::CallMissing`, this
+    /// is a *dynamic invocation* rather than an error, and it dispatches
+    /// through the Call Tags proposal: the tag's fall-back handler consults the
+    /// miss hook (PHP `__call`, Ruby `method_missing`, Dart `noSuchMethod`).
+    /// That slot had no reader anywhere before this — every frontend that
+    /// wanted the feature rewrote its own `typeof obj.__call === "function"`
+    /// ternary at each call site instead.
+    ///
+    /// Programs binding the role nowhere are untouched and keep the host
+    /// `invokeMethod` path, which raises the language's own error.
+    fn emit_method_miss_or_invoke(
+        &mut self,
+        obj_slot: u16,
+        lookup_slot: u16,
+        method_name: &str,
+        arg_slots: &[u16],
+    ) {
+        if self.program_has_callmissing {
+            self.emit_dynamic_invoke_with_tag(obj_slot, lookup_slot, method_name, arg_slots);
+        } else {
+            self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
+        }
     }
 
     fn emit_js_invoke_method_call(&mut self, obj_slot: u16, method_name: &str, arg_slots: &[u16]) {
@@ -2511,12 +2545,13 @@ impl Compiler {
             let line = self.line;
             common::functions::emit_async_body_start(&mut self.chunks[self.current], line);
         }
-        self.active_async_try_depth += 1;
+        self.frame_cf_mut().active_async_try_depth += 1;
         let body = js_promise_chain_body(kind);
         for statement in &body {
             self.compile_stmt(statement)?;
         }
-        self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
+        let cf = self.frame_cf_mut();
+        cf.active_async_try_depth = cf.active_async_try_depth.saturating_sub(1);
 
         let line = self.line;
         common::functions::emit_async_body_fallthrough(&mut self.chunks[self.current], line);
@@ -5433,20 +5468,6 @@ impl Compiler {
                         }
                     }
                 }
-
-                // Profile namespace roots
-                if self.profile.is_namespace_root(&lower_parts[0]) {
-                    self.emit_global_read(&lower_parts[0]);
-                    for part in &lower_parts[1..] {
-                        let idx = self.str_const(part);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
-                    }
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
-                    return Ok(());
-                }
             }
         }
 
@@ -5478,10 +5499,27 @@ impl Compiler {
 
                 if !chain_through_private {
                     if let Some(current_class) = self.current_class.clone() {
-                        if self.canon(head_name) == self.canon(&current_class)
-                            || class_parts
-                                .last()
-                                .is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                        // The chain must END at the class for the receiver to BE
+                        // the class object. A chain that merely STARTS there
+                        // denotes whatever its remaining segments select, so
+                        // `C.field.method()` is a call on the FIELD's value —
+                        // matching on the head emitted `global.get C` plus a
+                        // `struct.get <method>` and the field was never read.
+                        // A one-segment chain is its own last segment, so this
+                        // still answers `C.method()` from inside `C`.
+                        // `C.Inner.method()` also stops matching here; measured,
+                        // it already resolved through the full/short canon arms
+                        // below and is unaffected either way.
+                        //
+                        // ⛔ A name that is BOTH a class and a static field is NOT
+                        // fixable here: the walker resolves such a head to the FIELD
+                        // and qualifies it, so `C.C.m()` arrives as a chain of THREE
+                        // `C` segments (`--dump-ast` it before touching this).
+                        // Guarding on the last segment being a member of its prefix
+                        // does nothing, because the prefix `C.C` is not a class.
+                        if class_parts
+                            .last()
+                            .is_some_and(|part| self.canon(part) == self.canon(&current_class))
                         {
                             static_class_canon = Some(current_class);
                         }
@@ -8108,6 +8146,35 @@ impl Compiler {
                             );
                             self.chunk().emit_end(miss_line);
                             self.chunk().emit_end(miss_line);
+                        } else if self.program_has_callmissing {
+                            // Same miss guard the prototype-dispatch arm above
+                            // has, for the profiles that pass the receiver
+                            // positionally. Without it a resolved-but-absent
+                            // member reached `call_ref` as `undefined` and the
+                            // program died with "undefined is not callable" —
+                            // so a PHP `__call` was unreachable for any
+                            // receiver the walker could not type, which is
+                            // exactly the case the miss hook exists for.
+                            let miss_line = self.line;
+                            self.emit_u16(Op::LOCAL_GET, class_fn_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            self.emit_u16(Op::LOCAL_GET, class_fn_slot);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
+                            self.emit(Op::I32_OR);
+                            self.chunk().emit_if(miss_line);
+                            self.emit_dynamic_invoke_with_tag(
+                                obj_tmp,
+                                class_fn_slot,
+                                field,
+                                &arg_slots,
+                            );
+                            self.chunk().emit_else(miss_line);
+                            self.emit_call_ref_with_arg_slots(
+                                class_fn_slot,
+                                Some(obj_tmp),
+                                &arg_slots,
+                            );
+                            self.chunk().emit_end(miss_line);
                         } else {
                             self.emit_call_ref_with_arg_slots(
                                 class_fn_slot,
@@ -8150,6 +8217,17 @@ impl Compiler {
                             args_slot,
                             known_len,
                         );
+                    } else if self.program_has_callmissing {
+                        // The lookup missed and the program binds a method-miss
+                        // hook: a DYNAMIC INVOCATION, dispatched through the
+                        // Call Tags proposal rather than handed to
+                        // `invokeMethod`, which only raises.
+                        self.emit_dynamic_invoke_with_tag(
+                            obj_tmp,
+                            lookup_slot,
+                            method_name.as_str(),
+                            &arg_slots,
+                        );
                     } else {
                         let invoke = self.import("ecma:value", "invokeMethod");
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -8171,6 +8249,17 @@ impl Compiler {
                             method_name.as_str(),
                             args_slot,
                             known_len,
+                        );
+                    } else if self.program_has_callmissing {
+                        // The lookup missed and the program binds a method-miss
+                        // hook: a DYNAMIC INVOCATION, dispatched through the
+                        // Call Tags proposal rather than handed to
+                        // `invokeMethod`, which only raises.
+                        self.emit_dynamic_invoke_with_tag(
+                            obj_tmp,
+                            lookup_slot,
+                            method_name.as_str(),
+                            &arg_slots,
                         );
                     } else {
                         let invoke = self.import("ecma:value", "invokeMethod");
@@ -8942,12 +9031,6 @@ impl Compiler {
                 return Ok(());
             }
 
-            if std::env::var_os("VYBE_DBG_RECV").is_some() {
-                eprintln!(
-                    "[owner] field={field:?} owner={:?}",
-                    resolve_pointer_receiver_instance_method_owner(self, object, field)
-                );
-            }
             if let Some(class_name) =
                 resolve_pointer_receiver_instance_method_owner(self, object, field)
             {

@@ -1424,53 +1424,13 @@ impl Compiler {
         Ok(())
     }
 
+    /// The receiver, for the three call sites that need it as a value
+    /// (`super.m()` binding, metadata reflection).
+    ///
+    /// Was a SECOND resolver that disagreed with `ExprKind::This` — see
+    /// `class_context.rs::emit_receiver_value`, which is now the only one.
     pub(super) fn emit_js_current_this_value(&mut self) {
-        // Inside a class method under ambient `this`, the live receiver is the
-        // `__js_this` global — exactly what `ExprKind::This` reads
-        // (expressions.rs). Falling through to the local/upvalue search here
-        // instead synthesizes an upvalue over a closure env the method never
-        // allocated, so `super.m()` handed the callee an undefined receiver
-        // whenever the method body had no closure to force a real `this`
-        // local. Constructors keep the slot-based path (derived-ctor TDZ);
-        // lambdas keep the upvalue path (they capture the enclosing `this`).
-        if self.ambient_this()
-            && self.current_class.is_some()
-            && self.current_func_name.as_deref() != Some("<lambda>")
-            && self
-                .current_func_name
-                .as_deref()
-                .is_some_and(|name| !name.eq_ignore_ascii_case(&self.profile.constructor_name))
-        {
-            self.emit_global_read("__js_this");
-            return;
-        }
-
-        let self_kw = self.profile.self_keyword.clone();
-        if let Some(slot) = self.scope().resolve(&self_kw) {
-            self.emit_u16(Op::LOCAL_GET, slot);
-        } else if self.scopes.len() > 1
-            && self
-                .resolve_upvalue(self.scopes.len() - 1, &self_kw)
-                .is_some()
-        {
-            let env = self.closure_env_slot();
-            let idx = self.closure_env_index(&self_kw);
-            let line = self.line;
-            crate::primitives::closures::emit_env_get(self.chunk(), env, idx, line);
-        } else if self.scopes.len() > 1
-            && self
-                .resolve_upvalue(self.scopes.len() - 1, "__js_this")
-                .is_some()
-        {
-            let env = self.closure_env_slot();
-            let idx = self.closure_env_index("__js_this");
-            let line = self.line;
-            crate::primitives::closures::emit_env_get(self.chunk(), env, idx, line);
-        } else if self.ambient_this() {
-            self.emit_global_read("__js_this");
-        } else {
-            self.emit_null();
-        }
+        self.emit_receiver_value();
     }
 
     /// `Caption` inside `with L do …` IS `L.Caption`.

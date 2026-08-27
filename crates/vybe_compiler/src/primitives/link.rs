@@ -449,6 +449,9 @@ impl Compiler {
                                     vybe_ast::ProtocolSlot::SetAttr => {
                                         self.program_has_setattr = true;
                                     }
+                                    vybe_ast::ProtocolSlot::CallMissing => {
+                                        self.program_has_callmissing = true;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -521,6 +524,9 @@ impl Compiler {
                                     }
                                     vybe_ast::ProtocolSlot::SetAttr => {
                                         self.program_has_setattr = true;
+                                    }
+                                    vybe_ast::ProtocolSlot::CallMissing => {
+                                        self.program_has_callmissing = true;
                                     }
                                     _ => {}
                                 }
@@ -855,6 +861,16 @@ impl Compiler {
                 // hides them today.
                 return Err(format!("augmentation conflict — {first}"));
             }
+            // Every class in the program reaches this insert, whatever its
+            // declaration shape — which is what the method-miss role needs, and
+            // what the namespace-only pass above does not give it.
+            if nc
+                .special_methods
+                .iter()
+                .any(|s| s.kind == vybe_ast::ProtocolSlot::CallMissing)
+            {
+                self.program_has_callmissing = true;
+            }
             available.insert(name.clone(), nc.clone());
             self.normalized_classes.insert(name, nc);
         }
@@ -1032,6 +1048,26 @@ impl Compiler {
             self.classes_with_index_setter.insert(self.canon(&nc.name));
         }
 
+        // The method-miss role, program-level (see `program_has_callmissing`).
+        //
+        // Set HERE and not only in the namespace-declaration pass: that pass is
+        // reached by a class declared inside a `NamespaceDecl`, and a top-level
+        // class never goes through it — so a flag set only there is false for
+        // most programs that actually bind the role.
+        //
+        // ⚠ `program_has_getattr` and `program_has_setattr` are set in that
+        // same namespace-only pass and have the SAME gap. They are deliberately
+        // not added here: both already gate emitted probes, so turning them on
+        // for every top-level class changes behaviour far beyond this work and
+        // needs its own measurement.
+        if nc
+            .special_methods
+            .iter()
+            .any(|s| s.kind == vybe_ast::ProtocolSlot::CallMissing)
+        {
+            self.program_has_callmissing = true;
+        }
+
         // Methods only. Properties are NOT registered: a getter named after a
         // profile value-method (`isEmpty`, `length`, `charAt`) would shadow
         // into the user-method path — measured at 6 dart failures. Fields are
@@ -1145,7 +1181,7 @@ impl Compiler {
                             instance_field_types.insert(
                                 field_name,
                                 FieldType {
-                                    hint: Self::normalize_type_hint(type_hint),
+                                    hint: type_hint.trim().to_string(),
                                     value_type: None,
                                 },
                             );

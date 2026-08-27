@@ -37,6 +37,7 @@ pub mod datetime;
 pub mod delegates;
 pub mod dict;
 pub mod dispatch;
+pub mod dynamic_invoke;
 pub mod dynamic_symbols;
 pub mod enum_lowering;
 pub mod errors;
@@ -201,7 +202,20 @@ struct LoopCtx {
 /// silent.
 #[derive(Clone)]
 struct FieldType {
-    /// The declared type hint, as `Compiler::normalize_type_hint` left it.
+    /// The declared type hint, IN THE SPELLING THE SOURCE WROTE.
+    ///
+    /// ⛔ Stored folded until 2026-08-27, which destroyed the only copy of the
+    /// declared case. The namespace tree is keyed by the registrar's spelling
+    /// and matches EXACTLY for a language that does not fold, so a receiver
+    /// typed from this map asked the tree for `arraylist` and missed
+    /// `ArrayList` — invisible in every folding language, fatal in the others,
+    /// exactly as `tree_type_key` warns. Folding here also cannot be undone;
+    /// folding at a READ site can.
+    ///
+    /// Every consumer that compares against lowercase literals folds on its
+    /// own (`normalize_type_hint`, `builtin_types::classify_with`), so they are
+    /// unaffected. See `documentation/casesensitivityplan.md` — this is the
+    /// field-hint leg of the lowercase-canonical shortcut.
     hint: String,
     /// Canonical class name when `hint` names a type that stores BY VALUE,
     /// else `None`. Read by the record deep-copy to recurse into nested
@@ -466,6 +480,29 @@ struct JsArgumentsBinding {
 
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
+/// `--dump-classes`. A process-wide switch rather than a `Compiler` field
+/// because `Bundle` is built by struct literal at 43 sites and a diagnostic
+/// must not churn them; the CLI sets it once, before any compile.
+static DUMP_CLASSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_dump_classes(on: bool) {
+    DUMP_CLASSES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn dump_classes_enabled() -> bool {
+    DUMP_CLASSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `(none)` rather than an empty line, so an EMPTY table is visibly empty —
+/// the distinction the class dump exists to make.
+fn join_or_none(items: &[String]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
 pub struct Compiler {
     pub(crate) chunks: Vec<Chunk>,
     scopes: Vec<Scope>,
@@ -598,6 +635,22 @@ pub struct Compiler {
     /// the same reason: the receiver's type is unknown exactly where this
     /// matters, and programs binding the role nowhere pay nothing.
     pub(crate) program_has_setattr: bool,
+    /// Any class in this program binds `ProtocolSlot::CallMissing` (PHP
+    /// `__call`, Ruby `method_missing`, Dart `noSuchMethod`) — the
+    /// method-miss interceptor.
+    ///
+    /// The slot was in the vocabulary with NO reader anywhere: four frontends
+    /// declared it and nothing consumed it, so each one synthesised its own
+    /// `typeof obj.__call === "function" ? … : …` rewrite in its walker, once
+    /// per call site. The reader is the Call Tags proposal's "Dynamic
+    /// Invocation" application — a tag per name/arity pair whose fall-back
+    /// handler runs the miss — so the decision is the CALLEE's and the call
+    /// site is one instruction.
+    ///
+    /// Program-level for the same reason as `program_has_getattr`: the
+    /// receiver's type is unknown exactly where this matters. Programs binding
+    /// the role nowhere pay nothing.
+    pub(crate) program_has_callmissing: bool,
     /// Any class in this program exposes its index role as an ACCESSOR pair
     /// (`__get___index__` / `__set___index__`) rather than as a slot-bound
     /// method. A program-level flag for the same reason as
@@ -881,6 +934,39 @@ pub struct Compiler {
     /// and used during `collect_host_imports` to route value exports into
     /// `host_const_bindings` instead of `host_import_bindings`.
     module_value_exports: HashMap<String, HashMap<String, vybe_runtime::Value>>,
+    /// Per-FRAME control-flow bookkeeping, indexed by chunk index — see
+    /// [`FrameControlFlow`].
+    frame_control_flow: FrameControlFlowStore,
+    js_arguments_bindings: Vec<Option<JsArgumentsBinding>>,
+}
+
+/// §16.2.1.3 wildcard — `import * as alias from "module"`.
+#[derive(Debug, Clone)]
+pub struct HostWildcardImport {
+    pub alias: String,
+    pub module: String,
+}
+
+/// Control-flow bookkeeping that describes ONE frame, addressed by the chunk
+/// it describes.
+///
+/// ⛔ Every field here names something FRAME-RELATIVE — a local slot, an index
+/// into another of these vectors, or a structured-label depth — so it is
+/// meaningless in any other chunk. It lived on the `Compiler` and was
+/// hand-saved at each site that switches `self.current` to a nested chunk;
+/// those sites disagreed about which fields to save, and the ones nobody saved
+/// LEAKED: a lambda compiled inside a `Using` inherited the enclosing block's
+/// `ResourceDispose { slot }`, so its implicit return emitted the enclosing
+/// frame's `LOCAL_GET 77` into a chunk with nine locals and trapped. Keying
+/// the state by frame is what makes that unrepresentable: switching
+/// `self.current` switches the bookkeeping with it and there is nothing left
+/// to remember to save.
+///
+/// This is not a language quirk and carries no directive: a `return` inside a
+/// nested function runs that function's `finally` blocks and never the
+/// enclosing function's, in every language that has both.
+#[derive(Debug, Default)]
+struct FrameControlFlow {
     /// Active finally blocks for the current control-flow path.
     ///
     /// Used to make early returns execute structured `finally` bodies
@@ -907,14 +993,22 @@ pub struct Compiler {
     /// must emit matching TRY_END opcodes before RETURN so the VM does
     /// not retain stale handlers from the callee frame.
     active_async_try_depth: usize,
-    js_arguments_bindings: Vec<Option<JsArgumentsBinding>>,
 }
 
-/// §16.2.1.3 wildcard — `import * as alias from "module"`.
-#[derive(Debug, Clone)]
-pub struct HostWildcardImport {
-    pub alias: String,
-    pub module: String,
+/// [`FrameControlFlow`] per frame, addressed by chunk index.
+///
+/// `empty` is what a frame with no entry yet reads as. An entry is created on
+/// first WRITE — most chunks never open a `try`, a `using` or an async body —
+/// and a read takes `&self`, so it cannot create one.
+///
+/// ⛔ INVARIANT: a chunk index never moves. `self.chunks` is only ever pushed
+/// to (no `remove`/`swap`/`retain`/`insert`/`drain`), which is what makes the
+/// index a stable name for a frame. A path that shifted them would silently
+/// re-attach every frame's bookkeeping to a different chunk.
+#[derive(Debug, Default)]
+struct FrameControlFlowStore {
+    frames: Vec<FrameControlFlow>,
+    empty: FrameControlFlow,
 }
 
 #[derive(Debug, Clone)]
@@ -937,7 +1031,8 @@ mod completion {
     pub const RETURN: f64 = 3.0;
 }
 
-/// A `try`-with-`finally` join point (see [`Compiler::finally_joins`]).
+/// A `try`-with-`finally` join point (see [`FrameControlFlow::finally_joins`]).
+#[derive(Debug)]
 struct FinallyJoin {
     /// `self.label_depth` captured where the try's wrapping block is the
     /// innermost label, so `label_depth - join_label_depth` is the `br` depth
@@ -2796,6 +2891,7 @@ impl Compiler {
             classes_with_index_setter: HashSet::new(),
             program_has_getattr: false,
             program_has_setattr: false,
+            program_has_callmissing: false,
             program_has_index_accessor: false,
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
@@ -2853,15 +2949,28 @@ impl Compiler {
             active_namespaces: None,
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
-            active_finally_blocks: Vec::new(),
-            finally_joins: Vec::new(),
-            fired_finally_indices: Vec::new(),
-            catch_depth: 0,
-            active_async_try_depth: 0,
+            frame_control_flow: FrameControlFlowStore::default(),
             uses_proxy: false,
             bigint_enabled: false,
             js_arguments_bindings: Vec::new(),
         }
+    }
+
+    /// The control-flow bookkeeping of the frame being compiled.
+    fn frame_cf(&self) -> &FrameControlFlow {
+        self.frame_control_flow
+            .frames
+            .get(self.current)
+            .unwrap_or(&self.frame_control_flow.empty)
+    }
+
+    /// The same, for writing — the frame's entry is created here on demand.
+    fn frame_cf_mut(&mut self) -> &mut FrameControlFlow {
+        let frames = &mut self.frame_control_flow.frames;
+        if frames.len() <= self.current {
+            frames.resize_with(self.current + 1, FrameControlFlow::default);
+        }
+        &mut frames[self.current]
     }
 
     fn current_js_arguments_binding(&self) -> Option<&JsArgumentsBinding> {
@@ -2938,6 +3047,47 @@ impl Compiler {
     ) -> Self {
         self.module_value_exports = value_exports;
         self
+    }
+
+    /// The middle stage between `--dump-ast` and `--dump`: what the declaration
+    /// pass actually BUILT from the AST. A receiver that "lost its type" is
+    /// almost always a name present in the AST but absent from — or in the
+    /// wrong one of — these tables, which neither other dump can show.
+    ///
+    /// Sorted, because `HashMap` order is arbitrary and a diagnostic that
+    /// reorders between runs cannot be diffed.
+    pub fn dump_pending_classes(&self) {
+        println!("== pending classes ==");
+        let mut names: Vec<&String> = self.pending_classes.keys().collect();
+        names.sort();
+        for name in names {
+            let pc = &self.pending_classes[name];
+            println!("{name}");
+            println!(
+                "  parent:  {}",
+                pc.parent.as_deref().unwrap_or("-")
+            );
+            let mut fields: Vec<String> = pc
+                .instance_field_types
+                .iter()
+                .map(|(k, v)| format!("{k} -> {}", v.hint))
+                .collect();
+            fields.sort();
+            println!("  fields:  {}", join_or_none(&fields));
+            let mut statics: Vec<String> = pc
+                .static_field_types
+                .iter()
+                .map(|(k, v)| format!("{k} -> {v}"))
+                .collect();
+            statics.sort();
+            println!("  statics: {}", join_or_none(&statics));
+            let mut members = pc.instance_member_names.clone();
+            members.sort();
+            println!("  members: {}", join_or_none(&members));
+            let mut nested = pc.nested_types.clone();
+            nested.sort();
+            println!("  nested:  {}", join_or_none(&nested));
+        }
     }
 
     /// Compile a module to bytecode chunks. Legacy API — returns just
@@ -3316,6 +3466,9 @@ impl Compiler {
         // writes through to it, so reading the base frame answers for the whole
         // unit however it was stated.
         let app_shell = self.directives.first().and_then(|d| d.app_shell);
+        if dump_classes_enabled() {
+            self.dump_pending_classes();
+        }
         Ok(CompileResult {
             chunks: self.chunks,
             host_imports,

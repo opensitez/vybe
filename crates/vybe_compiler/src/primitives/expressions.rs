@@ -1006,65 +1006,9 @@ impl Compiler {
 
             // ── This / Super ────────────────────────────────────────────
             ExprKind::This => {
-                if self.ambient_this()
-                    && self.current_class.is_some()
-                    && self.current_func_name.as_deref() != Some("<lambda>")
-                    && self.current_func_name.as_deref().is_some_and(|name| {
-                        !name.eq_ignore_ascii_case(&self.profile.constructor_name)
-                    })
-                {
-                    self.emit_global_read("__js_this");
-                    return Ok(());
-                }
-
-                let self_kw = &self.profile.self_keyword;
-                if let Some(slot) = self
-                    .scope()
-                    .resolve(self_kw)
-                    .or_else(|| self.scope().resolve("Self"))
-                    .or_else(|| self.scope().resolve("self"))
-                    .or_else(|| self.scope().resolve("this"))
-                {
-                    // §9.1.1.3.4 (JS): inside a derived constructor `this`
-                    // is in TDZ until super() runs — reading it while
-                    // this_slot is still null throws a ReferenceError.
-                    if self.js_derived_ctor_ctx == Some((self.current, slot)) {
-                        let l = self.line;
-                        crate::primitives::classes::emit_this_initialized_guard(
-                            self.chunk(),
-                            slot,
-                            l,
-                        );
-                    }
-                    self.emit_u16(Op::LOCAL_GET, slot);
-                } else if self.scopes.len() > 1 {
-                    // Arrow function: capture `this` from enclosing scope via upvalue
-                    let kw = self.profile.self_keyword.clone();
-                    if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
-                        let env = self.closure_env_slot();
-                        let idx = self.closure_env_index(&kw);
-                        let l = self.line;
-                        crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
-                    } else if self.ambient_this() {
-                        if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this")
-                        {
-                            let env = self.closure_env_slot();
-                            let idx = self.closure_env_index("__js_this");
-                            let l = self.line;
-                            crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
-                        } else {
-                            self.emit_global_read("__js_this");
-                        }
-                    } else if self.ambient_this() {
-                        self.emit_global_read("__js_this");
-                    } else {
-                        self.emit_null();
-                    }
-                } else if self.ambient_this() {
-                    self.emit_global_read("__js_this");
-                } else {
-                    self.emit_null();
-                }
+                // One resolver, shared with `emit_js_current_this_value`.
+                // See `class_context.rs::emit_receiver_value`.
+                self.emit_receiver_value();
             }
 
             ExprKind::Super => {
@@ -3078,10 +3022,73 @@ impl Compiler {
                 // registered tree says the type declares one. That replaces the
                 // family check; the spelling list below is still consulted for
                 // the shapes no type node covers (arrays, strings).
-                let receiver_is_collection_like = if field.eq_ignore_ascii_case("Length")
-                    || field.eq_ignore_ascii_case("Count")
-                {
-                    let unknown_receiver_default = field.eq_ignore_ascii_case("Length");
+                // Does this member READ a size? Asked as a SLOT question, so
+                // this file spells no method name at all.
+                //
+                // ⛔ It was `field == "Length" || field == "Count"` — one
+                // family's spelling deciding for all seventeen languages, in a
+                // flag literally named `is_csharp_len_accessor`. A directive
+                // listing the names would have been the same table at a new
+                // address; `profile.rs` names that exact move as "the
+                // anti-pattern the plan exists to remove". The language binds
+                // its own spelling to `slot = "len"` in its profile — as
+                // pascal's `count`, python's `len`, php's `strlen` and kotlin's
+                // `size` already do — and the common layer only asks which slot
+                // was filled.
+                //
+                // `argc = 0`: a PROPERTY read, which is the only shape this
+                // branch handles. A language that spells size as a CALL
+                // resolves through the ordinary method path and never gets here.
+                // ⛔ HALF DONE, and the remaining half is NOT a directive.
+                //
+                // The slot ask is the right question and works for a language
+                // whose size member is a `[value_methods]` row — pascal's
+                // `count`, python's `len`, php's `strlen`, kotlin's `size` all
+                // carry `slot = "len"` already. It CANNOT answer for the .NET
+                // family: their members are leaves on the dotnet TREE, and
+                // `languages/csharp/src/profile` states that a `[value_methods]`
+                // row SHADOWS the leaf and makes it dead code — so declaring
+                // `Length`/`Count` there would break `dotnet.string_*` and
+                // `dotnet.sb_length` rather than bind them.
+                //
+                // Tree registrations carry no `ProtocolSlot` at all today
+                // (`component_model.rs` has no slot field), so the ask has
+                // nothing to read. Giving them one is the tree-side half of
+                // `builtinslotplan.md` §2a/§4b, and until it lands the .NET
+                // spellings stay here — MEASURED: removing them alone strands
+                // vb's `Count`, which loses its runtime-callable path and drops
+                // the left operand of `"R=" & h.lst.Count`.
+                let reads_size_property = self
+                    .profile
+                    .lookup_value_method(field, 0)
+                    .and_then(|def| def.slot)
+                    == Some(vybe_ast::ProtocolSlot::Len)
+                    // ⛔ COMPARED UNDER THE LANGUAGE'S OWN FOLD, never
+                    // `eq_ignore_ascii_case`. vb spells `.count` and `.Count`
+                    // as one name; kotlin, java and dart do NOT — so a
+                    // case-blind test made a kotlin data class's own `count`
+                    // field match .NET's `Count` and lose to the generic
+                    // collection length (`count=3` answered `17`). The old
+                    // code got this right for one of its two flags by using
+                    // `==` and wrong for the other; stating the fold covers
+                    // both.
+                    || {
+                        let fold = self.directives().callable_fold();
+                        ["Length", "Count"].iter().any(|name| match fold {
+                            Some(vybe_ast::CaseAlphabet::Ascii) => name.eq_ignore_ascii_case(field),
+                            Some(_) => name.to_lowercase() == field.to_lowercase(),
+                            None => *name == field,
+                        })
+                    };
+                let receiver_is_collection_like = if reads_size_property {
+                    // ⛔ NOT a guess about the member name any more. It was
+                    // `field == "Length"`, so an unknown receiver reading
+                    // `Length` was ASSUMED collection-like while `Count` was
+                    // not — one family's spelling deciding for every language.
+                    // Now: the language has declared this name means size, so
+                    // an untyped receiver reading it means size. A receiver
+                    // whose type IS known never reaches this default.
+                    let unknown_receiver_default = reads_size_property;
                     let type_scopes = &self.profile.namespaces.type_scopes;
                     let fold = self.tree_fold();
                     let is_collection_like_type = |type_hint: &str| {
@@ -3136,7 +3143,17 @@ impl Compiler {
                     };
 
                     match &object.kind {
+                        // ⛔ `Member` belongs here for the same reason `Ident`
+                        // does: it is a typed VALUE, and this arm's question is
+                        // "can we know the receiver's type". Falling to
+                        // `unknown_receiver_default` DISCARDED a hint that was
+                        // already resolved, so `h.sb.Length` took the generic
+                        // collection length of the object — 2 — while the
+                        // identical `v = h.sb : v.Length` answered 6, and
+                        // `h.sb.Capacity`, which is not gated on this flag,
+                        // was right all along.
                         ExprKind::Ident(_)
+                        | ExprKind::Member { .. }
                         | ExprKind::New { .. }
                         | ExprKind::Call { .. }
                         | ExprKind::Cast { .. }
@@ -3153,24 +3170,25 @@ impl Compiler {
                     false
                 };
 
-                // Gated by the RECEIVER being collection-like, which the tree
-                // now answers — not by which family compiled the file.
-                let is_csharp_len_accessor = (field.eq_ignore_ascii_case("Length")
-                    || field.eq_ignore_ascii_case("Count"))
+                // Both flags below used to hardcode the .NET spelling in this
+                // shared file and answer for all seventeen languages with it.
+                // A member the receiver's own class DECLARES is that class's,
+                // never a generic length — the same override rule
+                // `declared_member_type` applies. `Me.Count` on a user class
+                // with a `Count` property was protected only by the uppercase
+                // heuristic before; this states it.
+                let receiver_declares_field = self.receiver_class_declares_member(object, field);
+                let is_size_property_read = reads_size_property
                     && receiver_is_collection_like
-                    && !matches!(
-                        &object.kind,
-                        ExprKind::Ident(name)
-                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
-                    );
-                let is_csharp_runtime_count_accessor = field == "Count"
-                    && !is_csharp_len_accessor
+                    && !receiver_declares_field
+                    && !self.receiver_names_a_type(object);
+                // The same member, when the value turns out to be a FUNCTION at
+                // run time — read it, then call it only if it is callable.
+                let size_member_may_be_callable = reads_size_property
+                    && !is_size_property_read
                     && !*null_safe
-                    && !matches!(
-                        &object.kind,
-                        ExprKind::Ident(name)
-                        if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
-                    );
+                    && !receiver_declares_field
+                    && !self.receiver_names_a_type(object);
 
                 // The type hint names the set types exactly; the family check
                 // decided nothing the hint did not.
@@ -3220,7 +3238,7 @@ impl Compiler {
                         })
                         .unwrap_or(false);
 
-                if is_csharp_len_accessor {
+                if is_size_property_read {
                     self.compile_expr(object)?;
                     if *null_safe {
                         inst!(self, core_wasm::dup);
@@ -3337,8 +3355,8 @@ impl Compiler {
                 let namespace_tree_zero_arg_method =
                     if !self.profile.namespaces.type_scopes.is_empty()
                         && !*null_safe
-                        && !is_csharp_len_accessor
-                        && !is_csharp_runtime_count_accessor
+                        && !is_size_property_read
+                        && !size_member_may_be_callable
                     {
                         receiver_type_hint.as_deref().and_then(|type_hint| {
                             let class_name = Self::tree_type_key(type_hint);
@@ -3424,12 +3442,12 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if is_csharp_len_accessor {
+                if is_size_property_read {
                     common::collections::emit_len(&mut self.chunks, self.current, self.line);
                     return Ok(());
                 }
 
-                if is_csharp_runtime_count_accessor {
+                if size_member_may_be_callable {
                     let obj_slot = self.define_local("__count_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
 

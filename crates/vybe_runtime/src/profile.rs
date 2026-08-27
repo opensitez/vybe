@@ -1195,20 +1195,6 @@ impl LanguageProfile {
             .map(|(m, f)| (m.as_str(), f.as_str()))
     }
 
-    /// Check if a name is a known namespace root.
-    pub fn is_namespace_root(&self, name: &str) -> bool {
-        // The case-sensitive arm allocated a `String` only to compare it and
-        // drop it, on every call. This runs per identifier during compilation
-        // and showed up in a warm-job profile; comparing borrowed is the same
-        // answer without the allocation. The case-insensitive arm still folds,
-        // because that genuinely needs an owned buffer.
-        if self.case_sensitive {
-            return self.namespaces.roots.iter().any(|r| r == name);
-        }
-        let key = name.to_lowercase();
-        self.namespaces.roots.iter().any(|r| r == &key)
-    }
-
     /// Check if a name is a known constant (property access, not call).
     pub fn is_namespace_constant(&self, name: &str) -> bool {
         // Same allocation removal as `is_namespace_root` directly above.

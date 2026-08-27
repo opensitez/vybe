@@ -524,6 +524,114 @@ impl Compiler {
         self.emit_global_write("__js_this");
     }
 
+    /// **The** answer to "what is `this` here". One function, one answer.
+    ///
+    /// flexclassplan.md §"Two implementations of `what is this here`, and they
+    /// disagreed" (item 2): `ExprKind::This` and `emit_js_current_this_value`
+    /// were two independent resolvers, and they did not agree. Verified
+    /// divergences, all three in the FALLBACK path — their ambient branches
+    /// were condition-for-condition identical, which is why the bug presented
+    /// as `super.m()` handing the callee an undefined receiver rather than as
+    /// a general breakage:
+    ///
+    /// | | `ExprKind::This` | `emit_js_current_this_value` |
+    /// |---|---|---|
+    /// | receiver-is-a-parameter guard | yes | **none** |
+    /// | local names tried | `self_kw`, `Self`, `self`, `this` | **`self_kw` only** |
+    /// | derived-ctor TDZ (§9.1.1.3.4) | yes | **none** |
+    ///
+    /// The union is the first column throughout; the second contributed
+    /// nothing the union needs.
+    ///
+    /// ⚠ This resolves the receiver as it is bound TODAY, which still includes
+    /// the ambient `__js_this` global. That global is not a WASM concept —
+    /// core wasm has no `this`, and a mutable module global standing in for a
+    /// parameter needs the `save`/`restore` pair around every call, i.e. a
+    /// hand-rolled shadow stack for something the substrate models natively.
+    /// Collapsing the two resolvers is the PREREQUISITE for removing it: while
+    /// two sites disagreed about what `this` is, nothing could safely change
+    /// what it resolves TO.
+    pub(super) fn emit_receiver_value(&mut self) {
+        // ⛔ A CHUNK THAT TOOK THE RECEIVER AS A PARAMETER ALREADY HAS ONE —
+        // the ambient global is not it.
+        //
+        // A property accessor is compiled as a chunk whose FIRST PARAMETER is
+        // the receiver (`classes.rs`, `declare_receiver_first_accessor`). The
+        // ambient branch fires first and reads `__js_this`, a global that
+        // accessor chunk never set — so `this` inside an accessor answered null
+        // while the same `this` in a method on the SAME object in the SAME run
+        // was correct.
+        //
+        // Invisible from parsed source: every walker emits `Ident("this")` for
+        // an accessor, which resolves the local and works. It bites only a
+        // producer of SYNTHESIZED class AST — dart's `core_classes`, flutter's
+        // adapter classes. There is no split to memorise; `This` means the
+        // receiver.
+        let receiver_is_a_parameter = self.chunks[self.current]
+            .handled_call_tags
+            .iter()
+            .any(|tag| tag == vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG);
+
+        if !receiver_is_a_parameter
+            && self.ambient_this()
+            && self.current_class.is_some()
+            && self.current_func_name.as_deref() != Some("<lambda>")
+            && self.current_func_name.as_deref().is_some_and(|name| {
+                !name.eq_ignore_ascii_case(&self.profile.constructor_name)
+            })
+        {
+            self.emit_global_read("__js_this");
+            return;
+        }
+
+        let self_kw = self.profile.self_keyword.clone();
+        if let Some(slot) = self
+            .scope()
+            .resolve(&self_kw)
+            .or_else(|| self.scope().resolve("Self"))
+            .or_else(|| self.scope().resolve("self"))
+            .or_else(|| self.scope().resolve("this"))
+        {
+            // §9.1.1.3.4: inside a derived constructor `this` is in TDZ until
+            // super() runs — reading it while the slot is still null throws a
+            // ReferenceError rather than handing back null.
+            if self.js_derived_ctor_ctx == Some((self.current, slot)) {
+                let l = self.line;
+                crate::primitives::classes::emit_this_initialized_guard(self.chunk(), slot, l);
+            }
+            self.emit_u16(Op::LOCAL_GET, slot);
+            return;
+        }
+
+        if self.scopes.len() > 1 {
+            // Arrow function: capture `this` from the enclosing scope.
+            if self.resolve_upvalue(self.scopes.len() - 1, &self_kw).is_some() {
+                let env = self.closure_env_slot();
+                let idx = self.closure_env_index(&self_kw);
+                let l = self.line;
+                crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
+                return;
+            }
+            if self.ambient_this()
+                && self
+                    .resolve_upvalue(self.scopes.len() - 1, "__js_this")
+                    .is_some()
+            {
+                let env = self.closure_env_slot();
+                let idx = self.closure_env_index("__js_this");
+                let l = self.line;
+                crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
+                return;
+            }
+        }
+
+        if self.ambient_this() {
+            self.emit_global_read("__js_this");
+        } else {
+            self.emit_null();
+        }
+    }
+
     pub(super) fn restore_js_this(&mut self, slot: Option<u16>) {
         let Some(slot) = slot else {
             return;
