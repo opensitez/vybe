@@ -993,7 +993,6 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
         ancestry: control_ancestry(class_name),
         control_fn: Some(element.to_string()),
         inner_html: default_markup_for_control(class_name).map(str::to_string),
-        after_create: after_create_for_control(class_name).map(str::to_string),
         // A WinForms control IS its element at construction; nothing to inflate.
         nest_coerce: None,
         value_equality: false,
@@ -1068,31 +1067,12 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
             "<div class='vybe-split-panel2' style='flex:1 1 50%;overflow:auto'></div>"
         ),
         // ⛔ No `monthcalendar` arm. A calendar has no static spelling: the
-        // month it opens on is the date the program RUNS, and its weekday
-        // header follows `FirstDayOfWeek`. It is built at construction instead
-        // — see `after_create_for_control`.
+        // month it opens on is the date the program RUNS. That makes it
+        // BEHAVIOUR, and behaviour belongs to `platforms/web`, which owns the
+        // relationship with the browser — this crate declares only what the
+        // control IS.
         _ => return None,
     })
-}
-
-/// The part of a control that only a RUNNING program can know, as a
-/// common-emit key ([`CtorSpec::after_create`]).
-///
-/// The companion of [`default_markup_for_control`], and the split between them
-/// is whether a value is involved. A `SplitContainer`'s two panes are the same
-/// two panes in every program on every day, so they are markup. A
-/// `MonthCalendar` is a view of a DATE: baking a month into a string would
-/// freeze the control at compile time and ship a calendar that is wrong from
-/// the day after it was built.
-///
-/// One key, dispatched through the ordinary `common:dotnet.*` route, so the
-/// calendar's rules live in this platform's own adapter and the shared
-/// construction path holds no calendar vocabulary.
-fn after_create_for_control(class_name: &str) -> Option<&'static str> {
-    match class_name.to_ascii_lowercase().as_str() {
-        "monthcalendar" => Some("dotnet.month_calendar_render"),
-        _ => None,
-    }
 }
 
 /// Does this class DESCEND FROM `Control` — i.e. is it a control at all?

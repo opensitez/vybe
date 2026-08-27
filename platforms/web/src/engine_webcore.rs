@@ -329,9 +329,6 @@ impl WebEngine for WebCore {
                     let nodes = doc.query_selector_all(&sel);
                     DomValue::Nodes(nodes.iter().map(|n| from_hb(doc, *n)).collect())
                 }
-                DomOp::AllElements => DomValue::Nodes(
-                    doc.all_elements().iter().map(|n| from_hb(doc, *n)).collect(),
-                ),
                 DomOp::Title => DomValue::Text(doc.title()),
                 DomOp::SetTitle(t) => {
                     doc.set_title(&t);

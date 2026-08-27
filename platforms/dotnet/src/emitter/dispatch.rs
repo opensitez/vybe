@@ -256,12 +256,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datagrid_add_row" => {
             crate::emitter::core::datagrid_adapter::emit_add_row(chunks, current, argc, line);
         }
-        // The one control whose content is a VALUE — see
-        // `month_calendar_adapter`. Named by `CtorSpec::after_create`, so it
-        // runs once on the freshly created element.
-        "dotnet.month_calendar_render" => {
-            crate::emitter::core::month_calendar_adapter::emit_render(chunks, current, line);
-        }
         "dotnet.winforms_application_run" => {
             crate::emitter::winforms::adapter::emit_application_run(chunks, current, argc, line);
         }

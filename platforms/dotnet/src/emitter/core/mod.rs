@@ -55,7 +55,6 @@ pub mod datetime_format_adapter;
 pub mod biginteger_adapter;
 pub mod binary_io_adapter;
 pub mod math_adapter;
-pub mod month_calendar_adapter;
 pub mod object_fields;
 pub mod memory_stream_adapter;
 pub mod datetime_parse_adapter;
