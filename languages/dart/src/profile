@@ -153,6 +153,10 @@ __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, m
 __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
+# `{...a, ...b}` is a SET or a MAP depending on what is spread, and a
+# spread-ONLY literal carries nothing syntactic to decide it. The walker emits
+# both shapes behind this test on the first operand.
+__dart_is_set_like  = { emit = "common:dart.is_set_like",        min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
 __dart_nullable_double_to_string = { emit = "common:dart.nullable_double_to_string", min_args = 1, max_args = 1 }
 # `Duration` is not here: it is a `dart.core` CLASS (`core_classes/duration.rs`), so

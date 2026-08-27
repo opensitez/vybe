@@ -89,6 +89,17 @@ pub(crate) struct DartWalker {
     /// the common AST's `ExprKind::New`. Kept separate from the full type set
     /// because `enum`/`mixin`/`extension` declarations are not constructible.
     user_declared_classes: HashSet<String>,
+    /// `class name -> its GENERATIVE named constructors` (`Point.origin`).
+    ///
+    /// In Dart a named constructor IS a construction, but it parses as a
+    /// static-member call, so without this the walker handed the compiler a
+    /// plain `Call` — and `classes.rs` stamps the ctor helper on the class
+    /// object under that name, so the call landed on a helper that only
+    /// allocates when the ambient receiver is EMPTY. Every later
+    /// `Point.origin()` therefore overwrote the object the previous one
+    /// returned. FACTORY named constructors are excluded on purpose: a factory
+    /// really is a static method that returns an instance itself.
+    dart_generative_named_ctors: HashMap<String, HashSet<String>>,
     /// Intra-walker index used while normalizing primitive-target extension
     /// calls. The final AST contains only ordinary static calls with an explicit
     /// receiver; the common compiler never sees a Dart extension concept.
@@ -159,6 +170,79 @@ fn is_user_declared_class(__w: &DartWalker, name: &str) -> bool {
     __w.user_declared_classes.contains(name)
 }
 
+/// Every GENERATIVE named constructor each class declares, keyed by class.
+///
+/// A declaration and a call site are spelled identically (`Icon.sized(…)`), so
+/// the scan only accepts a line at class-body depth: a call can only appear
+/// inside a member body, which is one brace deeper. `factory` is skipped —
+/// Dart's factory constructor returns an instance itself and is already
+/// compiled as a static method, which is why `Icon.of(x)` must stay a `Call`.
+fn collect_generative_named_constructors(source: &str) -> HashMap<String, HashSet<String>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut current: Option<String> = None;
+    let mut depth: i32 = 0;
+    for line in source.lines() {
+        let mut t = line.trim();
+        if let Some(rest) = t.split("//").next() {
+            t = rest.trim();
+        }
+        if let Some(class) = current.clone() {
+            // Depth 1 is the class body itself. Anything deeper is a member
+            // body, where `Icon.sized(…)` is a CALL, not a declaration.
+            if depth == 1 {
+                let mut decl = t;
+                for modifier in ["const ", "external ", "@override "] {
+                    if let Some(rest) = decl.strip_prefix(modifier) {
+                        decl = rest.trim_start();
+                    }
+                }
+                if !decl.starts_with("factory ") {
+                    if let Some(rest) = decl.strip_prefix(class.as_str()) {
+                        if let Some(rest) = rest.strip_prefix('.') {
+                            let ctor: String = rest
+                                .chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect();
+                            if !ctor.is_empty() && rest[ctor.len()..].starts_with('(') {
+                                out.entry(class.clone()).or_default().insert(ctor);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut head = t;
+        for modifier in ["abstract ", "sealed ", "final ", "base ", "interface "] {
+            if let Some(rest) = head.strip_prefix(modifier) {
+                head = rest.trim_start();
+            }
+        }
+        if depth == 0 {
+            if let Some(rest) = head.strip_prefix("class ") {
+                let name: String = rest
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                current = if name.is_empty() { None } else { Some(name) };
+            }
+        }
+        depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
+        if depth <= 0 {
+            depth = 0;
+            current = None;
+        }
+    }
+    out
+}
+
+/// True when `C.name(…)` names a generative constructor rather than a static.
+fn dart_is_generative_named_ctor(__w: &DartWalker, class: &str, name: &str) -> bool {
+    __w.dart_generative_named_ctors
+        .get(class)
+        .is_some_and(|ctors| ctors.contains(name))
+}
+
 /// Build a call expression, normalising `ClassName(args)` — a call whose callee
 /// names a class the program declares — to the common AST's `ExprKind::New`.
 ///
@@ -173,6 +257,30 @@ fn is_user_declared_class(__w: &DartWalker, name: &str) -> bool {
 ///
 /// Any other callee stays a plain `Call`.
 fn dart_call_or_new(__w: &mut DartWalker, callee: Expression, args: Vec<Argument>) -> ExprKind {
+    // `Point.origin(…)` — a GENERATIVE named constructor. Dart spells it as a
+    // static-member call, but it constructs, and only `ExprKind::New` allocates
+    // a receiver before running the constructor body. Left as a `Call` it
+    // reached the helper `classes.rs` stamps on the class object, which
+    // allocates ONLY when the ambient receiver is empty — so the second
+    // `Point.origin()` in a program overwrote the first one's fields and
+    // returned that same object.
+    let named_ctor = match &callee.kind {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } => match &object.kind {
+            ExprKind::Ident(class) => dart_is_generative_named_ctor(__w, class, field),
+            _ => false,
+        },
+        _ => false,
+    };
+    if named_ctor {
+        return ExprKind::New {
+            class: Box::new(callee),
+            args,
+        };
+    }
     if let ExprKind::Ident(name) = &callee.kind {
         // `Expando()` — an IDENTITY-keyed weak store. A dart map routes
         // through property semantics whose keys coerce, so two distinct
@@ -221,6 +329,13 @@ fn dart_call_or_new(__w: &mut DartWalker, callee: Expression, args: Vec<Argument
         // declaration of the same name still wins — it is checked first.
         if is_user_declared_class(__w, name)
             || crate::core_classes::is_core_class(name)
+            // A Flutter ADAPTER CLASS constructs the same way. Without this the
+            // call stayed a plain `Call`, so the class's own constructor never
+            // ran: `ValueNotifier('x')` produced an object whose backing field
+            // was never assigned and every read answered null, while the
+            // zero-arg `ChangeNotifier()` merely looked fine because its field
+            // INITIALISERS covered for the missing constructor.
+            || vybe_platform_flutter::core_classes::is_core_class(name)
             || crate::tree_register::is_adapter_type(name)
         {
             return ExprKind::New {
@@ -1450,6 +1565,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let (declared_types, declared_classes) = collect_user_declared_types(&source);
     __w.user_declared_types = declared_types;
     __w.user_declared_classes = declared_classes;
+    __w.dart_generative_named_ctors = collect_generative_named_constructors(&source);
     // Flutter render runtime: the `platforms/flutter` adapter owns its Dart
     // runtime (`runApp` + the widget-tree realizer). Append it ONLY when a
     // program actually renders — imports a Flutter library AND references
@@ -1507,6 +1623,21 @@ pub fn parse(source: &str) -> Result<Module, String> {
         crate::core_classes::declarations_for(&source, |name| is_user_declared_class(__w, name));
     if !core_classes.is_empty() {
         body.splice(0..0, core_classes);
+    }
+
+    // The Flutter ADAPTER CLASSES, spliced the same way and on the same terms.
+    // `platforms/flutter` owns what they are; the frontend only decides that a
+    // program importing `package:flutter/` may need them, and each class is
+    // still gated on its own name appearing in the source. This is the path
+    // that replaces behaviour living in the `runtime.dart` prelude — a Flutter
+    // class is a class, walked like every other one.
+    if source.contains("package:flutter/") {
+        let flutter_classes = vybe_platform_flutter::core_classes::declarations_for(&source, |name| {
+            is_user_declared_class(__w, name)
+        });
+        if !flutter_classes.is_empty() {
+            body.splice(0..0, flutter_classes);
+        }
     }
 
     __w.dart_mixin_names = mixin_names.clone();
@@ -3813,6 +3944,13 @@ fn rewrite_forced_getter_calls_on_user_fields(body: &mut Vec<Statement>) {
     let mut class_fields: HashMap<String, HashSet<String>> = HashMap::new();
     for stmt in body.iter() {
         if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            // USER fields only, as the name says. The core classes are spliced
+            // into this same body, and several of them own a colliding name on
+            // purpose — `ReceivePort.first` is a channel RECEIVE that must stay
+            // a call, so un-forcing it deadlocked the isolate tests.
+            if crate::core_classes::is_core_class(name) {
+                continue;
+            }
             let fields: HashSet<String> = members
                 .iter()
                 .filter_map(|member| match member {
@@ -3832,27 +3970,89 @@ fn rewrite_forced_getter_calls_on_user_fields(body: &mut Vec<Statement>) {
     if class_fields.is_empty() {
         return;
     }
+    // A function's DECLARED return type types its result, so
+    // `var s = swap(p);` knows `s` is a `Pair` and `s.first` stays a field
+    // read. Without this the un-force only reached receivers built by a
+    // visible constructor call.
+    let mut fn_returns: HashMap<String, String> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::FunctionDecl {
+            name, return_type, ..
+        } = &stmt.kind
+        {
+            if let Some(class) = return_type
+                .as_deref()
+                .and_then(dart_declared_type_base_name)
+                .filter(|class| class_fields.contains_key(class))
+            {
+                fn_returns.insert(name.clone(), class);
+            }
+        }
+    }
     let mut locals: HashMap<String, String> = HashMap::new();
-    rewrite_forced_getters_in_stmts(body, &class_fields, &mut locals);
+    rewrite_forced_getters_in_stmts(body, &class_fields, &fn_returns, &mut locals);
+}
+
+/// The bare class name a declared type spells — `Pair<T, U>` → `Pair`,
+/// `Pair?` → `Pair`, `List<int>` → `List`. Generic arguments and the nullable
+/// marker are not part of the identity being matched.
+fn dart_declared_type_base_name(hint: &str) -> Option<String> {
+    let base = hint
+        .split('<')
+        .next()
+        .unwrap_or(hint)
+        .trim()
+        .trim_end_matches('?')
+        .trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+/// Seed a fresh scope with the parameters whose DECLARED type is a class
+/// carrying a colliding field — `Pair<T, U> p` makes `p.first` a field read
+/// inside the function body.
+fn dart_seed_forced_getter_params(
+    params: &[Param],
+    class_fields: &HashMap<String, HashSet<String>>,
+    scope: &mut HashMap<String, String>,
+) {
+    for param in params {
+        if let Some(class) = param
+            .type_hint
+            .as_ref()
+            .map(|hint| hint.spelling())
+            .and_then(dart_declared_type_base_name)
+            .filter(|class| class_fields.contains_key(class))
+        {
+            scope.insert(param.name.clone(), class);
+        }
+    }
 }
 
 fn rewrite_forced_getters_in_stmts(
     stmts: &mut [Statement],
     class_fields: &HashMap<String, HashSet<String>>,
+    fn_returns: &HashMap<String, String>,
     locals: &mut HashMap<String, String>,
 ) {
     for stmt in stmts {
         match &mut stmt.kind {
-            StmtKind::FunctionDecl { body, .. } => {
+            StmtKind::FunctionDecl { params, body, .. } => {
                 let mut inner = HashMap::new();
-                rewrite_forced_getters_in_stmts(body, class_fields, &mut inner);
+                dart_seed_forced_getter_params(params, class_fields, &mut inner);
+                rewrite_forced_getters_in_stmts(body, class_fields, fn_returns, &mut inner);
             }
             StmtKind::ClassDecl { members, .. } => {
                 for member in members.iter_mut() {
                     if let ClassMember::Method(method) = member {
-                        if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                        if let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind {
                             let mut inner = HashMap::new();
-                            rewrite_forced_getters_in_stmts(body, class_fields, &mut inner);
+                            dart_seed_forced_getter_params(params, class_fields, &mut inner);
+                            rewrite_forced_getters_in_stmts(
+                                body,
+                                class_fields,
+                                fn_returns,
+                                &mut inner,
+                            );
                         }
                     }
                 }
@@ -3893,15 +4093,35 @@ fn rewrite_forced_getters_in_stmts(
                 });
                 if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                     for decl in declarations {
-                        if let (BindingPattern::Ident(name), Some(init)) =
-                            (&decl.pattern, &decl.init)
+                        let BindingPattern::Ident(name) = &decl.pattern else {
+                            continue;
+                        };
+                        // An explicit declared type wins outright.
+                        if let Some(class) = decl
+                            .type_hint
+                            .as_ref()
+                            .map(|hint| hint.spelling())
+                            .and_then(dart_declared_type_base_name)
+                            .filter(|class| class_fields.contains_key(class))
                         {
-                            if let ExprKind::New { class, .. } = &init.kind {
-                                if let ExprKind::Ident(cls) = &class.kind {
-                                    if class_fields.contains_key(cls) {
-                                        locals.insert(name.clone(), cls.clone());
-                                    }
-                                }
+                            locals.insert(name.clone(), class);
+                            continue;
+                        }
+                        let Some(init) = &decl.init else { continue };
+                        // Dart constructs WITHOUT `new`, so a construction is
+                        // an ordinary `Call` as often as it is a `New`; and a
+                        // call of a declared function is typed by that
+                        // function's return type.
+                        let callee = match &init.kind {
+                            ExprKind::New { class, .. } => Some(class),
+                            ExprKind::Call { callee, .. } => Some(callee),
+                            _ => None,
+                        };
+                        if let Some(ExprKind::Ident(called)) = callee.map(|c| &c.kind) {
+                            if class_fields.contains_key(called) {
+                                locals.insert(name.clone(), called.clone());
+                            } else if let Some(class) = fn_returns.get(called) {
+                                locals.insert(name.clone(), class.clone());
                             }
                         }
                     }
@@ -12741,6 +12961,67 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                     )))],
                     optional: false,
                 })
+            } else if !is_map
+                && !props.is_empty()
+                && props
+                    .iter()
+                    .all(|p| matches!(p, ObjectProperty::Spread(_)))
+            {
+                // `{...a, ...b}` — SPREAD-ONLY, so nothing syntactic says set
+                // or map; dart decides from the operands' static type. Both
+                // shapes are emitted behind a test on the FIRST operand,
+                // which is bound by a lambda so it is evaluated exactly once
+                // (a spread source can be a call). A null first operand
+                // (`{...?missing, ...b}`) answers map, the shape this literal
+                // already had.
+                let operands: Vec<Expression> = props
+                    .iter()
+                    .map(|p| match p {
+                        ObjectProperty::Spread(value) => value.clone(),
+                        _ => unreachable!("guarded by the all-Spread test above"),
+                    })
+                    .collect();
+                let bound = "__dart_spread_head";
+                let rest = |first: Expression| {
+                    let mut out = vec![first];
+                    out.extend(operands.iter().skip(1).cloned());
+                    out
+                };
+                let set_branch = dart_call_of(
+                    Expression::ident("__dart_set_from"),
+                    vec![Expression::new(ExprKind::Array(
+                        rest(Expression::ident(bound))
+                            .into_iter()
+                            .map(|value| ArrayElement {
+                                key: None,
+                                value,
+                                spread: true,
+                                by_ref: false,
+                            })
+                            .collect(),
+                    ))],
+                );
+                let map_branch = Expression::new(ExprKind::Object(
+                    rest(Expression::ident(bound))
+                        .into_iter()
+                        .map(ObjectProperty::Spread)
+                        .collect(),
+                ));
+                return Ok(dart_call_of(
+                    dart_lambda1_of(
+                        bound,
+                        dart_ternary_of(
+                            dart_call_of(
+                                Expression::ident("__dart_is_set_like"),
+                                vec![Expression::ident(bound)],
+                            ),
+                            set_branch,
+                            map_branch,
+                        ),
+                    ),
+                    vec![operands[0].clone()],
+                )
+                .kind);
             } else {
                 Ok(ExprKind::Object(props))
             }
@@ -14341,6 +14622,31 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                     (None, false) => None,
                 };
                 if let (ExprKind::Ident(type_name), Some(cargs)) = (&expr.kind, &ctor_args) {
+                    // `Point.origin(…)` — a GENERATIVE named constructor of a
+                    // class this program declares. Dart spells it as a
+                    // static-member call, but it CONSTRUCTS, and only
+                    // `ExprKind::New` allocates a receiver before the
+                    // constructor body runs. As a plain `Call` it reached the
+                    // helper `classes.rs` stamps on the class object, which
+                    // allocates only when the ambient receiver is EMPTY — so
+                    // the second `Point.origin()` in a program overwrote the
+                    // fields of the object the first one returned and handed
+                    // back that same instance. Checked before the Flutter
+                    // desugar because a user declaration is the more specific
+                    // match; a `factory` named ctor is deliberately absent from
+                    // the registry, since a factory really is a static method
+                    // that returns an instance itself.
+                    if dart_is_generative_named_ctor(__w, type_name, &name) {
+                        expr = Expression::new(ExprKind::New {
+                            class: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(expr.clone()),
+                                field: name.clone(),
+                                null_safe: false,
+                            })),
+                            args: cargs.clone(),
+                        });
+                        continue;
+                    }
                     if let Some(kind) = dart_flutter_named_ctor(__w, type_name, &name, cargs) {
                         expr = Expression::new(kind);
                         continue;

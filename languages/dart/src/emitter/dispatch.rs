@@ -303,6 +303,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.is_list_of_int" => {
             crate::emitter::reflection_adapter::emit_dart_is_list_of_int(chunks, current, line)
         }
+        "dart.is_set_like" => {
+            crate::emitter::string_adapter::emit_dart_is_set_like(chunks, current, line)
+        }
         "dart.duration_new" => {
             crate::emitter::core_adapter::emit_duration_new(chunks, current, argc, line)
         }

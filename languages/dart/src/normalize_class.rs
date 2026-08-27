@@ -198,9 +198,37 @@ pub fn normalize_class(
             // Dart's `with M` is a HEADER clause, not a body member, so it is
             // read from the class header below rather than arriving here.
             ClassMember::Augment(decl) => m.push_augment_decl(decl, DART_MIXIN),
-            other @ (ClassMember::Event { .. }
-            | ClassMember::Const { .. }
-            | ClassMember::NestedType(_)) => {
+            // Dart's `static const X = …` IS a static final field whose
+            // initializer is a compile-time constant — so it takes the static
+            // FIELD path, which runs initializers with the class's own
+            // constructor object already bound. Left as a raw extra member it
+            // was evaluated before the class was ready, so a const whose value
+            // CONSTRUCTS the declaring class (`static const zero = Vec(0, 0)`)
+            // called an undefined constructor; literal-valued consts survived
+            // only because they needed nothing from the class. Enums are their
+            // own `EnumDecl` node, so nothing else arrives here.
+            ClassMember::Const {
+                name: cname,
+                type_hint,
+                value,
+                ..
+            } => {
+                m.push_field(
+                    true,
+                    NormalField {
+                        span: span.clone(),
+                        name: cname.clone(),
+                        type_hint: type_hint.clone().map(Into::into),
+                        init: Some(value.clone()),
+                        array_bounds: None,
+                        access: Access::Public,
+                        readonly: true,
+                        value_type: None,
+                        storage: None,
+                    },
+                );
+            }
+            other @ (ClassMember::Event { .. } | ClassMember::NestedType(_)) => {
                 m.raw_extra_members.push(other.clone());
             }
         }

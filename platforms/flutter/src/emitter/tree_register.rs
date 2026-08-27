@@ -120,6 +120,9 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
         // ARGUMENTS, so there is nothing a widget is born with that the call
         // site has not already said.
         inner_html: None,
+        // Nor any construction-time part: a Flutter widget's whole content
+        // arrives as arguments and is applied by the nesting path.
+        after_create: None,
         // A Flutter widget argument may be a COMPOSITE — `home: CalculatorPage()`
         // is a `StatefulWidget`, a description with no element until `build()`
         // has run. `_vfConcrete` is that build, and it is the identity for

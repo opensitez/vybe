@@ -204,95 +204,17 @@ void _vfPatchAttributes(dynamic doc, dynamic old, dynamic fresh) {
   }
 }
 
-// Minimal layout value types the samples reference.
-class EdgeInsets {
-  double left = 0.0;
-  double top = 0.0;
-  double right = 0.0;
-  double bottom = 0.0;
-  EdgeInsets.all(double v) {
-    left = v;
-    top = v;
-    right = v;
-    bottom = v;
-  }
-  EdgeInsets.symmetric(double horizontal, double vertical) {
-    left = horizontal;
-    right = horizontal;
-    top = vertical;
-    bottom = vertical;
-  }
-  EdgeInsets.only(double l, double t, double r, double b) {
-    left = l;
-    top = t;
-    right = r;
-    bottom = b;
-  }
-
-  // **What this becomes when it reaches CSS.** `padding` is a LENGTH role, so
-  // the emitter appends `px` to whatever this stringifies to — which is why an
-  // `EdgeInsets` with no `toString` arrived as the literal `[object]` and every
-  // Flutter padding in the document did nothing at all.
-  //
-  // A uniform inset — `EdgeInsets.all(24)`, the overwhelmingly common case —
-  // is one number, and `24` + `px` is the value CSS wants.
-  //
-  // ⚠ A NON-uniform inset needs the four-value shorthand (`top right bottom
-  // left`), and that cannot survive a `px` appended to the end of it. Rather
-  // than emit a single side and quietly get three of them wrong, this answers
-  // nothing: `"" + "px"` is not a length, so the declaration is dropped and the
-  // box keeps its default. Visibly unstyled beats silently mis-styled, and
-  // closing it properly means the length roles learning that a value can arrive
-  // WITH its units already on it.
-  String toString() {
-    if (left == top && top == right && right == bottom) {
-      return "$left";
-    }
-    return "";
-  }
-}
-
-class Alignment {
-  double x = 0.0;
-  double y = 0.0;
-  Alignment(double ax, double ay) {
-    x = ax;
-    y = ay;
-  }
-
-  // **What this becomes in CSS**, for the case a `Container` uses it: where its
-  // content sits across the box, which is `text-align`. VCL's `Alignment` and
-  // WinForms' `TextAlign` already map to the same property, so this is the
-  // spelling those frontends share rather than a Flutter-specific one.
-  //
-  // ⚠ The INLINE axis only. Flutter's `Alignment` is two axes, and `y` has no
-  // counterpart here — `text-align` says nothing about the block direction. It
-  // also aligns inline CONTENT, so `Container(alignment: …, child: Text(…))`
-  // lands correctly and a container holding a BOX child does not move. Both
-  // need the flex mapping (`justify-content` + `align-items`), which is a role
-  // that does not exist yet.
-  String toString() {
-    if (x < -0.5) {
-      return "left";
-    }
-    if (x > 0.5) {
-      return "right";
-    }
-    return "center";
-  }
-
-  // Flutter's nine named alignments, on its own -1..1 axes. Without these
-  // `Alignment.centerRight` resolved to NOTHING — the field arrived null and
-  // the element carried a valueless `alignment` attribute, which is why a
-  // right-aligned calculator display sat on the left.
-  static Alignment get topLeft { return Alignment(-1.0, -1.0); }
-  static Alignment get topCenter { return Alignment(0.0, -1.0); }
-  static Alignment get topRight { return Alignment(1.0, -1.0); }
-  static Alignment get centerLeft { return Alignment(-1.0, 0.0); }
-  static Alignment get center { return Alignment(0.0, 0.0); }
-  static Alignment get centerRight { return Alignment(1.0, 0.0); }
-  static Alignment get bottomLeft { return Alignment(-1.0, 1.0); }
-  static Alignment get bottomCenter { return Alignment(0.0, 1.0); }
-  static Alignment get bottomRight { return Alignment(1.0, 1.0); }
-
-}
+// `EdgeInsets` and `Alignment` used to be declared here, 86 lines of them.
+// They were REDUNDANT: `emitter/widgets/value_types.rs` already declares both
+// as catalog value types, so the prelude copies only shadowed them. Deleting
+// them changed nothing measurable (flutter_widgets_{padding,align,container,
+// center,column,row} + flutter_material_card: zero new failures).
+//
+// ⛔Do NOT re-add them as adapter classes either — that was tried and it
+// BREAKS `Align`: a widget default holds a catalog-constructed `Alignment`,
+// and a second class minting its own means `a.alignment == Alignment.center`
+// compares two different identities and answers false (5 tests). One notion of
+// a value type, and the catalog already owns this one.
+//
+// What remains here is the RENDERING half — `runApp`, `setState`, `_vfRealize`
+// — which `documentation/guiplan.md` says must be DELETED, not ported.

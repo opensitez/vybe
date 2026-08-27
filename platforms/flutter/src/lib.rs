@@ -16,6 +16,7 @@
 //! how the dotnet adapter emits per-class ctor chunks only for the classes a
 //! program uses.
 
+pub mod core_classes;
 pub mod emitter;
 
 /// The Flutter adapter's Dart runtime: `runApp`, `setState`, composite

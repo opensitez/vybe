@@ -2587,6 +2587,14 @@ pub fn emit_dart_sorted_map_new(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
 }
 
+/// True when a value spreads as a SET rather than as a MAP — sets and lists
+/// are array-backed here, maps are objects. Stack: [value] → [bool].
+pub fn emit_dart_is_set_like(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
 pub fn emit_dart_set_new(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
     emit_mark_set_top(&mut chunks[current], line);
@@ -2597,8 +2605,44 @@ pub fn emit_dart_set_from(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    emit_dart_iter_distinct(chunks, current, 0, line);
+    emit_dart_set_dedupe(chunks, current, line);
     emit_mark_set_top(&mut chunks[current], line);
+}
+
+/// Keep the first occurrence of each DISTINCT element, comparing against every
+/// element kept so far. Stack: [array] → [array].
+///
+/// Not `emit_dart_iter_distinct`: that one is `Stream.distinct`, whose dart
+/// semantics are deliberately ADJACENT-only (it compares each event with the
+/// previous one, so `[1, 2, 1]` streams three events — the corpus asserts
+/// exactly that in `stream_distinct_keeps_non_adjacent_duplicates`). A SET has
+/// membership semantics, and building one on the stream helper meant
+/// `{'dart', 'flutter', 'dart'}` kept all three: only a duplicate that
+/// happened to be ADJACENT was removed.
+fn emit_dart_set_dedupe(chunks: &mut [Chunk], current: usize, line: u32) {
+    let receiver_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    let arr_slot = materialize_slot(chunks, current, receiver_slot, line);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    let idx_slot = reserve_slot(&mut chunks[current]);
+    let elem_slot = reserve_slot(&mut chunks[current]);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_contains(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 fn emit_freeze_top(chunks: &mut [Chunk], current: usize, line: u32) {
