@@ -53,7 +53,7 @@ Module M
         __P(CStr(s2))
         __P(CStr(s3))
         __Check("8
-   1.2!
+     1.2!
 [   42]")
     End Sub
 End Module

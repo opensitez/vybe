@@ -45,8 +45,7 @@ End Module
 
 Module Program
     Sub Main()
-        Dim big
-        BigInteger = 999
+        Dim big As BigInteger = 999
         Dim intVal As Integer = CInt(big)
         Dim doubleVal As Double = CDbl(big)
         __P(CStr(intVal & "|" & doubleVal))

@@ -44,7 +44,7 @@ End Module
 Module M
     Sub Main()
         Dim name As String = "json"
-        Dim s As String = $"{{\"name\": \"{name}\"}}"
+        Dim s As String = $"{{""name"": ""{name}""}}"
         __P(CStr(s))
         __Check("{""name"": ""json""}")
     End Sub

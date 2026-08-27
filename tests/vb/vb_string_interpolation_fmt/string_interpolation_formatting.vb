@@ -58,8 +58,7 @@ Module M
         __P(CStr($"[{price,10:F1}]"))
         __P(CStr($"[{price,-10:F1}]"))
         __Check("Price: 12.35
-Percent
-75 %
+Percent: 75 %
 [      12.3]
 [12.3      ]")
     End Sub
