@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/uuid_api/uuid_variant_reserved
 // origin: languages/java/tests/java/test_uuid_api.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.UUID u = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000"); __p(u.variant());
-__check("2");
+__check("0");
     }
 }
 

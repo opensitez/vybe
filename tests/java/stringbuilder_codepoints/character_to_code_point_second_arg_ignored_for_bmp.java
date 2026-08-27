@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stringbuilder_codepoints/character_to_code_point_second_arg_ignored_for_bmp
 // origin: languages/java/tests/java/test_stringbuilder_codepoints.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Character.toCodePoint('Z', '\u0000'));
-__check("90");
+__check("-56521728");
     }
 }
 

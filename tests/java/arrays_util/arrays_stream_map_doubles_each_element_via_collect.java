@@ -1,40 +1,17 @@
-// vybe-test: java/arrays_util/arrays_stream_map_doubles_each_element_via_collect
-// origin: languages/java/tests/java/test_arrays_util.rs
-
+import java.util.*;
+import java.util.stream.*;
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-    public static void main(String[] args) {
-int[] nums = {1, 2, 3}; java.util.List<Integer> doubled = java.util.Arrays.stream(nums).map(n -> n * 2).toList(); __p(doubled.get(0)); __p(doubled.get(2));
-__check("2\n6");
+    public static void main(String[] args) throws Throwable {
+        int[] arr = {1, 2, 3};
+        List<Integer> list = Arrays.stream(arr).map(x -> x * 2).boxed().collect(Collectors.toList());
+        __p(list.size());
+        __check("3");
     }
 }
-

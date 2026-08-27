@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/object_wait_notify/object_wait_notify_bounded_buffer_size_one
 // origin: languages/java/tests/java/test_object_wait_notify.rs
 
@@ -37,7 +48,7 @@ static class Slot {
             synchronized void put(int v) throws InterruptedException { while (val != null) wait(); val = v; notify(); }
             synchronized int get() throws InterruptedException { while (val == null) wait(); int r = val; val = null; notify(); return r; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Slot s = new Slot(); Thread c = new Thread(() -> { try { __p(s.get()); } catch (InterruptedException e) {} }); c.start(); Thread.sleep(10); try { s.put(99); } catch (InterruptedException e) {} c.join();
 __check("99");
     }

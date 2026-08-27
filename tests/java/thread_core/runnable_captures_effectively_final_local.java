@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/runnable_captures_effectively_final_local
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int base = 4; Runnable r = () -> __p(base + 1); Thread t = new Thread(r); t.start(); t.join();
 __check("5");
     }

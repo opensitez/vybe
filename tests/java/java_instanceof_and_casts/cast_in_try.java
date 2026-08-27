@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_instanceof_and_casts/cast_in_try
 // origin: languages/java/tests/java/test_java_instanceof_and_casts.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Object x = 1; try { int v = (Integer)x + 1; __p(v); } catch (ClassCastException e) { __p("bad"); }
-__check("bad");
+__check("2");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_move_renames_file
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path src = java.nio.file.Files.createTempFile("vybe", ".mv"); java.nio.file.Files.writeString(src, "moved"); java.nio.file.Path dst = src.resolveSibling("renamed.txt"); java.nio.file.Files.move(src, dst); __p(java.nio.file.Files.readString(dst)); __p(java.nio.file.Files.notExists(src)); java.nio.file.Files.delete(dst);
 __check("moved\ntrue");
     }

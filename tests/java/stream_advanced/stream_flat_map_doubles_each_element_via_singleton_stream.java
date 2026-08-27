@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stream_advanced/stream_flat_map_doubles_each_element_via_singleton_stream
 // origin: languages/java/tests/java/test_stream_advanced.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.List<Integer> out = java.util.Arrays.asList(1, 2, 3).stream().flatMap(n -> java.util.Arrays.asList(n, n).stream()).toList(); __p(out.size()); __p(out.get(3));
-__check("6\n3");
+__check("6\n2");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/interface_reference_virtual_dispatch
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-static interface Greeter { String greet(); }
-        static class En implements Greeter { String greet() { return "hi"; } }
-    public static void main(String[] args) {
+static interface Greeter { public String greet(); }
+        static class En implements Greeter { public String greet() { return "hi"; } }
+    public static void main(String[] args) throws Throwable {
 Greeter g = new En(); __p(g.greet());
 __check("hi");
     }

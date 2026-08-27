@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_callable_boolean_false_result
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.FutureTask<Boolean> task = new java.util.concurrent.FutureTask<Boolean>(() -> false); task.run(); __p(task.get());
+    public static void main(String[] args) throws Throwable {
+java.util.concurrent.FutureTask<Boolean> task = new FutureTask<Boolean>(() -> false); task.run(); __p(task.get());
 __check("false");
     }
 }

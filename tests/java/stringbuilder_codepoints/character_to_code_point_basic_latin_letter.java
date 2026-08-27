@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stringbuilder_codepoints/character_to_code_point_basic_latin_letter
 // origin: languages/java/tests/java/test_stringbuilder_codepoints.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Character.toCodePoint('A', 'B'));
-__check("65");
+__check("-56547262");
     }
 }
 

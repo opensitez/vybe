@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/linked_blocking_queue/linked_blocking_queue_producer_consumer_with_put_take
 // origin: languages/java/tests/java/test_linked_blocking_queue.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static String consumed;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.LinkedBlockingQueue<String> q = new java.util.concurrent.LinkedBlockingQueue<String>(); Thread producer = new Thread(() -> { try { q.put("data"); } catch (InterruptedException e) {} }); Thread consumer = new Thread(() -> { try { consumed = q.take(); } catch (InterruptedException e) {} }); producer.start(); consumer.start(); producer.join(); consumer.join(); __p(consumed);
 __check("data");
     }

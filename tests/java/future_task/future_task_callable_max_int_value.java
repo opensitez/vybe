@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_callable_max_int_value
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> Integer.MAX_VALUE); task.run(); __p(task.get());
+    public static void main(String[] args) throws Throwable {
+FutureTask<Integer> task = new FutureTask<Integer>(() -> Integer.MAX_VALUE); task.run(); __p(task.get());
 __check("2147483647");
     }
 }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_serializes_negative_and_positive_increments
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Balance {
             int amount = 100;
             synchronized void adjust(int delta) { amount += delta; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Balance b = new Balance(); Thread t1 = new Thread(() -> b.adjust(-30)); Thread t2 = new Thread(() -> b.adjust(20)); t1.start(); t2.start(); t1.join(); t2.join(); __p(b.amount);
 __check("90");
     }

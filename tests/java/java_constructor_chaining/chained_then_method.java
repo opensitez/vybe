@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_constructor_chaining/chained_then_method
 // origin: languages/java/tests/java/test_java_constructor_chaining.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Calc { int value; Calc() { this(1); } Calc(int v) { value = v; } int add(int d) { return value + d; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(new Calc(2).add(3));
-__check("4");
+__check("5");
     }
 }
 

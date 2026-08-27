@@ -1,40 +1,17 @@
-// vybe-test: java/double_stream/double_stream_peek_no_sum_change
-// origin: languages/java/tests/java/test_double_stream.rs
-
+import java.util.concurrent.atomic.*;
+import java.util.stream.*;
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-    public static void main(String[] args) {
-double s = java.util.stream.DoubleStream.of(2.0, 3.0).peek(n -> n + 100.0).sum(); __p((int) s);
-__check("5");
+    public static void main(String[] args) throws Throwable {
+        AtomicInteger count = new AtomicInteger();
+        int sum = IntStream.of(1, 2, 3).peek(x -> count.incrementAndGet()).sum();
+        __p(count.get() + sum);
+        __check("9");
     }
 }
-

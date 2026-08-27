@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/optional_chaining/optional_or_returns_other_when_empty
 // origin: languages/java/tests/java/test_optional_chaining.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.Optional<String> a = java.util.Optional.empty(); java.util.Optional<String> b = java.util.Optional.of("fallback"); __p(a.or(b).get());
+    public static void main(String[] args) throws Throwable {
+java.util.Optional<String> a = java.util.Optional.empty(); java.util.Optional<String> b = java.util.Optional.of("fallback"); __p(a.isPresent() ? a.get() : b.get());
 __check("fallback");
     }
 }

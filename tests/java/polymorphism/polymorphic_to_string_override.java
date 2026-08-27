@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/polymorphic_to_string_override
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-static class Base { String toString() { return "base"; } }
-        static class Child extends Base { String toString() { return "child"; } }
-    public static void main(String[] args) {
+static class Base { public String toString() { return "base"; } }
+        static class Child extends Base { public String toString() { return "child"; } }
+    public static void main(String[] args) throws Throwable {
 Base b = new Child(); __p(b.toString());
 __check("child");
     }

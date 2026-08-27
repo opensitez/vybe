@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/zone_id/zone_id_short_ids_contains_utc
 // origin: languages/java/tests/java/test_zone_id.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(java.time.ZoneId.SHORT_IDS.containsKey("UTC"));
-__check("true");
+__check("false");
     }
 }
 

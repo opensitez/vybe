@@ -1,40 +1,15 @@
-// vybe-test: java/string_advanced/get_bytes_utf8_charset_preserves_ascii_bytes
-// origin: languages/java/tests/java/test_string_advanced.rs
-
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-    public static void main(String[] args) {
-byte[] data = "hi".getBytes(java.nio.charset.StandardCharsets.UTF_8); __p(data[0]); __p(data[1]);
-__check("104\n105");
+    public static void main(String[] args) throws Throwable {
+        byte[] b = "hi".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        __p(b[0]);
+        __p(b[1]);
+        __check("104\n105");
     }
 }
-

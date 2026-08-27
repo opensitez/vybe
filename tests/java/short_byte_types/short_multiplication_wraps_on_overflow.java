@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/short_byte_types/short_multiplication_wraps_on_overflow
 // origin: languages/java/tests/java/test_short_byte_types.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 short a = 200; short b = 200; __p((short)(a * b));
-__check("-7920");
+__check("-25536");
     }
 }
 

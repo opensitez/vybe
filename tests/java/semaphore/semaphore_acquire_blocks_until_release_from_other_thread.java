@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_acquire_blocks_until_release_from_other_thread
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.Semaphore sem = new java.util.concurrent.Semaphore(0);
         static boolean acquired = false;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread waiter = new Thread(() -> { try { sem.acquire(); acquired = true; } catch (InterruptedException e) {} }); waiter.start(); Thread.sleep(5); sem.release(); waiter.join(); __p(acquired);
 __check("true");
     }

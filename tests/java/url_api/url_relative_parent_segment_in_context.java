@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/url_api/url_relative_parent_segment_in_context
 // origin: languages/java/tests/java/test_url_api.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URL base = new java.net.URL("http://par.url.test/a/b/"); java.net.URL rel = new java.net.URL(base, "../c"); __p(rel.getPath());
-__check("/a/b/../c");
+__check("/a/c");
     }
 }
 

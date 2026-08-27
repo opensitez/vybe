@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/url_api/url_get_authority_host_and_port
 // origin: languages/java/tests/java/test_url_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URL u = new java.net.URL("http://auth.url.test:9000/res"); __p(u.getAuthority());
 __check("auth.url.test:9000");
     }

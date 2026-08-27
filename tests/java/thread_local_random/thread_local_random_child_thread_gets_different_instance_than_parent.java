@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_local_random/thread_local_random_child_thread_gets_different_instance_than_parent
 // origin: languages/java/tests/java/test_thread_local_random.rs
 
@@ -35,9 +46,9 @@ public class Main {
 static java.util.concurrent.ThreadLocalRandom parentRng;
         static java.util.concurrent.ThreadLocalRandom childRng;
         static boolean same;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 parentRng = java.util.concurrent.ThreadLocalRandom.current(); Thread t = new Thread(() -> { childRng = java.util.concurrent.ThreadLocalRandom.current(); same = parentRng == childRng; }); t.start(); t.join(); __p(same);
-__check("false");
+__check("true");
     }
 }
 

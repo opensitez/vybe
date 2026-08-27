@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_interleaved_reads_remain_consistent
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -38,7 +49,7 @@ static class Pair {
             synchronized void set(int a, int b) { x = a; y = b; }
             synchronized int sum() { return x + y; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Pair p = new Pair(); Thread writer = new Thread(() -> p.set(2, 3)); Thread reader = new Thread(() -> { try { Thread.sleep(1); } catch (InterruptedException e) { } }); writer.start(); reader.start(); writer.join(); reader.join(); __p(p.sum());
 __check("5");
     }

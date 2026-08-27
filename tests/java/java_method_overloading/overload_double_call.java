@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_method_overloading/overload_double_call
 // origin: languages/java/tests/java/test_java_method_overloading.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Form { static String value(double v) { return "d"; } static String value(float v) { return "f"; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Form.value(1) + "," + Form.value(1.0) + "," + Form.value(1f));
-__check("d,f,f");
+__check("f,d,f");
     }
 }
 

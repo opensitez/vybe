@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_two_parties_exchange_data_at_barrier
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
         static int shared = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread writer = new Thread(() -> { shared = 99; try { barrier.await(); } catch (Exception e) {} }); Thread reader = new Thread(() -> { try { barrier.await(); __p(shared); } catch (Exception e) {} }); writer.start(); reader.start(); writer.join(); reader.join();
 __check("99");
     }

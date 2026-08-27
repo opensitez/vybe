@@ -1,40 +1,17 @@
-// vybe-test: java/regex_matcher_replace/matcher_append_replacement_backreference_swaps_fraction
-// origin: languages/java/tests/java/test_regex_matcher_replace.rs
-
+import java.util.regex.*;
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-    public static void main(String[] args) {
-java.util.regex.Pattern p = java.util.regex.Pattern.compile("(\\d+)/(\d+)"); java.util.regex.Matcher m = p.matcher("3/4 and 5/6"); StringBuffer sb = new StringBuffer(); if (m.find()) { m.appendReplacement(sb, "$2/$1"); } m.appendTail(sb); __p(sb.toString());
-__check("4/3 and 5/6");
+    public static void main(String[] args) throws Throwable {
+        Pattern p = Pattern.compile("(\\d+)/(\\d+)");
+        Matcher m = p.matcher("1/2");
+        String res = m.replaceAll("$2/$1");
+        __p(res);
+        __check("2/1");
     }
 }
-

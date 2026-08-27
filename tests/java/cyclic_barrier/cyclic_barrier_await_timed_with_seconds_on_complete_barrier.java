@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_await_timed_with_seconds_on_complete_barrier
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
         static boolean ok = false;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> { try { barrier.await(1, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception e) {} }); t.start(); ok = barrier.await(1, java.util.concurrent.TimeUnit.SECONDS) >= 0; t.join(); __p(ok);
 __check("true");
     }

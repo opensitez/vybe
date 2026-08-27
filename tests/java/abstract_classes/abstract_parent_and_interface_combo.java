@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/abstract_classes/abstract_parent_and_interface_combo
 // origin: languages/java/tests/java/test_abstract_classes.rs
 
@@ -35,10 +46,10 @@ public class Main {
 static interface Named { String name(); }
         static abstract class Entity implements Named { abstract int id(); }
         static class User extends Entity {
-            String name() { return "user"; }
+            public String name() { return "user"; }
             int id() { return 1; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Entity e = new User(); __p(e.name()); __p(e.id());
 __check("user\n1");
     }

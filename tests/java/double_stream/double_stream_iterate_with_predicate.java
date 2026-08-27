@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/double_stream/double_stream_iterate_with_predicate
 // origin: languages/java/tests/java/test_double_stream.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 long c = java.util.stream.DoubleStream.iterate(1.0, n -> n < 10.0, n -> n + 3.0).count(); __p(c);
-__check("4");
+__check("3");
     }
 }
 

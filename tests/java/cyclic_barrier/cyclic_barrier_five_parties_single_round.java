@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_five_parties_single_round
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,8 +45,8 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(5);
         static int arrived = 0;
-    public static void main(String[] args) {
-for (int i = 0; i < 5; i++) { Thread t = new Thread(() -> { try { barrier.await(); arrived++; } catch (Exception e) {} }); t.start(); t.join(); } __p(arrived);
+    public static void main(String[] args) throws Throwable {
+List<Thread> __ts = new ArrayList<>(); for (int i = 0; i < 5; i++) { Thread t = new Thread(() -> { try { barrier.await(); arrived++; } catch (Exception e) {} }); t.start(); __ts.add(t); } for (Thread __t : __ts) __t.join(); __p(arrived);
 __check("5");
     }
 }

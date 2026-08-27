@@ -1,7 +1,9 @@
+import java.util.concurrent.*;
 // vybe-test: java/future_task/future_task_callable_throws_checked_exception_wrapped
 // origin: languages/java/tests/java/test_future_task.rs
 
 public class Main {
+
 
     // A static String, NOT a StringBuilder. Calling a method on a bare static
     // FIELD receiver fails under Vybe with "undefined is not callable"
@@ -33,7 +35,7 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> { throw new Exception("checked"); }); task.run(); try { task.get(); __p("ok"); } catch (Exception e) { __p(e.getCause().getMessage()); }
+java.util.concurrent.FutureTask<Integer> task = new FutureTask<Integer>(() -> { throw new Exception("checked"); }); task.run(); try { task.get(); __p("ok"); } catch (Exception e) { __p(e.getCause().getMessage()); }
 __check("checked");
     }
 }

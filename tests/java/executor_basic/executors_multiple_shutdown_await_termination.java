@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_multiple_shutdown_await_termination
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); pool.submit(() -> __p("x")); pool.shutdown(); pool.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS); __p("y");
 __check("x\ny");
     }

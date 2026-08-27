@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_array_mutation/set_even
 // origin: languages/java/tests/java/test_java_array_mutation.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[] a = {1,2,3,4}; for (int i = 0; i < a.length; i++) if ((i & 1) == 0) a[i] = 0; __p(a[0] + a[1] + a[2] + a[3]);
-__check("8");
+__check("6");
     }
 }
 

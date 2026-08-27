@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_runnable_side_effect_before_result
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -33,8 +44,8 @@ public class Main {
     }
 
 static int hits = 0;
-    public static void main(String[] args) {
-java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> { hits++; }, 9); task.run(); __p(hits); __p(task.get());
+    public static void main(String[] args) throws Throwable {
+FutureTask<Integer> task = new FutureTask<Integer>(() -> { hits++; }, 9); task.run(); __p(hits); __p(task.get());
 __check("1\n9");
     }
 }

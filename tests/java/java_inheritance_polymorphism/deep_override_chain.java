@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_inheritance_polymorphism/deep_override_chain
 // origin: languages/java/tests/java/test_java_inheritance_polymorphism.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-abstract class Root { String label() { return "root"; } } static class Mid extends Root { String label() { return "mid"; } } static class Leaf extends Mid { String label() { return "leaf"; } }
-    public static void main(String[] args) {
+abstract static class Root { String label() { return "root"; } } static class Mid extends Root { String label() { return "mid"; } } static class Leaf extends Mid { String label() { return "leaf"; } }
+    public static void main(String[] args) throws Throwable {
 Leaf l = new Leaf(); __p(l.label());
 __check("leaf");
     }

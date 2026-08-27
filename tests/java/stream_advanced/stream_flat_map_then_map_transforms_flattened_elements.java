@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stream_advanced/stream_flat_map_then_map_transforms_flattened_elements
 // origin: languages/java/tests/java/test_stream_advanced.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.List<Integer> out = java.util.Arrays.asList(1, 2).stream().flatMap(n -> java.util.Arrays.asList(n, n + 10).stream()).map(n -> n * 2).toList(); __p(out.get(1)); __p(out.get(3));
-__check("4\n24");
+__check("22\n24");
     }
 }
 

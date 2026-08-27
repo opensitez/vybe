@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/bi_functional_interfaces/bi_function_and_then_parse_sum
 // origin: languages/java/tests/java/test_bi_functional_interfaces.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.function.BiFunction<String, String, Integer> concat = (a, b) -> a + b; __p(concat.andThen(Integer::parseInt).apply("1", "2"));
+    public static void main(String[] args) throws Throwable {
+java.util.function.BiFunction<String, String, String> concat = (a, b) -> a + b; __p(concat.andThen(Integer::parseInt).apply("1", "2"));
 __check("12");
     }
 }

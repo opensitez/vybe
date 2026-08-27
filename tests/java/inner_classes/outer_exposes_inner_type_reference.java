@@ -33,7 +33,7 @@ public class Main {
     }
 
 static class Outer {
-            class Inner { String label() { return "nested"; } }
+            static class Inner { String label() { return "nested"; } }
             Inner make() { return new Inner(); }
         }
     public static void main(String[] args) {

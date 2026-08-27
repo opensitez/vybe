@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_method_overloading/overload_instance_and_static
 // origin: languages/java/tests/java/test_java_method_overloading.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Over { static int staticOp(int a) { return 1; } int staticOp(int a, int b) { return 2; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Over.staticOp(1) + "," + new Over().staticOp(1));
-__check("1,2");
+__check("1,1");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/anonymous_classes/anonymous_class_with_numeric_return_from_interface
 // origin: languages/java/tests/java/test_anonymous_classes.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static interface Calc { double compute(double x); }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Calc c = new Calc() { public double compute(double x) { return x * x; } }; __p(c.compute(3.0));
-__check("9");
+__check("9.0");
     }
 }
 

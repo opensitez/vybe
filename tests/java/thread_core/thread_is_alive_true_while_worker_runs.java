@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_is_alive_true_while_worker_runs
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -40,7 +51,7 @@ static int[] gate = {0};
                 gate[0] = 2;
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 GateThread t = new GateThread(); t.start(); while (gate[0] == 0) { Thread.sleep(0); } __p(t.isAlive()); t.join(); __p(t.isAlive());
 __check("true\nfalse");
     }

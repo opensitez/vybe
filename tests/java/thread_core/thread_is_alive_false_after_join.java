@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_is_alive_false_after_join
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> __p("x")); t.start(); t.join(); __p(t.isAlive());
 __check("x\nfalse");
     }

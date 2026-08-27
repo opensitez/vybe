@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_scope_and_shadowing/block_scope_true_false
 // origin: languages/java/tests/java/test_java_scope_and_shadowing.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-int a = 1; if(false) { int a = 2; } else { a = 3; } __p(a);
+    public static void main(String[] args) throws Throwable {
+int a = 1; if(false) { a = 2; } else { a = 3; } __p(a);
 __check("3");
     }
 }

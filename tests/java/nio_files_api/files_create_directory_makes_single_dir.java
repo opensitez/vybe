@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_create_directory_makes_single_dir
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path parent = java.nio.file.Files.createTempDirectory("vybedir"); java.nio.file.Path child = parent.resolve("child"); java.nio.file.Files.createDirectory(child); __p(java.nio.file.Files.isDirectory(child)); java.nio.file.Files.delete(child); java.nio.file.Files.delete(parent);
 __check("true");
     }

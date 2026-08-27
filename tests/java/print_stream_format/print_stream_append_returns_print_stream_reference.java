@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/print_stream_format/print_stream_append_returns_print_stream_reference
 // origin: languages/java/tests/java/test_print_stream_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.io.PrintStream ps = System.out; java.io.PrintStream same = ps.append("x"); __p(same == ps);
-__check("xtrue");
+__check("true");
     }
 }
 

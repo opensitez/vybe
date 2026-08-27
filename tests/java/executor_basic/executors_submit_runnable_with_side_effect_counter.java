@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_submit_runnable_with_side_effect_counter
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static int[] hits = {0};
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); pool.submit(() -> { hits[0]++; }); pool.shutdown(); Thread.sleep(10); __p(hits[0]);
 __check("1");
     }

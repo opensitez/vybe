@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_after_join_sees_final_value
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -37,7 +48,7 @@ static class Done {
             synchronized void set(int v) { value = v; }
             synchronized int get() { return value; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Done d = new Done(); Thread t = new Thread(() -> d.set(11)); t.start(); t.join(); __p(d.get());
 __check("11");
     }

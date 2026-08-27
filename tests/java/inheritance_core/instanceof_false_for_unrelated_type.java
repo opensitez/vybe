@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/inheritance_core/instanceof_false_for_unrelated_type
 // origin: languages/java/tests/java/test_inheritance_core.rs
 
@@ -35,8 +46,8 @@ public class Main {
 static class Dog {}
         static class Tree {}
         static class Puppy extends Dog {}
-    public static void main(String[] args) {
-Puppy p = new Puppy(); __p(p instanceof Tree);
+    public static void main(String[] args) throws Throwable {
+Puppy p = new Puppy(); __p(((Object)p) instanceof Tree);
 __check("false");
     }
 }

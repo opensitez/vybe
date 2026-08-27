@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_chain_assignments/while_assignment
 // origin: languages/java/tests/java/test_java_chain_assignments.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int a = 0; int i = 1; while (i <= 3) { a += i; a += 2; i++; } __p(a);
-__check("9");
+__check("12");
     }
 }
 

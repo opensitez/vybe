@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_await_waits_for_multiple_count_downs
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static int phase = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(2); Thread t1 = new Thread(() -> { latch.countDown(); phase = 1; }); Thread t2 = new Thread(() -> { latch.countDown(); phase = 2; }); t1.start(); t2.start(); latch.await(); __p(latch.getCount());
 __check("0");
     }

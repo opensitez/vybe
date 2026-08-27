@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/objects_util/objects_compare_second_null_positive_without_comparator_call
 // origin: languages/java/tests/java/test_objects_util.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(java.util.Objects.compare("z", null, (a, b) -> 0));
-__check("1");
+__check("0");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_ternary_expressions/multiple_ternaries
 // origin: languages/java/tests/java/test_java_ternary_expressions.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int a = 1; int b = 2; int c = 3; __p((a < b ? a : b) + (b < c ? b : c));
-__check("4");
+__check("3");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_static_instance_members/static_and_instance_same_name
 // origin: languages/java/tests/java/test_java_static_instance_members.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Counter { static int total = 1; int n; Counter() { n = 2; } static int instanceDelta(Counter c) { return c.n; } void increment() { total++; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Counter c = new Counter(); c.increment(); __p(Counter.total + Counter.instanceDelta(c));
-__check("3");
+__check("4");
     }
 }
 

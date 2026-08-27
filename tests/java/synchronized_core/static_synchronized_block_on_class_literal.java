@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/static_synchronized_block_on_class_literal
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -38,7 +49,7 @@ static class Counter {
                 synchronized (Counter.class) { value++; }
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { for (int i = 0; i < 10; i++) Counter.inc(); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 15; i++) Counter.inc(); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(Counter.value);
 __check("25");
     }

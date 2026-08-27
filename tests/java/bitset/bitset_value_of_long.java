@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/bitset/bitset_value_of_long
 // origin: languages/java/tests/java/test_bitset.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.BitSet bs = java.util.BitSet.valueOf(5L); __p(bs.get(0)); __p(bs.get(2));
+    public static void main(String[] args) throws Throwable {
+java.util.BitSet bs = java.util.BitSet.valueOf(new long[]{5L}); __p(bs.get(0)); __p(bs.get(2));
 __check("true\ntrue");
     }
 }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_signaling_chain_three_threads
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.Semaphore turn = new java.util.concurrent.Semaphore(0);
         static int stage = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { turn.acquire(); stage = 1; turn.release(); } catch (InterruptedException e) {} }); Thread t2 = new Thread(() -> { try { turn.acquire(); stage = 2; } catch (InterruptedException e) {} }); turn.release(); t1.start(); t2.start(); t1.join(); t2.join(); __p(stage);
 __check("2");
     }

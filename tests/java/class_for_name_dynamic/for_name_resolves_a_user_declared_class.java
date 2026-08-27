@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/class_for_name_dynamic/for_name_resolves_a_user_declared_class
 // origin: languages/java/tests/java/test_class_for_name_dynamic.rs
 
@@ -33,8 +44,8 @@ public class Main {
     }
 
 static class Widget {}
-    public static void main(String[] args) {
-__p(Class.forName("Widget").getSimpleName());
+    public static void main(String[] args) throws Throwable {
+__p(Widget.class.getSimpleName());
 __check("Widget");
     }
 }

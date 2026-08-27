@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/static_synchronized_method_called_from_multiple_class_references
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Ref {
             static int n = 0;
             static synchronized void add() { n++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Ref r1 = new Ref(); Ref r2 = new Ref(); Thread t1 = new Thread(() -> r1.add()); Thread t2 = new Thread(() -> r2.add()); t1.start(); t2.start(); t1.join(); t2.join(); __p(Ref.n);
 __check("2");
     }

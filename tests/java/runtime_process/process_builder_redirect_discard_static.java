@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/runtime_process/process_builder_redirect_discard_static
 // origin: languages/java/tests/java/test_runtime_process.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.lang.ProcessBuilder.Redirect r = java.lang.ProcessBuilder.Redirect.DISCARD; __p(r.type());
-__check("DISCARD");
+__check("WRITE");
     }
 }
 

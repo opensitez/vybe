@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/collectors_reducing/collectors_averaging_int_empty_is_nan
 // origin: languages/java/tests/java/test_collectors_reducing.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Double a = java.util.Arrays.<Integer>asList().stream().collect(java.util.stream.Collectors.averagingInt(n -> n)); __p(a.isNaN());
-__check("true");
+__check("false");
     }
 }
 

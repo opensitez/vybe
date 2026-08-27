@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_callable_constructor_get_returns_result
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.Callable<Integer> job = () -> 6 * 7; java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(job); task.run(); __p(task.get());
+    public static void main(String[] args) throws Throwable {
+java.util.concurrent.Callable<Integer> job = () -> 6 * 7; FutureTask<Integer> task = new FutureTask<Integer>(job); task.run(); __p(task.get());
 __check("42");
     }
 }

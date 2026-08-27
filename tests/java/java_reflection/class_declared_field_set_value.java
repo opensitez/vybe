@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_reflection/class_declared_field_set_value
 // origin: languages/java/tests/java/test_java_reflection.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static class Box { int value; Box(int v) { value = v; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Box b = new Box(1); Box.class.getDeclaredField("value").set(b, 7); __p(b.value);
 __check("7");
     }

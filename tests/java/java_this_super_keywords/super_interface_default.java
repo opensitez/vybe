@@ -1,41 +1,16 @@
-// vybe-test: java/java_this_super_keywords/super_interface_default
-// origin: languages/java/tests/java/test_java_this_super_keywords.rs
-
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
+    interface I { default String m() { return "default"; } }
+    static class C implements I {}
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-interface Named { default String label() { return "base"; } } static class D2 implements Named { public String label() { return super.label() + "2"; } }
-    public static void main(String[] args) {
-__p(new D2().label());
-__check("base2");
+    public static void main(String[] args) throws Throwable {
+        C c = new C();
+        __p(c.m());
+        __check("default");
     }
 }
-

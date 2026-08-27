@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/url_api/url_get_file_includes_path_and_query
 // origin: languages/java/tests/java/test_url_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URL u = new java.net.URL("http://f.url.test/dir/file?q=1"); __p(u.getFile());
 __check("/dir/file?q=1");
     }

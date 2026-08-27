@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/linked_blocking_queue/linked_blocking_queue_offer_with_timeout_succeeds_when_space_available
 // origin: languages/java/tests/java/test_linked_blocking_queue.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.LinkedBlockingQueue<Integer> q = new java.util.concurrent.LinkedBlockingQueue<Integer>(2); __p(q.offer(1, 10, java.util.concurrent.TimeUnit.MILLISECONDS));
 __check("true");
     }

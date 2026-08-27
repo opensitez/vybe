@@ -1,41 +1,23 @@
-// vybe-test: java/java_this_super_keywords/super_this_mix
-// origin: languages/java/tests/java/test_java_this_super_keywords.rs
 
 public class Main {
+    static class Base { int x = 1; }
+    static class Sub extends Base { int x = 2; int getSuper() { return super.x; } int getThis() { return this.x; } }
 
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
+
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
+    static void __pr(Object o) { __buf = __buf + String.valueOf(o); }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
         if (!got.equals(want)) {
             System.out.println("FAIL: want [" + want + "] got [" + got + "]");
             throw new RuntimeException("assertion failed");
         }
     }
-
-static class A { int base = 1; S(){} } static class S extends A { int value; S() { this(2); } S(int v) { this.value = super.base + v; } }
-    public static void main(String[] args) {
-__p(new S().value);
-__check("3");
+    public static void main(String[] args) throws Throwable {
+        Sub s = new Sub();
+        __p(s.getSuper() + s.getThis());
+        __check("3");
     }
 }
-

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_instanceof_and_casts/instanceof_array
 // origin: languages/java/tests/java/test_java_instanceof_and_casts.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-String[] names = new String[]{"a"};
-    public static void main(String[] args) {
+static String[] names = new String[]{"a"};
+    public static void main(String[] args) throws Throwable {
 __p(names instanceof Object);
 __check("true");
     }

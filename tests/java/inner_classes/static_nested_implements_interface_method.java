@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/inner_classes/static_nested_implements_interface_method
 // origin: languages/java/tests/java/test_inner_classes.rs
 
@@ -34,9 +45,9 @@ public class Main {
 
 static interface Named { String name(); }
         static class Outer {
-            static class Inner implements Named { String name() { return "inner"; } }
+            static class Inner implements Named { public String name() { return "inner"; } }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Named n = new Outer.Inner(); __p(n.name());
 __check("inner");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/final_keyword/final_class_cannot_be_extended_compile_semantics_documented_by_usage
 // origin: languages/java/tests/java/test_final_keyword.rs
 
@@ -32,10 +43,10 @@ public class Main {
         }
     }
 
-final class Terminal {
+static final class Terminal {
             String ping() { return "ok"; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Terminal t = new Terminal(); __p(t.ping());
 __check("ok");
     }

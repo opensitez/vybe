@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_submit_two_callables_sum_via_main
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2); java.util.concurrent.Future<Integer> left = pool.submit(() -> 11); java.util.concurrent.Future<Integer> right = pool.submit(() -> 22); int sum = left.get() + right.get(); pool.shutdown(); __p(sum);
 __check("33");
     }

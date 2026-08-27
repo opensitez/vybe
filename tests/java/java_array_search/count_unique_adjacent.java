@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_array_search/count_unique_adjacent
 // origin: languages/java/tests/java/test_java_array_search.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[] a = {1,1,2,2,3,3,3}; int c = 0; for (int i = 0; i < a.length; i++) { if (i == 0 || a[i] != a[i - 1]) c++; } __p(c);
-__check("4");
+__check("3");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/inner_classes/static_nested_overrides_to_string
 // origin: languages/java/tests/java/test_inner_classes.rs
 
@@ -34,10 +45,10 @@ public class Main {
 
 static class Outer {
             static class Inner {
-                String toString() { return "inner"; }
+                public String toString() { return "inner"; }
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Outer.Inner inner = new Outer.Inner(); __p(inner.toString());
 __check("inner");
     }

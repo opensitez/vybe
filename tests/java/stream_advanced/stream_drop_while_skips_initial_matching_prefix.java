@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stream_advanced/stream_drop_while_skips_initial_matching_prefix
 // origin: languages/java/tests/java/test_stream_advanced.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.List<Integer> rest = java.util.Arrays.asList(1, 2, 3, 1, 2).stream().dropWhile(n -> n < 3).toList(); __p(rest.size()); __p(rest.get(0));
-__check("2\n3");
+__check("3\n3");
     }
 }
 

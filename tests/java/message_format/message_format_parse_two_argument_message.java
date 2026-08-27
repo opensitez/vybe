@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_parse_two_argument_message
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.text.MessageFormat mf = new java.text.MessageFormat("{0}:{1}"); Object[] parsed = mf.parse("alpha:beta"); __p(parsed[0]); __p(parsed[1]);
 __check("alpha\nbeta");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/linked_blocking_queue/linked_blocking_queue_take_blocks_until_element_available
 // origin: languages/java/tests/java/test_linked_blocking_queue.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.LinkedBlockingQueue<Integer> q = new java.util.concurrent.LinkedBlockingQueue<Integer>();
         static int taken = -1;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread consumer = new Thread(() -> { try { taken = q.take(); } catch (InterruptedException e) {} }); consumer.start(); Thread.sleep(5); q.put(99); consumer.join(); __p(taken);
 __check("99");
     }

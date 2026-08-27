@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_labeled_control_flow/label_break_out_of_if
 // origin: languages/java/tests/java/test_java_labeled_control_flow.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int a = 0; int i = 0; outer: for(; i < 4; i++) { for(int j = 0; j < 4; j++) { if (i == 2) break outer; a++; } } __p(a);
-__check("6");
+__check("8");
     }
 }
 

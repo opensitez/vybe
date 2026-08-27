@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/operator_precedence/double_unary_minus_negates_twice
 // origin: languages/java/tests/java/test_operator_precedence.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-__p(--5);
+    public static void main(String[] args) throws Throwable {
+__p(-(-5));
 __check("5");
     }
 }

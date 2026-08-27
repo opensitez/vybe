@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stringbuilder/stringbuilder_delete_then_append_replaces_removed_span
 // origin: languages/java/tests/java/test_stringbuilder.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 StringBuilder sb = new StringBuilder("abcdef"); sb.delete(2, 5); sb.append("Z"); __p(sb.toString());
-__check("abZ");
+__check("abfZ");
     }
 }
 

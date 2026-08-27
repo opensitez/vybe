@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_three_permits_allow_three_concurrent_holders
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -35,7 +46,7 @@ public class Main {
 static java.util.concurrent.Semaphore sem = new java.util.concurrent.Semaphore(3);
         static int maxHeld = 0;
         static int held = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Runnable task = () -> { try { sem.acquire(); held++; if (held > maxHeld) maxHeld = held; Thread.sleep(2); held--; sem.release(); } catch (Exception e) {} }; Thread t1 = new Thread(task); Thread t2 = new Thread(task); Thread t3 = new Thread(task); t1.start(); t2.start(); t3.start(); t1.join(); t2.join(); t3.join(); __p(maxHeld);
 __check("3");
     }

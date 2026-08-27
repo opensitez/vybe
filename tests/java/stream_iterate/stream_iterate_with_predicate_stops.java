@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stream_iterate/stream_iterate_with_predicate_stops
 // origin: languages/java/tests/java/test_stream_iterate.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 long c = java.util.stream.Stream.iterate(1, n -> n < 10, n -> n + 3).count(); __p(c);
-__check("4");
+__check("3");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_future_not_done_before_get
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); java.util.concurrent.Future<Integer> f = pool.submit(() -> { Thread.sleep(5); return 1; }); __p(f.isDone()); f.get(); pool.shutdown();
 __check("false");
     }

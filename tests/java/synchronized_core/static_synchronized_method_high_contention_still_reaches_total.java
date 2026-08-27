@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/static_synchronized_method_high_contention_still_reaches_total
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Hits {
             static int count = 0;
             static synchronized void ping() { count++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.ArrayList<Thread> threads = new java.util.ArrayList<Thread>(); for (int i = 0; i < 8; i++) { threads.add(new Thread(() -> { for (int j = 0; j < 5; j++) Hits.ping(); })); } for (int i = 0; i < threads.size(); i++) threads.get(i).start(); for (int i = 0; i < threads.size(); i++) threads.get(i).join(); __p(Hits.count);
 __check("40");
     }

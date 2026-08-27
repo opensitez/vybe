@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_throttling_limits_parallel_section
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -35,7 +46,7 @@ public class Main {
 static java.util.concurrent.Semaphore throttle = new java.util.concurrent.Semaphore(2);
         static int peak = 0;
         static int active = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Runnable job = () -> { try { throttle.acquire(); active++; if (active > peak) peak = active; Thread.sleep(2); active--; throttle.release(); } catch (Exception e) {} }; Thread t1 = new Thread(job); Thread t2 = new Thread(job); Thread t3 = new Thread(job); t1.start(); t2.start(); t3.start(); t1.join(); t2.join(); t3.join(); __p(peak);
 __check("2");
     }

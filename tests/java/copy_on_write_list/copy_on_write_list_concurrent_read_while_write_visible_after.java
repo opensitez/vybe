@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/copy_on_write_list/copy_on_write_list_concurrent_read_while_write_visible_after
 // origin: languages/java/tests/java/test_copy_on_write_list.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CopyOnWriteArrayList<Integer> list = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
         static int snapshotSize;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 list.add(1); Thread writer = new Thread(() -> list.add(2)); Thread reader = new Thread(() -> snapshotSize = list.size()); writer.start(); reader.start(); writer.join(); reader.join(); __p(list.size());
 __check("2");
     }

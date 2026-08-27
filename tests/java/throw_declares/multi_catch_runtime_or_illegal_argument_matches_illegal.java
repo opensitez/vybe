@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/throw_declares/multi_catch_runtime_or_illegal_argument_matches_illegal
 // origin: languages/java/tests/java/test_throw_declares.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-try { throw new IllegalArgumentException(); } catch (RuntimeException | IllegalArgumentException e) { __p("union-illegal"); }
+    public static void main(String[] args) throws Throwable {
+try { throw new IllegalArgumentException(); } catch (RuntimeException e) { __p("union-illegal"); }
 __check("union-illegal");
     }
 }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/instanceof_false_for_unrelated_type
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -34,8 +45,8 @@ public class Main {
 
 static class Cat {}
         static class Dog {}
-    public static void main(String[] args) {
-Cat c = new Cat(); __p(c instanceof Dog);
+    public static void main(String[] args) throws Throwable {
+Cat c = new Cat(); __p(((Object)c) instanceof Dog);
 __check("false");
     }
 }

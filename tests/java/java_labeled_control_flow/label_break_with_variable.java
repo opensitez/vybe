@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_labeled_control_flow/label_break_with_variable
 // origin: languages/java/tests/java/test_java_labeled_control_flow.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int a = 0; int b = 0; outer: for (int i = 0; i < 4; i++) { for (int j = 0; j < 4; j++) { b++; if (i == 1 && j == 1) break outer; } a++; } __p(a + "," + b);
-__check("1,2");
+__check("1,6");
     }
 }
 

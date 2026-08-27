@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_local_random/thread_local_random_child_thread_current_is_not_null
 // origin: languages/java/tests/java/test_thread_local_random.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static boolean childHadRng;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> { childHadRng = java.util.concurrent.ThreadLocalRandom.current() != null; }); t.start(); t.join(); __p(childHadRng);
 __check("true");
     }

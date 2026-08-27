@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/final_keyword/final_class_with_final_field_and_method
 // origin: languages/java/tests/java/test_final_keyword.rs
 
@@ -32,11 +43,11 @@ public class Main {
         }
     }
 
-final class Token {
+static final class Token {
             final int code = 7;
             final int code() { return code; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Token t = new Token(); __p(t.code());
 __check("7");
     }

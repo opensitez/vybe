@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_callable_with_local_variable_capture
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 String tag = "go"; java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); __p(pool.submit(() -> tag).get()); pool.shutdown();
 __check("go");
     }

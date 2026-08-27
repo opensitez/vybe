@@ -1,40 +1,17 @@
-// vybe-test: java/arrays_util/arrays_as_list_get_reflects_underlying_array_mutation
-// origin: languages/java/tests/java/test_arrays_util.rs
-
+import java.util.*;
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-    public static void main(String[] args) {
-int[] data = {1, 2, 3}; java.util.List<Integer> list = java.util.Arrays.asList(data); data[1] = 99; __p(list.get(1));
-__check("99");
+    public static void main(String[] args) throws Throwable {
+        String[] arr = {"a", "b"};
+        List<String> list = Arrays.asList(arr);
+        arr[0] = "c";
+        __p(list.get(0));
+        __check("c");
     }
 }
-

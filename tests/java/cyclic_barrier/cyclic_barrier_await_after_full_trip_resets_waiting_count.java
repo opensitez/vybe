@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_await_after_full_trip_resets_waiting_count
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); Thread t2 = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); t1.start(); t2.start(); t1.join(); t2.join(); __p(barrier.getNumberWaiting());
 __check("0");
     }

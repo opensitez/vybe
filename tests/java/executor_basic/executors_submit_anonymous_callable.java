@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_submit_anonymous_callable
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); java.util.concurrent.Callable<String> c = new java.util.concurrent.Callable<String>() { public String call() { return "anon"; } }; __p(pool.submit(c).get()); pool.shutdown();
 __check("anon");
     }

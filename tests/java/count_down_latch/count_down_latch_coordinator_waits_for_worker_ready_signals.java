@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_coordinator_waits_for_worker_ready_signals
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(3);
         static int readyCount = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread w1 = new Thread(() -> { readyCount++; ready.countDown(); }); Thread w2 = new Thread(() -> { readyCount++; ready.countDown(); }); Thread w3 = new Thread(() -> { readyCount++; ready.countDown(); }); w1.start(); w2.start(); w3.start(); ready.await(); __p(readyCount);
 __check("3");
     }

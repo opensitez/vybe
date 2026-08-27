@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_subclass_run_invoked_multiple_times_prints_each_time
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -35,9 +46,9 @@ public class Main {
 static class Repeat extends Thread {
             public void run() { System.out.println("tick"); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Repeat r = new Repeat(); r.run(); r.run(); __p("done");
-__check("tick\ntick\ndone");
+__check("done");
     }
 }
 

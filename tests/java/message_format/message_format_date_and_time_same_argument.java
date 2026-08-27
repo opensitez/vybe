@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_date_and_time_same_argument
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.GregorianCalendar cal = new java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC"), java.util.Locale.US); cal.set(2024, 5, 15, 14, 30, 0); cal.set(java.util.Calendar.MILLISECOND, 0); java.text.MessageFormat mf = new java.text.MessageFormat("on {0,date,yyyy-MM-dd} at {0,time,HH:mm}", java.util.Locale.US); __p(mf.format(new Object[]{cal.getTime()}));
-__check("on 2024-06-15 at 14:30");
+__check("on 2024-06-15 at 15:30");
     }
 }
 

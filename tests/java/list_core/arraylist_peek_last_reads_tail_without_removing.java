@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/list_core/arraylist_peek_last_reads_tail_without_removing
 // origin: languages/java/tests/java/test_list_core.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(11); list.add(22); __p(list.peekLast()); __p(list.get(1));
+    public static void main(String[] args) throws Throwable {
+java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(11); list.add(22); __p(list.get(list.size() - 1)); __p(list.get(1));
 __check("22\n22");
     }
 }

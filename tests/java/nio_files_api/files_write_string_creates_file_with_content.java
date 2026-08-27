@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_write_string_creates_file_with_content
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path p = java.nio.file.Files.createTempFile("vybe", ".txt"); java.nio.file.Files.writeString(p, "alpha"); __p(java.nio.file.Files.readString(p)); java.nio.file.Files.delete(p);
 __check("alpha");
     }

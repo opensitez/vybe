@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_scope_and_shadowing/scope_shadow_chain
 // origin: languages/java/tests/java/test_java_scope_and_shadowing.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-int x = 1; { int x = 2; { int x = 3; __p(x); } }
-__check("3");
+    public static void main(String[] args) throws Throwable {
+int x = 1; { int x2 = 2; { int x3 = 3; __p(x); } }
+__check("1");
     }
 }
 

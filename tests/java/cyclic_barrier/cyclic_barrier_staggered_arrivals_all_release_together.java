@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_staggered_arrivals_all_release_together
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
         static int phase = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread slow = new Thread(() -> { try { Thread.sleep(5); barrier.await(); phase = 1; } catch (Exception e) {} }); Thread fast = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); slow.start(); fast.start(); slow.join(); fast.join(); __p(phase);
 __check("1");
     }

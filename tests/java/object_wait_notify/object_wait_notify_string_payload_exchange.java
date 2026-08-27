@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/object_wait_notify/object_wait_notify_string_payload_exchange
 // origin: languages/java/tests/java/test_object_wait_notify.rs
 
@@ -37,7 +48,7 @@ static class Mailbox {
             synchronized void deposit(String s) { letter = s; notify(); }
             synchronized String pickup() throws InterruptedException { while (letter == null) wait(); String s = letter; letter = null; return s; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Mailbox m = new Mailbox(); Thread t = new Thread(() -> { try { __p(m.pickup()); } catch (InterruptedException e) {} }); t.start(); Thread.sleep(10); m.deposit("note"); t.join();
 __check("note");
     }

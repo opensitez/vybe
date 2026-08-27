@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/double_stream/double_stream_filter_above_two
 // origin: languages/java/tests/java/test_double_stream.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 double s = java.util.stream.DoubleStream.of(1.0, 2.5, 3.0, 4.0).filter(n -> n > 2.0).sum(); __p((int) s);
-__check("7");
+__check("9");
     }
 }
 

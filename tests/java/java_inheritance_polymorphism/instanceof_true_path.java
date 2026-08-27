@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_inheritance_polymorphism/instanceof_true_path
 // origin: languages/java/tests/java/test_java_inheritance_polymorphism.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-abstract class Animal {} static class Tiger extends Animal {}
-    public static void main(String[] args) {
+abstract static class Animal {} static class Tiger extends Animal {}
+    public static void main(String[] args) throws Throwable {
 __p(new Tiger() instanceof Animal);
 __check("true");
     }

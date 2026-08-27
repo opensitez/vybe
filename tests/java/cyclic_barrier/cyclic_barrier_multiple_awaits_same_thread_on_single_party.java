@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_multiple_awaits_same_thread_on_single_party
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(1); barrier.await(); barrier.await(); barrier.await(); __p(barrier.getParties());
 __check("1");
     }

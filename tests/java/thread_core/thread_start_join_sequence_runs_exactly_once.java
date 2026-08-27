@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_start_join_sequence_runs_exactly_once
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -36,9 +47,9 @@ static int[] hits = {0};
         static class Once extends Thread {
             public void run() { hits[0]++; System.out.println(hits[0]); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Once t = new Once(); t.start(); t.join(); __p(hits[0]);
-__check("1\n1");
+__check("1");
     }
 }
 

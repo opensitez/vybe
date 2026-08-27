@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_multiple_number_formats_in_one_pattern
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.text.MessageFormat mf = new java.text.MessageFormat("a={0,number,integer} b={1,number,0.0}", java.util.Locale.US); __p(mf.format(new Object[]{1000, 2.25}));
-__check("a=1,000 b=2.3");
+__check("a=1,000 b=2.2");
     }
 }
 

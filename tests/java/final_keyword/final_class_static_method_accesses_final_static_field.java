@@ -32,7 +32,7 @@ public class Main {
         }
     }
 
-final class Gate {
+static final class Gate {
             static final int CODE = 99;
             static int code() { return CODE; }
         }

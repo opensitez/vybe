@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_worker_exception_still_count_down_in_finally
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         static boolean sawError = false;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread worker = new Thread(() -> { try { throw new RuntimeException("fail"); } catch (RuntimeException e) { sawError = true; } finally { latch.countDown(); } }); worker.start(); latch.await(); __p(sawError);
 __check("true");
     }

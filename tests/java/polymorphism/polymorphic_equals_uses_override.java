@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/polymorphic_equals_uses_override
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -35,13 +46,13 @@ public class Main {
 static class Base {
             int id;
             Base(int id) { this.id = id; }
-            boolean equals(Object o) {
+            public boolean equals(Object o) {
                 if (o instanceof Base) { return ((Base) o).id == id; }
                 return false;
             }
         }
         static class Child extends Base { Child(int id) { super(id); } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Base a = new Child(1); Base b = new Child(1); __p(a.equals(b));
 __check("true");
     }

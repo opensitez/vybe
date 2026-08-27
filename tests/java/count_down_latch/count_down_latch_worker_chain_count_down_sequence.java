@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_worker_chain_count_down_sequence
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
         static int order = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { order = order + 1; latch.countDown(); }); Thread t2 = new Thread(() -> { order = order + 10; latch.countDown(); }); Thread t3 = new Thread(() -> { order = order + 100; latch.countDown(); }); t1.start(); t2.start(); t3.start(); latch.await(); __p(latch.getCount());
 __check("0");
     }

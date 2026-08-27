@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_return_statements/return_in_nested_loop
 // origin: languages/java/tests/java/test_java_return_statements.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Matrix { static int sumTo(int n) { int s = 0; for (int i = 0; i <= n; i++) { if (i == 3) return s + 3; s += i; } return s; } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Matrix.sumTo(5));
-__check("3");
+__check("6");
     }
 }
 

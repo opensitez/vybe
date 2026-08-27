@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/object_wait_notify/object_wait_notify_producer_consumer_queue
 // origin: languages/java/tests/java/test_object_wait_notify.rs
 
@@ -38,7 +49,7 @@ static class Queue1 {
             synchronized void put(int v) { while (hasItem) { try { wait(); } catch (InterruptedException e) {} } item = v; hasItem = true; notify(); }
             synchronized int take() throws InterruptedException { while (!hasItem) wait(); hasItem = false; notify(); return item; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Queue1 q = new Queue1(); Thread consumer = new Thread(() -> { try { __p(q.take()); } catch (InterruptedException e) {} }); consumer.start(); Thread.sleep(10); q.put(7); consumer.join();
 __check("7");
     }

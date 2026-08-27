@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_parallel_tasks_signal_completion
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(2);
         static int sum = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { sum += 5; latch.countDown(); }); Thread t2 = new Thread(() -> { sum += 7; latch.countDown(); }); t1.start(); t2.start(); latch.await(); __p(sum);
 __check("12");
     }

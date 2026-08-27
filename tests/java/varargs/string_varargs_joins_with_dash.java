@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/varargs/string_varargs_joins_with_dash
 // origin: languages/java/tests/java/test_varargs.rs
 
@@ -33,14 +44,14 @@ public class Main {
     }
 
 static String join(String... parts) {
-            String out = \"\";
+            String out = "";
             for (int i = 0; i < parts.length; i++) {
-                if (i > 0) out = out + \"-\";
+                if (i > 0) out = out + "-";
                 out = out + parts[i];
             }
             return out;
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(join("a", "b", "c"));
 __check("a-b-c");
     }

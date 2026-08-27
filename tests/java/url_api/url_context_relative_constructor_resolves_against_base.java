@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/url_api/url_context_relative_constructor_resolves_against_base
 // origin: languages/java/tests/java/test_url_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URL base = new java.net.URL("http://ctx.url.test/a/"); java.net.URL rel = new java.net.URL(base, "b.html"); __p(rel.getPath());
 __check("/a/b.html");
     }

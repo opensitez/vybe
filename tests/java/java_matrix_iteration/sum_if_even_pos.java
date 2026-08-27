@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_matrix_iteration/sum_if_even_pos
 // origin: languages/java/tests/java/test_java_matrix_iteration.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[][] m = {{1,2,3},{4,5,6}}; int s = 0; for (int i = 0; i < m.length; i++) for (int j = 0; j < m[i].length; j++) if (((i + j) & 1) == 0) s += m[i][j]; __p(s);
-__check("11");
+__check("9");
     }
 }
 

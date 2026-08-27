@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/string_advanced/code_point_at_after_supplementary_uses_trailing_unit_index
 // origin: languages/java/tests/java/test_string_advanced.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 String s = "x\uD83D\uDE00y"; __p(s.codePointAt(2));
-__check("128512");
+__check("56832");
     }
 }
 

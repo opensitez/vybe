@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/short_byte_types/byte_unsigned_right_shift_fills_zeros
 // origin: languages/java/tests/java/test_short_byte_types.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 byte b = -1; __p((byte)(b >>> 1));
-__check("127");
+__check("-1");
     }
 }
 

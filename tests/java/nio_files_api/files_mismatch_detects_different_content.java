@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_mismatch_detects_different_content
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path a = java.nio.file.Files.createTempFile("vybe", ".a"); java.nio.file.Path b = java.nio.file.Files.createTempFile("vybe", ".b"); java.nio.file.Files.writeString(a, "aaa"); java.nio.file.Files.writeString(b, "bbb"); long pos = java.nio.file.Files.mismatch(a, b); __p(pos >= 0); java.nio.file.Files.delete(a); java.nio.file.Files.delete(b);
 __check("true");
     }

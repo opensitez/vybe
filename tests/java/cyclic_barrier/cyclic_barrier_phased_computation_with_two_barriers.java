@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_phased_computation_with_two_barriers
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -35,7 +46,7 @@ public class Main {
 static java.util.concurrent.CyclicBarrier phase1 = new java.util.concurrent.CyclicBarrier(2);
         static java.util.concurrent.CyclicBarrier phase2 = new java.util.concurrent.CyclicBarrier(2);
         static int value = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { value = 1; phase1.await(); value = value + 10; phase2.await(); } catch (Exception e) {} }); Thread t2 = new Thread(() -> { try { phase1.await(); value = value + 100; phase2.await(); __p(value); } catch (Exception e) {} }); t1.start(); t2.start(); t1.join(); t2.join();
 __check("111");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_interrupt/sleeping_thread_interrupt_surfaces_as_interrupted_exception
 // origin: languages/java/tests/java/test_thread_interrupt.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> { try { Thread.sleep(1000); } catch (InterruptedException e) { __p("caught"); } }); t.start(); t.interrupt(); t.join();
 __check("caught");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_matrix_iteration/mirror_first
 // origin: languages/java/tests/java/test_java_matrix_iteration.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[][] m = {{1,2,3},{4,5,6}}; int s = m[0][0] + m[0][2] + m[1][0] + m[1][2]; __p(s);
-__check("12");
+__check("14");
     }
 }
 

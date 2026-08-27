@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_nested_start_join_inside_runnable
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread outer = new Thread(() -> { Thread inner = new Thread(() -> __p("inner")); inner.start(); try { inner.join(); } catch (InterruptedException e) { } }); outer.start(); outer.join(); __p("outer");
 __check("inner\nouter");
     }

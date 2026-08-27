@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/method_ref_advanced/method_ref_in_stream_peek_with_println_reference
 // origin: languages/java/tests/java/test_method_ref_advanced.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.List<Integer> out = java.util.Arrays.asList(1, 2).stream().peek(System.out::println).toList(); __p(out.size());
-__check("1\n2\n2");
+__check("2");
     }
 }
 

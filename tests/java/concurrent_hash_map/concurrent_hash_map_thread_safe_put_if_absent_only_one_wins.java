@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/concurrent_hash_map/concurrent_hash_map_thread_safe_put_if_absent_only_one_wins
 // origin: languages/java/tests/java/test_concurrent_hash_map.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.ConcurrentHashMap<String, Integer> map = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
         static int wins = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { if (map.putIfAbsent("k", 1) == null) wins++; }); Thread t2 = new Thread(() -> { if (map.putIfAbsent("k", 2) == null) wins++; }); t1.start(); t2.start(); t1.join(); t2.join(); __p(wins); __p(map.size());
 __check("1\n1");
     }

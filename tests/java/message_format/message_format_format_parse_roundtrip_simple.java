@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_format_parse_roundtrip_simple
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.text.MessageFormat mf = new java.text.MessageFormat("id={0}, name={1}"); Object[] args = new Object[]{7, "vybe"}; String s = mf.format(args); Object[] parsed = mf.parse(s); __p(parsed[0]); __p(parsed[1]);
+    public static void main(String[] args) throws Throwable {
+java.text.MessageFormat mf = new java.text.MessageFormat("id={0}, name={1}"); Object[] msgArgs = new Object[]{7, "vybe"}; String s = mf.format(msgArgs); Object[] parsed = mf.parse(s); __p(parsed[0]); __p(parsed[1]);
 __check("7\nvybe");
     }
 }

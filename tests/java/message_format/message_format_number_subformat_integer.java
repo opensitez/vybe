@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_number_subformat_integer
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.text.MessageFormat mf = new java.text.MessageFormat("count={0,number,integer}", java.util.Locale.US); __p(mf.format(new Object[]{12345.67}));
-__check("count=12,345");
+__check("count=12,346");
     }
 }
 

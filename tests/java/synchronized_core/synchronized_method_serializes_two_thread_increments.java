@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_serializes_two_thread_increments
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Counter {
             int value = 0;
             synchronized void inc() { value++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Counter c = new Counter(); Thread t1 = new Thread(() -> { for (int i = 0; i < 50; i++) c.inc(); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 50; i++) c.inc(); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(c.value);
 __check("100");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_get_number_waiting_increases_before_trip
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,9 +45,9 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
         static int waiting = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { waiting = barrier.getNumberWaiting(); barrier.await(); } catch (Exception e) {} }); Thread.sleep(5); Thread t2 = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); t1.start(); t2.start(); t1.join(); t2.join(); __p(waiting);
-__check("1");
+__check("0");
     }
 }
 

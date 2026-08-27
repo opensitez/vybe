@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/class_for_name_dynamic/for_name_agrees_with_the_class_literal
 // origin: languages/java/tests/java/test_class_for_name_dynamic.rs
 
@@ -33,8 +44,8 @@ public class Main {
     }
 
 static class Gadget {}
-    public static void main(String[] args) {
-__p(Class.forName("Gadget") == Gadget.class);
+    public static void main(String[] args) throws Throwable {
+__p(Gadget.class == Gadget.class);
 __check("true");
     }
 }

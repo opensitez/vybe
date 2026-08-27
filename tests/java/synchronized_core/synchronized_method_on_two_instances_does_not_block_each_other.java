@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_on_two_instances_does_not_block_each_other
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Counter {
             int value = 0;
             synchronized void inc() { value++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Counter a = new Counter(); Counter b = new Counter(); Thread t1 = new Thread(() -> { a.inc(); a.inc(); }); Thread t2 = new Thread(() -> { b.inc(); b.inc(); b.inc(); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(a.value); __p(b.value);
 __check("2\n3");
     }

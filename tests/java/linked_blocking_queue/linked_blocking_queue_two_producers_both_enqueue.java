@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/linked_blocking_queue/linked_blocking_queue_two_producers_both_enqueue
 // origin: languages/java/tests/java/test_linked_blocking_queue.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static java.util.concurrent.LinkedBlockingQueue<Integer> q = new java.util.concurrent.LinkedBlockingQueue<Integer>();
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { q.put(1); } catch (InterruptedException e) {} }); Thread t2 = new Thread(() -> { try { q.put(2); } catch (InterruptedException e) {} }); t1.start(); t2.start(); t1.join(); t2.join(); __p(q.size());
 __check("2");
     }

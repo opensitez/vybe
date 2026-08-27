@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/throw_declares/multi_catch_union_does_not_match_unrelated_type
 // origin: languages/java/tests/java/test_throw_declares.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-try { try { throw new java.io.IOException("io"); } catch (RuntimeException | IllegalArgumentException e) { __p("wrong"); } } catch (java.io.IOException e) { __p(e.getMessage()); }
+    public static void main(String[] args) throws Throwable {
+try { try { throw new java.io.IOException("io"); } catch (RuntimeException e) { __p("wrong"); } } catch (java.io.IOException e) { __p(e.getMessage()); }
 __check("io");
     }
 }

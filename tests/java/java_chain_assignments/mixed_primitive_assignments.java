@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_chain_assignments/mixed_primitive_assignments
 // origin: languages/java/tests/java/test_java_chain_assignments.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int a = 2; a += 3; a -= 1; a *= 2; a /= 2; a %= 3; __p(a);
-__check("3");
+__check("1");
     }
 }
 

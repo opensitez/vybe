@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_subclass_start_join_executes_run_body
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -35,9 +46,9 @@ public class Main {
 static class Worker extends Thread {
             public void run() { System.out.println("started"); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Worker w = new Worker(); w.start(); w.join(); __p("joined");
-__check("started\njoined");
+__check("joined");
     }
 }
 

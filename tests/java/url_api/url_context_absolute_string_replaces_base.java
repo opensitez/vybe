@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/url_api/url_context_absolute_string_replaces_base
 // origin: languages/java/tests/java/test_url_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URL base = new java.net.URL("http://ctx.url.test/old"); java.net.URL abs = new java.net.URL(base, "http://other.url.test/new"); __p(abs.getHost());
 __check("other.url.test");
     }

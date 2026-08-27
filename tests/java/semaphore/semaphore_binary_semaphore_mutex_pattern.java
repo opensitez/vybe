@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_binary_semaphore_mutex_pattern
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1);
         static int counter = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Runnable inc = () -> { try { mutex.acquire(); counter++; mutex.release(); } catch (InterruptedException e) {} }; Thread t1 = new Thread(inc); Thread t2 = new Thread(inc); t1.start(); t2.start(); t1.join(); t2.join(); __p(counter);
 __check("2");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_interrupt/worker_checks_interrupted_status_in_loop
 // origin: languages/java/tests/java/test_thread_interrupt.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> { int n = 0; while (!Thread.currentThread().isInterrupted() && n < 5) { n++; } __p(n); }); t.start(); t.interrupt(); t.join();
-__check("1");
+__check("0");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_array_aggregation/sum_modulo
 // origin: languages/java/tests/java/test_java_array_aggregation.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[] a = {10,20,30}; int s = 0; for (int v : a) s += v % 7; __p(s);
-__check("6");
+__check("11");
     }
 }
 

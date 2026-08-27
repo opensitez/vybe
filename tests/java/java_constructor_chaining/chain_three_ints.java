@@ -1,41 +1,19 @@
-// vybe-test: java/java_constructor_chaining/chain_three_ints
-// origin: languages/java/tests/java/test_java_constructor_chaining.rs
-
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
+    static class Triple {
+        int a, b, c;
+        Triple(int a) { this(a, 0, 0); }
+        Triple(int a, int b, int c) { this.a = a; this.b = b; this.c = c; }
+    }
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-static class Triple { int value; Triple() { this(1); } Triple(int v) { this(v, v+1); } Triple(int a, int b) { this(a * b); } Triple(int a) { value = a; } }
-    public static void main(String[] args) {
-__p(new Triple(1).value);
-__check("2");
+    public static void main(String[] args) throws Throwable {
+        Triple t = new Triple(1);
+        __p(t.a);
+        __check("1");
     }
 }
-

@@ -1,7 +1,9 @@
+import java.util.concurrent.*;
 // vybe-test: java/future_task/future_task_cancel_before_run_prevents_execution
 // origin: languages/java/tests/java/test_future_task.rs
 
 public class Main {
+
 
     // A static String, NOT a StringBuilder. Calling a method on a bare static
     // FIELD receiver fails under Vybe with "undefined is not callable"
@@ -33,7 +35,7 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.FutureTask<String> task = new java.util.concurrent.FutureTask<String>(() -> "never"); task.cancel(false); __p(task.isCancelled()); __p(task.isDone());
+java.util.concurrent.FutureTask<String> task = new FutureTask<String>(() -> "never"); task.cancel(false); __p(task.isCancelled()); __p(task.isDone());
 __check("true\ntrue");
     }
 }

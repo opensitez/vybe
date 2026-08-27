@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_protects_list_append_size
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -37,7 +48,7 @@ static class Bucket {
             synchronized void add(int v) { items.add(v); }
             synchronized int size() { return items.size(); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Bucket b = new Bucket(); Thread t1 = new Thread(() -> { for (int i = 0; i < 3; i++) b.add(i); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 2; i++) b.add(i); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(b.size());
 __check("5");
     }

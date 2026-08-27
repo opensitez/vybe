@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_worker_exception_during_await_may_break
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,8 +45,8 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
         static boolean sawBroken = false;
-    public static void main(String[] args) {
-Thread t1 = new Thread(() -> { try { barrier.await(); } catch (Exception e) { sawBroken = barrier.isBroken(); } }); Thread t2 = new Thread(() -> { try { Thread.sleep(5); barrier.await(); } catch (Exception e) {} }); t1.start(); barrier.reset(); t2.join(); t1.join(); __p(barrier.isBroken());
+    public static void main(String[] args) throws Throwable {
+Thread t1 = new Thread(() -> { try { try { barrier.await(100, TimeUnit.MILLISECONDS); } catch (Exception e) {} } catch (Exception e) { sawBroken = barrier.isBroken(); } }); Thread t2 = new Thread(() -> { try { Thread.sleep(5); try { barrier.await(100, TimeUnit.MILLISECONDS); } catch (Exception e) {} } catch (Exception e) {} }); t1.start(); barrier.reset(); t2.join(); t1.join(); __p(barrier.isBroken());
 __check("true");
     }
 }

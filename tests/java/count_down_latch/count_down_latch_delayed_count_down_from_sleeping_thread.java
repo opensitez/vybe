@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/count_down_latch/count_down_latch_delayed_count_down_from_sleeping_thread
 // origin: languages/java/tests/java/test_count_down_latch.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static long waitedMs = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1); long start = System.currentTimeMillis(); Thread t = new Thread(() -> { try { Thread.sleep(5); latch.countDown(); } catch (InterruptedException e) {} }); t.start(); latch.await(); waitedMs = System.currentTimeMillis() - start; t.join(); __p(waitedMs >= 0);
 __check("true");
     }

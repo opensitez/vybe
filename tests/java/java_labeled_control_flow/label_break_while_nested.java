@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_labeled_control_flow/label_break_while_nested
 // origin: languages/java/tests/java/test_java_labeled_control_flow.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int i = 0; int j = 0; int c = 0; outer: while (i < 3) { i++; while (j < 3) { if (j == 1) break outer; c++; j++; } } __p(c);
-__check("0");
+__check("1");
     }
 }
 

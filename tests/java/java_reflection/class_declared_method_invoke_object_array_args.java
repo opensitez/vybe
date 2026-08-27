@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_reflection/class_declared_method_invoke_object_array_args
 // origin: languages/java/tests/java/test_java_reflection.rs
 
@@ -35,7 +46,7 @@ public class Main {
 static class Ops {
             String join(String a, String b) { return a + b; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Ops.class.getDeclaredMethod("join", String.class, String.class).invoke(new Ops(), new Object[]{"a", "b"}));
 __check("ab");
     }

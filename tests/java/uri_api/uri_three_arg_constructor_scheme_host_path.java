@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/uri_api/uri_three_arg_constructor_scheme_host_path
 // origin: languages/java/tests/java/test_uri_api.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URI u = new java.net.URI("http", "three.test", "/v"); __p(u.getHost()); __p(u.getPath());
-__check("three.test\n/v");
+__check("null\nnull");
     }
 }
 

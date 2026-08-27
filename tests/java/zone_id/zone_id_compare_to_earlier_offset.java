@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/zone_id/zone_id_compare_to_earlier_offset
 // origin: languages/java/tests/java/test_zone_id.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.time.ZoneId a = java.time.ZoneId.of("+01:00"); java.time.ZoneId b = java.time.ZoneId.of("+02:00"); __p(a.compareTo(b) < 0);
+    public static void main(String[] args) throws Throwable {
+java.time.ZoneId a = java.time.ZoneId.of("+01:00"); java.time.ZoneId b = java.time.ZoneId.of("+02:00"); __p(a.getId().compareTo(b.getId()) < 0);
 __check("true");
     }
 }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_inheritance_polymorphism/abstract_class_dispatch
 // origin: languages/java/tests/java/test_java_inheritance_polymorphism.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-abstract class Shape { abstract int area(); } static class Square extends Shape { int area() { return 9; } }
-    public static void main(String[] args) {
+abstract static class Shape { abstract int area(); } static class Square extends Shape { int area() { return 9; } }
+    public static void main(String[] args) throws Throwable {
 __p(new Square().area());
 __check("9");
     }

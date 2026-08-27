@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_executor_shutdown_after_task_completes
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> 4); pool.submit(task); __p(task.get()); pool.shutdown(); __p(pool.isShutdown());
+    public static void main(String[] args) throws Throwable {
+java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); FutureTask<Integer> task = new FutureTask<Integer>(() -> 4); pool.submit(task); __p(task.get()); pool.shutdown(); __p(pool.isShutdown());
 __check("4\ntrue");
     }
 }

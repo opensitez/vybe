@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_try_acquire_after_release_succeeds
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.Semaphore sem = new java.util.concurrent.Semaphore(1); sem.acquire(); sem.release(); __p(sem.tryAcquire());
 __check("true");
     }

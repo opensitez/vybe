@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_matrix_iteration/count_cells
 // origin: languages/java/tests/java/test_java_matrix_iteration.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[][] m = {{1,2,3},{4},{5,6,7}}; int c = 0; for (int i = 0; i < m.length; i++) c += m[i].length; __p(c);
-__check("6");
+__check("7");
     }
 }
 

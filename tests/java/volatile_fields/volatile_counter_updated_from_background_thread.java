@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/volatile_fields/volatile_counter_updated_from_background_thread
 // origin: languages/java/tests/java/test_volatile_fields.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static class Counter { volatile int value = 0; }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Counter c = new Counter(); Thread t = new Thread(() -> { c.value = 42; }); t.start(); t.join(); __p(c.value);
 __check("42");
     }

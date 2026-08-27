@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_autoboxing/byte_to_integer_object
 // origin: languages/java/tests/java/test_java_autoboxing.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-byte b = 3; Integer i = b; __p(i);
+    public static void main(String[] args) throws Throwable {
+byte b = 3; Integer i = (int) b; __p(i);
 __check("3");
     }
 }

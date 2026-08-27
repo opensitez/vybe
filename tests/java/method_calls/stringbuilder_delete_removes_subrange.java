@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/method_calls/stringbuilder_delete_removes_subrange
 // origin: languages/java/tests/java/test_method_calls.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 StringBuilder sb = new StringBuilder("abcdef"); sb.delete(1, 4); __p(sb.toString());
-__check("adf");
+__check("aef");
     }
 }
 

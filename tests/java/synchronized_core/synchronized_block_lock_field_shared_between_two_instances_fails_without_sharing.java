@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_lock_field_shared_between_two_instances_fails_without_sharing
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -42,7 +53,7 @@ static class Node {
                 synchronized (shared) { return value; }
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Node a = new Node(); Node b = new Node(); Thread t1 = new Thread(() -> a.set(4)); Thread t2 = new Thread(() -> b.set(9)); t1.start(); t2.start(); t1.join(); t2.join(); __p(a.get() + b.get());
 __check("13");
     }

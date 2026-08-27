@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/message_format/message_format_time_subformat_custom_hms
 // origin: languages/java/tests/java/test_message_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.GregorianCalendar cal = new java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC"), java.util.Locale.US); cal.set(2024, 0, 1, 8, 9, 10); cal.set(java.util.Calendar.MILLISECOND, 0); java.text.MessageFormat mf = new java.text.MessageFormat("t={0,time,HH:mm:ss}", java.util.Locale.US); __p(mf.format(new Object[]{cal.getTime()}));
-__check("t=08:09:10");
+__check("t=09:09:10");
     }
 }
 

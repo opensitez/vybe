@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_ternary_patterns/ternary_in_loop
 // origin: languages/java/tests/java/test_java_ternary_patterns.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int sum = 0; for(int i=0;i<3;i++){ sum += i % 2 == 0 ? 1 : 2; } __p(sum);
-__check("5");
+__check("4");
     }
 }
 

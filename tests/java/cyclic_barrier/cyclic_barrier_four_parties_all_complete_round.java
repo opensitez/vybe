@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_four_parties_all_complete_round
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(4);
         static int count = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { try { barrier.await(); count++; } catch (Exception e) {} }); Thread t2 = new Thread(() -> { try { barrier.await(); count++; } catch (Exception e) {} }); Thread t3 = new Thread(() -> { try { barrier.await(); count++; } catch (Exception e) {} }); Thread t4 = new Thread(() -> { try { barrier.await(); count++; } catch (Exception e) {} }); t1.start(); t2.start(); t3.start(); t4.start(); t1.join(); t2.join(); t3.join(); t4.join(); __p(count);
 __check("4");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_break_continue/break_with_if_guard
 // origin: languages/java/tests/java/test_java_break_continue.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int i = 0; int s = 0; while(i < 10) { if(i == 4) break; if(i % 2 == 0) s += i; i++; } __p(s);
-__check("6");
+__check("2");
     }
 }
 

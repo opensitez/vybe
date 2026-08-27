@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_on_distinct_lock_objects_allow_parallel_updates
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -40,7 +51,7 @@ static class Split {
             void incA() { synchronized (left) { a++; } }
             void incB() { synchronized (right) { b++; } }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Split s = new Split(); Thread t1 = new Thread(() -> { for (int i = 0; i < 3; i++) s.incA(); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 4; i++) s.incB(); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(s.a); __p(s.b);
 __check("3\n4");
     }

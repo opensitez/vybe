@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_constructor_chaining/init_from_constructor
 // origin: languages/java/tests/java/test_java_constructor_chaining.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static class Node { int value; Node(int value) { this.value = value; } Node() { this(3); } }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(new Node(2).value);
-__check("3");
+__check("2");
     }
 }
 

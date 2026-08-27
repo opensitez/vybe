@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/interface_instanceof_on_implementor
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-static interface Closeable { void close(); }
-        static class FileHandle implements Closeable { void close() {} }
-    public static void main(String[] args) {
+static interface Closeable { public void close(); }
+        static class FileHandle implements Closeable { public void close() {} }
+    public static void main(String[] args) throws Throwable {
 Closeable c = new FileHandle(); __p(c instanceof FileHandle);
 __check("true");
     }

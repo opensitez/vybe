@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/linked_blocking_queue/linked_blocking_queue_put_multiple_then_drain_to_empties
 // origin: languages/java/tests/java/test_linked_blocking_queue.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.LinkedBlockingQueue<Integer> q = new java.util.concurrent.LinkedBlockingQueue<Integer>(); q.put(1); q.put(2); java.util.ArrayList<Integer> dest = new java.util.ArrayList<Integer>(); q.drainTo(dest); __p(q.isEmpty()); __p(dest.size());
 __check("true\n2");
     }

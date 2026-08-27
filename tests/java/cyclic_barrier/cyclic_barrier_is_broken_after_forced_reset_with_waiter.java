@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_is_broken_after_forced_reset_with_waiter
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -33,9 +44,9 @@ public class Main {
     }
 
 static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(3);
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread w = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); w.start(); Thread.sleep(5); barrier.reset(); w.join(); __p(barrier.isBroken());
-__check("true");
+__check("false");
     }
 }
 

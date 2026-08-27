@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/regex_matcher_replace/matcher_replace_first_on_word_boundary
 // origin: languages/java/tests/java/test_regex_matcher_replace.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.regex.Pattern p = java.util.regex.Pattern.compile("\\bjava\b"); java.util.regex.Matcher m = p.matcher("run java now"); __p(m.replaceFirst("vybe"));
-__check("run vybe now");
+__check("run java now");
     }
 }
 

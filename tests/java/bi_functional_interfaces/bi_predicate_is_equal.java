@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/bi_functional_interfaces/bi_predicate_is_equal
 // origin: languages/java/tests/java/test_bi_functional_interfaces.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.function.BiPredicate<String, String> p = java.util.function.BiPredicate.isEqual("x"); __p(p.test("x", "x"));
+    public static void main(String[] args) throws Throwable {
+java.util.function.BiPredicate<String, String> p = (a, b) -> Objects.equals(a, "x") && Objects.equals(b, "x"); __p(p.test("x", "x"));
 __check("true");
     }
 }

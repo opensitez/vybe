@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/decimal_format/decimal_format_parse_simple_decimal
 // origin: languages/java/tests/java/test_decimal_format.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.text.DecimalFormatSymbols sym = new java.text.DecimalFormatSymbols(java.util.Locale.US); java.text.DecimalFormat df = new java.text.DecimalFormat("#0.00", sym); Number n = df.parse("12.34"); __p(n.doubleValue());
 __check("12.34");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_array_mutation/right_shift
 // origin: languages/java/tests/java/test_java_array_mutation.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[] a = {1,2,3,4}; for (int i = a.length -1; i > 0; i--) a[i] = a[i - 1]; a[0] = 0; __p(a[0] + a[1]);
-__check("2");
+__check("1");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/uri_api/uri_seven_arg_constructor_sets_scheme_and_path
 // origin: languages/java/tests/java/test_uri_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URI u = new java.net.URI("http", "user", "host.test", 80, "/api", "q=1", "frag"); __p(u.getScheme()); __p(u.getPath());
 __check("http\n/api");
     }

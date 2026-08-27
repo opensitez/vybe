@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/object_wait_notify/object_wait_notify_handoff_between_threads
 // origin: languages/java/tests/java/test_object_wait_notify.rs
 
@@ -37,7 +48,7 @@ static class Handoff {
             synchronized void send(String m) { msg = m; notify(); }
             synchronized String recv() throws InterruptedException { while (msg == null) wait(); return msg; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Handoff h = new Handoff(); Thread t = new Thread(() -> { try { __p(h.recv()); } catch (InterruptedException e) {} }); t.start(); Thread.sleep(10); h.send("ping"); t.join();
 __check("ping");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_zero_initial_increment_to_one
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Once {
             int n = 0;
             synchronized void once() { if (n == 0) n = 1; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Once o = new Once(); Thread t1 = new Thread(() -> o.once()); Thread t2 = new Thread(() -> o.once()); t1.start(); t2.start(); t1.join(); t2.join(); __p(o.n);
 __check("1");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/cyclic_barrier/cyclic_barrier_action_runnable_runs_on_barrier_thread
 // origin: languages/java/tests/java/test_cyclic_barrier.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static String marker = "";
         static java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2, () -> { marker = "tripped"; });
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t = new Thread(() -> { try { barrier.await(); } catch (Exception e) {} }); t.start(); barrier.await(); t.join(); __p(marker);
 __check("tripped");
     }

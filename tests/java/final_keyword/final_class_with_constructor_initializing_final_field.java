@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/final_keyword/final_class_with_constructor_initializing_final_field
 // origin: languages/java/tests/java/test_final_keyword.rs
 
@@ -32,11 +43,11 @@ public class Main {
         }
     }
 
-final class Point {
+static final class Point {
             final int x;
             Point(int v) { x = v; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Point p = new Point(8); __p(p.x);
 __check("8");
     }

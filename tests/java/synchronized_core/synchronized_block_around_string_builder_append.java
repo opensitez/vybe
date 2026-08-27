@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_around_string_builder_append
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -37,7 +48,7 @@ static class Log {
             synchronized void append(String part) { sb.append(part); }
             synchronized String text() { return sb.toString(); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Log log = new Log(); Thread t1 = new Thread(() -> log.append("a")); Thread t2 = new Thread(() -> log.append("b")); t1.start(); t2.start(); t1.join(); t2.join(); __p(log.text().length());
 __check("2");
     }

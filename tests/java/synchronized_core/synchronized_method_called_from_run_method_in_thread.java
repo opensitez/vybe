@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_called_from_run_method_in_thread
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -41,7 +52,7 @@ static class Counter {
             Worker(Counter counter) { this.counter = counter; }
             public void run() { counter.inc(); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Counter c = new Counter(); Worker w = new Worker(c); w.start(); w.join(); __p(c.value);
 __check("1");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/copy_on_write_list/copy_on_write_list_add_if_absent_thread_safe_only_one_insert
 // origin: languages/java/tests/java/test_copy_on_write_list.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.CopyOnWriteArrayList<Integer> list = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
         static int inserts = 0;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> { if (list.addIfAbsent(7)) inserts++; }); Thread t2 = new Thread(() -> { if (list.addIfAbsent(7)) inserts++; }); t1.start(); t2.start(); t1.join(); t2.join(); __p(inserts); __p(list.size());
 __check("1\n1");
     }

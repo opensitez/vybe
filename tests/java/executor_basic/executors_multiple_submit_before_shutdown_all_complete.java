@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_multiple_submit_before_shutdown_all_complete
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2); java.util.concurrent.Future<Integer> f1 = pool.submit(() -> 1); java.util.concurrent.Future<Integer> f2 = pool.submit(() -> 2); java.util.concurrent.Future<Integer> f3 = pool.submit(() -> 3); __p(f1.get() + f2.get() + f3.get()); pool.shutdown();
 __check("6");
     }

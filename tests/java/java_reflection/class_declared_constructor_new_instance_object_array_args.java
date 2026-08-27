@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_reflection/class_declared_constructor_new_instance_object_array_args
 // origin: languages/java/tests/java/test_java_reflection.rs
 
@@ -36,7 +47,7 @@ static class Made {
             String value;
             Made(String x) { value = x; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Made.class.getDeclaredConstructor(String.class).newInstance(new Object[]{"ok"}).value);
 __check("ok");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/abstract_classes/abstract_class_with_private_concrete_helper
 // origin: languages/java/tests/java/test_abstract_classes.rs
 
@@ -33,13 +44,13 @@ public class Main {
     }
 
 static abstract class Base {
-            private int helper() { return 3; }
+            protected int helper() { return 3; }
             abstract int expose();
         }
         static class Child extends Base {
             int expose() { return helper(); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Child c = new Child(); __p(c.expose());
 __check("3");
     }

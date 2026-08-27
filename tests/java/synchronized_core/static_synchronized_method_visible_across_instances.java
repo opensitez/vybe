@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/static_synchronized_method_visible_across_instances
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -36,7 +47,7 @@ static class Shared {
             static int hits = 0;
             static synchronized void hit() { hits++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Shared a = new Shared(); Shared b = new Shared(); Thread t1 = new Thread(() -> a.hit()); Thread t2 = new Thread(() -> b.hit()); t1.start(); t2.start(); t1.join(); t2.join(); __p(Shared.hits);
 __check("2");
     }

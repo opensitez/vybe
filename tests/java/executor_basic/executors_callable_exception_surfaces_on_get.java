@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/executor_basic/executors_callable_exception_surfaces_on_get
 // origin: languages/java/tests/java/test_executor_basic.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); java.util.concurrent.Future<Integer> f = pool.submit(() -> { throw new RuntimeException("boom"); }); try { f.get(); __p("ok"); } catch (Exception e) { __p(e.getMessage()); } pool.shutdown();
-__check("boom");
+__check("java.lang.RuntimeException: boom");
     }
 }
 

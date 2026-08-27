@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_while_loops_advanced/while_false_immediate
 // origin: languages/java/tests/java/test_java_while_loops_advanced.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-int x = 0; while (false) x++; __p(x);
+    public static void main(String[] args) throws Throwable {
+int x = 0; boolean __f = false; while (__f) x++; __p(x);
 __check("0");
     }
 }

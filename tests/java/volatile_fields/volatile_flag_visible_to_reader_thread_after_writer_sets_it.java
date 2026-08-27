@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/volatile_fields/volatile_flag_visible_to_reader_thread_after_writer_sets_it
 // origin: languages/java/tests/java/test_volatile_fields.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static class Flag { volatile boolean ready = false; }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Flag f = new Flag(); Thread writer = new Thread(() -> { f.ready = true; }); Thread reader = new Thread(() -> { while (!f.ready) { } __p("seen"); }); writer.start(); reader.start(); writer.join(); reader.join();
 __check("seen");
     }

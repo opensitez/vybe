@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_labeled_control_flow/label_break_inner_only
 // origin: languages/java/tests/java/test_java_labeled_control_flow.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int total = 0; for(int i=0;i<3;i++){ for(int j=0;j<3;j++){ if(j==1) break; total += 1; } } __p(total);
-__check("6");
+__check("3");
     }
 }
 

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_write_with_create_option_on_missing_path
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("vybedir"); java.nio.file.Path f = dir.resolve("created.txt"); java.nio.file.Files.writeString(f, "fresh", java.nio.file.StandardOpenOption.CREATE); __p(java.nio.file.Files.readString(f)); java.nio.file.Files.delete(f); java.nio.file.Files.delete(dir);
 __check("fresh");
     }

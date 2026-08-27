@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_submit_to_executor_via_future_task
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> 10); pool.submit(task); __p(task.get()); pool.shutdown();
+    public static void main(String[] args) throws Throwable {
+java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(1); FutureTask<Integer> task = new FutureTask<Integer>(() -> 10); pool.submit(task); __p(task.get()); pool.shutdown();
 __check("10");
     }
 }

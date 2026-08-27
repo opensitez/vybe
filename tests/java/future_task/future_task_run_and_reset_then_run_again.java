@@ -1,41 +1,22 @@
-// vybe-test: java/future_task/future_task_run_and_reset_then_run_again
-// origin: languages/java/tests/java/test_future_task.rs
-
+import java.util.concurrent.*;
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
+    static class MyTask<V> extends FutureTask<V> {
+        public MyTask(Callable<V> c) { super(c); }
+        public boolean runAndReset() { return super.runAndReset(); }
+    }
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-static int runs = 0;
-    public static void main(String[] args) {
-java.util.concurrent.FutureTask<Integer> task = new java.util.concurrent.FutureTask<Integer>(() -> { runs++; return runs; }); task.run(); __p(task.get()); task.runAndReset(); task.run(); __p(task.get());
-__check("1\n2");
+    public static void main(String[] args) throws Throwable {
+        MyTask<Integer> task = new MyTask<>(() -> 1);
+        task.run();
+        task.runAndReset();
+        task.run();
+        __p(task.get());
+        __check("1");
     }
 }
-

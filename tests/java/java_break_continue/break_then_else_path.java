@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_break_continue/break_then_else_path
 // origin: languages/java/tests/java/test_java_break_continue.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int i = 0; int s = 0; while(true) { if(i == 2) break; if(i == 1) { i++; continue; } s += i; i++; } __p(s);
-__check("1");
+__check("0");
     }
 }
 

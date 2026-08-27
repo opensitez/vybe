@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/final_keyword/final_class_with_to_string_override
 // origin: languages/java/tests/java/test_final_keyword.rs
 
@@ -32,11 +43,11 @@ public class Main {
         }
     }
 
-final class Label {
+static final class Label {
             final String text = "done";
             public String toString() { return text; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Label l = new Label(); __p(l);
 __check("done");
     }

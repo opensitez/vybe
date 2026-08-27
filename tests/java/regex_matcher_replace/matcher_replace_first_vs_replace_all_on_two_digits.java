@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/regex_matcher_replace/matcher_replace_first_vs_replace_all_on_two_digits
 // origin: languages/java/tests/java/test_regex_matcher_replace.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.regex.Pattern p = java.util.regex.Pattern.compile("\\d"); java.util.regex.Matcher m1 = p.matcher("x1y2"); java.util.regex.Matcher m2 = p.matcher("x1y2"); __p(m1.replaceFirst("*")); __p(m2.replaceAll("*"));
-__check("x*1y2\nx*y*");
+__check("x*y2\nx*y*");
     }
 }
 

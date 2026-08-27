@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_method_on_subclass_inherits_lock
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -37,7 +48,7 @@ static class Base {
             synchronized void bump() { n++; }
         }
         static class Derived extends Base { }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Derived d = new Derived(); Thread t1 = new Thread(() -> { for (int i = 0; i < 4; i++) d.bump(); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 6; i++) d.bump(); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(d.n);
 __check("10");
     }

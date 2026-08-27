@@ -1,41 +1,19 @@
-// vybe-test: java/java_this_super_keywords/this_from_array_init
-// origin: languages/java/tests/java/test_java_this_super_keywords.rs
-
 public class Main {
-
-    // A static String, NOT a StringBuilder. Calling a method on a bare static
-    // FIELD receiver fails under Vybe with "undefined is not callable"
-    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
-    // l.append(x)` works, so the method is resolved from the receiver's
-    // declared type at the call site and a static field carries none. String
-    // concatenation onto a static field has no such problem.
+    static class ArrBox {
+        int[] arr;
+        ArrBox(int[] arr) { this.arr = arr; }
+        int getTotal() { return arr[0]; }
+    }
     static String __buf = "";
-
-    static void __p(Object o) {
-        __buf = __buf + String.valueOf(o) + "\n";
-    }
-
-    static void __pr(Object o) {
-        __buf = __buf + String.valueOf(o);
-    }
-
+    static void __p(Object o) { __buf = __buf + String.valueOf(o) + "\n"; }
     static void __check(String want) {
         String got = __buf;
-        // The final `println` contributes a trailing newline that the expected
-        // line vector never carried, so it is not part of the comparison.
-        if (got.endsWith("\n")) {
-            got = got.substring(0, got.length() - 1);
-        }
-        if (!got.equals(want)) {
-            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
-        }
+        if (got.endsWith("\n")) got = got.substring(0, got.length() - 1);
+        if (!got.equals(want)) throw new RuntimeException("fail: " + got);
     }
-
-static class ArrBox { int value; ArrBox(int v) { this.value = v; } ArrBox total(int times) { int r = 0; for (int i = 0; i < times; i++) r += this.value; return r; } ArrBox total() { return this; } int total() { return this.value; } }
-    public static void main(String[] args) {
-__p(new ArrBox(2).total());
-__check("2");
+    public static void main(String[] args) throws Throwable {
+        ArrBox b = new ArrBox(new int[]{5});
+        __p(b.getTotal());
+        __check("5");
     }
 }
-

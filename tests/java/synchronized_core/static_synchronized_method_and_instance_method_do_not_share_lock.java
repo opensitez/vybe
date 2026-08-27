@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/static_synchronized_method_and_instance_method_do_not_share_lock
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -38,7 +49,7 @@ static class Mixed {
             static synchronized void staticInc() { staticCount++; }
             synchronized void instanceInc() { instanceCount++; }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Mixed m = new Mixed(); Thread t1 = new Thread(() -> Mixed.staticInc()); Thread t2 = new Thread(() -> m.instanceInc()); t1.start(); t2.start(); t1.join(); t2.join(); __p(Mixed.staticCount); __p(m.instanceCount);
 __check("1\n1");
     }

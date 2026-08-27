@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/concurrent_hash_map/concurrent_hash_map_two_threads_put_distinct_keys
 // origin: languages/java/tests/java/test_concurrent_hash_map.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static java.util.concurrent.ConcurrentHashMap<String, Integer> map = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread t1 = new Thread(() -> map.put("left", 1)); Thread t2 = new Thread(() -> map.put("right", 2)); t1.start(); t2.start(); t1.join(); t2.join(); __p(map.size());
 __check("2");
     }

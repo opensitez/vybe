@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_reflection/class_declared_constructor_parameter_count
 // origin: languages/java/tests/java/test_java_reflection.rs
 
@@ -36,7 +47,7 @@ static class Made {
             Made() {}
             Made(int x) {}
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p(Made.class.getDeclaredConstructor(int.class).getParameterCount());
 __check("1");
     }

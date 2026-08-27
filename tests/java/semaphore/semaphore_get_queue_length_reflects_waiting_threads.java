@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/semaphore/semaphore_get_queue_length_reflects_waiting_threads
 // origin: languages/java/tests/java/test_semaphore.rs
 
@@ -34,7 +45,7 @@ public class Main {
 
 static java.util.concurrent.Semaphore sem = new java.util.concurrent.Semaphore(1);
         static int queueLen;
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 sem.acquire(); Thread w = new Thread(() -> { try { sem.acquire(); } catch (InterruptedException e) {} }); w.start(); Thread.sleep(5); queueLen = sem.getQueueLength(); sem.release(); sem.release(); w.join(); __p(queueLen);
 __check("1");
     }

@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/stream_core/stream_collect_after_filter_builds_sublist
 // origin: languages/java/tests/java/test_stream_core.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.List<Integer> evens = java.util.Arrays.asList(1, 2, 3, 4, 5, 6).stream().filter(n -> n % 2 == 0).collect(java.util.stream.Collectors.toList()); __p(evens.size()); __p(evens.get(1));
-__check("3\n6");
+__check("3\n4");
     }
 }
 

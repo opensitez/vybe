@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/print_stream_format/print_stream_format_width_precision_integer
 // origin: languages/java/tests/java/test_print_stream_format.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 System.out.format("%8.3f", 1.5); __p("done");
-__check("   1.500done");
+__check("done");
     }
 }
 

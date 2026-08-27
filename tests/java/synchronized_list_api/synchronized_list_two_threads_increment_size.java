@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_list_api/synchronized_list_two_threads_increment_size
 // origin: languages/java/tests/java/test_synchronized_list_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.util.ArrayList<Integer> backing = new java.util.ArrayList<Integer>(); java.util.List<Integer> sync = java.util.Collections.synchronizedList(backing); Thread t1 = new Thread(() -> { for (int i = 0; i < 25; i++) sync.add(i); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 25; i++) sync.add(i); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(sync.size());
 __check("50");
     }

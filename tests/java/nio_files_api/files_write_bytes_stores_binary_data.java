@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/nio_files_api/files_write_bytes_stores_binary_data
 // origin: languages/java/tests/java/test_nio_files_api.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.nio.file.Path p = java.nio.file.Files.createTempFile("vybe", ".bin"); byte[] data = new byte[]{65, 66, 67}; java.nio.file.Files.write(p, data); byte[] back = java.nio.file.Files.readAllBytes(p); __p(back[0]); __p(back[2]); java.nio.file.Files.delete(p);
 __check("65\n67");
     }

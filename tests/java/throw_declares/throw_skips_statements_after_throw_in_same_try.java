@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/throw_declares/throw_skips_statements_after_throw_in_same_try
 // origin: languages/java/tests/java/test_throw_declares.rs
 
@@ -28,12 +39,12 @@ public class Main {
         }
         if (!got.equals(want)) {
             System.out.println("FAIL: want [" + want + "] got [" + got + "]");
-            throw new RuntimeException("assertion failed");
+            if (true) throw new RuntimeException("assertion failed");
         }
     }
 
-    public static void main(String[] args) {
-try { __p("before"); throw new RuntimeException("stop"); __p("never"); } catch (RuntimeException e) { __p(e.getMessage()); }
+    public static void main(String[] args) throws Throwable {
+try { __p("before"); if (true) throw new RuntimeException("stop"); __p("never"); } catch (RuntimeException e) { __p(e.getMessage()); }
 __check("before\nstop");
     }
 }

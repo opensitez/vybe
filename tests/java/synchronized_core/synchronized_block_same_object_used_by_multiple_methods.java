@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_same_object_used_by_multiple_methods
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -42,7 +53,7 @@ static class Account {
                 synchronized (lock) { return balance; }
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Account a = new Account(); Thread t1 = new Thread(() -> a.deposit(5)); Thread t2 = new Thread(() -> a.deposit(7)); t1.start(); t2.start(); t1.join(); t2.join(); __p(a.snapshot());
 __check("12");
     }

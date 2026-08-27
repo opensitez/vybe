@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/polymorphism/cross_hierarchy_instanceof_false
 // origin: languages/java/tests/java/test_polymorphism.rs
 
@@ -34,8 +45,8 @@ public class Main {
 
 static class A {}
         static class B {}
-    public static void main(String[] args) {
-A a = new A(); __p(a instanceof B);
+    public static void main(String[] args) throws Throwable {
+A a = new A(); __p(((Object)a) instanceof B);
 __check("false");
     }
 }

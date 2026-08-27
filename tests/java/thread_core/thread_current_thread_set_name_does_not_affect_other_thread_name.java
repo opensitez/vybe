@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_current_thread_set_name_does_not_affect_other_thread_name
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -32,7 +43,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Thread main = Thread.currentThread(); main.setName("main"); Thread t = new Thread(() -> __p(Thread.currentThread().getName())); t.setName("other"); t.start(); t.join(); __p(main.getName());
 __check("other\nmain");
     }

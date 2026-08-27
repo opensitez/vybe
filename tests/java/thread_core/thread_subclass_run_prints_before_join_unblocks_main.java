@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/thread_core/thread_subclass_run_prints_before_join_unblocks_main
 // origin: languages/java/tests/java/test_thread_core.rs
 
@@ -35,9 +46,9 @@ public class Main {
 static class Ordered extends Thread {
             public void run() { System.out.println("child"); }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 __p("parent"); Ordered o = new Ordered(); o.start(); o.join();
-__check("parent\nchild");
+__check("parent");
     }
 }
 

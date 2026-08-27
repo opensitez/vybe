@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/synchronized_core/synchronized_block_prevents_lost_updates_on_int_field
 // origin: languages/java/tests/java/test_synchronized_core.rs
 
@@ -38,7 +49,7 @@ static class Tallier {
                 synchronized (this) { sum += v; }
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 Tallier t = new Tallier(); Thread a = new Thread(() -> t.add(10)); Thread b = new Thread(() -> t.add(20)); a.start(); b.start(); a.join(); b.join(); __p(t.sum);
 __check("30");
     }

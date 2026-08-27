@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/future_task/future_task_two_future_tasks_independent_results
 // origin: languages/java/tests/java/test_future_task.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-java.util.concurrent.FutureTask<Integer> a = new java.util.concurrent.FutureTask<Integer>(() -> 1); java.util.concurrent.FutureTask<Integer> b = new java.util.concurrent.FutureTask<Integer>(() -> 2); a.run(); b.run(); __p(a.get() + b.get());
+    public static void main(String[] args) throws Throwable {
+java.util.concurrent.FutureTask<Integer> a = new FutureTask<Integer>(() -> 1); java.util.concurrent.FutureTask<Integer> b = new FutureTask<Integer>(() -> 2); a.run(); b.run(); __p(a.get() + b.get());
 __check("3");
     }
 }

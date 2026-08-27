@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/object_wait_notify/object_wait_releases_lock_for_other_thread
 // origin: languages/java/tests/java/test_object_wait_notify.rs
 
@@ -10,7 +21,7 @@ static class LockOrder {
                 System.out.println(flag);
             }
         }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 LockOrder lo = new LockOrder(); Thread t = new Thread(() -> { try { lo.getter(); } catch (InterruptedException e) {} }); t.start(); Thread.sleep(10); lo.setter(); t.join();
     }
 }

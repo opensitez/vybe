@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_scope_and_shadowing/scope_multiple_blocks
 // origin: languages/java/tests/java/test_java_scope_and_shadowing.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-int x = 1; { x = 2; } { int x = 3; __p(2); }
+    public static void main(String[] args) throws Throwable {
+int x = 1; { x = 2; } { int x3 = 3; __p(2); }
 __check("2");
     }
 }

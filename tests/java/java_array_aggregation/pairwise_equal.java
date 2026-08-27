@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/java_array_aggregation/pairwise_equal
 // origin: languages/java/tests/java/test_java_array_aggregation.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 int[] a = {1,2,3,2,1}; boolean ok = true; for (int i = 0; i < a.length/2; i++) if (a[i] != a[a.length -1 -i]) ok = false; __p(ok);
-__check("false");
+__check("true");
     }
 }
 

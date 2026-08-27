@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/final_keyword/final_class_instance_created_and_used
 // origin: languages/java/tests/java/test_final_keyword.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-final class Seal {}
-    public static void main(String[] args) {
+static final class Seal {}
+    public static void main(String[] args) throws Throwable {
 Seal s = new Seal(); __p(s != null);
 __check("true");
     }

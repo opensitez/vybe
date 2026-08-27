@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/uri_api/uri_relativize_strips_common_prefix
 // origin: languages/java/tests/java/test_uri_api.rs
 
@@ -32,9 +43,9 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 java.net.URI a = java.net.URI.create("http://x.com/a/b"); java.net.URI b = java.net.URI.create("http://x.com/a/c"); __p(a.relativize(b).getPath());
-__check("../c");
+__check("/a/c");
     }
 }
 

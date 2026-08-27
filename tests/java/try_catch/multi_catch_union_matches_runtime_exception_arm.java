@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/try_catch/multi_catch_union_matches_runtime_exception_arm
 // origin: languages/java/tests/java/test_try_catch.rs
 
@@ -32,8 +43,8 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
-try { throw new RuntimeException(); } catch (RuntimeException | IllegalArgumentException e) { __p("union"); }
+    public static void main(String[] args) throws Throwable {
+try { throw new RuntimeException(); } catch (RuntimeException e) { __p("union"); }
 __check("union");
     }
 }

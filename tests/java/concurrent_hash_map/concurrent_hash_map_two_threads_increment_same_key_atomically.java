@@ -1,3 +1,14 @@
+import java.util.*;
+import java.util.stream.*;
+import java.util.function.*;
+import java.util.concurrent.*;
+import java.time.*;
+import java.time.format.*;
+import java.net.*;
+import java.io.*;
+import java.nio.file.*;
+import java.lang.reflect.*;
+
 // vybe-test: java/concurrent_hash_map/concurrent_hash_map_two_threads_increment_same_key_atomically
 // origin: languages/java/tests/java/test_concurrent_hash_map.rs
 
@@ -33,7 +44,7 @@ public class Main {
     }
 
 static java.util.concurrent.ConcurrentHashMap<String, Integer> map = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
 map.put("n", 0); Thread t1 = new Thread(() -> { for (int i = 0; i < 50; i++) map.compute("n", (k, v) -> v + 1); }); Thread t2 = new Thread(() -> { for (int i = 0; i < 50; i++) map.compute("n", (k, v) -> v + 1); }); t1.start(); t2.start(); t1.join(); t2.join(); __p(map.get("n"));
 __check("100");
     }
