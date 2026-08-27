@@ -191,6 +191,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common(emit.into()),
             ));
         }
+        // ⛔ The float predicates belong on THIS registration, not a second
+        // `ClassType::new("Double")` of their own. Two exports of one class
+        // name under one interface do not merge — the class lookup takes the
+        // first match — so declaring `IsNaN` separately left it unreachable
+        // while `Parse` on the other copy resolved. It also gets them the
+        // lowercase spellings (`double.IsNaN`) for free.
+        if matches!(name, "Single" | "float" | "Double" | "double") {
+            for (member, emit) in [
+                ("IsNaN", "dotnet.double_is_nan"),
+                ("IsInfinity", "dotnet.double_is_infinity"),
+                ("IsPositiveInfinity", "dotnet.double_is_positive_infinity"),
+                ("IsNegativeInfinity", "dotnet.double_is_negative_infinity"),
+                ("IsFinite", "dotnet.double_is_finite"),
+                ("IsNormal", "dotnet.double_is_normal"),
+                ("IsSubnormal", "dotnet.double_is_subnormal"),
+            ] {
+                ty = ty.with_method(MethodDef::static_method(
+                    member,
+                    1,
+                    MethodBody::Common(emit.into()),
+                ));
+            }
+        }
         exports.push(DotnetClassExport::new("dotnet.System", ty));
     }
 

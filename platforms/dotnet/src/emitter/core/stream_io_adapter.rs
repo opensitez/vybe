@@ -45,6 +45,9 @@ const BUF_KEY: &str = "__buf";
 const BUILDER_KEY: &str = "__builder";
 const SB_BUFFER_KEY: &str = "__buffer";
 const DISPOSED_KEY: &str = "__disposed";
+/// The underlying byte stream, when the reader/writer was built over one
+/// (`new StreamReader(ms)`) rather than over a file path.
+const STREAM_KEY: &str = "__stream";
 
 const READER_TYPE: &str = "StreamReader";
 const WRITER_TYPE: &str = "StreamWriter";
@@ -139,23 +142,81 @@ fn emit_set_writer_buffer(chunk: &mut Chunk, writer_slot: u16, new_buf_slot: u16
     chunk.emit_end(line);
 }
 
-/// `new StreamReader(path)` — load file into a `__content` string and
-/// initialise `__pos = 0`. Stack: `[path]` → `[reader]`.
-pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// The stream fields a `MemoryStream` carries — read directly, because a text
+/// reader over a stream needs the bytes and there is no name-dispatch here.
+const MS_BUF: &str = "__ms_buf";
+const MS_POS: &str = "__ms_pos";
+const MS_LEN: &str = "__ms_len";
+
+/// `[]` → `[text]` — the bytes from `__ms_pos` to `__ms_len` of the stream in
+/// `stream_slot`, decoded as UTF-8, with the stream's cursor left at the end.
+///
+/// ⛔ A `StreamReader` over a stream reads it EAGERLY here, the same
+/// load-whole-file model the path constructor uses; the cursor moves so a
+/// second reader over the same stream sees nothing left, which is what .NET's
+/// buffering does in practice.
+fn emit_decode_stream_tail(chunk: &mut Chunk, stream_slot: u16, line: u32) {
+    let buf_key = chunk.add_constant(Value::String(Arc::from(MS_BUF)));
+    let pos_key = chunk.add_constant(Value::String(Arc::from(MS_POS)));
+    let len_key = chunk.add_constant(Value::String(Arc::from(MS_LEN)));
+
+    // decoder first: `decode` is receiver-first.
+    host::emit(chunk, "web:encoding", "decoderNew", 0, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, len_key, line);
+    host::emit(chunk, "ecma:array", "slice", 3, line);
+    // ⛔ `decode` takes a BufferSource: a plain Array decodes to the EMPTY
+    // STRING rather than failing.
+    host::emit(chunk, "ecma:uint8array", "newFromIterable", 1, line);
+    host::emit(chunk, "web:encoding", "decode", 2, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, len_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+}
+
+/// `[…, argN]` → `[arg0]` — drop the trailing constructor arguments .NET
+/// accepts and this model does not need (encoding, buffer size, `leaveOpen`).
+fn emit_drop_extra_args(chunk: &mut Chunk, argc: u8, line: u32) {
+    for _ in 1..argc.max(1) {
+        chunk.emit_op(Op::DROP, line);
+    }
+}
+
+/// `new StreamReader(path)` / `new StreamReader(stream)` — load the source
+/// into a `__content` string and initialise `__pos = 0`.
+/// Stack: `[source, …]` → `[reader]`.
+pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
     let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
     let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
 
+    emit_drop_extra_args(chunk, argc, line);
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
-    // content = the file, read through `read-via-stream` and decoded as UTF-8.
+    // content = the SOURCE as text. A string is a file path, read through
+    // `read-via-stream`; anything else is a byte stream, decoded from its
+    // cursor to its length.
+    let content_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    host::emit(chunk, "wasm:js-string", "test", 1, line);
+    chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     vybe_compiler::primitives::fs_path::emit_read_file(chunk, line);
-    let content_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    chunk.emit_else(line);
+    emit_decode_stream_tail(chunk, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    chunk.emit_end(line);
 
     // STRUCT_NEW → [obj]
     chunk.emit_struct_new(0, 0, line);
@@ -397,16 +458,18 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
-/// `new StreamWriter(path)` — initialise `__path` + empty `__buf`.
-/// Stack: `[path]` → `[writer]`.
-pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// `new StreamWriter(path)` / `new StreamWriter(stream)` — initialise the
+/// destination + an empty `__buf`. Stack: `[destination, …]` → `[writer]`.
+pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
+    let stream_key = chunk.add_constant(Value::String(Arc::from(STREAM_KEY)));
     let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
     let nl_key = chunk.add_constant(Value::String(Arc::from("NewLine")));
     let nl_lower_key = chunk.add_constant(Value::String(Arc::from("newline")));
 
+    emit_drop_extra_args(chunk, argc, line);
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
@@ -417,10 +480,24 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
 
-    // __path = path
+    // A string destination is a file PATH; anything else is a byte STREAM the
+    // flush appends to. Which one it is decides where `Flush` writes.
+    // ⛔ The `if` arms are stack-NEUTRAL: the writer is re-read from a local
+    // inside each arm rather than left on the stack across the branch.
+    let writer_slot = reserve_slot(chunk);
     core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    host::emit(chunk, "wasm:js-string", "test", 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, path_key, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, stream_key, line);
+    chunk.emit_end(line);
 
     // __buf = ""
     core_wasm::dup(chunk, line);
@@ -548,7 +625,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
 
 /// `writer.Write(fmt, a, b)` or `writer.Write(chars, index, count)`.
 /// Stack: `[writer, arg0, arg1, arg2]` → `[null]`.
-pub fn emit_stream_writer_write_3(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_stream_writer_write_3(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let a2_slot = reserve_slot(chunk);
     let a1_slot = reserve_slot(chunk);
@@ -792,15 +869,37 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `writer.Flush()` / `writer.Close()` — the buffered text through
-/// `write-via-stream`. Stack: `[writer]` → `[null]`.
-pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32) {
+/// `[]` → `[]` — persist the writer's buffered text to wherever it belongs:
+/// appended to the underlying byte stream when it was built over one, written
+/// to `__path` otherwise. The buffer is CLEARED for the stream case, so two
+/// flushes do not write the text twice.
+fn emit_writer_persist(chunks: &mut [Chunk], current: usize, writer_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
+    let stream_key = chunk.add_constant(Value::String(Arc::from(STREAM_KEY)));
     let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
 
-    let writer_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, stream_key, line);
+    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+
+    // Stream-backed: the buffered text, UTF-8 encoded, through the stream's
+    // own write — which is what grows it and moves its cursor.
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, stream_key, line);
+    host::emit(chunk, "web:encoding", "encoderNew", 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    host::emit(chunk, "web:encoding", "encode", 2, line);
+    super::memory_stream_adapter::emit_write(chunks, current, 1, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
+
+    chunk.emit_else(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
@@ -809,7 +908,16 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
     vybe_compiler::primitives::fs_path::emit_write_file(chunk, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
+}
+
+/// `writer.Flush()` / `writer.Close()` — the buffered text to the file or the
+/// underlying stream. Stack: `[writer]` → `[null]`.
+pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32) {
+    let writer_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, writer_slot, line);
+    emit_writer_persist(chunks, current, writer_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `reader.Close()` / `writer.Close()` — no-op for readers, flush for writers.
@@ -832,13 +940,9 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    vybe_compiler::primitives::fs_path::emit_write_file(chunk, line);
-    chunk.emit_op(Op::DROP, line);
+    emit_writer_persist(chunks, current, stream_slot, line);
 
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(skip_flush);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);

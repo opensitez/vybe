@@ -14,7 +14,6 @@ mod descriptor;
 pub mod dispatch;
 pub mod host_map;
 pub mod imports;
-pub mod namespaces;
 pub mod tree_register;
 pub mod types;
 pub mod winforms;
@@ -36,7 +35,6 @@ pub enum StaticMethodTarget {
 }
 pub struct DotnetSurface {
     default_imports: Vec<String>,
-    namespace_roots: HashSet<String>,
     noop_methods: HashSet<String>,
     known_constants: HashSet<String>,
     runtime_collection_methods: HashSet<String>,
@@ -165,7 +163,6 @@ fn build_dotnet_surface() -> DotnetSurface {
     let component_descriptor = dotnet_component_descriptor();
     DotnetSurface {
         default_imports: imports::default_interface_imports(),
-        namespace_roots: namespaces::namespace_roots(),
         noop_methods: winforms::noop_methods()
             .iter()
             .map(|name| (*name).to_string())
@@ -187,14 +184,6 @@ pub fn surface() -> &'static DotnetSurface {
 impl DotnetSurface {
     pub fn default_imports(&self) -> &[String] {
         &self.default_imports
-    }
-
-    pub fn namespace_roots(&self) -> &HashSet<String> {
-        &self.namespace_roots
-    }
-
-    pub fn is_namespace_root(&self, name: &str) -> bool {
-        self.namespace_roots.contains(&name.to_lowercase())
     }
 
     pub fn is_noop_method(&self, name: &str) -> bool {
@@ -1060,14 +1049,6 @@ pub fn default_interface_imports() -> Vec<String> {
     surface().default_imports().to_vec()
 }
 
-pub fn namespace_roots() -> HashSet<String> {
-    surface().namespace_roots().clone()
-}
-
-pub fn is_namespace_root(name: &str) -> bool {
-    surface().is_namespace_root(name)
-}
-
 pub fn is_noop_method(name: &str) -> bool {
     surface().is_noop_method(name)
 }
@@ -1180,20 +1161,96 @@ pub fn component_instance_method_exists(
     lookup_component_instance_method(class_name, method_name, arg_count).is_some()
 }
 
+/// The bare type name at the end of a .NET type path, with any generic
+/// argument list dropped — `System.Collections.Generic.Comparer<int>` and
+/// `Comparer(Of Integer)` both yield `Comparer`.
+///
+/// Every .NET frontend spells type arguments differently; the type they name
+/// is the same, so a table keyed on the type must not see the spelling.
+fn dotnet_type_path_leaf(path: &str) -> String {
+    let path = path.trim();
+    let base = match (path.find('<'), path.find("(Of ")) {
+        (Some(i), Some(j)) => &path[..i.min(j)],
+        (Some(i), None) => &path[..i],
+        (None, Some(j)) => &path[..j],
+        (None, None) => path,
+    };
+    base.trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(base)
+        .trim()
+        .to_string()
+}
+
+/// Does a generic call on this .NET type need its type ARGUMENTS materialized
+/// as extra runtime arguments?
+///
+/// A C# frontend appends two positional bindings per type argument (a ctor
+/// handle and a zero value) so a generic method can evaluate `new T()` or
+/// `default(T)` at run time. A USER generic needs that. A declared .NET static
+/// never does — its body is a leaf in this platform, which reads its operands
+/// positionally, so the bindings land as DATA:
+/// `ImmutableArray.Create<int>(1)` arrived with argc 3 and built a
+/// three-element array whose `Length` answered 3.
+///
+/// Answered from the descriptors rather than a name list, so a type gains the
+/// right behaviour by being declared — the check is "does this platform
+/// declare a static of that name on that type", which is exactly the
+/// condition under which the leaf, not the caller, owns the arity.
+pub fn generic_binding_args_suppressed(class_path: &str, method_name: &str) -> bool {
+    let class = dotnet_type_path_leaf(class_path);
+    if class.is_empty() {
+        return false;
+    }
+    class_exports::dotnet_class_exports()
+        .iter()
+        .filter(|export| export.class.name.eq_ignore_ascii_case(&class))
+        .flat_map(|export| export.class.methods.iter())
+        .any(|m| m.is_static && m.name.eq_ignore_ascii_case(method_name))
+}
+
+/// Is this one of the built-in comparer singletons?
+///
+/// `Comparer.Default`, `EqualityComparer.Default`, `StringComparer.Ordinal`
+/// and `StringComparer.OrdinalIgnoreCase` — the reads that used to answer a
+/// raw marker string. Keyed on the type leaf so a closed generic
+/// (`Comparer<int>`, `Comparer(Of Integer)`) answers the same as the open one.
+fn is_comparer_static(class_path: &str, member_name: &str) -> bool {
+    match dotnet_type_path_leaf(class_path).to_ascii_lowercase().as_str() {
+        "comparer" | "equalitycomparer" => member_name.eq_ignore_ascii_case("Default"),
+        "stringcomparer" => {
+            member_name.eq_ignore_ascii_case("Ordinal")
+                || member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+        }
+        _ => false,
+    }
+}
+
+/// What an `Immutable*` static factory hands back.
+///
+/// `CreateBuilder` is the exception that proves the rule: it is the only one
+/// that does NOT answer its own type, because a builder is the mutable staging
+/// object you call `ToImmutable()` on.
+fn immutable_factory_return_type(class: &str, method_name: &str) -> Option<&'static str> {
+    let owner = match class.to_ascii_lowercase().as_str() {
+        "immutablearray" => "ImmutableArray",
+        "immutablelist" => "ImmutableList",
+        "immutablequeue" => "ImmutableQueue",
+        "immutablestack" => "ImmutableStack",
+        "immutablehashset" => "ImmutableHashSet",
+        "immutabledictionary" => "ImmutableDictionary",
+        _ => return None,
+    };
+    match method_name.to_ascii_lowercase().as_str() {
+        "createbuilder" => Some("ImmutableListBuilder"),
+        "create" | "createrange" | "empty" => Some(owner),
+        _ => None,
+    }
+}
+
 pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'static str> {
     let normalized = prefix.trim();
-    if (normalized.eq_ignore_ascii_case("StringComparer")
-        || normalized.eq_ignore_ascii_case("System.StringComparer"))
-        && member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
-    {
-        return Some("__dotnet_stringcomparer_ordinalignorecase");
-    }
-    if (normalized.eq_ignore_ascii_case("StringComparer")
-        || normalized.eq_ignore_ascii_case("System.StringComparer"))
-        && member_name.eq_ignore_ascii_case("Ordinal")
-    {
-        return Some("__dotnet_stringcomparer_ordinal");
-    }
     if (normalized.eq_ignore_ascii_case("StringComparison")
         || normalized.eq_ignore_ascii_case("System.StringComparison"))
         && member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
@@ -1310,14 +1367,42 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
             _ => return None,
         });
     }
-    if normalized.contains("EqualityComparer<") && member_name.eq_ignore_ascii_case("Default") {
-        return Some("__dotnet_equalitycomparer_default");
-    }
-    if normalized.contains("Comparer<")
-        && !normalized.contains("EqualityComparer<")
-        && member_name.eq_ignore_ascii_case("Default")
+    // ⛔ These four markers are NOT merely the value of a comparer read. Both
+    // .NET frontends match them as a CONSTRUCTOR ARGUMENT
+    // (`new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase)`) to
+    // select a case-folding container — see `has_ordinal_ignore_case_comparer_arg`
+    // in the C# walker and the HashSet/Dictionary ctor arms in the VB one.
+    // No method is called on the comparer there, so a typed tree member with
+    // `Equals`/`Compare` does NOT subsume this. Dropping the marker made those
+    // containers silently case-SENSITIVE — a wrong answer, not a failure.
+    // Retiring it needs comparer-aware Dictionary/HashSet CONSTRUCTORS in this
+    // platform first; the ctor currently backs onto `dotnet.dict_new_ignore_arg`,
+    // which discards the argument outright.
+    if (normalized.eq_ignore_ascii_case("StringComparer")
+        || normalized.eq_ignore_ascii_case("System.StringComparer"))
+        && member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
     {
-        return Some("__dotnet_comparer_default");
+        return Some("__dotnet_stringcomparer_ordinalignorecase");
+    }
+    if (normalized.eq_ignore_ascii_case("StringComparer")
+        || normalized.eq_ignore_ascii_case("System.StringComparer"))
+        && member_name.eq_ignore_ascii_case("Ordinal")
+    {
+        return Some("__dotnet_stringcomparer_ordinal");
+    }
+    if member_name.eq_ignore_ascii_case("Default") {
+        // Keyed on the TYPE, not the closed spelling: the old
+        // `normalized.contains("Comparer<")` could only match C#'s generic
+        // syntax, so `Comparer(Of Integer).Default` never resolved for VB.
+        match dotnet_type_path_leaf(normalized).as_str() {
+            leaf if leaf.eq_ignore_ascii_case("EqualityComparer") => {
+                return Some("__dotnet_equalitycomparer_default");
+            }
+            leaf if leaf.eq_ignore_ascii_case("Comparer") => {
+                return Some("__dotnet_comparer_default");
+            }
+            _ => {}
+        }
     }
     if (normalized.eq_ignore_ascii_case("DateTimeKind")
         || normalized.eq_ignore_ascii_case("System.DateTimeKind"))
@@ -1372,6 +1457,19 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
     } else {
         trimmed
     };
+    // `ImmutableDictionary<K,V>.Empty` — no parentheses, so the walker reads it
+    // as a FIELD unless told otherwise, and a field that no type declares is
+    // `undefined`. Declaring it here makes the read INVOKE the zero-arg static,
+    // which is how every other value-shaped .NET static (`DateTime.Now`,
+    // `TimeSpan.Zero`) already resolves.
+    //
+    // `Create`/`CreateRange`/`CreateBuilder` are deliberately absent: they are
+    // always written WITH an argument list, so they arrive as calls already.
+    if member_name.eq_ignore_ascii_case("Empty")
+        && immutable_factory_return_type(&dotnet_type_path_leaf(normalized), member_name).is_some()
+    {
+        return true;
+    }
     if (normalized.eq_ignore_ascii_case("CancellationToken")
         || normalized.eq_ignore_ascii_case("System.Threading.CancellationToken"))
         && member_name.eq_ignore_ascii_case("None")
@@ -1386,6 +1484,18 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
         || ((normalized.eq_ignore_ascii_case("TimeSpan")
             || normalized.eq_ignore_ascii_case("System.TimeSpan"))
             && member_name.eq_ignore_ascii_case("Zero"))
+        // ⛔ `BigInteger.Zero` is a .NET static PROPERTY, but its value is an
+        // object this platform MINTS (payload plus operator slots), so the tree
+        // backs it with a zero-arity static METHOD — `class.properties` only
+        // accepts a host getter. Without this the member read never invoked the
+        // leaf: `BigInteger.Zero.IsZero` answered `undefined` while
+        // `.ToString()` still printed `0`, because a bare BigInt stringifies.
+        || ((normalized.eq_ignore_ascii_case("BigInteger")
+            || normalized.eq_ignore_ascii_case("System.Numerics.BigInteger"))
+            && matches!(
+                member_name.to_ascii_lowercase().as_str(),
+                "zero" | "one" | "minusone"
+            ))
         || ((normalized.eq_ignore_ascii_case("Stopwatch")
             || normalized.eq_ignore_ascii_case("System.Diagnostics.Stopwatch"))
             && matches!(
@@ -1483,6 +1593,20 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     // language frontend where no other .NET consumer could see it.
     if class.eq_ignore_ascii_case("Type") && method_name.eq_ignore_ascii_case("GetTypeCode") {
         return Some("TypeCode");
+    }
+    // `System.Collections.Immutable` factories answer their own type — the
+    // ENTRY point into a chain that `self_member_returns` then carries. A
+    // static returning a bare array has no identity, so `Create(…).Add(…)`
+    // resolved against nothing even with both members declared.
+    if let Some(immutable) = immutable_factory_return_type(class, method_name) {
+        return Some(immutable);
+    }
+    if is_comparer_static(class, method_name) {
+        return Some(match class.to_ascii_lowercase().as_str() {
+            "equalitycomparer" => "EqualityComparer",
+            "stringcomparer" => "StringComparer",
+            _ => "Comparer",
+        });
     }
     if class.eq_ignore_ascii_case("Nullable")
         && method_name.eq_ignore_ascii_case("GetUnderlyingType")
@@ -1802,6 +1926,12 @@ pub fn declared_instance_property_types(
         ],
         // The same for `DateTime` itself.
         "datetime" => &[("Date", "DateTime"), ("TimeOfDay", "TimeSpan")],
+        // `tcs.Task` hands back the consumer half. Undeclared, the promise read
+        // back untyped and the NEXT hop resolved against nothing —
+        // `tcs.Task.IsCompleted` and `tcs.Task.Status` answered `undefined`
+        // even though `Task` declares both, because the receiver never said
+        // what it was.
+        "taskcompletionsource" => &[("Task", "Task")],
         _ => &[],
     }
 }
@@ -2111,7 +2241,6 @@ mod tests {
     #[test]
     fn test_dotnet_surface_cache_merges_metadata_predicates() {
         assert!(default_interface_imports().contains(&"system.windows.forms".to_string()));
-        assert!(is_namespace_root("application"));
         assert!(is_noop_method("SuspendLayout"));
         assert!(is_known_constant("PI"));
     }

@@ -11,6 +11,12 @@ mod component_classes_common;
 mod component_classes_data_drawing;
 #[path = "component_classes_diagnostics_process.rs"]
 mod component_classes_diagnostics_process;
+#[path = "component_classes_collections_specialized.rs"]
+mod component_classes_collections_specialized;
+#[path = "component_classes_comparer.rs"]
+mod component_classes_comparer;
+#[path = "component_classes_immutable.rs"]
+mod component_classes_immutable;
 #[path = "component_classes_io.rs"]
 mod component_classes_io;
 #[path = "component_classes_linq.rs"]
@@ -45,6 +51,9 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         component_classes_span::add_array_extension_methods(&mut enumerable.class);
         exports.push(enumerable);
         exports.push(component_classes_linq::enumerable_static_export());
+        exports.extend(component_classes_collections_specialized::exports());
+        exports.extend(component_classes_comparer::exports());
+        exports.extend(component_classes_immutable::exports());
         exports.extend(component_classes_span::exports());
         exports.extend(component_classes_system::exports());
         exports.push(component_classes_system::biginteger_export());

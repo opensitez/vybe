@@ -305,6 +305,8 @@ pub fn try_parse_desugar(
         || recv.eq_ignore_ascii_case("Date")
         || recv.eq_ignore_ascii_case("DateTimeOffset")
         || recv.eq_ignore_ascii_case("System.DateTimeOffset")
+        || recv.eq_ignore_ascii_case("BigInteger")
+        || recv.eq_ignore_ascii_case("System.Numerics.BigInteger")
     {
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
@@ -418,6 +420,49 @@ pub fn try_from_base64_chars_desugar(
             value: Box::new(index_expr(pair.clone(), Expression::int(1))),
         }),
         index_expr(pair, Expression::int(0)),
+    ])))
+}
+
+/// `Math.DivRem(a, b, out r)` / `BigInteger.DivRem(a, b, out r)` out-param
+/// normalization.
+///
+/// .NET 7 added a two-argument TUPLE overload of the same method, so the core
+/// call here is not a hidden helper — it is the other public spelling, and both
+/// forms land on one leaf. The pair's `Remainder` goes to the out-param and the
+/// expression evaluates to its `Quotient`.
+pub fn div_rem_desugar(
+    recv: Option<&str>,
+    callee: &Expression,
+    dividend: &Expression,
+    divisor: &Expression,
+    out_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    if !(recv.eq_ignore_ascii_case("Math")
+        || recv.eq_ignore_ascii_case("System.Math")
+        || recv.eq_ignore_ascii_case("BigInteger")
+        || recv.eq_ignore_ascii_case("System.Numerics.BigInteger"))
+    {
+        return None;
+    }
+    let pair = Expression::ident("__vybe_div_rem_pair");
+    let core = call_expr(
+        callee.clone(),
+        vec![
+            Argument::positional(dividend.clone()),
+            Argument::positional(divisor.clone()),
+        ],
+    );
+    Some(Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(pair.clone()),
+            value: Box::new(core),
+        }),
+        Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(member_expr(pair.clone(), "Remainder")),
+        }),
+        member_expr(pair, "Quotient"),
     ])))
 }
 

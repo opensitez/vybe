@@ -24,6 +24,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
+
+use super::thread_adapter::DELAY_TOKEN_KEY;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -928,6 +930,13 @@ pub fn emit_copy_to(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let obj = scratch + 2;
     let count = scratch + 3;
 
+    // ⛔ `argc >= 3` is the RECEIVER plus two arguments. Do not "fix" it to 2:
+    // measured, that breaks the one-argument `CopyTo(dest)` (8 tests). The
+    // two-argument form does not reach here with three either — the dotnet
+    // lookup resolves both `CopyTo` registrations to the FIRST one, so
+    // `CopyTo(dest, 0)` arrives with the size still on the stack and pops it
+    // as the destination. That is the overload-resolution defect, not this
+    // test's shape.
     if argc >= 3 {
         set(chunk, size, line);
     } else {
@@ -997,16 +1006,28 @@ pub fn emit_copy_to(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// promise is what makes `Await src.CopyToAsync(dest)` and `.Result` both
 /// answer, and it is the same object JS reaches (ECMA-262 §27.2.4.7).
 pub fn emit_copy_to_async(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    // A third argument here is a CancellationToken, not a buffer size — drop it
-    // and copy with the default, rather than validating it as a size.
-    if argc >= 3 {
-        chunks[current].emit_op(Op::DROP, line);
-    }
+    // A third argument is a CancellationToken, not a buffer size. It is not
+    // discarded: the task carries it, and `task.IsCanceled` asks the token —
+    // `CopyToAsync(dest, size, cts.Token)` on a cancelled source answers True
+    // in .NET, and a resolved task with nothing on it answered False.
+    let token = if argc >= 3 {
+        let slot = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+        Some(slot)
+    } else {
+        None
+    };
     emit_copy_to(chunks, current, 2, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
     core_wasm::undefined(chunk, line);
     call(chunk, "ecma:promise", "resolve", 1, line);
+    if let Some(slot) = token {
+        let key = chunk.add_constant(Value::String(Arc::from(DELAY_TOKEN_KEY)));
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    }
 }
 
 /// `[value] → [Task]` — settle what the sync operation already produced.

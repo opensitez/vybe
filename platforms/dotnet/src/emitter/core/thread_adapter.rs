@@ -22,7 +22,9 @@ const LINKED_KEY: &str = "__dotnet_linked_tokens";
 // case-insensitive frontend, which folds `cts.Token` to `token` and reads EMPTY.
 const TOKEN_KEY: &str = "token";
 const REQUESTED_KEY: &str = "iscancellationrequested";
-const DELAY_TOKEN_KEY: &str = "__dotnet_delay_token";
+/// The CancellationToken a task carries — `task.IsCanceled` asks it. Shared
+/// with `memory_stream_adapter`, whose `CopyToAsync` stamps the same field.
+pub(crate) const DELAY_TOKEN_KEY: &str = "__dotnet_delay_token";
 const EXCEPTION_KEY: &str = "exception";
 const REGISTRATIONS_KEY: &str = "__dotnet_cancellation_registrations";
 const SOURCE_TYPE: &str = "CancellationTokenSource";
@@ -725,6 +727,77 @@ pub fn emit_task_run(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: [task] -> [value]
 pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get(&mut chunks[current], "__value", line);
+}
+
+/// `task.Status` — the .NET `TaskStatus` name for the promise's own state.
+///
+/// A settled-with-cancellation task stamps `status` directly (`SetCanceled`
+/// does), and that stamp WINS: .NET distinguishes `Canceled` from `Faulted`,
+/// while ECMA has one `rejected` state for both, so the reason has to be
+/// carried rather than derived.
+///
+/// Stack: [task] -> [string]
+pub fn emit_task_status(chunks: &mut [Chunk], current: usize, line: u32) {
+    let task_slot = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, task_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    struct_get(chunk, "status", line);
+    let stamped = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, stamped, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stamped, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stamped, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    struct_get(chunk, "__state", line);
+    let state = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, state, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, state, line);
+    chunk.emit_string_const("fulfilled", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut *chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut *chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("RanToCompletion", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, state, line);
+    chunk.emit_string_const("rejected", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut *chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut *chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Faulted", line);
+    chunk.emit_else(line);
+    // ⛔ `WaitingForActivation`, not `Created`. A TCS task is already handed to
+    // a scheduler the moment the source exists — `Created` is the state of a
+    // `New Task(…)` that nobody has started.
+    chunk.emit_string_const("WaitingForActivation", line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// `task.IsFaulted` — completed with an exception, and NOT by cancellation.
+///
+/// Derived from `emit_task_status` rather than re-deriving the state, so the
+/// Canceled-vs-Faulted split is stated in exactly one place. Writing that rule
+/// twice is the shape that cost this platform `Double.IsNaN`.
+///
+/// Stack: [task] -> [bool]
+pub fn emit_task_is_faulted(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_task_status(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_string_const("Faulted", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    // ⛔ `emit_dyn_to_bool` leaves an i32, not a Bool VALUE — `IsFaulted`
+    // rendered as `1` where the corpus wants `True`. Every sibling predicate
+    // here (`emit_task_is_completed`) ends with this same conversion.
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `task.IsCompleted` — true for fulfilled/rejected tasks, false while pending.

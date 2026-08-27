@@ -86,3 +86,63 @@ pub fn emit_is_finite(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
     as_bool(chunk, line);
 }
+
+/// The smallest NORMAL double — `2^-1022`. Below it the exponent field is zero
+/// and the significand loses its implicit leading one, which is what
+/// "subnormal" names.
+///
+/// ⛔ Not `Double.Epsilon`. That is the smallest subnormal (`5e-324`) and sits
+/// at the other end of the same range; using it as the boundary calls every
+/// subnormal normal.
+const MIN_NORMAL: f64 = f64::MIN_POSITIVE;
+
+/// `[x] → [finite && x <> 0]` in the operand's slot, leaving the ABSOLUTE
+/// value on the stack — the shared half of `IsNormal` and `IsSubnormal`.
+fn emit_finite_nonzero_magnitude(chunk: &mut Chunk, slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    lget(chunk, slot, line);
+    chunk.emit_f64_const(f64::INFINITY, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    chunk.emit_f64_const(f64::NEG_INFINITY, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_ABS, line);
+}
+
+/// `Double.IsNormal(x)` — finite, non-zero, and at or above the smallest
+/// normal magnitude. Zero is NOT normal, which is the case the name hides.
+///
+/// ⚠ One emit serves `Double` and `Single`, as every predicate here does, but
+/// this is the one whose boundary is width-dependent: `Single`'s smallest
+/// normal is `1.17549435e-38`. A `Single` on this platform is stored as an
+/// f64, so a value in between is not actually subnormal in the storage it
+/// lives in, and the double boundary is the honest answer for it.
+pub fn emit_is_normal(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = operand(chunk, line);
+    emit_finite_nonzero_magnitude(chunk, slot, line);
+    chunk.emit_f64_const(MIN_NORMAL, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    as_bool(chunk, line);
+}
+
+/// `Double.IsSubnormal(x)` — finite, non-zero, and below the smallest normal.
+pub fn emit_is_subnormal(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = operand(chunk, line);
+    emit_finite_nonzero_magnitude(chunk, slot, line);
+    chunk.emit_f64_const(MIN_NORMAL, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_AND, line);
+    as_bool(chunk, line);
+}

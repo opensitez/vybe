@@ -235,6 +235,9 @@ pub(crate) fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    use crate::emitter::core::comparer_adapter as cmp;
+    use crate::emitter::core::specialized_adapter as sp;
+    use crate::emitter::core::immutable_adapter as imm;
     if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line) {
         return true;
     }
@@ -252,6 +255,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datagrid_add_row" => {
             crate::emitter::core::datagrid_adapter::emit_add_row(chunks, current, argc, line);
+        }
+        // The one control whose content is a VALUE — see
+        // `month_calendar_adapter`. Named by `CtorSpec::after_create`, so it
+        // runs once on the freshly created element.
+        "dotnet.month_calendar_render" => {
+            crate::emitter::core::month_calendar_adapter::emit_render(chunks, current, line);
         }
         "dotnet.winforms_application_run" => {
             crate::emitter::winforms::adapter::emit_application_run(chunks, current, argc, line);
@@ -727,6 +736,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.double_is_finite" => {
             crate::emitter::core::float_adapter::emit_is_finite(chunks, current, line)
         }
+        "dotnet.double_is_normal" => {
+            crate::emitter::core::float_adapter::emit_is_normal(chunks, current, line)
+        }
+        "dotnet.double_is_subnormal" => {
+            crate::emitter::core::float_adapter::emit_is_subnormal(chunks, current, line)
+        }
 
         // ── System.Char statics ─────────────────────────────────────────────
         // Every name that carries a `(string, index)` or culture overload takes
@@ -1050,6 +1065,66 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.list_new" => {
             crate::emitter::core::collections_adapter::emit_list_new(chunks, current, argc, line)
         }
+        // ── Specialized collections / ObjectModel wrappers / PriorityQueue ──
+        "dotnet.bitvector32_create_mask" => sp::emit_create_mask(chunks, current, line),
+        "dotnet.bitvector32_create_mask_next" => sp::emit_create_mask_next(chunks, current, line),
+        "dotnet.ordered_dictionary_new" => sp::emit_seq_new(chunks, current, line),
+        "dotnet.ordered_dictionary_add" => sp::emit_ordered_dictionary_add(chunks, current, line),
+        "dotnet.name_value_add" => sp::emit_name_value_add(chunks, current, line),
+        "dotnet.priority_queue_new" => sp::emit_priority_queue_new(chunks, current, argc, line),
+        "dotnet.priority_queue_enqueue" => sp::emit_priority_queue_enqueue(chunks, current, line),
+        "dotnet.priority_queue_dequeue" => sp::emit_priority_queue_dequeue(chunks, current, line),
+        "dotnet.priority_queue_peek" => sp::emit_priority_queue_peek(chunks, current, line),
+        "dotnet.priority_queue_count" => sp::emit_priority_queue_count(chunks, current, line),
+        "dotnet.priority_queue_clear" => sp::emit_priority_queue_clear(chunks, current, line),
+        // ── Comparer / EqualityComparer / StringComparer ──────────────
+        //
+        // The statics answer a sentinel; the behaviour lives here, so every
+        // .NET frontend gets it from one place instead of re-deriving it.
+        "dotnet.comparer_default" => {
+            cmp::emit_marker(chunks, current, cmp::COMPARER_DEFAULT, line)
+        }
+        "dotnet.equality_comparer_default" => {
+            cmp::emit_marker(chunks, current, cmp::EQUALITY_COMPARER_DEFAULT, line)
+        }
+        "dotnet.string_comparer_ordinal" => {
+            cmp::emit_marker(chunks, current, cmp::ORDINAL, line)
+        }
+        "dotnet.string_comparer_ordinal_ignore_case" => {
+            cmp::emit_marker(chunks, current, cmp::ORDINAL_IGNORE_CASE, line)
+        }
+        "dotnet.array_sort_with_comparer" => {
+            cmp::emit_array_sort_with_comparer(chunks, current, line)
+        }
+        "dotnet.comparer_compare" => cmp::emit_compare(chunks, current, line),
+        "dotnet.comparer_equals" => cmp::emit_equals(chunks, current, line),
+        "dotnet.comparer_get_hash_code" => cmp::emit_get_hash_code(chunks, current, line),
+        // ── System.Collections.Immutable ──────────────────────────────
+        //
+        // Copy-on-write, so these are NOT aliases of the mutable leaves above:
+        // `dotnet.list_add` pushes in place, which would make `a1.Add(2)`
+        // change `a1`.
+        "dotnet.immutable_seq_empty" => imm::emit_seq_empty(chunks, current, line),
+        "dotnet.immutable_seq_create" => imm::emit_seq_create(chunks, current, argc, line),
+        "dotnet.immutable_seq_add" => imm::emit_seq_add(chunks, current, line),
+        "dotnet.immutable_seq_add_range" => imm::emit_seq_add_range(chunks, current, line),
+        "dotnet.immutable_seq_set_item" => imm::emit_seq_set_item(chunks, current, line),
+        "dotnet.immutable_seq_remove_at" => imm::emit_seq_remove_at(chunks, current, line),
+        "dotnet.immutable_is_empty" => imm::emit_is_empty(chunks, current, line),
+        "dotnet.immutable_queue_peek" => imm::emit_queue_peek(chunks, current, line),
+        "dotnet.immutable_queue_dequeue" => imm::emit_queue_dequeue(chunks, current, line),
+        "dotnet.immutable_stack_peek" => imm::emit_stack_peek(chunks, current, line),
+        "dotnet.immutable_stack_pop" => imm::emit_stack_pop(chunks, current, line),
+        "dotnet.immutable_map_empty" => imm::emit_map_empty(chunks, current, line),
+        "dotnet.immutable_map_add" => imm::emit_map_add(chunks, current, line),
+        "dotnet.immutable_set_empty" => imm::emit_set_empty(chunks, current, line),
+        "dotnet.immutable_set_create" => imm::emit_set_create(chunks, current, argc, line),
+        "dotnet.immutable_set_add" => imm::emit_set_add(chunks, current, line),
+        "dotnet.immutable_set_remove" => imm::emit_set_remove(chunks, current, line),
+        "dotnet.immutable_set_union" => imm::emit_set_union(chunks, current, line),
+        "dotnet.immutable_set_intersect" => imm::emit_set_intersect(chunks, current, line),
+        "dotnet.immutable_set_except" => imm::emit_set_except(chunks, current, line),
+        "dotnet.immutable_set_is_empty" => imm::emit_set_is_empty(chunks, current, line),
         "dotnet.list_add" => {
             crate::emitter::core::collections_adapter::emit_list_add(chunks, current, line)
         }
@@ -1129,6 +1204,56 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.hashset_overlaps" => {
             crate::emitter::core::collections_adapter::emit_hashset_overlaps(chunks, current, line)
+        }
+        "dotnet.tcs_new" => {
+            crate::emitter::core::task_completion_source_adapter::emit_tcs_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.tcs_task" => {
+            crate::emitter::core::task_completion_source_adapter::emit_tcs_task(
+                chunks, current, line,
+            )
+        }
+        "dotnet.tcs_set_result"
+        | "dotnet.tcs_try_set_result"
+        | "dotnet.tcs_set_exception"
+        | "dotnet.tcs_try_set_exception"
+        | "dotnet.tcs_set_canceled"
+        | "dotnet.tcs_try_set_canceled" => {
+            use crate::emitter::core::task_completion_source_adapter::{Settle, emit_tcs_settle};
+            let settle = if name.contains("_result") {
+                Settle::Result
+            } else if name.contains("_exception") {
+                Settle::Exception
+            } else {
+                Settle::Canceled
+            };
+            emit_tcs_settle(chunks, current, settle, name.contains("_try_"), line)
+        }
+        "dotnet.weakref_new" => {
+            crate::emitter::core::weak_reference_adapter::emit_weakref_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.weakref_target" => {
+            crate::emitter::core::weak_reference_adapter::emit_weakref_target(chunks, current, line)
+        }
+        "dotnet.weakref_set_target" => {
+            crate::emitter::core::weak_reference_adapter::emit_weakref_set_target(
+                chunks, current, line,
+            )
+        }
+        "dotnet.weakref_is_alive" => {
+            crate::emitter::core::weak_reference_adapter::emit_weakref_is_alive(
+                chunks, current, line,
+            )
+        }
+        "dotnet.task_is_faulted" => {
+            crate::emitter::core::thread_adapter::emit_task_is_faulted(chunks, current, line)
+        }
+        "dotnet.task_status" => {
+            crate::emitter::core::thread_adapter::emit_task_status(chunks, current, line)
         }
         "dotnet.task_wait" => {
             crate::emitter::core::thread_adapter::emit_task_wait(chunks, current, line)
@@ -2994,6 +3119,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.linq_order_descending" => {
+            crate::emitter::core::linq_adapter::emit_linq_order_descending(chunks, current, line)
+        }
         "dotnet.linq_order_by" => {
             crate::emitter::core::linq_adapter::emit_linq_order_by(chunks, current, line)
         }
@@ -3645,7 +3773,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::biginteger_adapter::emit_negate(chunks, current, line)
         }
         "dotnet.bigint_parse" => {
-            crate::emitter::core::biginteger_adapter::emit_parse(chunks, current, line)
+            crate::emitter::core::biginteger_adapter::emit_parse(chunks, current, argc, line)
+        }
+        "dotnet.bigint_try_parse" => {
+            crate::emitter::core::biginteger_adapter::emit_try_parse(chunks, current, line)
+        }
+        "dotnet.bigint_is_power_of_two" => {
+            crate::emitter::core::biginteger_adapter::emit_is_power_of_two(chunks, current, line)
+        }
+        "dotnet.bigint_log10" => {
+            crate::emitter::core::biginteger_adapter::emit_log10(chunks, current, line)
+        }
+        "dotnet.bigint_log" => {
+            crate::emitter::core::biginteger_adapter::emit_log(chunks, current, argc, line)
+        }
+        "dotnet.bigint_clamp" => {
+            crate::emitter::core::biginteger_adapter::emit_clamp(chunks, current, line)
+        }
+        "dotnet.bigint_div_rem" => {
+            crate::emitter::core::biginteger_adapter::emit_div_rem(chunks, current, line)
+        }
+        "dotnet.bigint_to_byte_array" => {
+            crate::emitter::core::biginteger_adapter::emit_to_byte_array(chunks, current, line)
         }
         "dotnet.bigint_pow" => {
             crate::emitter::core::biginteger_adapter::emit_pow(chunks, current, line)
@@ -3672,7 +3821,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::biginteger_adapter::emit_minus_one(chunks, current, line)
         }
         "dotnet.bigint_to_string" => {
-            crate::emitter::core::biginteger_adapter::emit_to_string(chunks, current, line)
+            crate::emitter::core::biginteger_adapter::emit_to_string(chunks, current, argc, line)
         }
         "dotnet.bigint_sign" => {
             crate::emitter::core::biginteger_adapter::emit_sign(chunks, current, line)
@@ -3989,6 +4138,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.system.math.clamp" => {
             vybe_compiler::primitives::math::emit_clamp(&mut chunks[current], line)
+        }
+        "dotnet.system.math.div_rem" => {
+            crate::emitter::core::math_adapter::emit_div_rem(chunks, current, line)
+        }
+        "dotnet.system.math.big_mul" => {
+            crate::emitter::core::math_adapter::emit_big_mul(chunks, current, line)
+        }
+        "dotnet.system.math.fused_multiply_add" => {
+            crate::emitter::core::math_adapter::emit_fused_multiply_add(chunks, current, line)
+        }
+        "dotnet.system.math.ilogb" => {
+            crate::emitter::core::math_adapter::emit_ilogb(chunks, current, line)
+        }
+        "dotnet.system.math.scaleb" => {
+            crate::emitter::core::math_adapter::emit_scaleb(chunks, current, line)
+        }
+        "dotnet.system.math.cbrt" => {
+            let idx = chunks[current].add_import("ecma:math", "cbrt");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.hypot" => {
+            let idx = chunks[current].add_import("ecma:math", "hypot");
+            chunks[current].emit_call(idx, 2, line);
         }
         _ => return false,
     }

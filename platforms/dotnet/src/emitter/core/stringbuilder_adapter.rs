@@ -324,7 +324,7 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
 /// `sb.AppendFormat(fmt, values...)` — append .NET composite-format output.
 ///
 /// Stack on entry: `[sb, fmt, arg0, ...]` ; Stack on exit: `[sb]`
-pub fn emit_sb_append_format(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_sb_append_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let effective_argc = if argc >= 5 {
         let value_count = argc.saturating_sub(3) as usize;
         let value_slots: Vec<u16> = (0..value_count)

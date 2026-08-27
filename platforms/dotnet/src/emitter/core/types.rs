@@ -40,8 +40,58 @@ const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
     ("double.NegativeInfinity", f64::NEG_INFINITY),
     ("float.MaxValue", 3.4028235e38),
     ("float.MinValue", -3.4028235e38),
+    // ⛔ `Epsilon` is the smallest SUBNORMAL, not `f64::MIN_POSITIVE` (the
+    // smallest normal). .NET documents 4.94065645841247E-324 for Double and
+    // 1.401298E-45 for Single, and the two differ — one shared value answered
+    // both wrongly.
+    ("double.Epsilon", 5e-324),
+    ("float.Epsilon", 1.401298464324817e-45),
+    ("single.Epsilon", 1.401298464324817e-45),
+    ("single.NaN", f64::NAN),
+    ("single.PositiveInfinity", f64::INFINITY),
+    ("single.NegativeInfinity", f64::NEG_INFINITY),
+    ("single.MaxValue", 3.4028235e38),
+    ("single.MinValue", -3.4028235e38),
     ("char.MaxValue", 65535.0),
     ("char.MinValue", 0.0),
+    // `System.Globalization.NumberStyles` — the flag ordinals, so a `Parse`
+    // overload can READ the styles it is handed instead of guessing from arity.
+    // `AllowHexSpecifier` (512) is the highest flag, which is what lets the
+    // parse emitters test `styles >= 512` for "this is hexadecimal".
+    ("NumberStyles.None", 0.0),
+    ("NumberStyles.AllowLeadingWhite", 1.0),
+    ("NumberStyles.AllowTrailingWhite", 2.0),
+    ("NumberStyles.AllowLeadingSign", 4.0),
+    ("NumberStyles.AllowTrailingSign", 8.0),
+    ("NumberStyles.AllowParentheses", 16.0),
+    ("NumberStyles.AllowDecimalPoint", 32.0),
+    ("NumberStyles.AllowThousands", 64.0),
+    ("NumberStyles.AllowExponent", 128.0),
+    ("NumberStyles.AllowCurrencySymbol", 256.0),
+    ("NumberStyles.AllowHexSpecifier", 512.0),
+    ("NumberStyles.Integer", 7.0),
+    ("NumberStyles.Number", 111.0),
+    ("NumberStyles.Float", 167.0),
+    ("NumberStyles.Currency", 383.0),
+    ("NumberStyles.Any", 511.0),
+    ("NumberStyles.HexNumber", 515.0),
+    ("numberstyles.none", 0.0),
+    ("numberstyles.allowleadingwhite", 1.0),
+    ("numberstyles.allowtrailingwhite", 2.0),
+    ("numberstyles.allowleadingsign", 4.0),
+    ("numberstyles.allowtrailingsign", 8.0),
+    ("numberstyles.allowparentheses", 16.0),
+    ("numberstyles.allowdecimalpoint", 32.0),
+    ("numberstyles.allowthousands", 64.0),
+    ("numberstyles.allowexponent", 128.0),
+    ("numberstyles.allowcurrencysymbol", 256.0),
+    ("numberstyles.allowhexspecifier", 512.0),
+    ("numberstyles.integer", 7.0),
+    ("numberstyles.number", 111.0),
+    ("numberstyles.float", 167.0),
+    ("numberstyles.currency", 383.0),
+    ("numberstyles.any", 511.0),
+    ("numberstyles.hexnumber", 515.0),
     // ⛔ `Profile::lookup_constant` LOWERCASES the key for a case-insensitive
     // language and looks the cased name up verbatim for a case-sensitive one.
     // That is what the cased/lowercase duplicate pairs further down this table
@@ -73,6 +123,12 @@ const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
     ("float.minvalue", -3.4028235e38),
     ("single.maxvalue", 3.4028235e38),
     ("single.minvalue", -3.4028235e38),
+    ("double.epsilon", 5e-324),
+    ("float.epsilon", 1.401298464324817e-45),
+    ("single.epsilon", 1.401298464324817e-45),
+    ("single.nan", f64::NAN),
+    ("single.positiveinfinity", f64::INFINITY),
+    ("single.negativeinfinity", f64::NEG_INFINITY),
     // The CODE UNIT, not the one-character string .NET's `Char.MaxValue` really
     // is — this table is f64-only, and every measured use is a limit comparison
     // or an `AscW`.

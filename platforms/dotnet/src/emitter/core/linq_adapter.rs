@@ -3119,3 +3119,13 @@ pub fn emit_linq_default_if_empty_value(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_end(line);
 }
+
+/// `seq.OrderDescending()` — ascending sort, reversed.
+///
+/// Composed from the two existing leaves rather than given its own comparison:
+/// a descending order that disagreed with `collections.sorted` about ties or
+/// mixed types would be a second answer to the same question.
+pub fn emit_linq_order_descending(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_sorted(chunks, current, line);
+    collections::emit_reverse(chunks, current, line);
+}

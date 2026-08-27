@@ -706,7 +706,11 @@ pub fn emit_write_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_br_if(1, line);
     get(chunk, src, line);
     get(chunk, idx, line);
-    call(chunk, "ecma:array", "get", 2, line);
+    // ⛔ Not `ecma:array.get`: the source is whatever the caller passed —
+    // a VB `Byte()`, but also the Uint8Array `TextEncoder.encode` hands back
+    // for `Write(Char)`/`Write(String)` — and that host fn answers Undefined
+    // for anything that is not an Array or a Map.
+    chunk.emit_op(Op::ARRAY_GET, line);
     set(chunk, byte, line);
     put_byte(chunk, stream, byte, line);
     get(chunk, idx, line);

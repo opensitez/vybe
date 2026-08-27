@@ -610,72 +610,34 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetimeoffset_to_string".into()),
                 )),
         ),
-        // `Double` / `Single` static predicates. The CONSTANTS they test against
-        // (`Double.NaN`, `Double.PositiveInfinity`) were already known in
-        // `core::types`; the predicates that read them back were registered
-        // nowhere, so `Double.IsNaN(x)` answered `null`.
-        DotnetClassExport::new(
-            "dotnet.System",
-            ClassType::new("Double")
-                .with_method(MethodDef::static_method(
-                    "IsNaN",
-                    1,
-                    MethodBody::Common("dotnet.double_is_nan".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsPositiveInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_positive_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsNegativeInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_negative_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsFinite",
-                    1,
-                    MethodBody::Common("dotnet.double_is_finite".into()),
-                )),
-        ),
-        DotnetClassExport::new(
-            "dotnet.System",
-            ClassType::new("Single")
-                .with_method(MethodDef::static_method(
-                    "IsNaN",
-                    1,
-                    MethodBody::Common("dotnet.double_is_nan".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsPositiveInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_positive_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsNegativeInfinity",
-                    1,
-                    MethodBody::Common("dotnet.double_is_negative_infinity".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "IsFinite",
-                    1,
-                    MethodBody::Common("dotnet.double_is_finite".into()),
-                )),
-        ),
         // `Lazy(Of T)` — the type was absent from the catalog entirely, so every
         // member answered "undefined is not callable". `Value` and
         // `IsValueCreated` are computed properties declared in
         // `tree_register::shared_emit_accessors`, not methods.
+        // `WeakReference` / `WeakReference(Of T)` — absent from the catalog
+        // entirely. `Target` and `IsAlive` are computed properties declared in
+        // `tree_register::shared_emit_accessors`, not fields: a field named
+        // `Target` would collide with the payload key on a case-insensitive
+        // read.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("WeakReference")
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.weakref_new"))
+                .with_constructor(ConstructorDef::new(2).with_common_backing("dotnet.weakref_new"))
+                .with_method(MethodDef::new(
+                    "SetTarget",
+                    1,
+                    MethodBody::Common("dotnet.weakref_set_target".into()),
+                ))
+                // ⛔ ARITY ZERO. The source spells `TryGetTarget(out)` with one
+                // argument; the walker desugars that to `wr.TryGetTarget()`
+                // plus an assignment, so what reaches the tree is the CORE.
+                .with_method(MethodDef::new(
+                    "TryGetTarget",
+                    0,
+                    MethodBody::Common("dotnet.weakref_target".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Lazy")
@@ -880,6 +842,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.array_sort".into()),
                 ))
+                // ⛔ NO `Sort` AT ARITY 2 HERE. `Array.Sort` has TWO two-argument
+                // overloads and this tree resolves overloads by arity alone, so
+                // declaring one silently claims the other: a `Sort/2` bound to
+                // `dotnet.array_sort_with_comparer` swallowed
+                // `Array.Sort(keys, items)` — the PARALLEL-KEYS form, which
+                // sorts `keys` and applies the same permutation to `items` —
+                // and it stopped reordering `items` (measured regression).
+                // `dotnet.array_sort_with_comparer` exists and is dispatched;
+                // it needs a run-time test of whether the second operand is an
+                // array or a comparer before it can be declared here.
                 .with_method(MethodDef::static_method(
                     "Reverse",
                     1,
@@ -1108,6 +1080,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Clamp",
                     3,
                     MethodBody::Common("dotnet.system.math.clamp".into()),
+                ))
+                // `Math.DivRem(a, b)` — .NET 7's TUPLE overload. The older
+                // `DivRem(a, b, out r)` reaches the same leaf: the walkers
+                // desugar the out-param and call this with two arguments.
+                .with_method(MethodDef::static_method(
+                    "DivRem",
+                    2,
+                    MethodBody::Common("dotnet.system.math.div_rem".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "BigMul",
+                    2,
+                    MethodBody::Common("dotnet.system.math.big_mul".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Cbrt",
+                    1,
+                    MethodBody::Common("dotnet.system.math.cbrt".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Hypot",
+                    2,
+                    MethodBody::Common("dotnet.system.math.hypot".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FusedMultiplyAdd",
+                    3,
+                    MethodBody::Common("dotnet.system.math.fused_multiply_add".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ILogB",
+                    1,
+                    MethodBody::Common("dotnet.system.math.ilogb".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ScaleB",
+                    2,
+                    MethodBody::Common("dotnet.system.math.scaleb".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -1948,6 +1958,16 @@ pub(super) fn biginteger_export() -> DotnetClassExport {
         ("Compare", 2, "dotnet.bigint_compare"),
         ("ModPow", 3, "dotnet.bigint_mod_pow"),
         ("GreatestCommonDivisor", 2, "dotnet.bigint_gcd"),
+        ("Clamp", 3, "dotnet.bigint_clamp"),
+        ("DivRem", 2, "dotnet.bigint_div_rem"),
+        ("Log10", 1, "dotnet.bigint_log10"),
+        ("Log", 1, "dotnet.bigint_log"),
+        // The hidden one-arg core `lowering::try_parse_desugar` calls. It
+        // answers NULL on a malformed string and the desugar turns that into
+        // `False` plus the out-param write, which is why BigInteger belongs in
+        // that function's REFERENCE-shaped list and not the numeric one — a
+        // BigInteger's failure value is null, not zero.
+        ("TryParse", 1, "dotnet.bigint_try_parse"),
     ] {
         class = class.with_method(MethodDef::static_method(
             name,
@@ -1972,10 +1992,22 @@ pub(super) fn biginteger_export() -> DotnetClassExport {
         ("IsZero", "dotnet.bigint_is_zero"),
         ("IsOne", "dotnet.bigint_is_one"),
         ("IsEven", "dotnet.bigint_is_even"),
+        ("IsPowerOfTwo", "dotnet.bigint_is_power_of_two"),
+        ("ToByteArray", "dotnet.bigint_to_byte_array"),
     ] {
         class = class.with_method(MethodDef::new(name, 0, MethodBody::Common(emit.into())));
     }
     class = class
+        // ⛔ A SECOND registration, not a widened one. INSTANCE lookup matches
+        // on EXACT arity (`find_instance_method_on`), the opposite of the
+        // static path — so `v.ToString("X")` never reached the arity-0
+        // `ToString` and fell through to the generic object one. Both point at
+        // the same common; the emitter branches on `argc`.
+        .with_method(MethodDef::new(
+            "ToString",
+            1,
+            MethodBody::Common("dotnet.bigint_to_string".into()),
+        ))
         .with_method(MethodDef::new(
             "CompareTo",
             1,

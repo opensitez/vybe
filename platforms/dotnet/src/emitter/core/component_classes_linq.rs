@@ -146,6 +146,19 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         1,
         MethodBody::Common("dotnet.linq_take".into()),
     ));
+    // §Order()/OrderDescending() — .NET 7 sorts by the ELEMENT itself, with no
+    // key selector. Distinct from `OrderBy`, which requires one: the arity is
+    // the whole difference, so they cannot share a leaf.
+    class.methods.push(MethodDef::new(
+        "Order",
+        0,
+        MethodBody::Common("collections.sorted".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "OrderDescending",
+        0,
+        MethodBody::Common("dotnet.linq_order_descending".into()),
+    ));
     class.methods.push(MethodDef::new(
         "Average",
         0,

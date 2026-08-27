@@ -159,7 +159,26 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_else(line);
+    // ⛔ NaN is BOTH the failure signal and a legitimate answer. `"NaN"` is the
+    // invariant culture's NaN symbol and .NET's `Double.TryParse` accepts it,
+    // returning True with a NaN out-param — the `result == result` test alone
+    // reported False and wrote nothing. `"Infinity"` needs no arm: `Number`
+    // parses it and it survives the test on its own.
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
+    let to_str = chunk.add_import("ecma:string", "String");
+    let trim = chunk.add_import("ecma:string", "trim");
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_call(trim, 1, line);
+    chunk.emit_call(lower, 1, line);
+    chunk.emit_string_const("nan", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(f64::NAN, line);
+    chunk.emit_else(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 

@@ -993,6 +993,7 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
         ancestry: control_ancestry(class_name),
         control_fn: Some(element.to_string()),
         inner_html: default_markup_for_control(class_name).map(str::to_string),
+        after_create: after_create_for_control(class_name).map(str::to_string),
         // A WinForms control IS its element at construction; nothing to inflate.
         nest_coerce: None,
         value_equality: false,
@@ -1024,17 +1025,40 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
 /// `datagrid_adapter` makes about its cell borders. It rides in the markup's
 /// own `style` attributes rather than the UA sheet, so it cascades normally
 /// and an author's later write simply overrides it.
+/// A `ToolStripButton`'s resting appearance: a glyph on the strip, with the
+/// strip's own background showing through. WinForms only draws a border and a
+/// fill on hover or press, so the resting state has neither.
+///
+/// A macro rather than a `const`, because `concat!` takes literals only and
+/// the markup below is built with it.
+macro_rules! toolstrip_button {
+    () => {
+        "min-width:23px;height:22px;padding:0 4px;border:none;\
+         border-radius:0;background-color:transparent"
+    };
+}
+
 fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
     Some(match class_name.to_ascii_lowercase().as_str() {
         // The standard items, in WinForms' order: move-first, move-previous,
         // the position box reading "N of M", move-next, move-last.
+        //
+        // The items are `ToolStripButton`s, and a ToolStripButton is FLAT:
+        // no border and no fill until the pointer is over it. Left with the
+        // UA's `<button>` chrome they drew as rounded grey lozenges — right
+        // element, wrong control. `TOOLSTRIP_BUTTON` below is that appearance,
+        // and it has to name every property the UA sheet sets, because a
+        // shorthand it does not mention keeps the UA's value: `border-radius`
+        // is the one that made them lozenges and `border`/`background` alone
+        // would have left it.
         "bindingnavigator" => concat!(
-            "<button type='button' class='vybe-nav vybe-nav-first' style='min-width:24px'>|&#9664;</button>",
-            "<button type='button' class='vybe-nav vybe-nav-prev' style='min-width:24px'>&#9664;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-first' style='", toolstrip_button!(), "'>|&#9664;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-prev' style='", toolstrip_button!(), "'>&#9664;</button>",
             "<input type='text' class='vybe-nav-position' value='0 of 0'",
-            " style='width:64px;text-align:center;margin:0 4px'>",
-            "<button type='button' class='vybe-nav vybe-nav-next' style='min-width:24px'>&#9654;</button>",
-            "<button type='button' class='vybe-nav vybe-nav-last' style='min-width:24px'>&#9654;|</button>"
+            " style='width:64px;text-align:center;margin:0 4px;height:21px;border-radius:0",
+            ";border:1px solid #7a7a7a;background-color:#ffffff'>",
+            "<button type='button' class='vybe-nav vybe-nav-next' style='", toolstrip_button!(), "'>&#9654;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-last' style='", toolstrip_button!(), "'>&#9654;|</button>"
         ),
         // Two panes and the splitter between them. `Panel1`/`Panel2` resolve to
         // these, so they must exist before any code adds a control to one.
@@ -1043,24 +1067,32 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
             "<div class='vybe-splitter' style='flex:0 0 4px;background-color:#c8c8c8;cursor:col-resize'></div>",
             "<div class='vybe-split-panel2' style='flex:1 1 50%;overflow:auto'></div>"
         ),
-        // A caption with its two arrows, the weekday initials, and a day grid.
-        // Static chrome only — which month it shows and which day is selected
-        // are VALUES, so they are written by the control, not baked in here.
-        "monthcalendar" => concat!(
-            "<div class='vybe-cal-header' style='display:flex;justify-content:space-between;align-items:center'>",
-            "<button type='button' class='vybe-cal-prev'>&#9664;</button>",
-            "<span class='vybe-cal-title'></span>",
-            "<button type='button' class='vybe-cal-next'>&#9654;</button>",
-            "</div>",
-            "<table class='vybe-cal-grid' style='width:100%;border-collapse:collapse'>",
-            "<thead><tr>",
-            "<th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th><th>S</th>",
-            "</tr></thead>",
-            "<tbody class='vybe-cal-days'></tbody>",
-            "</table>"
-        ),
+        // ⛔ No `monthcalendar` arm. A calendar has no static spelling: the
+        // month it opens on is the date the program RUNS, and its weekday
+        // header follows `FirstDayOfWeek`. It is built at construction instead
+        // — see `after_create_for_control`.
         _ => return None,
     })
+}
+
+/// The part of a control that only a RUNNING program can know, as a
+/// common-emit key ([`CtorSpec::after_create`]).
+///
+/// The companion of [`default_markup_for_control`], and the split between them
+/// is whether a value is involved. A `SplitContainer`'s two panes are the same
+/// two panes in every program on every day, so they are markup. A
+/// `MonthCalendar` is a view of a DATE: baking a month into a string would
+/// freeze the control at compile time and ship a calendar that is wrong from
+/// the day after it was built.
+///
+/// One key, dispatched through the ordinary `common:dotnet.*` route, so the
+/// calendar's rules live in this platform's own adapter and the shared
+/// construction path holds no calendar vocabulary.
+fn after_create_for_control(class_name: &str) -> Option<&'static str> {
+    match class_name.to_ascii_lowercase().as_str() {
+        "monthcalendar" => Some("dotnet.month_calendar_render"),
+        _ => None,
+    }
 }
 
 /// Does this class DESCEND FROM `Control` — i.e. is it a control at all?
@@ -1203,6 +1235,21 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("Result", ro("dotnet.task_result")),
             ("IsCompleted", ro("dotnet.task_is_completed")),
             ("IsCanceled", ro("dotnet.task_is_canceled")),
+            // `TaskStatus`, as the .NET spelling of the promise's own state.
+            ("Status", ro("dotnet.task_status")),
+            ("IsFaulted", ro("dotnet.task_is_faulted")),
+        ],
+        // `TaskCompletionSource(Of T).Task` — the consumer half. READ-ONLY and
+        // computed: a struct field named `Task` on the source would be read as
+        // `task` by a case-insensitive front end, and the accessor keeps the
+        // promise reachable under the declared spelling for C# too.
+        "taskcompletionsource" => vec![("Task", ro("dotnet.tcs_task"))],
+        "weakreference" => vec![
+            (
+                "Target",
+                rw("dotnet.weakref_target", "dotnet.weakref_set_target"),
+            ),
+            ("IsAlive", ro("dotnet.weakref_is_alive")),
         ],
         "list" | "arraylist" => vec![("Capacity", ro("dotnet.list_capacity"))],
         // `MemoryStream` — every one of these is DERIVED. `Length` changes on
@@ -1381,6 +1428,44 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
             ("Columns", "DataGridViewColumnCollection"),
             ("Rows", "DataGridViewRowCollection"),
         ],
+        // ── System.Collections.Immutable ──────────────────────────────────
+        //
+        // A persistent collection's whole surface CHAINS: every "mutation"
+        // answers a new collection of the same type. Without these the value
+        // coming back from `Add` is a bare array with no identity, so the
+        // next hop resolves against nothing — `a1.Add(2).Length` died there
+        // even with the type fully declared.
+        "immutablearray" => &[
+            ("Add", "ImmutableArray"),
+            ("AddRange", "ImmutableArray"),
+            ("RemoveAt", "ImmutableArray"),
+            ("SetItem", "ImmutableArray"),
+        ],
+        "immutablelist" => &[
+            ("Add", "ImmutableList"),
+            ("AddRange", "ImmutableList"),
+            ("RemoveAt", "ImmutableList"),
+            ("SetItem", "ImmutableList"),
+        ],
+        // `Dequeue`/`Pop` answer the REMAINING collection, not the element —
+        // .NET spells the element read as a separate `Peek`.
+        "immutablequeue" => &[("Enqueue", "ImmutableQueue"), ("Dequeue", "ImmutableQueue")],
+        "immutablestack" => &[("Push", "ImmutableStack"), ("Pop", "ImmutableStack")],
+        "immutablehashset" => &[
+            ("Add", "ImmutableHashSet"),
+            ("Remove", "ImmutableHashSet"),
+            ("Union", "ImmutableHashSet"),
+            ("Intersect", "ImmutableHashSet"),
+            ("Except", "ImmutableHashSet"),
+        ],
+        "immutabledictionary" => &[
+            ("Add", "ImmutableDictionary"),
+            ("SetItem", "ImmutableDictionary"),
+        ],
+        // The builder is the one type here that does NOT chain — its `Add`
+        // mutates and returns nothing. Only the handoff back to immutability
+        // carries a type.
+        "immutablelistbuilder" => &[("ToImmutable", "ImmutableList")],
         _ => &[],
     }
 }

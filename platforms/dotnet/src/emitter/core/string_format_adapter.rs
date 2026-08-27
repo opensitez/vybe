@@ -32,19 +32,47 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
+/// One `{N[,W][:fmt]}` substitution.
+///
+/// ⛔ A DATE takes the date renderer, not the numeric one. `{0:yyyy-MM-dd}` on
+/// a DateTime reached `__vybe_dotnet_numeric_format`, which has no date
+/// patterns and answered `[object DateTime]` — in C# too, since both spellings
+/// share this adapter. The value's own `__type` decides, at run time, because
+/// a composite format string is walked at run time.
 fn emit_dotnet_format_value_call(
-    chunk: &mut Chunk,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
     args_slot: u16,
     idx_slot: u16,
     format_slot: u16,
     width_slot: u16,
     line: u32,
 ) {
-    let value_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    let value_slot = {
+        let chunk = &mut chunks[current];
+        let value_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+        // ⛔ The test is the `__time` FIELD, not `__type`: a VB `Date` carries
+        // the type stamp folded to `datetime` while C# stamps `DateTime`, and
+        // a name comparison answered only one of them. `__time` is the date's
+        // payload and is spelled the same from every front end.
+        let time_key = chunk.add_constant(Value::String(Arc::from("__time")));
+        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
+        value_slot
+    };
+    super::datetime_format_adapter::emit_date_format(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
 
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_dotnet_numeric_format", line);
 
@@ -59,6 +87,7 @@ fn emit_dotnet_format_value_call(
     chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, width_slot, line);
     chunk.emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
+    chunk.emit_end(line);
 }
 
 /// Emit `String.Format(fmt, ...args)` at the call site.
@@ -66,7 +95,7 @@ fn emit_dotnet_format_value_call(
 /// Stack on entry: `[fmt, arg_0, arg_1, ..., arg_{n-1}]` where
 /// `argc == n + 1` (format string + n placeholder values).
 /// Stack on exit: `[result_string]`.
-pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
         // Defensive: no format string was pushed. Emit empty string.
@@ -147,7 +176,10 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // skip past open-brace handler if not '{'
 
-    emit_handle_open_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, args_slot, line);
+    emit_handle_open_brace(
+        chunks, current, fmt_slot, i_slot, len_slot, out_slot, args_slot, line,
+    );
+    let chunk = &mut chunks[current];
     // br(1) = continue loop (depth 0 = open_block, 1 = loop, 2 = outer)
     chunk.emit_br(1, line);
     chunk.emit_end(line);
@@ -198,7 +230,8 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// On entry `i` points at `{`. Advances `i` past the consumed segment and
 /// appends the formatted result to `out`.
 fn emit_handle_open_brace(
-    chunk: &mut Chunk,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
     fmt_slot: u16,
     i_slot: u16,
     len_slot: u16,
@@ -206,6 +239,7 @@ fn emit_handle_open_brace(
     args_slot: u16,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     // Check if next char is also '{' → escape
     // peek = (i+1 < len) && fmt.charCodeAt(i+1) == '{'
     let escape_block = chunk.emit_block(line);
@@ -367,7 +401,10 @@ fn emit_handle_open_brace(
 
     // out = out + format(args[idx], format, width)
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
-    emit_dotnet_format_value_call(chunk, args_slot, idx_slot, format_slot, width_slot, line);
+    emit_dotnet_format_value_call(
+        chunks, current, args_slot, idx_slot, format_slot, width_slot, line,
+    );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 

@@ -76,6 +76,51 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     }
     vec![
         DotnetClassExport::new("dotnet.System.Threading.Tasks", task),
+        // `TaskCompletionSource(Of T)` — the producer half of a Task. The type
+        // was absent from the catalog entirely, so every member answered
+        // "undefined is not callable". `Task` is a computed property declared
+        // in `tree_register::shared_emit_accessors`, not a method.
+        //
+        // ⛔ THE `Try*` PAIR IS A SEPARATE REGISTRATION, NOT A FLAG. `SetResult`
+        // and `TrySetResult` differ in their RETURN CONTRACT — one throws on a
+        // second completion, the other answers `False` — so they route to
+        // distinct commons and share their body inside the adapter.
+        DotnetClassExport::new(
+            "dotnet.System.Threading.Tasks",
+            ClassType::new("TaskCompletionSource")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.tcs_new"))
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.tcs_new"))
+                .with_method(MethodDef::new(
+                    "SetResult",
+                    1,
+                    MethodBody::Common("dotnet.tcs_set_result".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrySetResult",
+                    1,
+                    MethodBody::Common("dotnet.tcs_try_set_result".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SetException",
+                    1,
+                    MethodBody::Common("dotnet.tcs_set_exception".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrySetException",
+                    1,
+                    MethodBody::Common("dotnet.tcs_try_set_exception".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SetCanceled",
+                    0,
+                    MethodBody::Common("dotnet.tcs_set_canceled".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrySetCanceled",
+                    0,
+                    MethodBody::Common("dotnet.tcs_try_set_canceled".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Threading",
             ClassType::new("Interlocked")
