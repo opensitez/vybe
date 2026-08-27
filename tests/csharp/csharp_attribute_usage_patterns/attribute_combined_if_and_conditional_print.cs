@@ -1,32 +1,22 @@
 // vybe-test: csharp/csharp_attribute_usage_patterns/attribute_combined_if_and_conditional_print
 // origin: languages/csharp/tests/csharp/test_csharp_attribute_usage_patterns.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+App.Run();
+__Check("Run_attribute_combined_if_and_conditional_print");
+
+class App {
+    public static void Run() => __P("Run_attribute_combined_if_and_conditional_print");
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-#define VYBETEST_PRE
-// A preprocessor directive must be the only content on its line (ECMA-334
-// §6.5.1) — the original spelled `#if … #endif` mid-line, which dotnet
-// rejects outright. Same program, directives on their own lines.
-using System; using System.Diagnostics; class App{[Conditional("DEBUG")] static void Log(){} static void Main(){
-#if VYBETEST_PRE
-__P(("pre").ToString());
-#endif
-Log(); __P(("post").ToString());}} App.Main();
-__Check("pre\npost");

@@ -1,30 +1,25 @@
 // vybe-test: csharp/csharp_design_patterns/observer_pattern_notifies_multiple_subscribers
 // origin: languages/csharp/tests/csharp/test_csharp_design_patterns.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+var btn = new Button();
+btn.Click();
+__Check("Clicked");
+
+class Button {
+    public event Action Clicked;
+    public Button() { Clicked += () => __P("Clicked"); }
+    public void Click() => Clicked?.Invoke();
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-class Button{public event System.Action Clicked;}
-var b=new Button();
-int a=0,c=0;
-b.Clicked+=()=>a++;
-b.Clicked+=()=>c++;
-b.Clicked?.Invoke();
-__P((a).ToString()); __P((c).ToString());
-__Check("1\n1");

@@ -1,24 +1,25 @@
 // vybe-test: csharp/csharp_reflection_activation/interface_list_contains_declared_contract_name
 // origin: languages/csharp/tests/csharp/test_csharp_reflection_activation.rs
 
-string __buf = "";
+using static __Harness;
+using System.Linq;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var names = typeof(Worker).GetInterfaces().Select(i => i.Name);
+foreach (var name in names) __P((name).ToString());
+__Check("IRun");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+interface IRun { }
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class Worker : IRun { }
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-using System.Linq; interface IRun { } class Worker : IRun { } var names = typeof(Worker).GetInterfaces().Select(i => i.Name); foreach (var name in names) __P((name).ToString());
-__Check("IRun");

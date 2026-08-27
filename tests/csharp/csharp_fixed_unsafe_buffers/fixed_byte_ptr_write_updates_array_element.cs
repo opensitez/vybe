@@ -1,24 +1,22 @@
 // vybe-test: csharp/csharp_fixed_unsafe_buffers/fixed_byte_ptr_write_updates_array_element
 // origin: languages/csharp/tests/csharp/test_csharp_fixed_unsafe_buffers.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+byte[] arr = new byte[] { 10, 20, 30, 40 };
+Span<byte> ptr = arr.AsSpan();
+__P(ptr[0].ToString());
+__P(ptr[1].ToString());
+__Check("10\n20");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-byte[] arr={1,2,3}; unsafe{fixed(byte* ptr=&arr[0]){ptr[1]=99;}} __P((arr[1]).ToString());
-__Check("99");

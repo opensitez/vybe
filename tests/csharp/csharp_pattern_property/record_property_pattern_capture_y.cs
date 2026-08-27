@@ -1,24 +1,22 @@
 // vybe-test: csharp/csharp_pattern_property/record_property_pattern_capture_y
 // origin: languages/csharp/tests/csharp/test_csharp_pattern_property.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+object o=new Point(3,8);
+if(o is Point{X:3,Y:var y}) __P((y).ToString());
+__Check("8");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+record Point(int X,int Y);
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-record Point(int X,int Y); object o=new Point(3,8); if(o is Point{X:3,Y:var y}) __P((y).ToString());
-__Check("8");

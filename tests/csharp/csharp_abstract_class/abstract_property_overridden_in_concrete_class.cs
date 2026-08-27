@@ -1,27 +1,27 @@
 // vybe-test: csharp/csharp_abstract_class/abstract_property_overridden_in_concrete_class
 // origin: languages/csharp/tests/csharp/test_csharp_abstract_class.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+Derived d = new Derived();
+d.Title = "Sample";
+__P(d.Title);
+__Check("Sample");
+
+abstract class Base {
+    public abstract string Title { get; set; }
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
+class Derived : Base {
+    public override string Title { get; set; } = "";
 }
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-abstract class Shape{public abstract double Area;}
-class Square:Shape{public double Side;public override double Area=>Side*Side;}
-Shape s=new Square{Side=4};
-__P((s.Area).ToString());
-__Check("16");

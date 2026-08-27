@@ -1,24 +1,15 @@
 // vybe-test: csharp/csharp_iasync_enumerable/static_async_enumerable_method_count
 // origin: languages/csharp/tests/csharp/test_csharp_iasync_enumerable.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+async System.Threading.Tasks.Task Run() {
+    int count = 0;
+    await foreach (var x in Factory.Three()) count++;
+    __P((count).ToString());
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+Run().Wait();
+__Check("3");
 
 class Factory {
     public static async System.Collections.Generic.IAsyncEnumerable<int> Three() {
@@ -27,10 +18,15 @@ class Factory {
         yield return 3;
     }
 }
-async System.Threading.Tasks.Task Run() {
-    int count = 0;
-    await foreach (var x in Factory.Three()) count++;
-    __P((count).ToString());
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
 }
-Run().Wait();
-__Check("3");

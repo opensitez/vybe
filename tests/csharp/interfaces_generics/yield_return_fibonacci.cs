@@ -1,24 +1,10 @@
 // vybe-test: csharp/interfaces_generics/yield_return_fibonacci
 // origin: languages/csharp/tests/csharp/test_interfaces_generics.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+foreach (var n in Fib.Sequence(8)) __P((n).ToString());
+__Check("0\n1\n1\n2\n3\n5\n8\n13");
 
 class Fib {
     public static IEnumerable<int> Sequence(int count) {
@@ -31,5 +17,15 @@ class Fib {
         }
     }
 }
-foreach (var n in Fib.Sequence(8)) __P((n).ToString());
-__Check("0\n1\n1\n2\n3\n5\n8\n13");
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
+}

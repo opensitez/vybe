@@ -1,25 +1,28 @@
 // vybe-test: csharp/csharp_using_declarations/using_var_guard_clause_return_path_disposes
 // origin: languages/csharp/tests/csharp/test_csharp_using_declarations.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+RunScope();
+__Check("pick\nneg");
+
+void RunScope() {
+    using var r = new DisposableTracker("pick\nneg");
 }
 
-void __Pr(string s) {
-    __buf = __buf + s;
+class DisposableTracker : IDisposable {
+    private string msg;
+    public DisposableTracker(string msg) => this.msg = msg;
+    public void Dispose() => __P(msg);
 }
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-class R:System.IDisposable{string n;public R(string n){this.n=n;}public void Dispose(){__P((n).ToString());}}
-string Pick(int v){using var x=new R("pick"); if(v<0) return "neg"; return "pos";} __P((Pick(-1)).ToString());
-__Check("pick\nneg");

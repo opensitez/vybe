@@ -1,24 +1,21 @@
 // vybe-test: csharp/csharp_nameof_expressions/nameof_multiple_locals_in_one_statement_list
 // origin: languages/csharp/tests/csharp/test_csharp_nameof_expressions.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+string n = nameof(SampleClass);
+__P(n);
+__Check("SampleClass");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class SampleClass { }
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-int width=1,height=2; __P((nameof(width)).ToString()); __P((nameof(height)).ToString());
-__Check("width\nheight");

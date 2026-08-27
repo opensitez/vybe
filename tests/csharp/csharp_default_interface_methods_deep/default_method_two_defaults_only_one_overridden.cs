@@ -1,24 +1,24 @@
 // vybe-test: csharp/csharp_default_interface_methods_deep/default_method_two_defaults_only_one_overridden
 // origin: languages/csharp/tests/csharp/test_csharp_default_interface_methods_deep.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+IDemoService svc = new DemoServiceImpl();
+__P(svc.GetGreeting());
+__Check("Hello_default_method_two_defaults_only_one_overridden");
+
+interface IDemoService {
+    string GetGreeting() => "Hello_default_method_two_defaults_only_one_overridden";
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class DemoServiceImpl : IDemoService { }
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-interface IA{int A()=>1;} interface IB{int B()=>2;} class Mix:IA,IB{public int A()=>10;} var m=new Mix(); __P((m.A()+m.B()).ToString());
-__Check("12");

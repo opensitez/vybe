@@ -1,24 +1,23 @@
 // vybe-test: csharp/csharp_pattern_property/is_property_pattern_rejects_wrong_int_field
 // origin: languages/csharp/tests/csharp/test_csharp_pattern_property.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+object o=new Box{Value=10}
+;
+__P((o is Box{Value:11}).ToString());
+__Check("False");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+class Box { public int Value; }
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-class Box { public int Value; } object o=new Box{Value=10}; __P((o is Box{Value:11}).ToString());
-__Check("False");

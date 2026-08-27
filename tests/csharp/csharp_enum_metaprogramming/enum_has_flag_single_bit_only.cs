@@ -1,24 +1,23 @@
 // vybe-test: csharp/csharp_enum_metaprogramming/enum_has_flag_single_bit_only
 // origin: languages/csharp/tests/csharp/test_csharp_enum_metaprogramming.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var v=Bit.Two;
+__P((v.HasFlag(Bit.One)).ToString());
+__P((v.HasFlag(Bit.Two)).ToString());
+__Check("False\nTrue");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+[System.Flags] enum Bit{One=1,Two=2}
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-[System.Flags] enum Bit{One=1,Two=2} var v=Bit.Two; __P((v.HasFlag(Bit.One)).ToString()); __P((v.HasFlag(Bit.Two)).ToString());
-__Check("False\nTrue");

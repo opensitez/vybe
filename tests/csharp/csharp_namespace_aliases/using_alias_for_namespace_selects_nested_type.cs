@@ -1,24 +1,22 @@
 // vybe-test: csharp/csharp_namespace_aliases/using_alias_for_namespace_selects_nested_type
 // origin: languages/csharp/tests/csharp/test_csharp_namespace_aliases.rs
 
-string __buf = "";
+using static __Harness;
+using Core = Demo.Core;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+__P((new Core.Item().Name).ToString());
+__Check("core");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+namespace Demo.Core { public class Item { public string Name => "core"; } }
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-using Core = Demo.Core; namespace Demo.Core { public class Item { public string Name => "core"; } } __P((new Core.Item().Name).ToString());
-__Check("core");

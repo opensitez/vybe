@@ -1,24 +1,23 @@
 // vybe-test: csharp/csharp_record_types/positional_record_constructor_sets_properties
 // origin: languages/csharp/tests/csharp/test_csharp_record_types.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var p = new Point(3,4);
+__P((p.X).ToString());
+__P((p.Y).ToString());
+__Check("3\n4");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+record Point(int X, int Y);
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-record Point(int X, int Y); var p = new Point(3,4); __P((p.X).ToString()); __P((p.Y).ToString());
-__Check("3\n4");

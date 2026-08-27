@@ -1,24 +1,10 @@
 // vybe-test: csharp/csharp_nested_type_member_access/nested_class_can_invoke_outer_private_instance_method
 // origin: languages/csharp/tests/csharp/test_csharp_nested_type_member_access.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+__P((new Outer().ViaInner(5)).ToString());
+__Check("10");
 
 class Outer {
     int Twice(int n) { return n * 2; }
@@ -29,5 +15,15 @@ class Outer {
     }
     public int ViaInner(int n) { return new Inner(this).Run(n); }
 }
-__P((new Outer().ViaInner(5)).ToString());
-__Check("10");
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
+}

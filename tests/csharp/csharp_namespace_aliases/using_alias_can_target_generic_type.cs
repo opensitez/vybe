@@ -1,24 +1,22 @@
 // vybe-test: csharp/csharp_namespace_aliases/using_alias_can_target_generic_type
 // origin: languages/csharp/tests/csharp/test_csharp_namespace_aliases.rs
 
-string __buf = "";
+using static __Harness;
+using TextList = System.Collections.Generic.List<string>;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var list = new TextList { "a", "b" }
+;
+__P((list.Count).ToString());
+__Check("2");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-using TextList = System.Collections.Generic.List<string>; var list = new TextList { "a", "b" }; __P((list.Count).ToString());
-__Check("2");

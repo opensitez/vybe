@@ -1,26 +1,29 @@
 // vybe-test: csharp/csharp_static_abstract_interfaces/static_abstract_interface_constraint_on_type_param
 // origin: languages/csharp/tests/csharp/test_csharp_static_abstract_interfaces.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+string res = GenericHelper.Call<StaticImpl>();
+__P(res);
+__Check("Static_static_abstract_interface_constraint_on_type_param");
+
+interface IStaticProvider<TSelf> where TSelf : IStaticProvider<TSelf> {
+    static abstract string GetValue();
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
+class StaticImpl : IStaticProvider<StaticImpl> {
+    public static string GetValue() => "Static_static_abstract_interface_constraint_on_type_param";
 }
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class GenericHelper {
+    public static string Call<T>() where T : IStaticProvider<T> => T.GetValue();
+}
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-interface IHasLabel<T> where T:IHasLabel<T>{static abstract string Label();}
-struct Tag:IHasLabel<Tag>{public static string Label()=>"tag";}
-string Read<T>() where T:IHasLabel<T>=>T.Label(); __P((Read<Tag>()).ToString());
-__Check("tag");

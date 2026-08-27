@@ -68,6 +68,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Fixing their reset took `tests/php/namespaces` from flapping to 104/0
     // warm and the whole php suite from 1042 to 1014 failures.
     __w.declared_enums.clear();
+    __w.declared_types.clear();
+    for pair in pairs.clone() {
+        collect_declared_types(&pair, &mut __w.declared_types);
+    }
 
     for top in pairs {
         let inner = match top.as_rule() {
@@ -122,6 +126,22 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+
+    // ECMA-334 §13.1: a type declaration is not a statement and has no
+    // position in the execution order — `new Box()` binds to `class Box`
+    // wherever the file declares it. C# then *requires* the opposite
+    // spelling: §7.1 top-level statements must precede every type
+    // declaration (CS8803), so a legal file always reads statements-first
+    // and the types it names are all below them.
+    //
+    // Run BEFORE `lower_gotos`. That pass rewrites the top-level list into a
+    // dispatch construct, and a type declared after a label would end up
+    // nested inside it, where a top-level partition cannot see it — the file
+    // would stay broken with no diagnostic. Stable, so declaration order
+    // among the types themselves is untouched, and so the synthesized
+    // Exception hierarchy spliced at 0..0 below still lands ahead of the
+    // user types that derive from it.
+    body.sort_by_key(|stmt| !is_csharp_type_declaration(&stmt.kind));
 
     // Top-level statements are a method body (`<Main>$`) like any other, and
     // `goto` is legal there — but this list is assembled here rather than by
@@ -192,6 +212,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_user_defined_operator_calls(&mut module);
     elide_conditional_attribute_calls(__w, &mut module.body);
     Ok(module)
+}
+
+/// Does this top-level statement declare a type rather than execute?
+///
+/// `FunctionDecl` is deliberately absent: a top-level local function is
+/// already reachable before its declaration point, so hoisting it would move
+/// a statement that does not need moving.
+fn is_csharp_type_declaration(kind: &StmtKind) -> bool {
+    matches!(
+        kind,
+        StmtKind::ClassDecl { .. }
+            | StmtKind::StructDecl { .. }
+            | StmtKind::InterfaceDecl { .. }
+            | StmtKind::EnumDecl { .. }
+            | StmtKind::ModuleDecl { .. }
+            | StmtKind::DelegateDecl { .. }
+            // A namespace body can hold only type declarations, and §7.1
+            // puts it below the statements for the same reason.
+            | StmtKind::NamespaceDecl { .. }
+    )
 }
 
 /// ECMA-334 §6.5 lexical preprocessing. Returns the processed text plus the
@@ -4949,21 +4989,106 @@ fn normalize_task_expr(expr: &mut Expression) {
 struct UsingStaticScope {
     paths: Vec<String>,
     declared: HashSet<String>,
+    /// Static members of the `using static` types this very unit declares,
+    /// mapped to the type that owns them. Empty when every static path names
+    /// a host type (`System.Math`), which the walker cannot look inside.
+    local_statics: HashMap<String, String>,
 }
 
 impl UsingStaticScope {
     /// The qualification a bare callee should receive, or `None` when the unit
     /// declares that name itself.
     ///
-    /// Only the FIRST static path is offered. Choosing among several
-    /// `using static` directives needs to know which host type actually owns
-    /// the member, which the walker cannot answer — that pre-existing limit is
-    /// left exactly as it was rather than guessed at here.
+    /// For a `using static` type declared in this unit the owner IS knowable,
+    /// so that member is qualified with the type that actually declares it —
+    /// several such directives resolve exactly, not by position. Only when no
+    /// in-unit type claims the name does the first-path guess below apply:
+    /// choosing among several *host* types needs to know which one owns the
+    /// member, which the walker cannot answer, and that pre-existing limit is
+    /// left exactly as it was.
     fn qualification_for(&self, name: &str) -> Option<String> {
         if self.declared.contains(name) {
             return None;
         }
+        if let Some(owner) = self.local_statics.get(name) {
+            return Some(format!("{owner}.{name}"));
+        }
         self.paths.first().map(|path| format!("{path}.{name}"))
+    }
+}
+
+/// The static members of every `using static` type the unit declares itself,
+/// mapped to the declaring type.
+///
+/// ECMA-334 §13.5.4 imports the *static* members only, so an instance method
+/// is skipped: qualifying one as `T.m(...)` names a call that does not exist.
+fn collect_using_static_members(
+    body: &[Statement],
+    paths: &[String],
+    out: &mut HashMap<String, String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. }
+            | StmtKind::ModuleDecl { name, members, .. } => {
+                // `using static N.T` spells the type through its namespace,
+                // while the declaration below only carries `T` — match on the
+                // trailing segment but qualify with the DIRECTIVE's spelling,
+                // which is the one that resolves.
+                let owner = paths.iter().find(|path| {
+                    *path == name || path.rsplit('.').next() == Some(name.as_str())
+                });
+                if let Some(owner) = owner {
+                    for member in members {
+                        match member {
+                            ClassMember::Method(stmt) => {
+                                if let StmtKind::FunctionDecl {
+                                    name: member_name,
+                                    modifiers,
+                                    ..
+                                } = &stmt.kind
+                                {
+                                    if modifiers.is_static {
+                                        out.insert(member_name.clone(), owner.to_string());
+                                    }
+                                }
+                            }
+                            ClassMember::Field {
+                                name: member_name,
+                                modifiers,
+                                ..
+                            } => {
+                                if modifiers.is_static {
+                                    out.insert(member_name.clone(), owner.to_string());
+                                }
+                            }
+                            ClassMember::Property {
+                                name: member_name,
+                                modifiers,
+                                ..
+                            } => {
+                                if modifiers.is_static {
+                                    out.insert(member_name.clone(), owner.to_string());
+                                }
+                            }
+                            ClassMember::Const {
+                                name: member_name, ..
+                            } => {
+                                out.insert(member_name.clone(), owner.to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // A `using static N.T` names the type through its namespace, so
+            // the members are one level down from where the search started.
+            StmtKind::NamespaceDecl { body, .. } => {
+                collect_using_static_members(body, paths, out)
+            }
+            _ => {}
+        }
     }
 }
 
@@ -4974,24 +5099,38 @@ impl UsingStaticScope {
 /// naming a method of an unrelated class is not legal C# to begin with, so the
 /// extra names cost nothing, while walking scope-by-scope here would duplicate
 /// resolution the compiler already owns.
-fn collect_declared_callables(body: &[Statement], out: &mut HashSet<String>) {
+/// The accumulator for [`collect_declared_callables`].
+///
+/// `skip_types` names the types a `using static` directive imported. Their
+/// members are what the directive brings INTO scope, so counting them as
+/// "the unit declares this itself" is what made `using static __Harness;`
+/// leave every `__P(...)` bare and undefined at runtime.
+struct DeclaredCallables<'a> {
+    skip_types: &'a HashSet<String>,
+    names: HashSet<String>,
+}
+
+fn collect_declared_callables(body: &[Statement], out: &mut DeclaredCallables) {
     for stmt in body {
         collect_declared_callables_in_stmt(&stmt.kind, out);
     }
 }
 
-fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut HashSet<String>) {
+fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallables) {
     match kind {
         StmtKind::FunctionDecl { name, body, .. } => {
-            out.insert(name.clone());
+            out.names.insert(name.clone());
             collect_declared_callables(body, out);
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             collect_declared_callables(body, out)
         }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
+        StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }
+        | StmtKind::ModuleDecl { name, members, .. } => {
+            if out.skip_types.contains(name) {
+                return;
+            }
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
@@ -5090,9 +5229,24 @@ fn rewrite_using_imports(module: &mut Module) {
     if aliases.is_empty() && paths.is_empty() {
         return;
     }
-    let mut declared = HashSet::new();
+    let mut local_statics: HashMap<String, String> = HashMap::new();
+    collect_using_static_members(&module.body, &paths, &mut local_statics);
+    // The types the directives named, by their DECLARED spelling — that is
+    // the key `collect_declared_callables` matches on as it walks.
+    let skip_types: HashSet<String> = local_statics
+        .values()
+        .filter_map(|path| path.rsplit('.').next().map(str::to_string))
+        .collect();
+    let mut declared = DeclaredCallables {
+        skip_types: &skip_types,
+        names: HashSet::new(),
+    };
     collect_declared_callables(&module.body, &mut declared);
-    let statics = UsingStaticScope { paths, declared };
+    let statics = UsingStaticScope {
+        paths,
+        declared: declared.names,
+        local_statics,
+    };
     rewrite_using_imports_in_statements(&mut module.body, &aliases, &statics);
 }
 
@@ -8608,6 +8762,12 @@ fn walk_tuple_deconstruction(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Stm
         match p.as_rule() {
             Rule::var_kw => {}
             Rule::tuple_binding_list => pattern = Some(walk_tuple_binding_list(p)?),
+            // The explicitly-typed spelling lowers to the SAME pattern — the
+            // per-element types declare, they do not destructure — so
+            // everything below this point is shared with the `var` form.
+            Rule::tuple_declaration_list => {
+                pattern = Some(walk_tuple_declaration_list(p)?)
+            }
             Rule::expression => {
                 value = Some(walk_expression(__w, p)?);
             }
@@ -8668,6 +8828,49 @@ fn walk_tuple_deconstruction(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Stm
         value,
         by_ref: false,
     })
+}
+
+/// `(int a, string b)` / `(var a, var b)` — the declaring elements of an
+/// explicitly-typed deconstruction, reduced to the names being bound.
+///
+/// The element TYPE is dropped deliberately. It is a declaration of the local,
+/// not a description of the tuple's shape, and the `var` form — which reaches
+/// the identical lowering — never had one to begin with.
+fn walk_tuple_declaration_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, String> {
+    let mut elems = Vec::new();
+    for child in pair.into_inner() {
+        if child.as_rule() != Rule::tuple_declaration_element {
+            continue;
+        }
+        let mut nested = None;
+        let mut name = None;
+        for part in child.into_inner() {
+            match part.as_rule() {
+                Rule::tuple_declaration_list => {
+                    nested = Some(walk_tuple_declaration_list(part)?)
+                }
+                // The LAST identifier is the bound name; anything before it is
+                // the element's type, which may itself be a plain identifier
+                // (`Foo f`) and would otherwise win here.
+                Rule::ident_name => name = Some(part.as_str().to_string()),
+                _ => {}
+            }
+        }
+        if let Some(nested) = nested {
+            elems.push(ArrayPatternElem::Pattern(
+                BindingPattern::Array(nested),
+                None,
+            ));
+            continue;
+        }
+        let name = name.ok_or("tuple declaration element missing a name")?;
+        if name == "_" {
+            elems.push(ArrayPatternElem::Hole);
+        } else {
+            elems.push(ArrayPatternElem::Pattern(BindingPattern::Ident(name), None));
+        }
+    }
+    Ok(elems)
 }
 
 fn walk_tuple_binding_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, String> {
@@ -10184,7 +10387,13 @@ fn csharp_normalize_delegate_initializer(type_hint: &str, init: Expression) -> E
 }
 
 fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    // Also positional. `ref readonly` precedes the type, and the read-only
+    // alias lowers to an ordinary copy — see `ref_readonly_local` in the
+    // grammar for why that is exact rather than approximate — so the marker
+    // is dropped here and the declaration walks as any other.
+    let mut inner = pair
+        .into_inner()
+        .filter(|p| !matches!(p.as_rule(), Rule::ref_readonly_local | Rule::const_kw));
     let first = inner.next().ok_or("Empty local var")?;
 
     // Skip type name (var or explicit type)
@@ -10271,7 +10480,14 @@ fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, Stri
 }
 
 fn walk_var_declarator(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<VarDeclarator, String> {
-    let mut inner = pair.into_inner();
+    // ⛔ POSITIONAL. `ref_initializer` — the `ref` in `= ref val` — sits
+    // between the name and the initializer, so it is filtered out here rather
+    // than matched below: the `Some(p)` arm walks whatever it is handed, and
+    // handed a bare `ref` token it would walk that as the initialising
+    // EXPRESSION.
+    let mut inner = pair
+        .into_inner()
+        .filter(|p| p.as_rule() != Rule::ref_initializer);
     let name = inner
         .next()
         .ok_or("Empty var declarator")?
@@ -12116,6 +12332,38 @@ pub(crate) struct CsWalker {
     /// collected before the tuple pass so `var (a, b) = F();` resolves from
     /// the signature.
     tuple_returning_fns: std::collections::HashMap<String, usize>,
+    /// Every type this compilation unit declares, collected from the parse
+    /// tree BEFORE the walk.
+    ///
+    /// It has to be a pre-pass: §7.1 puts top-level statements above the
+    /// types they name, so at the moment the chain builder sees
+    /// `Counter<int>.Value` the walk has not reached `class Counter<T>` yet
+    /// and a registry filled during the walk would answer "not declared" for
+    /// every type in a legal file.
+    declared_types: std::collections::HashSet<String>,
+}
+
+/// Fill [`CsWalker::declared_types`] from the parse tree.
+fn collect_declared_types(pair: &Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+    if matches!(
+        pair.as_rule(),
+        Rule::class_declaration
+            | Rule::struct_declaration
+            | Rule::interface_declaration
+            | Rule::enum_declaration
+            | Rule::record_declaration
+    ) {
+        if let Some(name) = pair
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::ident_name)
+        {
+            out.insert(name.as_str().to_string());
+        }
+    }
+    for inner in pair.clone().into_inner() {
+        collect_declared_types(&inner, out);
+    }
 }
 
 
@@ -14756,6 +15004,14 @@ fn walk_using_stmt(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, Str
         }
     }
 
+    // The expression form declares nothing, so it arrives with no name. The
+    // shared `Using` lowering disposes a NAMED local in its `finally`, so the
+    // resource is given one here rather than teaching that lowering about a
+    // second shape: `using (r) { … }` is `using (var tmp = r) { … }`.
+    if var.is_empty() {
+        var = "__using_resource".to_string();
+    }
+
     Ok(StmtKind::Using {
         var,
         resource,
@@ -15406,9 +15662,11 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
         }
         Rule::string_literal => {
             let raw = pair.as_str();
-            if raw.starts_with("u8\"") {
-                // UTF-8 string literal → byte array
-                let text = &raw[3..raw.len() - 1];
+            if let Some(quoted) = raw.strip_suffix("u8") {
+                // UTF-8 string literal → byte array. §6.4.5.6 puts `u8` AFTER
+                // the closing quote; this used to test for a `u8"…"` PREFIX,
+                // which is not C# and which the grammar could never produce.
+                let text = &quoted[1..quoted.len() - 1];
                 let unescaped = text
                     .replace("\\\"", "\"")
                     .replace("\\\\", "\\")
@@ -16205,6 +16463,7 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
         }
         if chain_src.starts_with("?.") {
             // Null-conditional member access
+            strip_static_receiver_type_args(__w, &mut expr);
             let name = strip_csharp_terminal_type_args(chain_src[2..].trim());
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
@@ -16241,10 +16500,27 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                     ExprKind::Member { field, .. } => Some(field.as_str()),
                     _ => None,
                 };
-                args.extend(csharp_method_generic_binding_args_for_method(
-                    method_name,
-                    &generic_type_args,
-                ));
+                // Whether a .NET static wants its type arguments as runtime
+                // operands is a .NET fact, so the platform answers it. Asking
+                // here — rather than growing the `Cast`/`OfType` name list
+                // below — keeps `System.*` knowledge out of the frontend.
+                let platform_owns_arity = match (&expr.kind, method_name) {
+                    (ExprKind::Member { object, .. }, Some(method)) => expr_dotted_name(object)
+                        .is_some_and(|receiver| {
+                            !__w.declared_types.contains(
+                                receiver.rsplit('.').next().unwrap_or(receiver.as_str()),
+                            ) && vybe_platform_dotnet::emitter::generic_binding_args_suppressed(
+                                &receiver, method,
+                            )
+                        }),
+                    _ => false,
+                };
+                if !platform_owns_arity {
+                    args.extend(csharp_method_generic_binding_args_for_method(
+                        method_name,
+                        &generic_type_args,
+                    ));
+                }
             }
             // Inject default fill char for `PadLeft(n)` / `PadRight(n)` —
             // .NET defaults to space, but the value-method dispatch expects
@@ -16280,6 +16556,7 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
             expr = canonicalize_method_call(expr, args);
         } else if chain_src.starts_with(".") {
             // Member access — normalize known property accessors to canonical builtins
+            strip_static_receiver_type_args(__w, &mut expr);
             let name = strip_csharp_terminal_type_args(chain_src[1..].trim());
             // C# tuple ItemN accessor: `(1, 2, 3).Item1` → `t[0]`,
             // `Item2` → `t[1]`, etc. Tuples compile to Arrays so the
@@ -16532,9 +16809,31 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
     let mut array_init = Vec::new();
     let mut obj_init: Vec<(String, Expression)> = Vec::new();
     let mut is_anonymous = false;
+    // Element names from a TUPLE-typed array creation,
+    // `new (int Id, string Cat)[] { … }`. The elements themselves are written
+    // positionally, so without these `x.Cat` has nothing to resolve against —
+    // and a key selector that answers `undefined` for every row makes
+    // `DistinctBy`/`UnionBy`/`MinBy` collapse to one element rather than fail.
+    let mut tuple_field_names: Vec<Option<String>> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::tuple_type => {
+                for element in p.into_inner() {
+                    if element.as_rule() != Rule::tuple_type_element {
+                        continue;
+                    }
+                    // The element's name is its LAST `ident_name`; anything
+                    // before it is the element's TYPE, which may itself be a
+                    // bare identifier (`Foo f`) and would otherwise win.
+                    let name = element
+                        .into_inner()
+                        .filter(|part| part.as_rule() == Rule::ident_name)
+                        .next_back()
+                        .map(|part| part.as_str().to_string());
+                    tuple_field_names.push(name);
+                }
+            }
             Rule::type_name_for_new => {
                 let raw = p.as_str();
                 raw_type_name = raw.trim().to_string();
@@ -16679,13 +16978,25 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
         // Array initializer: new[] { 1, 2, 3 } or new int[] { 1, 2, 3 }
         // — also covers multi-dim (`int[,]`) where each element is itself
         // an Array, which `walk_collection_element` already produced.
+        // A tuple-typed array names its fields ONCE, on the type, while every
+        // element is written positionally. Stamp the names onto each element
+        // so `row.Cat` resolves — routed through the same builder a
+        // `(Cat: "x")` literal uses, so both spellings produce one shape.
         let elements = array_init
             .into_iter()
-            .map(|v| ArrayElement {
-                key: None,
-                value: v,
-                spread: false,
-                by_ref: false,
+            .map(|v| {
+                let value = match (&v.kind, tuple_field_names.is_empty()) {
+                    (ExprKind::Tuple(items), false) => {
+                        build_named_tuple_object_expr(v.span.clone(), &tuple_field_names, items)
+                    }
+                    _ => v,
+                };
+                ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                }
             })
             .collect();
         return Ok(ExprKind::Array(elements));
@@ -17118,6 +17429,42 @@ fn strip_csharp_terminal_type_args(name: &str) -> String {
     };
 
     trimmed[..start_idx].trim_end().to_string()
+}
+
+/// Drop the type-argument list from a member chain's RECEIVER — framework
+/// types only.
+///
+/// `ImmutableDictionary<string, int>.Empty` and `ImmutableDictionary.Empty`
+/// name the same member. The chain builder already strips a TERMINAL argument
+/// list (`Create<int>(…)`), but the receiver kept its own, so the identifier
+/// reaching the namespace tree was the literal string
+/// `System.Collections.Generic.KeyValuePair<string, int>` and the walk missed
+/// a node spelled `KeyValuePair`.
+///
+/// ⛔ A USER-declared generic keeps its closed spelling, because §14.5.7 gives
+/// every constructed type its OWN copy of each static field:
+/// `Counter<int>.Value` and `Counter<string>.Value` are two variables. The
+/// closed spelling in the identifier is what keeps them apart, and stripping
+/// it merged them (measured: `2\n5` became `5\n5`). Angle brackets cannot
+/// occur in a value identifier, so an instance receiver is untouched either
+/// way.
+fn strip_static_receiver_type_args(__w: &CsWalker, expr: &mut Expression) {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return;
+    };
+    if !name.contains('<') {
+        return;
+    }
+    let stripped = strip_csharp_type_path_generic_args(name);
+    if stripped == *name {
+        return;
+    }
+    // The LAST segment is the type; everything before it is the namespace.
+    let type_name = stripped.rsplit('.').next().unwrap_or(&stripped);
+    if __w.declared_types.contains(type_name) {
+        return;
+    }
+    *expr = build_dotted_expr(&stripped);
 }
 
 fn strip_csharp_type_path_generic_args(name: &str) -> String {
@@ -20256,6 +20603,23 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             if let Some(rewritten) =
                 dotnet_lowering::try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
             {
+                return rewritten;
+            }
+        }
+        if field.eq_ignore_ascii_case("DivRem") && args.len() == 3 && args[2].by_ref {
+            let recv = expr_dotted_name(object);
+            let callee = Expression::new(ExprKind::Member {
+                object: object.clone(),
+                field: field.clone(),
+                null_safe: false,
+            });
+            if let Some(rewritten) = dotnet_lowering::div_rem_desugar(
+                recv.as_deref(),
+                &callee,
+                &args[0].value,
+                &args[1].value,
+                &args[2].value,
+            ) {
                 return rewritten;
             }
         }

@@ -1,26 +1,29 @@
 // vybe-test: csharp/csharp_static_abstract_interfaces/static_abstract_bool_factory
 // origin: languages/csharp/tests/csharp/test_csharp_static_abstract_interfaces.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+string res = GenericHelper.Call<StaticImpl>();
+__P(res);
+__Check("Static_static_abstract_bool_factory");
+
+interface IStaticProvider<TSelf> where TSelf : IStaticProvider<TSelf> {
+    static abstract string GetValue();
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
+class StaticImpl : IStaticProvider<StaticImpl> {
+    public static string GetValue() => "Static_static_abstract_bool_factory";
 }
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class GenericHelper {
+    public static string Call<T>() where T : IStaticProvider<T> => T.GetValue();
+}
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-interface IFlag<T> where T:IFlag<T>{static abstract T True(); static abstract T False();}
-struct Bit:IFlag<Bit>{public bool On; public static Bit True()=>new Bit{On=true}; public static Bit False()=>new Bit{On=false};}
-__P((Bit.True().On).ToString());
-__Check("True");

@@ -1,24 +1,26 @@
 // vybe-test: csharp/csharp_record_struct_deep/record_struct_copy_with
 // origin: languages/csharp/tests/csharp/test_csharp_record_struct_deep.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var a=new Count(5);
+var b=a;
+b=b with{N=99}
+;
+__P((a.N).ToString());
+__P((b.N).ToString());
+__Check("5\n99");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+record struct Count(int N);
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-record struct Count(int N); var a=new Count(5); var b=a; b=b with{N=99}; __P((a.N).ToString()); __P((b.N).ToString());
-__Check("5\n99");

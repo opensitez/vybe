@@ -1,24 +1,7 @@
 // vybe-test: csharp/csharp_nested_control_flow/switch_break_prevents_fallthrough_into_next_case
 // origin: languages/csharp/tests/csharp/test_csharp_nested_control_flow.rs
 
-string __buf = "";
-
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+using static __Harness;
 
 int code = 2;
 string label = "";
@@ -29,3 +12,15 @@ switch (code) {
 }
 __P((label).ToString());
 __Check("two");
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
+}

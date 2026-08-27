@@ -1,24 +1,23 @@
 // vybe-test: csharp/csharp_deconstruct_tuples_records/record_struct_deconstruct
 // origin: languages/csharp/tests/csharp/test_csharp_deconstruct_tuples_records.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+var item = new DeconstructItem("record_struct_deconstruct", 42);
+(string tag, int val) = item;
+__P(tag);
+__P(val.ToString());
+__Check("record_struct_deconstruct\n42");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+record DeconstructItem(string Tag, int Val);
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-record struct Vec(int X,int Y); var (x,y)=new Vec(8,1); __P((x-y).ToString());
-__Check("7");

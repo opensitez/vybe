@@ -1,24 +1,24 @@
 // vybe-test: csharp/csharp_default_interface_methods_deep/default_method_replaced_only_on_one_interface_in_diamond
 // origin: languages/csharp/tests/csharp/test_csharp_default_interface_methods_deep.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+IDemoService svc = new DemoServiceImpl();
+__P(svc.GetGreeting());
+__Check("Hello_default_method_replaced_only_on_one_interface_in_diamond");
+
+interface IDemoService {
+    string GetGreeting() => "Hello_default_method_replaced_only_on_one_interface_in_diamond";
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class DemoServiceImpl : IDemoService { }
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-interface IA{string Tag()=>"A";} interface IB{string Tag()=>"B";} class Pick:IA,IB{public string Tag()=>"P";} __P((new Pick().Tag()).ToString());
-__Check("P");

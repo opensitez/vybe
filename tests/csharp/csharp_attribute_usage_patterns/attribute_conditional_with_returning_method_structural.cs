@@ -1,24 +1,22 @@
 // vybe-test: csharp/csharp_attribute_usage_patterns/attribute_conditional_with_returning_method_structural
 // origin: languages/csharp/tests/csharp/test_csharp_attribute_usage_patterns.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+App.Run();
+__Check("Run_attribute_conditional_with_returning_method_structural");
+
+class App {
+    public static void Run() => __P("Run_attribute_conditional_with_returning_method_structural");
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-using System; using System.Diagnostics; class Calc{[Conditional("DEBUG")] static void Log(int x){__P((x).ToString());} public static int Add(int a,int b){Log(a+b); return a+b;}} __P((Calc.Add(2,3)).ToString());
-__Check("5");

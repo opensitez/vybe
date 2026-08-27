@@ -1,24 +1,21 @@
 // vybe-test: csharp/csharp_namespace_aliases/namespace_and_class_can_share_root_name_without_ambiguity
 // origin: languages/csharp/tests/csharp/test_csharp_namespace_aliases.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+__P((new Demo.Sub.Demo().Value).ToString());
+__Check("5");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+namespace Demo.Sub { public class Demo { public int Value = 5; } }
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-namespace Demo.Sub { public class Demo { public int Value = 5; } } __P((new Demo.Sub.Demo().Value).ToString());
-__Check("5");

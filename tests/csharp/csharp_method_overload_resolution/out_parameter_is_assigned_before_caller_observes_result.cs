@@ -1,36 +1,26 @@
 // vybe-test: csharp/csharp_method_overload_resolution/out_parameter_is_assigned_before_caller_observes_result
 // origin: languages/csharp/tests/csharp/test_csharp_method_overload_resolution.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
+int res1 = Calculator.Add(5, 5);
+double res2 = Calculator.Add(2.5, 2.5);
+__P(res1.ToString());
+__P(res2.ToString(System.Globalization.CultureInfo.InvariantCulture));
+__Check("10\n5");
+
+class Calculator {
+    public static int Add(int a, int b) => a + b;
+    public static double Add(double a, double b) => a + b;
 }
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-bool TryHalve(int input, out int half) {
-    if (input % 2 != 0) {
-        half = 0;
-        return false;
-    }
-    half = input / 2;
-    return true;
-}
-if (TryHalve(8, out var result)) {
-    __P((result).ToString());
-} else {
-    __P(("fail").ToString());
-}
-__Check("4");

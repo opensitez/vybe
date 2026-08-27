@@ -40,8 +40,11 @@ namespace_declaration = {
 
 // ── Type declarations ───────────────────────────────────────────────────────
 
+// `attribute_list*`, not `?` — §22.3 allows any number of bracketed sections
+// on one target, and `class_member` already says so. Only the TOP-LEVEL form
+// capped it at one, so `[A]\n[B]\nclass Thing{}` failed at the second.
 type_declaration = _{
-    attribute_list? ~ (record_struct_declaration | record_declaration | class_declaration | struct_declaration | interface_declaration | enum_declaration | delegate_declaration)
+    attribute_list* ~ (record_struct_declaration | record_declaration | class_declaration | struct_declaration | interface_declaration | enum_declaration | delegate_declaration)
 }
 
 attribute_list = { "[" ~ (!"]" ~ ANY)* ~ "]" }
@@ -146,7 +149,14 @@ operator_symbol = @{
 // Walker lowers to a Property named `__index__` with one parameter,
 // so `obj[i]` lookups go through the same getter / setter machinery as
 // regular properties.
-explicit_interface_name = @{ ident_name ~ generic_type_args? }
+// `System.Collections.IEnumerable.GetEnumerator()` — the interface may be
+// named by its full path, not just a bare identifier (§15.6.7).
+// ⛔ Each extra segment must be FOLLOWED by another dot. This rule is atomic
+// and pest does not backtrack out of a successful repetition, so a plain
+// `("." ~ ident_name)*` would swallow `.GetEnumerator` as well and then fail
+// the specifier's own trailing `.` — breaking the single-segment spellings
+// that already worked. The lookahead stops it exactly one segment short.
+explicit_interface_name = @{ ident_name ~ ("." ~ ident_name ~ &".")* ~ generic_type_args? }
 explicit_interface_specifier = { explicit_interface_name ~ "." }
 indexer_name = { explicit_interface_specifier? ~ "this" }
 explicit_interface_indexer_declaration = {
@@ -232,7 +242,11 @@ var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
 // `new int[] { 1, 2, 3 }` per ECMA-334 §17.7. The bare-brace form is
 // only allowed in variable / field declarators; the walker materialises
 // the missing `new T[]` prefix from the declared type.
-var_declarator = { ident_name ~ ("=" ~ (array_initializer | expression))? }
+var_declarator = { ident_name ~ ("=" ~ ref_initializer? ~ (array_initializer | expression))? }
+
+// The `ref` in `= ref val`. Consumed and discarded: what it aliases is decided
+// by the declaration, not by the initializer.
+ref_initializer = @{ "ref" ~ WHITESPACE+ ~ !("readonly" ~ !(ASCII_ALPHANUMERIC | "_")) }
 
 // ── Struct ──────────────────────────────────────────────────────────────────
 
@@ -362,8 +376,28 @@ fixed_statement = { "fixed" ~ "(" ~ local_var_declaration_no_semi ~ ")" ~ statem
 // ── Variable declaration ────────────────────────────────────────────────────
 
 local_var_declaration = {
-    (var_kw | type_name) ~ var_declarator_list ~ ";"
+    const_kw? ~ ref_readonly_local? ~ (var_kw | type_name) ~ var_declarator_list ~ ";"
 }
+
+// §13.6.3 local constants. `const` was a `modifier` — reachable on a class
+// MEMBER and nowhere else — so `const int step = 5;` inside a method failed at
+// the type. Accepted and dropped: immutability is enforced at compile time in
+// C#, and nothing downstream reads it.
+const_kw = @{ "const" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// `ref readonly int r = ref val;` — a read-only alias (§9.7, §12.7.3).
+//
+// ⛔ Only the READONLY form. A `ref readonly` local cannot be written through,
+// so the sole way any program can distinguish it from a copy is to mutate the
+// SOURCE and read the alias again — and the walker lowers it to a copy on
+// exactly that basis.
+//
+// A mutable `ref int alias = ref val;` is deliberately left unparsed. It is a
+// true alias: `alias = 99` must be visible through `val`, which needs a
+// per-declarator reference binding the AST does not carry (`reference_binding`
+// is a MODULE-wide directive, not a per-declaration one). Accepting it here
+// would turn a visible parse failure into a silently wrong answer.
+ref_readonly_local = @{ "ref" ~ WHITESPACE+ ~ "readonly" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
 
@@ -371,8 +405,32 @@ var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
 // Introduces N fresh locals and destructures an N-tuple into them.
 // Pairs with the compiler's multi-value receive path when the RHS is
 // a direct call to a multi-return function.
+// ECMA-334 §12.21.2 gives deconstruction two DECLARING spellings, and only the
+// first parsed: one leading `var` covering every element, or a type on each
+// element individually. The second form carries no `var` at all, so a file
+// using `(string tag, int val) = item;` failed at the parser and never reached
+// the deconstruction lowering below — which handles it unchanged, because the
+// per-element types are declarations, not part of the lowered pattern.
 tuple_deconstruction_decl = {
     var_kw ~ tuple_binding_list ~ "=" ~ expression ~ ";"
+    | tuple_declaration_list ~ "=" ~ expression ~ ";"
+}
+
+// Each element declares its own name: `(int a, string b)`, `(var a, var b)`.
+//
+// Requires TWO tokens per element, which is what keeps this from swallowing
+// `(a, b) = e` — assignment to already-declared variables, a parenthesized
+// expression the ordinary assignment path owns. Two or more elements, matching
+// `tuple_type`: a one-element `(int a)` is a parenthesized declaration, not a
+// tuple.
+tuple_declaration_list = {
+    "(" ~ tuple_declaration_element ~ ("," ~ tuple_declaration_element)+ ~ ")"
+}
+
+tuple_declaration_element = {
+    tuple_declaration_list
+    | var_kw ~ ident_name
+    | type_name ~ ident_name
 }
 
 tuple_binding_list = {
@@ -510,6 +568,11 @@ using_declaration = {
 
 using_statement = {
     "using" ~ "(" ~ (var_kw | type_name) ~ ident_name ~ "=" ~ expression ~ ")" ~ statement
+    // §13.14 also takes a plain EXPRESSION — `using (r) { … }` over an
+    // already-declared disposable. Second, so the declaring form above still
+    // wins: `var x = e` is not an expression and would fail here anyway, but
+    // relying on that would make the order load-bearing by accident.
+    | "using" ~ "(" ~ expression ~ ")" ~ statement
 }
 
 // ── Lock statement ──────────────────────────────────────────────────────────
@@ -766,6 +829,17 @@ stackalloc_expression = {
 stackalloc_kw = @{ "stackalloc" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 new_expression = {
+    // C# 7 tuple-typed array creation: `new (int Id, string Tag)[] { (1, "A") }`.
+    // `tuple_type` already absorbs the trailing `[]` through its `array_rank*`.
+    //
+    // MUST come before the target-typed arm below, which would otherwise try
+    // to read `int Id, string Tag` as an ARGUMENT LIST and fail the parse.
+    // The initializer is REQUIRED, not optional, and that is what keeps
+    // `new (x, y)` — target-typed new with two arguments — parsing as a call:
+    // its operands are identifiers, so they satisfy `base_type` and would
+    // otherwise match `tuple_type` here.
+    new_kw ~ tuple_type ~ array_initializer
+    |
     // C# 9 target-typed new: `new()` / `new() { ... }`. The walker
     // normalizes the initializer shape; the declaration's type hint
     // supplies the target type downstream.
@@ -800,7 +874,17 @@ new_expression = {
 type_name_for_new = { type_name_for_new_segment ~ ("." ~ type_name_for_new_segment)* ~ ("?" ~ &"[")? }
 type_name_for_new_segment = { ident_or_keyword ~ generic_type_args? }
 
-generic_type_args = _{ "<" ~ type_name ~ ("," ~ type_name)* ~ ">" }
+// §12.8.18 also admits the UNBOUND form — `typeof(List<>)`,
+// `typeof(Dictionary<,>)` — where the commas state the arity and no argument
+// is named. It is only legal inside `typeof`, but accepting it generally costs
+// nothing: `<>` and `<,>` are not valid anywhere else, so no other construct
+// can match them by accident.
+generic_type_args = _{
+    "<" ~ type_name ~ ("," ~ type_name)* ~ ">"
+    | unbound_generic_args
+}
+
+unbound_generic_args = { "<" ~ ","* ~ ">" }
 
 // Collection initializer literal — accepts either flat expressions
 // (`new int[] { 1, 2, 3 }`, `new List<int> { 1, 2 }`,
@@ -861,6 +945,33 @@ index_expression = {
 
 from_end_index = { "^" ~ expression }
 
+// `1..4`, `..4`, `1..`, `^3..^1` in a VALUE position. Same shapes as
+// `index_expression`'s range arms, minus the non-range ones — a bare
+// `expression` here would match everything and the `..` would never be seen.
+// ⛔ ENDPOINTS ARE SIMPLE PRIMARIES, NOT `expression`.
+//
+// This rule is tried BEFORE `expression` in `argument`, so its cost is paid on
+// every argument in the program, whether or not a range is present. Written
+// with `expression` endpoints it parsed each argument in full, failed on the
+// absent `..`, backtracked and parsed it again — doubling per nesting level.
+// Measured: `__P((new Label("")==new Label("")).ToString())` took 176 SECONDS
+// of CPU on a 729-byte file, which reads as a hang and was very nearly filed
+// as one.
+//
+// A simple primary fails fast, and it is also all a range endpoint can
+// usefully be: `1..4`, `^3..^1`, `..n`, `arr.Length..`. Anything richer needs
+// parentheses, which `primary_range_endpoint` accepts.
+range_argument = {
+    range_endpoint? ~ ".." ~ range_endpoint?
+}
+
+range_endpoint = {
+    from_end_index
+    | "(" ~ expression ~ ")"
+    | numeric_literal
+    | dotted_name
+}
+
 argument_list = { argument ~ ("," ~ argument)* ~ ","? }
 
 argument = {
@@ -871,6 +982,15 @@ argument = {
     // `ident_name` so the walker can extract it; the colon disambiguates
     // from the bare-expression alternative below.
     | ident_name ~ ":" ~ !":" ~ expression
+    // A `System.Range` used as an ordinary VALUE — `nums.Take(1..4)`. §12.8.12
+    // makes `a..b` an expression, not indexer-only syntax, but `..` appears in
+    // this grammar solely inside `index_expression`, so a range reaching an
+    // argument position failed the parse at the first dot.
+    //
+    // Declared here rather than in `expression`: `..` there would have to be
+    // disambiguated against `slice_pattern`, `collection_expression_element`
+    // and the index forms, and every one of those already owns its own `..`.
+    | range_argument
     | expression
 }
 
@@ -994,10 +1114,20 @@ numeric_literal = @{
 
 numeric_suffix = @{ "UL" | "ul" | "LU" | "lu" | "f" | "F" | "d" | "D" | "m" | "M" | "L" | "l" | "U" | "u" }
 
+// ECMA-334 §6.4.5.6 UTF-8 literals spell `u8` as a SUFFIX — `"abc"u8`. The
+// prefix arm here (`u8"abc"`) is not C# and matched nothing; every real
+// occurrence failed the parse at the character after the closing quote.
+//
+// The suffix is consumed and dropped: it selects the literal's TYPE
+// (`ReadOnlySpan<byte>` rather than `string`), and this grammar does not carry
+// types. `utf8_suffix` is captured so the walker can see it if the byte
+// representation ever needs to differ.
 string_literal = @{
-    "u8\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
-    | "\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
+    "\"" ~ ("\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | "\\0" | !"\"" ~ ANY)* ~ "\""
+    ~ utf8_suffix?
 }
+
+utf8_suffix = @{ "u8" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // ── Type names ──────────────────────────────────────────────────────────────
 
@@ -1040,7 +1170,13 @@ param = {
     | attribute_list* ~ param_modifier? ~ ident_name ~ ("=" ~ expression)?
 }
 
-param_modifier = { "params" | ref_readonly_kw | "ref" | "out" | "this" }
+// `scoped` (C# 11) narrows a ref-like parameter's LIFETIME — it may not
+// escape the callee. That is a compile-time escape-analysis restriction with
+// no run-time component, so it is accepted and dropped, exactly like the
+// `readonly` half of `ref readonly`.
+param_modifier = { scoped_kw ~ (ref_readonly_kw | "ref" | "out" | "in")? | "params" | ref_readonly_kw | "ref" | "out" | "this" }
+
+scoped_kw = @{ "scoped" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // `ref readonly p` passes BY REFERENCE and forbids writing through it — the
 // aliasing half is `ref`, the rest is a compile-time restriction.

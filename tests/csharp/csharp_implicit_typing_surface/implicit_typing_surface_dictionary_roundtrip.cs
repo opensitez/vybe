@@ -1,25 +1,22 @@
 // vybe-test: csharp/csharp_implicit_typing_surface/implicit_typing_surface_dictionary_roundtrip
 // origin: languages/csharp/tests/csharp/test_csharp_implicit_typing_surface.rs
 
-string __buf = "";
-
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+using static __Harness;
 
 // implicit_typing_surface
-var map = new System.Collections.Generic.Dictionary<int, int>(); map[59] = 60; __P((map.ContainsKey(59) && map[59] == 60).ToString());
+var map = new System.Collections.Generic.Dictionary<int, int>();
+map[59] = 60;
+__P((map.ContainsKey(59) && map[59] == 60).ToString());
 __Check("True");
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
+}

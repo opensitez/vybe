@@ -1,24 +1,24 @@
 // vybe-test: csharp/csharp_generics_constraints/generic_method_with_multiple_constraints_uses_interface_and_constructor
 // origin: languages/csharp/tests/csharp/test_csharp_generics_constraints.rs
 
-string __buf = "";
+using static __Harness;
 
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
+int Build<T>() where T : IValue, new() { return new T().Read(); }
+__P((Build<Item>()).ToString());
+__Check("4");
 
-void __Pr(string s) {
-    __buf = __buf + s;
-}
+interface IValue { int Read(); }
 
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
+class Item : IValue { public int Read() { return 4; } }
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
     }
 }
-
-interface IValue { int Read(); } class Item : IValue { public int Read() { return 4; } } int Build<T>() where T : IValue, new() { return new T().Read(); } __P((Build<Item>()).ToString());
-__Check("4");

@@ -1,24 +1,7 @@
 // vybe-test: csharp/csharp_value_task/value_task_null_string_length_zero
 // origin: languages/csharp/tests/csharp/test_csharp_value_task.rs
 
-string __buf = "";
-
-void __P(string s) {
-    __buf = __buf + s + "\n";
-}
-
-void __Pr(string s) {
-    __buf = __buf + s;
-}
-
-// The final WriteLine contributes a trailing newline that the expected line
-// vector never carried, so BOTH forms are accepted.
-void __Check(string want) {
-    if (__buf != want && __buf != want + "\n") {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
-        throw new Exception("assertion failed");
-    }
-}
+using static __Harness;
 
 async System.Threading.Tasks.ValueTask<string> NullStr() { return null; }
 async System.Threading.Tasks.Task Run() {
@@ -27,3 +10,15 @@ async System.Threading.Tasks.Task Run() {
 }
 Run().Wait();
 __Check("0");
+
+public static class __Harness {
+    public static string __buf = "";
+    public static void __P(string s) { __buf = __buf + s + "\n"; }
+    public static void __Pr(string s) { __buf = __buf + s; }
+    public static void __Check(string want) {
+        if (__buf != want && __buf != want + "\n") {
+            Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+            throw new Exception("assertion failed");
+        }
+    }
+}
