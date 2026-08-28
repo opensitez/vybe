@@ -19,6 +19,9 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
 
 use super::adapter_util::{new_object, struct_set};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 
 /// Build (once per name) a chunk that raises `NotImplementedError`, and leave
 /// a reference to it on the stack — the value a bare `module.name` read is.
@@ -92,11 +95,12 @@ pub fn emit_type_surface(
     new_object(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("type", line);
-    struct_set(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(leaf, line);
-    struct_set(chunk, "__name__", line);
+    struct_set(chunk, &ClassSlot::internal("__name__"), line);
     chunk.emit_dup(line);
     chunk.emit_string_const(what, line);
-    struct_set(chunk, "__qualname__", line);
+    struct_set(chunk, &ClassSlot::internal("__qualname__"), line);
 }

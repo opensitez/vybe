@@ -20,6 +20,9 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{collections, fs_path, ops, strings};
 
 fn call_import(
@@ -43,31 +46,31 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 }
 
 /// `obj.<key> = <value already on stack>`, leaving `obj` on the stack.
-fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn set_field(chunks: &mut [Chunk], current: usize, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
-fn get_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+fn get_field(chunks: &mut [Chunk], current: usize, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// Read `slot.<key>` onto the stack.
 fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunks, current, key, line);
+    get_field(chunks, current, &ClassSlot::internal(key), line);
 }
 
 /// Build a `stat_result` from the wasi shim's `{size, isFile, isDir, modified}`
 /// (or null when the path is missing). Stack: `[raw]` → `[stat_result]`.
 fn emit_stat_result_from(chunks: &mut [Chunk], current: usize, raw: u16, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
 
     // st_size
     chunks[current].emit_dup(line);
     field_of(chunks, current, raw, "size", line);
-    set_field(chunks, current, "st_size", line);
+    set_field(chunks, current, &ClassSlot::internal("st_size"), line);
 
     // st_mtime — the shim reports milliseconds; Python uses float seconds.
     let secs = chunks[current].alloc_scratch(1);
@@ -79,7 +82,7 @@ fn emit_stat_result_from(chunks: &mut [Chunk], current: usize, raw: u16, line: u
     for key in ["st_mtime", "st_atime", "st_ctime"] {
         chunks[current].emit_dup(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, secs, line);
-        set_field(chunks, current, key, line);
+        set_field(chunks, current, &ClassSlot::internal(key), line);
     }
 
     // st_mode — directory vs regular file, the POSIX values CPython reports.
@@ -91,7 +94,7 @@ fn emit_stat_result_from(chunks: &mut [Chunk], current: usize, raw: u16, line: u
     chunks[current].emit_else(line);
     chunks[current].emit_f64_const(33188.0, line);
     chunks[current].emit_end(line);
-    set_field(chunks, current, "st_mode", line);
+    set_field(chunks, current, &ClassSlot::internal("st_mode"), line);
 
     for (key, val) in [
         ("st_ino", 0.0),
@@ -102,7 +105,7 @@ fn emit_stat_result_from(chunks: &mut [Chunk], current: usize, raw: u16, line: u
     ] {
         chunks[current].emit_dup(line);
         chunks[current].emit_f64_const(val, line);
-        set_field(chunks, current, key, line);
+        set_field(chunks, current, &ClassSlot::internal(key), line);
     }
 }
 
@@ -235,19 +238,19 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, nm, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, nm, line);
-    set_field(chunks, current, "name", line);
+    set_field(chunks, current, &ClassSlot::internal("name"), line);
     chunks[current].emit_dup(line);
     emit_join(chunks, current, dir, nm, line);
-    set_field(chunks, current, "path", line);
+    set_field(chunks, current, &ClassSlot::internal("path"), line);
     chunks[current].emit_dup(line);
     emit_entry_kind_flag(chunks, current, raw, dir, nm, "regular-file", line);
-    set_field(chunks, current, "__is_file", line);
+    set_field(chunks, current, &ClassSlot::internal("__is_file"), line);
     chunks[current].emit_dup(line);
     emit_entry_kind_flag(chunks, current, raw, dir, nm, "directory", line);
-    set_field(chunks, current, "__is_dir", line);
+    set_field(chunks, current, &ClassSlot::internal("__is_dir"), line);
     // `DirEntry.is_symlink()` answered a hardcoded False, because the invented
     // verb's `{ name, isFile, isDir }` had nowhere to say otherwise. The WIT
     // record does: `symbolic-link` is a `descriptor-type` case. And this one
@@ -255,7 +258,7 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // following a link to ask whether it is a link answers about the target.
     chunks[current].emit_dup(line);
     emit_entry_type_is(chunks, current, raw, "symbolic-link", line);
-    set_field(chunks, current, "__is_link", line);
+    set_field(chunks, current, &ClassSlot::internal("__is_link"), line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -727,13 +730,13 @@ pub fn emit_term_size(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(80.0, line);
-    set_field(chunks, current, "columns", line);
+    set_field(chunks, current, &ClassSlot::internal("columns"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(24.0, line);
-    set_field(chunks, current, "lines", line);
+    set_field(chunks, current, &ClassSlot::internal("lines"), line);
 }
 
 // ── sys ─────────────────────────────────────────────────────────────────────

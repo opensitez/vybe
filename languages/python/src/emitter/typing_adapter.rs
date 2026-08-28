@@ -19,6 +19,7 @@ use vybe_runtime::Chunk;
 use vybe_compiler::primitives::dict;
 
 use super::adapter_util::{lget, lset, new_tagged, set_call_slot, stash_exact, struct_set};
+use vybe_compiler::primitives::class_slots::ClassSlot;
 
 /// `typing.cast(typ, val)` → `val`.
 pub fn emit_cast(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -47,7 +48,7 @@ pub fn emit_marker_decorator(
     chunk.emit_if(line);
     lget(chunk, base, line);
     chunk.emit_bool_const(true, line);
-    struct_set(chunk, attr, line);
+    struct_set(chunk, &ClassSlot::internal(attr), line);
     chunk.emit_end(line);
     lget(chunk, base, line);
 }

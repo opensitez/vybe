@@ -15,6 +15,7 @@ use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::collections;
 
 use super::adapter_util::{lget, new_tagged, set_call_slot, stash_exact, struct_get, struct_set};
+use vybe_compiler::primitives::class_slots::ClassSlot;
 
 /// `weakref.ref(obj[, callback])` — a callable that derefs to the referent.
 pub fn emit_ref(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -27,7 +28,7 @@ pub fn emit_ref(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     lget(chunk, base, line);
     let idx = chunk.add_import("ecma:weakref", "new");
     chunk.emit_call(idx, 1, line);
-    struct_set(chunk, "__weak", line);
+    struct_set(chunk, &ClassSlot::internal("__weak"), line);
     set_call_slot(chunk, call_idx, line);
 
     // Record the ref ON the referent, so `getweakrefs`/`getweakrefcount`
@@ -49,7 +50,7 @@ pub fn emit_ref(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     super::adapter_util::lset(&mut chunks[current], list, line);
     lget(&mut chunks[current], base, line);
     lget(&mut chunks[current], list, line);
-    struct_set(&mut chunks[current], WEAKREFS_KEY, line);
+    struct_set(&mut chunks[current], &ClassSlot::internal(WEAKREFS_KEY), line);
     chunks[current].emit_end(line);
     lget(&mut chunks[current], list, line);
     lget(&mut chunks[current], this_ref, line);
@@ -64,7 +65,7 @@ fn build_deref_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     helper.arity = 1;
     helper.local_count = helper.local_count.max(1);
     helper.emit_op_u16(Op::LOCAL_GET, 0, line);
-    struct_get(&mut helper, "__weak", line);
+    struct_get(&mut helper, &ClassSlot::internal("__weak"), line);
     let idx = helper.add_import("ecma:weakref", "deref");
     helper.emit_call(idx, 1, line);
     helper.emit_op(Op::RETURN, line);
@@ -120,7 +121,7 @@ pub fn emit_finalize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     );
     chunk.emit_dup(line);
     chunk.emit_bool_const(true, line);
-    struct_set(chunk, "alive", line);
+    struct_set(chunk, &ClassSlot::internal("alive"), line);
     set_call_slot(chunk, call_idx, line);
 }
 
@@ -130,11 +131,11 @@ fn build_finalize_call_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     helper.arity = 1;
     helper.local_count = helper.local_count.max(1);
     helper.emit_op_u16(Op::LOCAL_GET, 0, line);
-    struct_get(&mut helper, "__func", line);
+    struct_get(&mut helper, &ClassSlot::internal("__func"), line);
     // `apply(fn, thisArg, argsArray)` — a plain callback has no receiver.
     helper.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     helper.emit_op_u16(Op::LOCAL_GET, 0, line);
-    struct_get(&mut helper, "__args", line);
+    struct_get(&mut helper, &ClassSlot::internal("__args"), line);
     let apply = helper.add_import("ecma:function", "apply");
     helper.emit_call(apply, 3, line);
     helper.emit_op(Op::RETURN, line);

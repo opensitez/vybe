@@ -3,6 +3,9 @@
 //! Python owns the format grammar and tuple result shape. Shared byte/endian
 //! mechanics come from `vybe_compiler::primitives::packing`.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -132,16 +135,16 @@ fn emit_tuple_from_top(chunks: &mut [Chunk], current: usize, n: u16, line: u32) 
 }
 
 fn emit_throw_exception(chunk: &mut Chunk, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "Exception", line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
-fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn emit_unpack_u32_at_offset(
@@ -528,19 +531,19 @@ pub fn emit_struct_iter_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
 pub fn emit_struct_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc < 1 {
-        chunks[current].emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
         return;
     }
     let fmt = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], fmt, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], fmt, line);
-    struct_set(&mut chunks[current], "format", line);
+    struct_set(&mut chunks[current], &ClassSlot::internal("format"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(4.0, line);
-    struct_set(&mut chunks[current], "size", line);
+    struct_set(&mut chunks[current], &ClassSlot::internal("size"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(4.0, line);
-    struct_set(&mut chunks[current], "alignment", line);
+    struct_set(&mut chunks[current], &ClassSlot::internal("alignment"), line);
 }

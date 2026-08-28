@@ -3,6 +3,9 @@ use std::sync::Arc;
 use vybe_compiler::primitives::{callable, functions::create_function_chunk, instructions::host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 
 const PY_THREAD_HANDLE_KEY: &str = "__py_thread_handle";
 const PY_THREAD_TARGET_KEY: &str = "__py_thread_target";
@@ -47,12 +50,12 @@ pub fn emit_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line: u32
     set_object_prop_from_local(chunks, current, thread, PY_THREAD_TARGET_KEY, target, line);
 
     let mut worker = create_function_chunk("__py_thread_worker", 1);
-    let target_key = worker.add_constant(Value::String(Arc::from(PY_THREAD_TARGET_KEY)));
+    let target_key = class_slots::resolve_interned(&mut worker, &ClassSlot::internal(PY_THREAD_TARGET_KEY), &PlainNames);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     worker.emit_op_u16(Op::TABLE_GET, 0, line);
     worker.emit_op_u16(Op::LOCAL_SET, 0, line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_struct_field_op(Op::STRUCT_GET, 0, target_key, line);
+    class_slots::emit_class_get(&mut worker, ObjSource::Stack, &target_key, Dest::Stack, line);
     callable::emit_direct_invoke_chunk(&mut worker, 0, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;

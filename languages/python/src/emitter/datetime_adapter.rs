@@ -19,6 +19,9 @@
 //!   * `ecma:date.getUTCMonth` is 0-based, Python's `.month` is 1-based.
 //!   * `getUTCDay` is Sunday=0, Python's `weekday()` is Monday=0.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -53,14 +56,14 @@ const COMPONENTS: &[(&str, &str)] = &[
     ("second", "getUTCSeconds"),
 ];
 
-fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
-fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+fn struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// Where a materialized value's `__type` comes from. Arithmetic is
@@ -82,18 +85,18 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     let ms = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, ms, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
 
     chunk.emit_dup(line);
     match tag {
         Tag::Const(s) => chunk.emit_string_const(s, line),
         Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line),
     }
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
 
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
 
     for (prop, getter) in COMPONENTS {
         chunk.emit_dup(line);
@@ -105,7 +108,7 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
             core_wasm::f64_const(chunk, line, 1.0);
             chunk.emit_op(Op::F64_ADD, line);
         }
-        struct_set(chunk, prop, line);
+        struct_set(chunk, &ClassSlot::internal(*prop), line);
     }
 
     // microsecond: Python's sub-second field. ms-resolution source, so
@@ -116,11 +119,11 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     chunk.emit_call(get_ms, 1, line);
     core_wasm::f64_const(chunk, line, 1000.0);
     chunk.emit_op(Op::F64_MUL, line);
-    struct_set(chunk, "microsecond", line);
+    struct_set(chunk, &ClassSlot::internal("microsecond"), line);
 
     chunk.emit_dup(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    struct_set(chunk, "tzinfo", line);
+    struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
 }
 
 /// Push `ecma:date.UTC(y, m-1, d, h, mi, s)` from six locals. Stack: `[]` → `[ms]`.
@@ -176,10 +179,10 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     emit_materialize(chunk, type_tag, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, micro, line);
-    struct_set(chunk, "microsecond", line);
+    struct_set(chunk, &ClassSlot::internal("microsecond"), line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
-    struct_set(chunk, "tzinfo", line);
+    struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
 }
 
 /// `datetime.date(y, m, d)`. Stack: `[y, m, d]` → `[date]`.
@@ -231,19 +234,19 @@ pub fn emit_wrap_timedelta(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_FLOOR, line);
     chunk.emit_op_u16(Op::LOCAL_SET, secs, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(TYPE_TIMEDELTA, line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, us, line);
-    struct_set(chunk, US_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(US_KEY), line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, days, line);
-    struct_set(chunk, "days", line);
+    struct_set(chunk, &ClassSlot::internal("days"), line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, secs, line);
-    struct_set(chunk, "seconds", line);
+    struct_set(chunk, &ClassSlot::internal("seconds"), line);
     // microseconds = rem - seconds * US_PER_SECOND
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, rem, line);
@@ -251,7 +254,7 @@ pub fn emit_wrap_timedelta(chunk: &mut Chunk, line: u32) {
     core_wasm::f64_const(chunk, line, US_PER_SECOND);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_SUB, line);
-    struct_set(chunk, "microseconds", line);
+    struct_set(chunk, &ClassSlot::internal("microseconds"), line);
 }
 
 /// How many microseconds each `timedelta` parameter contributes, in the
@@ -294,7 +297,7 @@ pub fn emit_timedelta_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// `timedelta.total_seconds()` → float. Stack: `[obj]` → `[num]`.
 pub fn emit_total_seconds(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, US_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(US_KEY), line);
     core_wasm::f64_const(chunk, line, US_PER_SECOND);
     chunk.emit_op(Op::F64_DIV, line);
 }
@@ -304,13 +307,13 @@ fn emit_wrap_timezone(chunk: &mut Chunk, line: u32) {
     let off = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, off, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(TYPE_TIMEZONE, line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, off, line);
-    struct_set(chunk, "__offset", line);
+    struct_set(chunk, &ClassSlot::internal("__offset"), line);
 }
 
 /// `datetime.timezone(offset)` — a fixed UTC offset carrying the
@@ -379,7 +382,7 @@ pub fn emit_date_max(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 /// `date.toordinal()` → days since 0001-01-01, 1-based.
 pub fn emit_toordinal(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     core_wasm::f64_const(chunk, line, MS_PER_DAY);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_FLOOR, line);
@@ -410,14 +413,14 @@ pub fn emit_utcoffset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let off = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-    struct_get(chunk, "__offset", line);
+    struct_get(chunk, &ClassSlot::internal("__offset"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, off, line);
     chunk.emit_op_u16(Op::LOCAL_GET, off, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-    struct_get(chunk, "tzinfo", line);
-    struct_get(chunk, "__offset", line);
+    struct_get(chunk, &ClassSlot::internal("tzinfo"), line);
+    struct_get(chunk, &ClassSlot::internal("__offset"), line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, off, line);
     chunk.emit_end(line);
@@ -430,15 +433,15 @@ fn emit_offset_us_from_tz(chunk: &mut Chunk, tz: u16, line: u32) {
     core_wasm::f64_const(chunk, line, 0.0);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
-    struct_get(chunk, "__offset", line);
-    struct_get(chunk, US_KEY, line);
+    struct_get(chunk, &ClassSlot::internal("__offset"), line);
+    struct_get(chunk, &ClassSlot::internal(US_KEY), line);
     chunk.emit_end(line);
 }
 
 fn emit_offset_us_from_datetime(chunk: &mut Chunk, dt: u16, line: u32) {
     let tz = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, dt, line);
-    struct_get(chunk, "tzinfo", line);
+    struct_get(chunk, &ClassSlot::internal("tzinfo"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
     emit_offset_us_from_tz(chunk, tz, line);
 }
@@ -537,7 +540,7 @@ pub fn emit_astimezone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     emit_offset_us_from_tz(chunk, tz, line);
     chunk.emit_op_u16(Op::LOCAL_SET, new_us, line);
     chunk.emit_op_u16(Op::LOCAL_GET, dt, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_us, line);
     chunk.emit_op_u16(Op::LOCAL_GET, old_us, line);
     chunk.emit_op(Op::F64_SUB, line);
@@ -547,7 +550,7 @@ pub fn emit_astimezone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     emit_materialize(chunk, TYPE_DATETIME, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
-    struct_set(chunk, "tzinfo", line);
+    struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
 }
 
 /// Drop every argument past the first `keep`. Builtin `argc` counts only
@@ -570,7 +573,7 @@ pub fn emit_fromtimestamp(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         emit_materialize(chunk, TYPE_DATETIME, line);
         chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
-        struct_set(chunk, "tzinfo", line);
+        struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
         return;
     }
     drop_extra_args(chunk, argc, 1, line);
@@ -584,7 +587,7 @@ const MS_PER_SECOND: f64 = 1_000.0;
 /// `datetime.timestamp()` → seconds as a float. Stack: `[dt]` → `[num]`.
 pub fn emit_timestamp(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     core_wasm::f64_const(chunk, line, MS_PER_SECOND);
     chunk.emit_op(Op::F64_DIV, line);
 }
@@ -656,7 +659,7 @@ pub fn emit_today(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_time_of_day_ms(chunk: &mut Chunk, obj: u16, line: u32) {
     let part = |chunk: &mut Chunk, prop: &str, scale: f64| {
         chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-        struct_get(chunk, prop, line);
+        struct_get(chunk, &ClassSlot::internal(prop), line);
         core_wasm::f64_const(chunk, line, scale);
         chunk.emit_op(Op::F64_MUL, line);
     };
@@ -681,7 +684,7 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, d, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, d, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     emit_floor_to_day(chunk, line);
     emit_time_of_day_ms(chunk, t, line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -691,7 +694,7 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// `datetime.date()` — the date half. Stack: `[dt]` → `[date]`.
 pub fn emit_date_method(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     emit_floor_to_day(chunk, line);
     emit_materialize(chunk, TYPE_DATE, line);
 }
@@ -713,7 +716,7 @@ pub fn emit_timetuple(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let obj = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     for (tm, prop) in [
         ("tm_year", "year"),
         ("tm_mon", "month"),
@@ -724,23 +727,23 @@ pub fn emit_timetuple(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     ] {
         chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-        struct_get(chunk, prop, line);
-        struct_set(chunk, tm, line);
+        struct_get(chunk, &ClassSlot::internal(prop), line);
+        struct_set(chunk, &ClassSlot::internal(tm), line);
     }
     // tm_wday is Monday=0, like `weekday()`.
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     let get_day = chunk.add_import("ecma:date", "getUTCDay");
     chunk.emit_call(get_day, 1, line);
     core_wasm::i32_const(chunk, line, 6);
     chunk.emit_op(Op::I32_ADD, line);
     core_wasm::i32_const(chunk, line, 7);
     chunk.emit_op(Op::I32_REM_S, line);
-    struct_set(chunk, "tm_wday", line);
+    struct_set(chunk, &ClassSlot::internal("tm_wday"), line);
     chunk.emit_dup(line);
     core_wasm::i32_const(chunk, line, -1);
-    struct_set(chunk, "tm_isdst", line);
+    struct_set(chunk, &ClassSlot::internal("tm_isdst"), line);
 }
 
 /// Weekday (Monday=0) of a y/m/d already on the stack, via a ms round-trip.
@@ -840,7 +843,7 @@ fn emit_has_key(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    struct_get(chunk, key, line);
+    struct_get(chunk, &ClassSlot::internal(key), line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_else(line);
@@ -882,11 +885,11 @@ pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
     {
         // a is a duration.
         chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-        struct_get(chunk, US_KEY, line);
+        struct_get(chunk, &ClassSlot::internal(US_KEY), line);
         emit_has_key(chunk, b, US_KEY, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-        struct_get(chunk, US_KEY, line);
+        struct_get(chunk, &ClassSlot::internal(US_KEY), line);
         chunk.emit_else(line);
         // `timedelta * 2` — a bare number scales the duration.
         chunk.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -903,13 +906,13 @@ pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
             // point ± timedelta → same type as `a`.
             let tag = chunk.alloc_scratch(1);
             chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-            struct_get(chunk, TYPE_KEY, line);
+            struct_get(chunk, &ClassSlot::TypeIdentity, line);
             chunk.emit_op_u16(Op::LOCAL_SET, tag, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-            struct_get(chunk, TIME_KEY, line);
+            struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
             chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-            struct_get(chunk, US_KEY, line);
+            struct_get(chunk, &ClassSlot::internal(US_KEY), line);
             core_wasm::f64_const(chunk, line, US_PER_MS);
             chunk.emit_op(Op::F64_DIV, line);
             chunk.emit_op(dt_op_code(&op), line);
@@ -919,9 +922,9 @@ pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
         {
             // point − point → duration.
             chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-            struct_get(chunk, TIME_KEY, line);
+            struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
             chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-            struct_get(chunk, TIME_KEY, line);
+            struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
             chunk.emit_op(dt_op_code(&op), line);
             core_wasm::f64_const(chunk, line, MS_PER_SECOND);
             chunk.emit_op(Op::F64_MUL, line);
@@ -935,7 +938,7 @@ pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
 /// Unary `-` on a duration. Stack: `[td]` → `[td]`.
 pub fn emit_dt_neg(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    struct_get(chunk, US_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(US_KEY), line);
     core_wasm::f64_const(chunk, line, -1.0);
     chunk.emit_op(Op::F64_MUL, line);
     emit_wrap_timedelta(chunk, line);
@@ -948,10 +951,10 @@ pub fn emit_dt_cmp(chunk: &mut Chunk, a: u16, b: u16, cmp: fn(&mut Chunk, u32), 
         emit_has_key(chunk, slot, US_KEY, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        struct_get(chunk, US_KEY, line);
+        struct_get(chunk, &ClassSlot::internal(US_KEY), line);
         chunk.emit_else(line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        struct_get(chunk, TIME_KEY, line);
+        struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
         chunk.emit_end(line);
     };
     key(chunk, a);
@@ -980,7 +983,7 @@ pub fn emit_dt_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-    struct_get(chunk, TYPE_KEY, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_op_u16(Op::LOCAL_SET, tag, line);
 
     for (i, prop) in REPLACE_PROPS.iter().enumerate() {
@@ -988,7 +991,7 @@ pub fn emit_dt_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-        struct_get(chunk, prop, line);
+        struct_get(chunk, &ClassSlot::internal(*prop), line);
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
         chunk.emit_end(line);
     }
@@ -1037,7 +1040,7 @@ fn emit_append_part(chunk: &mut Chunk, obj: u16, sep: &str, prop: &str, width: i
         chunk.emit_call(concat, 2, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, prop, line);
+    struct_get(chunk, &ClassSlot::internal(prop), line);
     emit_pad(chunk, width, line);
     let concat = chunk.add_import("wasm:js-string", "concat");
     chunk.emit_call(concat, 2, line);
@@ -1094,7 +1097,7 @@ fn emit_append_tz_offset_if_present(chunk: &mut Chunk, obj: u16, line: u32) {
     let tz = chunk.alloc_scratch(1);
     let us = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "tzinfo", line);
+    struct_get(chunk, &ClassSlot::internal("tzinfo"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -1182,13 +1185,13 @@ fn emit_timedelta_string(chunk: &mut Chunk, obj: u16, line: u32) {
     let seconds = chunk.alloc_scratch(1);
     let micros = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "days", line);
+    struct_get(chunk, &ClassSlot::internal("days"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, days, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "seconds", line);
+    struct_get(chunk, &ClassSlot::internal("seconds"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, seconds, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "microseconds", line);
+    struct_get(chunk, &ClassSlot::internal("microseconds"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, micros, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, days, line);
@@ -1221,7 +1224,7 @@ fn emit_timedelta_string(chunk: &mut Chunk, obj: u16, line: u32) {
 /// `obj.__type == tag` as a branch condition. Stack: `[]` → `[i32]`.
 fn emit_is_type(chunk: &mut Chunk, obj: u16, tag: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, TYPE_KEY, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_string_const(tag, line);
     let eq = chunk.add_import("wasm:js-string", "equals");
     chunk.emit_call(eq, 2, line);
@@ -1231,7 +1234,7 @@ fn emit_is_type(chunk: &mut Chunk, obj: u16, tag: &str, line: u32) {
 /// `HH:MM:SS` from the value in `obj`. Stack: `[]` → `[string]`.
 fn emit_time_part(chunk: &mut Chunk, obj: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "hour", line);
+    struct_get(chunk, &ClassSlot::internal("hour"), line);
     emit_pad(chunk, 2, line);
     emit_append_part(chunk, obj, ":", "minute", 2, line);
     emit_append_part(chunk, obj, ":", "second", 2, line);
@@ -1240,7 +1243,7 @@ fn emit_time_part(chunk: &mut Chunk, obj: u16, line: u32) {
 /// `YYYY-MM-DD` from the value in `obj`. Stack: `[]` → `[string]`.
 fn emit_date_part(chunk: &mut Chunk, obj: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    struct_get(chunk, "year", line);
+    struct_get(chunk, &ClassSlot::internal("year"), line);
     emit_pad(chunk, 4, line);
     emit_append_part(chunk, obj, "-", "month", 2, line);
     emit_append_part(chunk, obj, "-", "day", 2, line);
@@ -1249,7 +1252,7 @@ fn emit_date_part(chunk: &mut Chunk, obj: u16, line: u32) {
 /// `date.weekday()` → Monday=0. Stack: `[date]` → `[num]`.
 pub fn emit_date_weekday(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     let get_day = chunk.add_import("ecma:date", "getUTCDay");
     chunk.emit_call(get_day, 1, line);
     // ECMA Sunday=0 → Python Monday=0. WASM has no `f64.rem`, and the

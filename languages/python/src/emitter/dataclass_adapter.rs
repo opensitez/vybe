@@ -18,6 +18,9 @@
 use vybe_runtime::{Chunk, Op};
 
 use vybe_compiler::primitives::{reflection, tuples};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 
 /// Marker the walker stamps on every `@dataclass`; `is_dataclass` tests for it
 /// and the rest walk it.
@@ -172,12 +175,11 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
             // `Field` stand-in: the one attribute `fields()` callers read is
             // `.name` (plus `.default`, which the walker does not preserve).
             chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
-            chunk.emit_struct_new(0, 0, line);
+            class_slots::emit_class_alloc(chunk, line);
             chunk.emit_dup(line);
             chunk.emit_op_u16(Op::LOCAL_GET, key, line);
-            let name_key =
-                chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("name")));
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+            let name_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("name"), &PlainNames);
+            class_slots::emit_class_set(chunk, ObjSource::Stack, &name_key, ValueSource::Stack, line);
             let push = chunk.add_import("ecma:array", "push");
             chunk.emit_call(push, 2, line);
             chunk.emit_op(Op::DROP, line);

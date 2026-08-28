@@ -542,6 +542,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // module whose contract differs from its language's.
         imports,
         directives: Directives {
+            // Reading a method produces a fresh callable with the receiver
+            // already bound — the third dispatch model, distinct from
+            // prototype (js/dart) and call-site (php). Replaces the profile
+            // bool `methods_bind_on_access`.
+            method_receiver: Some(MethodReceiver::BindOnAccess),
             set_semantics: Some(SetSemantics {
                 mutation_result: SetMutationResult::Void,
                 delete_result: SetMutationResult::Void,

@@ -8,6 +8,9 @@
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{base64, collections};
 
 use super::adapter_util::{call_import, lget, lset, new_object, stash_exact, struct_set};
@@ -95,8 +98,8 @@ fn build_str_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     helper.arity = 1;
     helper.local_count = helper.local_count.max(1);
     helper.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let k = helper.add_constant(Value::String(std::sync::Arc::from(CANONICAL_KEY)));
-    helper.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve_interned(&mut helper, &ClassSlot::internal(CANONICAL_KEY), &PlainNames);
+    class_slots::emit_class_get(&mut helper, ObjSource::Stack, &k, Dest::Stack, line);
     helper.emit_op(Op::RETURN, line);
     chunks.push(helper);
     chunks.len() - 1
@@ -112,10 +115,11 @@ fn wrap_uuid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     new_object(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("UUID", line);
-    struct_set(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     chunk.emit_dup(line);
     lget(chunk, text, line);
-    struct_set(chunk, CANONICAL_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(CANONICAL_KEY), line);
     // `.hex` is the same digits without the dashes.
     chunk.emit_dup(line);
     lget(chunk, text, line);
@@ -123,14 +127,14 @@ fn wrap_uuid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_string_const("", line);
     let replace_all = chunk.add_import("ecma:string", "replaceAll");
     chunk.emit_call(replace_all, 3, line);
-    struct_set(chunk, "hex", line);
+    struct_set(chunk, &ClassSlot::internal("hex"), line);
     chunk.emit_dup(line);
     lget(chunk, text, line);
     chunk.emit_string_const("urn:uuid:", line);
     let concat = chunk.add_import("wasm:js-string", "concat");
     // `concat(a, b)` — the prefix has to be the LEFT operand.
     chunk.emit_call(concat, 2, line);
-    struct_set(chunk, "urn", line);
+    struct_set(chunk, &ClassSlot::internal("urn"), line);
 
     for slot in [
         vybe_ast::ProtocolSlot::ToString,
@@ -140,8 +144,8 @@ fn wrap_uuid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunk.emit_op_u16(Op::REF_FUNC, str_idx as u16, line);
         chunk.emit(0, line);
         let key = vybe_ast::protocol_slot_key(slot);
-        let k = chunk.add_constant(Value::String(std::sync::Arc::from(key.as_str())));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal((key.as_str()).to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
 }
 

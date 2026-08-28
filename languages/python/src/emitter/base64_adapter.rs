@@ -7,6 +7,9 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{base64, collections, loops, string_encoding, strings};
 
 const B32_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -954,11 +957,11 @@ pub fn emit_codecs_lookup(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
     lset(&mut chunks[current], name, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], name, line);
-    let name_key = chunks[current].add_constant(Value::String(Arc::from("name")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("name").to_string()), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 pub fn emit_codecs_escape_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

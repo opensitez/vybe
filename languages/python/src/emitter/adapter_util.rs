@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -54,15 +57,15 @@ pub fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 }
 
 /// `<obj> <value> → ` — sets `obj.key = value`, consuming both.
-pub fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = string_key(chunk, key);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+pub fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 /// `<obj> → <value>`.
-pub fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = string_key(chunk, key);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+pub fn struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 }
 
 pub fn call_import(
@@ -79,7 +82,7 @@ pub fn call_import(
 
 /// A fresh empty object left on the stack.
 pub fn new_object(chunk: &mut Chunk, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
 }
 
 /// Build an object with `__type` set and each `(key, slot)` copied in, left on
@@ -88,11 +91,12 @@ pub fn new_tagged(chunk: &mut Chunk, type_name: &str, fields: &[(&str, u16)], li
     new_object(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(type_name, line);
-    struct_set(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     for (key, slot) in fields {
         chunk.emit_dup(line);
         lget(chunk, *slot, line);
-        struct_set(chunk, key, line);
+        struct_set(chunk, &ClassSlot::internal(*key), line);
     }
 }
 
@@ -106,6 +110,6 @@ pub fn set_call_slot(chunk: &mut Chunk, chunk_index: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, chunk_index as u16, line);
     chunk.emit(0, line);
     let key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call);
-    let k = string_key(chunk, &key);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((&key).to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }

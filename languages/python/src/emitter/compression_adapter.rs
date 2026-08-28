@@ -12,6 +12,9 @@ use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::{collections, loops};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 
 /// Largest prime below 2^16 — the Adler-32 modulus.
 const ADLER_MOD: i32 = 65521;
@@ -148,13 +151,11 @@ fn emit_compress_with(
 
     lget(&mut chunks[current], data, line);
     // `{ level: <n> }` — the options object node's zlib reads.
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], level, line);
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(
-        std::sync::Arc::from("level"),
-    ));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("level"), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key, ValueSource::Stack, line);
     let idx = chunks[current].add_import("node:zlib", func);
     chunks[current].emit_call(idx, 2, line);
     to_bytes(chunks, current, line);

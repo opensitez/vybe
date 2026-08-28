@@ -5,6 +5,9 @@
 //! calls to these `common:python.calendar_*` entries, and this file emits only
 //! the bytecode needed at the call site.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{collections, instructions::core_wasm, tuples};
 use vybe_runtime::opcode::{Op, heaptype::HT_EXTERN};
 use vybe_runtime::{Chunk, Value};
@@ -15,9 +18,9 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
     chunk.add_constant(Value::String(std::sync::Arc::from(key)))
 }
 
-fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = string_key(chunk, key);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn push_item(
@@ -71,13 +74,14 @@ pub fn emit_calendar_typed_new(
     }
 
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(type_name, line);
-    struct_set(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, firstweekday, line);
-    struct_set(chunk, "firstweekday", line);
+    struct_set(chunk, &ClassSlot::internal("firstweekday"), line);
 }
 
 pub fn emit_leapdays(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

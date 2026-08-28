@@ -19,6 +19,9 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::errors::{emit_exception_new_finalize, emit_throw};
 use vybe_compiler::primitives::ops;
 
@@ -47,14 +50,14 @@ fn call_import(
 }
 
 /// `obj[key] = <value on stack>`. Stack: `[obj, value] -> []`.
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// Stash `argc` call arguments into consecutive scratch slots, arg0 at `base`.
@@ -117,13 +120,13 @@ fn stamp_attrs(chunks: &mut [Chunk], current: usize, slot: u16, name: &str, algo
     let (digest_size, block_size) = algo_sizes(algo).unwrap_or((32, 64));
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_string_const(name, line);
-    struct_set_key(&mut chunks[current], "name", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("name"), line);
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_i32_const(digest_size, line);
-    struct_set_key(&mut chunks[current], "digest_size", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("digest_size"), line);
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_i32_const(block_size, line);
-    struct_set_key(&mut chunks[current], "block_size", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("block_size"), line);
 }
 
 /// Throw `ValueError: unsupported hash type <algo>`.
@@ -198,7 +201,7 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     // name = <the algo argument>; sizes resolve from it at runtime.
     lget(&mut chunks[current], h, line);
     lget(&mut chunks[current], base, line);
-    struct_set_key(&mut chunks[current], "name", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("name"), line);
     // Sizes resolve from the runtime algorithm string. Same table as
     // `algo_sizes`; an unknown name lands on the sha256 defaults, matching
     // what the host will actually compute for it.
@@ -248,7 +251,7 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         for _ in 0..sizes.len() {
             chunks[current].emit_end(line);
         }
-        struct_set_key(&mut chunks[current], key, line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal(key), line);
     }
     lget(&mut chunks[current], h, line);
 }
@@ -258,7 +261,7 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
 /// value-method adapters branch to the digest path without a name check.
 pub fn emit_is_digest(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     lget(&mut chunks[current], slot, line);
-    struct_get_key(&mut chunks[current], "__algo", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__algo"), line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("string", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -285,8 +288,8 @@ pub fn emit_copy_slot(chunks: &mut [Chunk], current: usize, recv: u16, line: u32
     for key in ["name", "digest_size", "block_size"] {
         lget(&mut chunks[current], c, line);
         lget(&mut chunks[current], recv, line);
-        struct_get_key(&mut chunks[current], key, line);
-        struct_set_key(&mut chunks[current], key, line);
+        struct_get_key(&mut chunks[current], &ClassSlot::internal(key), line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal(key), line);
     }
     lget(&mut chunks[current], c, line);
 }
@@ -303,7 +306,7 @@ fn hmac_or_hash(
     line: u32,
 ) {
     lget(&mut chunks[current], recv, line);
-    struct_get_key(&mut chunks[current], "__key", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__key"), line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);

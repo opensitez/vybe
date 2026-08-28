@@ -9,6 +9,9 @@
 //!
 //! No new host fns.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -30,9 +33,9 @@ const ITEMSIZES: &[(&str, i32)] = &[
     ("d", 8),
 ];
 
-fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 /// The typecode's item size, resolved from the code held in `tc`. The typecode
@@ -78,17 +81,17 @@ pub fn emit_array_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, tc, line);
-    struct_set(chunk, "typecode", line);
+    struct_set(chunk, &ClassSlot::internal("typecode"), line);
     chunk.emit_dup(line);
     emit_itemsize_of(chunk, tc, line);
-    struct_set(chunk, "itemsize", line);
+    struct_set(chunk, &ClassSlot::internal("itemsize"), line);
     // `byteswap` reverses each item's bytes in place. Every typecode this
     // runtime stores is a plain number, so there are no stored bytes to
     // reverse and the operation is a no-op — but it has to EXIST, since
     // `hasattr(a, 'byteswap')` asks the object.
     chunk.emit_dup(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    struct_set(chunk, "byteswap", line);
+    struct_set(chunk, &ClassSlot::internal("byteswap"), line);
 }
 
 /// `a.tolist()` — a plain list copy, without the array's stamps.

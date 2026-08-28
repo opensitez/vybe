@@ -19,6 +19,9 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{fs_path, ops, strings};
 
 fn call_import(
@@ -41,20 +44,20 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     base
 }
 
-fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn set_field(chunks: &mut [Chunk], current: usize, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
-fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
+fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &ClassSlot, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
 }
 
 /// True when `slot` is one of our file objects (has `__fpath`).
 fn emit_is_file_obj(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
-    field_of(chunks, current, slot, "__fpath", line);
+    field_of(chunks, current, slot, &ClassSlot::internal("__fpath"), line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
@@ -101,19 +104,19 @@ pub fn emit_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
-    set_field(chunks, current, "__fpath", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpath"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mode, line);
-    set_field(chunks, current, "__fmode", line);
+    set_field(chunks, current, &ClassSlot::internal("__fmode"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
-    set_field(chunks, current, "__fdata", line);
+    set_field(chunks, current, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(0.0, line);
-    set_field(chunks, current, "__fpos", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpos"), line);
 }
 
 /// `f.write(s)` — append to the file and to the in-memory copy. Flushes every
@@ -125,16 +128,16 @@ pub fn emit_write(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     emit_is_file_obj(chunks, current, f, line);
     chunks[current].emit_if_value(line);
-    field_of(chunks, current, f, "__fpath", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fpath"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     fs_path::emit_append_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     // Keep __fdata in step so a read-after-write on the same handle is correct.
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
-    field_of(chunks, current, f, "__fdata", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     ops::emit_dyn_add(&mut chunks[current], line);
-    set_field(chunks, current, "__fdata", line);
+    set_field(chunks, current, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
@@ -154,10 +157,10 @@ pub fn emit_read(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_is_file_obj(chunks, current, f, line);
     chunks[current].emit_if_value(line);
     let data = chunks[current].alloc_scratch(1);
-    field_of(chunks, current, f, "__fdata", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
-    field_of(chunks, current, f, "__fpos", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fpos"), line);
     call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
     chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
@@ -168,7 +171,7 @@ pub fn emit_read(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
-    set_field(chunks, current, "__fpos", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpos"), line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     fs_path::emit_read_file(&mut chunks[current], line);
@@ -181,7 +184,7 @@ pub fn emit_readlines(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let f = base;
     emit_is_file_obj(chunks, current, f, line);
     chunks[current].emit_if_value(line);
-    field_of(chunks, current, f, "__fdata", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     fs_path::emit_read_file(&mut chunks[current], line);
@@ -199,7 +202,7 @@ pub fn emit_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     chunks[current].emit_f64_const(1.0, line);
-    set_field(chunks, current, "__fclosed", line);
+    set_field(chunks, current, &ClassSlot::internal("__fclosed"), line);
     chunks[current].emit_else(line);
     // `close` is keyed by NAME alone (`[value_methods]`), so a generator's
     // `close()` landed here and fell out of the `if` doing nothing at all —
@@ -228,9 +231,9 @@ pub fn emit_readline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let nl = chunks[current].alloc_scratch(1);
     let end = chunks[current].alloc_scratch(1);
 
-    field_of(chunks, current, f, "__fdata", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
-    field_of(chunks, current, f, "__fpos", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fpos"), line);
     call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
     chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pos, line);
@@ -262,7 +265,7 @@ pub fn emit_readline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, end, line);
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
-    set_field(chunks, current, "__fpos", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpos"), line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, pos, line);
@@ -288,15 +291,15 @@ fn emit_write_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     let f = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, f, line);
-    field_of(chunks, current, f, "__fpath", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fpath"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     fs_path::emit_append_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, f, line);
-    field_of(chunks, current, f, "__fdata", line);
+    field_of(chunks, current, f, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     ops::emit_dyn_add(&mut chunks[current], line);
-    set_field(chunks, current, "__fdata", line);
+    set_field(chunks, current, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -305,14 +308,14 @@ pub fn emit_seek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    set_field(chunks, current, "__fpos", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpos"), line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
 }
 
 /// `f.tell()`.
 pub fn emit_tell(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
-    field_of(chunks, current, base, "__fpos", line);
+    field_of(chunks, current, base, &ClassSlot::internal("__fpos"), line);
 }
 
 /// Build a fresh temp path from the walker-normalized `(prefix, suffix, dir)`
@@ -388,22 +391,22 @@ pub fn emit_named_temp_file(chunks: &mut [Chunk], current: usize, argc: u8, line
     fs_path::emit_write_file(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
-    set_field(chunks, current, "__fpath", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpath"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
-    set_field(chunks, current, "name", line);
+    set_field(chunks, current, &ClassSlot::internal("name"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("w+", line);
-    set_field(chunks, current, "__fmode", line);
+    set_field(chunks, current, &ClassSlot::internal("__fmode"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
-    set_field(chunks, current, "__fdata", line);
+    set_field(chunks, current, &ClassSlot::internal("__fdata"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(0.0, line);
-    set_field(chunks, current, "__fpos", line);
+    set_field(chunks, current, &ClassSlot::internal("__fpos"), line);
 }
 
 /// `tempfile.gettempprefix()`.

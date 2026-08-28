@@ -24,6 +24,9 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{collections, tuples};
 
 // ── local emit helpers (mirror pdo_adapter conventions) ──────────────────────
@@ -56,15 +59,15 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// `obj[key] = <value on stack>`. Stack: `[obj, value] -> []`.
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 /// Stash `argc` call arguments into consecutive scratch slots, arg0 at `base`.
@@ -94,7 +97,7 @@ fn emit_row_to_tuple(chunks: &mut [Chunk], current: usize, row_slot: u16, line: 
 
     // names = row.__col_names
     lget(&mut chunks[current], row_slot, line);
-    struct_get_key(&mut chunks[current], "__col_names", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__col_names"), line);
     lset(&mut chunks[current], names, line);
 
     // tup = []
@@ -161,8 +164,8 @@ fn emit_row_factory_flag(
     line: u32,
 ) {
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__conn", line);
-    struct_get_key(&mut chunks[current], "row_factory", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("row_factory"), line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     lset(&mut chunks[current], flag_slot, line);
 }
@@ -222,11 +225,11 @@ pub fn emit_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Connection (shortcut `conn.execute(...)`) or a Cursor (`cur.__conn`).
     lget(&mut chunks[current], conn, line);
     lget(&mut chunks[current], conn, line);
-    struct_set_key(&mut chunks[current], "__conn", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
     // Python `Connection.isolation_level` defaults to "" (deferred BEGIN).
     lget(&mut chunks[current], conn, line);
     push_str(&mut chunks[current], "", line);
-    struct_set_key(&mut chunks[current], "isolation_level", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("isolation_level"), line);
     lget(&mut chunks[current], conn, line);
     // result: connection object
 }
@@ -241,27 +244,28 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(&mut chunks[current], cur, line);
     push_str(&mut chunks[current], "SqlCursor", line);
-    struct_set_key(&mut chunks[current], "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     lget(&mut chunks[current], cur, line);
     lget(&mut chunks[current], base, line);
-    struct_set_key(&mut chunks[current], "__conn", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
 
     lget(&mut chunks[current], cur, line);
     empty_array(chunks, current, line);
-    struct_set_key(&mut chunks[current], "__rows", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
 
     lget(&mut chunks[current], cur, line);
     chunks[current].emit_i32_const(0, line);
-    struct_set_key(&mut chunks[current], "__cursor", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
 
     lget(&mut chunks[current], cur, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    struct_set_key(&mut chunks[current], "lastrowid", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("lastrowid"), line);
 
     lget(&mut chunks[current], cur, line);
     chunks[current].emit_i32_const(-1, line);
-    struct_set_key(&mut chunks[current], "rowcount", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("rowcount"), line);
 
     lget(&mut chunks[current], cur, line);
     // result: cursor
@@ -277,7 +281,7 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     let conn = alloc(&mut chunks[current]);
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__conn", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
     lset(&mut chunks[current], conn, line);
 
     let flag = alloc(&mut chunks[current]);
@@ -300,10 +304,10 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
         lget(&mut chunks[current], cursor, line);
         lget(&mut chunks[current], rows, line);
-        struct_set_key(&mut chunks[current], "__rows", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
         lget(&mut chunks[current], cursor, line);
         chunks[current].emit_i32_const(0, line);
-        struct_set_key(&mut chunks[current], "__cursor", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
     }
     chunks[current].emit_else(line);
     {
@@ -321,14 +325,14 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
         lget(&mut chunks[current], cursor, line);
         lget(&mut chunks[current], count, line);
-        struct_set_key(&mut chunks[current], "rowcount", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("rowcount"), line);
 
         lget(&mut chunks[current], cursor, line);
         empty_array(chunks, current, line);
-        struct_set_key(&mut chunks[current], "__rows", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
         lget(&mut chunks[current], cursor, line);
         chunks[current].emit_i32_const(0, line);
-        struct_set_key(&mut chunks[current], "__cursor", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
 
         // lastrowid = scalar("SELECT last_insert_rowid()")
         let lastid = alloc(&mut chunks[current]);
@@ -338,7 +342,7 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(&mut chunks[current], lastid, line);
         lget(&mut chunks[current], cursor, line);
         lget(&mut chunks[current], lastid, line);
-        struct_set_key(&mut chunks[current], "lastrowid", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("lastrowid"), line);
     }
     chunks[current].emit_end(line);
 
@@ -356,7 +360,7 @@ pub fn emit_executemany(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 
     let conn = alloc(&mut chunks[current]);
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__conn", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
     lset(&mut chunks[current], conn, line);
 
     let n = alloc(&mut chunks[current]);
@@ -416,7 +420,7 @@ pub fn emit_fetchall(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     emit_row_factory_flag(chunks, current, cursor, raw, line);
 
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__rows", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
     lset(&mut chunks[current], rows, line);
 
     empty_array(chunks, current, line);
@@ -428,7 +432,7 @@ pub fn emit_fetchall(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     // i = cursor.__cursor
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__cursor", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
     lset(&mut chunks[current], i, line);
 
     let block = chunks[current].emit_block(line);
@@ -465,7 +469,7 @@ pub fn emit_fetchall(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     // cursor.__cursor = n (exhausted)
     lget(&mut chunks[current], cursor, line);
     lget(&mut chunks[current], n, line);
-    struct_set_key(&mut chunks[current], "__cursor", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
 
     lget(&mut chunks[current], res, line);
     // result: list of tuples
@@ -484,13 +488,13 @@ pub fn emit_fetchone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     emit_row_factory_flag(chunks, current, cursor, raw, line);
 
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__rows", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
     lset(&mut chunks[current], rows, line);
     lget(&mut chunks[current], rows, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
     lset(&mut chunks[current], n, line);
     lget(&mut chunks[current], cursor, line);
-    struct_get_key(&mut chunks[current], "__cursor", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
     lset(&mut chunks[current], cur, line);
 
     // if cur < n
@@ -509,7 +513,7 @@ pub fn emit_fetchone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         lget(&mut chunks[current], cur, line);
         chunks[current].emit_i32_const(1, line);
         chunks[current].emit_op(Op::I32_ADD, line);
-        struct_set_key(&mut chunks[current], "__cursor", line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
 
         emit_row_result(chunks, current, row, raw, line);
     }

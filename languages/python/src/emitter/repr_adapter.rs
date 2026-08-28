@@ -16,6 +16,9 @@
 //! scanning `chunks` for that name), since `repr` runs on every `print`/`str`.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
 use vybe_runtime::opcode::Op;
@@ -232,18 +235,18 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
         // Named tuple? `__typename` present → `Name(f=v, …)`.
         lget(&mut c, value, line);
-        struct_get(&mut c, TYPENAME_TAG, line);
+        struct_get(&mut c, &ClassSlot::internal(TYPENAME_TAG), line);
         c.emit_op(Op::REF_IS_NULL, line);
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if(line);
         {
             lget(&mut c, value, line);
-            struct_get(&mut c, TYPENAME_TAG, line);
+            struct_get(&mut c, &ClassSlot::internal(TYPENAME_TAG), line);
             str_const(&mut c, "(", line);
             concat(&mut c, line);
             lset(&mut c, out, line);
             lget(&mut c, value, line);
-            struct_get(&mut c, FIELDS_TAG, line);
+            struct_get(&mut c, &ClassSlot::internal(FIELDS_TAG), line);
             lset(&mut c, fields, line);
             emit_i32_zero(&mut c, i, line);
             let lp = loop_start(&mut c, line);
@@ -274,7 +277,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
         // Plain tuple? `__tuple` present → `(a, b)` / `(a,)`.
         lget(&mut c, value, line);
-        struct_get(&mut c, TUPLE_TAG, line);
+        struct_get(&mut c, &ClassSlot::internal(TUPLE_TAG), line);
         c.emit_op(Op::REF_IS_NULL, line);
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if(line);
@@ -312,7 +315,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // A range is lazy and opaque, so `emit_range` stamps its bounds onto the
     // object for exactly this. CPython omits the step when it is 1.
     lget(&mut c, value, line);
-    struct_get(&mut c, "__py_range_stop", line);
+    struct_get(&mut c, &ClassSlot::internal("__py_range_stop"), line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
@@ -322,20 +325,20 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
         str_const(&mut c, "range(", line);
         lget(&mut c, value, line);
-        struct_get(&mut c, "__py_range_start", line);
+        struct_get(&mut c, &ClassSlot::internal("__py_range_start"), line);
         c.emit_call(to_str, 1, line);
         c.emit_call(concat, 2, line);
         str_const(&mut c, ", ", line);
         c.emit_call(concat, 2, line);
         lget(&mut c, value, line);
-        struct_get(&mut c, "__py_range_stop", line);
+        struct_get(&mut c, &ClassSlot::internal("__py_range_stop"), line);
         c.emit_call(to_str, 1, line);
         c.emit_call(concat, 2, line);
         lset(&mut c, out, line);
 
         // step != 1 → append ", <step>"
         lget(&mut c, value, line);
-        struct_get(&mut c, "__py_range_step", line);
+        struct_get(&mut c, &ClassSlot::internal("__py_range_step"), line);
         {
             let to_f64 = c.add_import("wasm:js-number", "toF64");
             c.emit_call(to_f64, 1, line);
@@ -347,7 +350,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         str_const(&mut c, ", ", line);
         c.emit_call(concat, 2, line);
         lget(&mut c, value, line);
-        struct_get(&mut c, "__py_range_step", line);
+        struct_get(&mut c, &ClassSlot::internal("__py_range_step"), line);
         c.emit_call(to_str, 1, line);
         c.emit_call(concat, 2, line);
         lset(&mut c, out, line);
@@ -391,7 +394,8 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // insertion order, then the list machinery renders them inside braces.
     {
         lget(&mut c, value, line);
-        struct_get(&mut c, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_id, Dest::Stack, line);
         str_const(&mut c, "Set", line);
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
         c.emit_if(line);
@@ -401,7 +405,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             // `frozenset({...})` / `frozenset()`; a plain set as `{...}` / `set()`.
             let frozen = c.alloc_scratch(1);
             lget(&mut c, value, line);
-            struct_get(&mut c, "__frozenset", line);
+            struct_get(&mut c, &ClassSlot::internal("__frozenset"), line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
             lset(&mut c, frozen, line);
 
@@ -453,7 +457,8 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // `__type = "complex"` so display/type semantics stay in the Python crate.
     {
         lget(&mut c, value, line);
-        struct_get(&mut c, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_id, Dest::Stack, line);
         str_const(&mut c, "complex", line);
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
         c.emit_if(line);
@@ -467,10 +472,10 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let abs = c.add_import("ecma:math", "abs");
 
             lget(&mut c, value, line);
-            struct_get(&mut c, "real", line);
+            struct_get(&mut c, &ClassSlot::internal("real"), line);
             lset(&mut c, real, line);
             lget(&mut c, value, line);
-            struct_get(&mut c, "imag", line);
+            struct_get(&mut c, &ClassSlot::internal("imag"), line);
             lset(&mut c, imag, line);
 
             lget(&mut c, real, line);
@@ -533,15 +538,14 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // `dict`/`list` subclass also has `__type` and renders here rather than as
     // its container — indistinguishable structurally in this value model.
     {
-        let has_own = c.add_import("ecma:object", "hasOwn");
-        lget(&mut c, value, line);
-        str_const(&mut c, "__type", line);
-        c.emit_call(has_own, 2, line);
+        let cs_has = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_has(&mut c, ObjSource::Local(value), &cs_has, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
         c.emit_if(line);
         str_const(&mut c, "<", line);
         lget(&mut c, value, line);
-        struct_get(&mut c, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_id, Dest::Stack, line);
         {
             let to_str = c.add_import("ecma:string", "String");
             c.emit_call(to_str, 1, line);
@@ -604,9 +608,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
 // ── small emit helpers ──────────────────────────────────────────────────
 
-fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+fn struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 fn emit_i32_const(chunk: &mut Chunk, v: i32, line: u32) {
