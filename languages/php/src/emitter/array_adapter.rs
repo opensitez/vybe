@@ -8,6 +8,9 @@
 //! per the cross-language type model.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -49,9 +52,9 @@ fn call_import(
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     chunks[current].emit_call(idx, argc, line);
 }
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 const PHP_JSON_LAST_ERROR: &str = "__php_json_last_error";
@@ -1427,8 +1430,8 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // PHP `count()` on a `Countable` object calls its `->count()` method.
     // Probe for a callable `count` method on the value; if present, call it.
     lget(chunk, value_slot, line);
-    let count_key = chunk.add_constant(Value::String(std::sync::Arc::from("count")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, count_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("count").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, method_slot, line);
     lget(chunk, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -1523,8 +1526,8 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     emit_test_object(chunk, line);
     chunk.emit_if(line);
     lget(chunk, value_slot, line);
-    let json_ser_key = chunk.add_constant(Value::String(Arc::from("jsonSerialize")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, json_ser_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("jsonSerialize").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, method_slot, line);
     lget(chunk, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -1549,8 +1552,8 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     lget(chunk, value_slot, line);
     emit_test_object(chunk, line);
     lget(chunk, value_slot, line);
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__type").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     push_str(chunk, "stream", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -1874,8 +1877,8 @@ fn emit_call_via_invoke_dispatch<F>(
     // Object: call $obj->__invoke(args). PHP method ABI passes `$this`
     // as arg0, so push fn (the receiver) twice.
     lget(chunk, fn_slot, line);
-    let invoke_key = chunk.add_constant(Value::String(Arc::from("__invoke")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, invoke_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__invoke").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lget(chunk, fn_slot, line);
     push_args(chunks, current);
     let chunk = &mut chunks[current];
@@ -3087,8 +3090,8 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if_value(line);
         lget(chunk, row_slot, line);
-        let get_key = chunk.add_constant(Value::String(Arc::from("__get")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__get").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         lset(chunk, get_method_slot, line);
         lget(chunk, get_method_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
@@ -3672,14 +3675,14 @@ fn emit_generator_yield_value_from_slot(
     chunk.emit_if(line);
 
     lget(chunk, yielded_slot, line);
-    let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, marker_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__vybe_generator_yield").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, yielded_slot, line);
-    let payload_id_key = chunk.add_constant(Value::String(Arc::from("payload_id")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, payload_id_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("payload_id").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, payload_id_slot, line);
 
     lget(chunk, payload_id_slot, line);
@@ -3687,8 +3690,8 @@ fn emit_generator_yield_value_from_slot(
     chunk.emit_if_value(line);
 
     lget(chunk, yielded_slot, line);
-    let value_key = chunk.add_constant(Value::String(Arc::from("value")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("value").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 
     chunk.emit_else(line);
 
@@ -3718,14 +3721,14 @@ fn emit_generator_yield_key_or_fallback_from_slot(
     chunk.emit_if(line);
 
     lget(chunk, yielded_slot, line);
-    let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, marker_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__vybe_generator_yield").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, yielded_slot, line);
-    let key_key = chunk.add_constant(Value::String(Arc::from("key")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("key").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 
     chunk.emit_else(line);
     if let Some(slot) = fallback_slot {
@@ -3924,13 +3927,13 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         let chunk = &mut chunks[current];
         lget(chunk, iter_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let done_k = chunk.add_constant(Value::String(std::sync::Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, iter_slot, line);
         lget(chunk, value_slot, line);
-        let ret_k = chunk.add_constant(Value::String(std::sync::Arc::from("__php_gen_return")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_return").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
     lget(&mut chunks[current], out_slot, line);
 
@@ -3998,8 +4001,8 @@ pub fn emit_generator_get_return(chunks: &mut [Chunk], current: usize, _argc: u8
         let chunk = &mut chunks[current];
         lset(chunk, gen_slot, line);
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
@@ -4015,8 +4018,8 @@ pub fn emit_generator_get_return(chunks: &mut [Chunk], current: usize, _argc: u8
         let chunk = &mut chunks[current];
         chunk.emit_end(line);
         lget(chunk, gen_slot, line);
-        let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, ret_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_return").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     }
 }
 
@@ -4026,8 +4029,8 @@ pub fn emit_generator_rewind(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let chunk = &mut chunks[current];
         lset(chunk, gen_slot, line);
         lget(chunk, gen_slot, line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
     }
@@ -4054,8 +4057,8 @@ pub fn emit_generator_key(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         let chunk = &mut chunks[current];
         lset(chunk, gen_slot, line);
         lget(chunk, gen_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         lset(chunk, current_slot, line);
 
         lget(chunk, current_slot, line);
@@ -4063,19 +4066,19 @@ pub fn emit_generator_key(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         chunk.emit_if(line);
 
         lget(chunk, current_slot, line);
-        let marker_k = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, marker_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__vybe_generator_yield").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
 
         lget(chunk, current_slot, line);
-        let key_k = chunk.add_constant(Value::String(Arc::from("key")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("key").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 
         chunk.emit_else(line);
         lget(chunk, gen_slot, line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         push_const(chunk, Value::F64(1.0), line);
@@ -4086,8 +4089,8 @@ pub fn emit_generator_key(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 
         chunk.emit_else(line);
         lget(chunk, gen_slot, line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         push_const(chunk, Value::F64(1.0), line);
@@ -4109,8 +4112,8 @@ fn emit_generator_advance_from_slot(
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         push_const(chunk, Value::Bool(false), line);
@@ -4126,13 +4129,13 @@ fn emit_generator_advance_from_slot(
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         push_const(chunk, Value::Bool(true), line);
 
@@ -4140,23 +4143,23 @@ fn emit_generator_advance_from_slot(
 
         lget(chunk, gen_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_return").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4176,8 +4179,8 @@ fn emit_generator_ensure_started(
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
@@ -4205,19 +4208,19 @@ pub fn emit_generator_next(chunks: &mut [Chunk], current: usize, _argc: u8, line
         let chunk = &mut chunks[current];
         lset(chunk, gen_slot, line);
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(false), line);
-        let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_keep_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_end(line);
 
         lget(chunk, gen_slot, line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         lset(chunk, was_started_slot, line);
     }
@@ -4233,8 +4236,8 @@ pub fn emit_generator_next(chunks: &mut [Chunk], current: usize, _argc: u8, line
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, gen_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         lset(chunk, first_current_slot, line);
     }
     emit_generator_advance_from_slot(chunks, current, gen_slot, value_slot, has_more_slot, line);
@@ -4247,17 +4250,17 @@ pub fn emit_generator_next(chunks: &mut [Chunk], current: usize, _argc: u8, line
         chunk.emit_if(line);
         lget(chunk, gen_slot, line);
         lget(chunk, first_current_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_keep_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_else(line);
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(false), line);
-        let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_keep_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -4285,8 +4288,8 @@ pub fn emit_generator_send(chunks: &mut [Chunk], current: usize, _argc: u8, line
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         push_const(chunk, Value::Bool(false), line);
@@ -4310,18 +4313,18 @@ pub fn emit_generator_send(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
         lget(chunk, gen_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_return").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4329,13 +4332,13 @@ pub fn emit_generator_send(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_moved").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
     emit_generator_yield_value_from_slot(chunks, current, value_slot, line);
     {
@@ -4365,8 +4368,8 @@ pub fn emit_generator_throw(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, ex_slot, line);
@@ -4391,18 +4394,18 @@ pub fn emit_generator_throw(chunks: &mut [Chunk], current: usize, _argc: u8, lin
 
         lget(chunk, gen_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_return").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4410,8 +4413,8 @@ pub fn emit_generator_throw(chunks: &mut [Chunk], current: usize, _argc: u8, lin
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
     emit_generator_yield_value_from_slot(chunks, current, value_slot, line);
     {
@@ -4438,25 +4441,25 @@ pub fn emit_generator_current(chunks: &mut [Chunk], current: usize, _argc: u8, l
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         lget(chunk, gen_slot, line);
-        let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, keep_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_keep_current").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         lget(chunk, gen_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         chunk.emit_else(line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_end(line);
         chunk.emit_else(line);
         lget(chunk, gen_slot, line);
-        let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, current_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_current").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     }
     {
         let chunk = &mut chunks[current];
@@ -4479,8 +4482,8 @@ pub fn emit_generator_valid(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     {
         let chunk = &mut chunks[current];
         lget(chunk, gen_slot, line);
-        let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__php_gen_done").to_string()), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
     }
@@ -6640,7 +6643,8 @@ pub fn emit_php_array_to_object(chunks: &mut [Chunk], current: usize, _argc: u8,
     lset(chunk, obj_slot, line);
     lget(chunk, obj_slot, line);
     push_str(chunk, "stdClass", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     lget(chunk, obj_slot, line);
 }
 

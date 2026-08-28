@@ -93,6 +93,14 @@ uses_normalize_class = true
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 echo                = { emit = "common:php.echo",            min_args = 0, max_args = 255 }
+# `exit` / `die` are the SAME builtin; php spells it two ways. Bound here on
+# php's own row exactly as every other language binds its terminate spelling
+# (`halt`, `os.Exit`, `sys.exit`, `process.exit`, `os.exit`, `__process_exit`)
+# — this replaced a `profile.name == "php"` check in shared `calls.rs` and
+# `statements.rs` that matched the SPELLINGS directly. The message-or-status
+# meaning of the argument is `Directives::exit_argument`, not a row here.
+exit                = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+die                 = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 __php_echo          = { emit = "common:php.echo",            min_args = 0, max_args = 255 }
 print               = { emit = "print",                      min_args = 1, max_args = 1 }
 print_r             = { emit = "common:php.print_r",         min_args = 1, max_args = 2 }

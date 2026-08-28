@@ -8,6 +8,9 @@
 //! host fns; no JS polyfills.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+};
 use vybe_compiler::primitives::{string_encoding, string_similarity, strings, url};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -2510,9 +2513,9 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             c.emit_op(Op::REF_IS_NULL, line);
             c.emit_op(Op::I32_EQZ, line);
             c.emit_if(line);
-            let index_k = c.add_constant(Value::String(std::sync::Arc::from("index")));
+            let cs_slot = class_slots::resolve(&ClassSlot::Internal(("index").to_string()), &PlainNames);
             lget(c, match_slot, line);
-            c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
+            class_slots::emit_class_get(c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
             lget(c, match_slot, line);
             push_const(c, Value::F64(0.0), line);
             c.emit_op(Op::ARRAY_GET, line);
@@ -2904,10 +2907,10 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    let groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("groups").to_string()), &PlainNames);
     let groups_slot = alloc_local(chunk);
     lget(chunk, exec_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, groups_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, groups_slot, line);
 
     // if groups is not null: copy named entries
@@ -3136,9 +3139,9 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let chunk = &mut chunks[current];
 
     // groups = result.groups
-    let groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("groups").to_string()), &PlainNames);
     lget(chunk, result_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, groups_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, groups_slot, line);
 
     // if groups is non-null: copy each named entry
@@ -3280,8 +3283,8 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 
     // pos = m.index
     lget(chunk, m_slot, line);
-    let index_key = chunk.add_constant(Value::String(Arc::from("index")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("index").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     lset(chunk, pos_slot, line);
 
     // match_str = m[0]
@@ -3430,15 +3433,15 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunks[current].emit_op(Op::DROP, line);
     let chunk = &mut chunks[current];
 
-    let clone_key = chunk.add_constant(Value::String(Arc::from("__clone")));
-    let copy_magic = |chunk: &mut Chunk, key: u16| {
+    let clone_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__clone"), &PlainNames);
+    let copy_magic = |chunk: &mut Chunk, key: &ResolvedSlot| {
         // copy.<key> = obj.<key>  (only writes if obj has it; STRUCT_GET
         // returns null/undefined for missing keys, which gets shadowed
         // back onto copy harmlessly — methods on the original class
         // always have these slots populated when bound).
         let line = line;
         lget(chunk, obj_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, key, Dest::Stack, line);
         // Stack: [val]. Skip the SET if val is null/undefined (no
         // method to copy). REF_IS_NULL returns i32: 1=null, 0=non-null.
         // emit_if enters then-block when 1 (null), else-block when 0 (non-null).
@@ -3452,14 +3455,14 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line);
         lget(chunk, copy_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, key, ValueSource::Stack, line);
         chunk.emit_end(line); // end null check
     };
-    copy_magic(chunk, clone_key);
-    let to_string_key = chunk.add_constant(Value::String(Arc::from("__toString")));
-    copy_magic(chunk, to_string_key);
-    let invoke_key = chunk.add_constant(Value::String(Arc::from("__invoke")));
-    copy_magic(chunk, invoke_key);
+    copy_magic(chunk, &clone_key);
+    let to_string_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__toString"), &PlainNames);
+    copy_magic(chunk, &to_string_key);
+    let invoke_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__invoke"), &PlainNames);
+    copy_magic(chunk, &invoke_key);
 
     let i_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
@@ -3518,7 +3521,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
     // Check for __clone method on the copy.
     lget(chunk, copy_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, clone_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &clone_key, Dest::Stack, line);
     lset(chunk, clone_fn_slot, line);
 
     // function test: not null AND not number AND not string AND not boolean

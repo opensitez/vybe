@@ -14,6 +14,9 @@
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+use vybe_compiler::primitives::class_slots::{
+    self,
+};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -252,7 +255,7 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "Division by zero", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(

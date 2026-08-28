@@ -11,6 +11,9 @@
 
 use std::sync::Arc;
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -59,14 +62,14 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn global_get(chunk: &mut Chunk, key: &str, line: u32) {
@@ -155,16 +158,16 @@ pub fn emit_set_error_handler(chunks: &mut [Chunk], current: usize, argc: u8, li
     lset(chunk, prev_slot, line);
 
     // handler = {cb, mask, prev}
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     lget(chunk, cb_slot, line);
-    struct_set_key(chunk, "cb", line);
+    struct_set_key(chunk, &ClassSlot::internal("cb"), line);
     chunk.emit_dup(line);
     lget(chunk, mask_slot, line);
-    struct_set_key(chunk, "mask", line);
+    struct_set_key(chunk, &ClassSlot::internal("mask"), line);
     chunk.emit_dup(line);
     lget(chunk, prev_slot, line);
-    struct_set_key(chunk, "prev", line);
+    struct_set_key(chunk, &ClassSlot::internal("prev"), line);
     global_set(chunk, HANDLER_G, line);
 
     // return the previous handler's callback (or null).
@@ -174,7 +177,7 @@ pub fn emit_set_error_handler(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     lget(chunk, prev_slot, line);
-    struct_get_key(chunk, "cb", line);
+    struct_get_key(chunk, &ClassSlot::internal("cb"), line);
     chunk.emit_end(line);
 }
 
@@ -190,7 +193,7 @@ pub fn emit_restore_error_handler(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, cur_slot, line);
-    struct_get_key(chunk, "prev", line);
+    struct_get_key(chunk, &ClassSlot::internal("prev"), line);
     global_set(chunk, HANDLER_G, line);
     chunk.emit_end(line);
     chunk.emit_bool_const(true, line);
@@ -400,13 +403,13 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     //   … and (level & handler.mask) != 0 …
     lget(chunk, level_slot, line);
     lget(chunk, handler_slot, line);
-    struct_get_key(chunk, "mask", line);
+    struct_get_key(chunk, &ClassSlot::internal("mask"), line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
 
     //     invoke cb(errno, errstr, errfile, errline) → ret
     lget(chunk, handler_slot, line);
-    struct_get_key(chunk, "cb", line);
+    struct_get_key(chunk, &ClassSlot::internal("cb"), line);
     lget(chunk, level_slot, line);
     lget(chunk, msg_slot, line);
     push_str(chunk, "php", line);

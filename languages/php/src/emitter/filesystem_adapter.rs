@@ -13,6 +13,9 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{fs_path, paths};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -310,7 +313,7 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     call_import(chunks, current, "ecma:map", "get", 2, line);
     {
         let chunk = &mut chunks[current];
-        struct_get_key(chunk, "__buf", line);
+        struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
         str_len(chunk, line);
         chunk.emit_else(line);
         lget(chunk, path_slot, line);
@@ -334,8 +337,8 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 pub fn emit_filemtime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
-    let key = chunk.add_constant(Value::String(Arc::from("modified")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("modified").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
 }
@@ -479,26 +482,26 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let chunk = &mut chunks[current];
     lset(chunk, filename_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     lget(chunk, dirname_slot, line);
-    let dirname_key = chunk.add_constant(Value::String(Arc::from("dirname")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dirname_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("dirname").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
     lget(chunk, basename_slot, line);
-    let basename_key = chunk.add_constant(Value::String(Arc::from("basename")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, basename_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("basename").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
     lget(chunk, extension_slot, line);
-    let extension_key = chunk.add_constant(Value::String(Arc::from("extension")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, extension_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("extension").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
     lget(chunk, filename_slot, line);
-    let filename_key = chunk.add_constant(Value::String(Arc::from("filename")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, filename_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("filename").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 /// PHP `file($path)` — read whole file, split on `"\n"`, return
@@ -750,21 +753,21 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     // wrapper = STRUCT_NEW; wrapper.__type = "Directory";
     // wrapper.__entries = entries; wrapper.__index = 0
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "Directory", line);
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__type").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
     lget(chunk, entries_slot, line);
-    let entries_key = chunk.add_constant(Value::String(Arc::from("__entries")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, entries_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__entries").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    let index_key = chunk.add_constant(Value::String(Arc::from("__index")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__index").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 /// PHP `Directory->read()` — pulls the next entry name from
@@ -777,16 +780,17 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     let index_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
     let entry_slot = alloc_local(chunk);
-    let entries_key = chunk.add_constant(Value::String(Arc::from("__entries")));
-    let index_key = chunk.add_constant(Value::String(Arc::from("__index")));
+    let cs_slot_1 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__entries").to_string()), &PlainNames);
+    let cs_slot_2 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__index").to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__index").to_string()), &PlainNames);
     lset(chunk, dir_slot, line);
 
     lget(chunk, dir_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, entries_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot_1, Dest::Stack, line);
     lset(chunk, entries_slot, line);
 
     lget(chunk, dir_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot_2, Dest::Stack, line);
     lset(chunk, index_slot, line);
 
     lget(chunk, entries_slot, line);
@@ -808,7 +812,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     lget(chunk, entry_slot, line);
 
     chunk.emit_else(line);
@@ -825,13 +829,13 @@ pub fn emit_dir_close(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 }
 
 // ── small local helpers ─────────────────────────────────────────────
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 }
 fn str_len(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "length");
@@ -891,7 +895,7 @@ pub fn emit_is_readable(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 pub fn emit_filetype(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "isDir", line);
+    struct_get_key(chunk, &ClassSlot::internal("isDir"), line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "dir", line);
@@ -1068,7 +1072,7 @@ pub fn emit_mime_content_type(chunks: &mut [Chunk], current: usize, _argc: u8, l
 pub fn emit_fileperms(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "isDir", line);
+    struct_get_key(chunk, &ClassSlot::internal("isDir"), line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // 0o40755 = 16877 (S_IFDIR | 0755)
@@ -1197,26 +1201,27 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, uri_slot, line);
 
         // build the stream object
-        chunk.emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(chunk, line);
         lset(chunk, stream_slot, line);
         lget(chunk, stream_slot, line);
         push_str(chunk, "stream", line);
-        struct_set_key(chunk, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
         lget(chunk, stream_slot, line);
         push_str(chunk, "", line);
-        struct_set_key(chunk, "__buf", line);
+        struct_set_key(chunk, &ClassSlot::internal("__buf"), line);
         lget(chunk, stream_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        struct_set_key(chunk, "__pos", line);
+        struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
         lget(chunk, stream_slot, line);
         lget(chunk, uri_slot, line);
-        struct_set_key(chunk, "__uri", line);
+        struct_set_key(chunk, &ClassSlot::internal("__uri"), line);
         lget(chunk, stream_slot, line);
         lget(chunk, mode_slot, line);
-        struct_set_key(chunk, "__mode", line);
+        struct_set_key(chunk, &ClassSlot::internal("__mode"), line);
         lget(chunk, stream_slot, line);
         push_const(chunk, Value::Bool(true), line);
-        struct_set_key(chunk, "__blocked", line);
+        struct_set_key(chunk, &ClassSlot::internal("__blocked"), line);
 
         // __sink: "stdout" for php://stdout|php://output, "stderr" for
         // php://stderr, else "memory".
@@ -1248,7 +1253,7 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_end(line);
         lget(chunk, stream_slot, line);
         lget(chunk, sink_slot, line);
-        struct_set_key(chunk, "__sink", line);
+        struct_set_key(chunk, &ClassSlot::internal("__sink"), line);
     }
 
     // registry.set(uri, stream)
@@ -1384,7 +1389,7 @@ pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, len_slot, line);
 
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__sink", line);
+    struct_get_key(chunk, &ClassSlot::internal("__sink"), line);
     lset(chunk, sink_slot, line);
 
     // if sink == "stdout"
@@ -1410,15 +1415,15 @@ pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // memory: buf = buf + data ; pos = buf.length
     lget(chunk, stream_slot, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     lget(chunk, data_slot, line);
     str_concat(chunk, line);
-    struct_set_key(chunk, "__buf", line);
+    struct_set_key(chunk, &ClassSlot::internal("__buf"), line);
     lget(chunk, stream_slot, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     str_len(chunk, line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
     chunk.emit_end(line); // end stderr/memory if
     chunk.emit_end(line); // end stdout if
 
@@ -1438,7 +1443,7 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, stream_slot, line);
 
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     lset(chunk, pos_slot, line);
 
     // end = pos + length
@@ -1449,7 +1454,7 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     // result = buf.substring(pos, end)
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     lget(chunk, pos_slot, line);
     lget(chunk, end_slot, line);
     {
@@ -1462,7 +1467,7 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // pos = min(end, buf.length)
     lget(chunk, stream_slot, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     str_len(chunk, line);
     let buflen_slot = alloc_local(chunk);
     lset(chunk, buflen_slot, line);
@@ -1475,7 +1480,7 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_else(line);
     lget(chunk, buflen_slot, line);
     chunk.emit_end(line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
 
     lget(chunk, result_slot, line);
 }
@@ -1499,10 +1504,10 @@ pub fn emit_fgets(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, stream_slot, line);
 
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     lset(chunk, buf_slot, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     lset(chunk, pos_slot, line);
 
     // nl = buf.indexOf("\n", pos)
@@ -1544,7 +1549,7 @@ pub fn emit_fgets(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // pos = end
     lget(chunk, stream_slot, line);
     lget(chunk, end_slot, line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
 
     lget(chunk, result_slot, line);
 }
@@ -1557,12 +1562,12 @@ pub fn emit_fgetc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, stream_slot, line);
 
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     lset(chunk, pos_slot, line);
 
     // result = buf.charAt(pos)
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     lget(chunk, pos_slot, line);
     {
         let idx = chunk.add_import("ecma:string", "charAt");
@@ -1576,7 +1581,7 @@ pub fn emit_fgetc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lget(chunk, pos_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
 
     lget(chunk, result_slot, line);
 }
@@ -1589,10 +1594,10 @@ pub fn emit_feof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     // pos >= buf.length
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     str_len(chunk, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
@@ -1600,7 +1605,7 @@ pub fn emit_feof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// PHP `ftell($stream)` — current cursor position.
 pub fn emit_ftell(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
 }
 
 /// PHP `fseek($stream, $offset, $whence = SEEK_SET)` — sets the cursor.
@@ -1631,7 +1636,7 @@ pub fn emit_fseek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     lget(chunk, offset_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, target_slot, line);
@@ -1644,7 +1649,7 @@ pub fn emit_fseek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     str_len(chunk, line);
     lget(chunk, offset_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
@@ -1654,7 +1659,7 @@ pub fn emit_fseek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // stream.__pos = target
     lget(chunk, stream_slot, line);
     lget(chunk, target_slot, line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
 
     // return 0 (success)
     push_const(chunk, Value::F64(0.0), line);
@@ -1667,7 +1672,7 @@ pub fn emit_rewind(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, stream_slot, line);
     lget(chunk, stream_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
     push_const(chunk, Value::Bool(true), line);
 }
 
@@ -1702,16 +1707,16 @@ pub fn emit_stream_get_contents(chunks: &mut [Chunk], current: usize, argc: u8, 
     lset(chunk, stream_slot, line);
 
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__pos", line);
+    struct_get_key(chunk, &ClassSlot::internal("__pos"), line);
     lset(chunk, pos_slot, line);
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     str_len(chunk, line);
     lset(chunk, end_slot, line);
 
     // result = buf.substring(pos, end)
     lget(chunk, stream_slot, line);
-    struct_get_key(chunk, "__buf", line);
+    struct_get_key(chunk, &ClassSlot::internal("__buf"), line);
     lget(chunk, pos_slot, line);
     lget(chunk, end_slot, line);
     {
@@ -1724,7 +1729,7 @@ pub fn emit_stream_get_contents(chunks: &mut [Chunk], current: usize, argc: u8, 
     // pos = end
     lget(chunk, stream_slot, line);
     lget(chunk, end_slot, line);
-    struct_set_key(chunk, "__pos", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pos"), line);
 
     lget(chunk, result_slot, line);
 }
@@ -1756,7 +1761,7 @@ pub fn emit_stream_get_meta_data(chunks: &mut [Chunk], current: usize, _argc: u8
         lget(chunk, meta_slot, line);
         push_str(chunk, "uri", line);
         lget(chunk, stream_slot, line);
-        struct_get_key(chunk, "__uri", line);
+        struct_get_key(chunk, &ClassSlot::internal("__uri"), line);
     }
     call_import(chunks, current, "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1767,7 +1772,7 @@ pub fn emit_stream_get_meta_data(chunks: &mut [Chunk], current: usize, _argc: u8
         lget(chunk, meta_slot, line);
         push_str(chunk, "mode", line);
         lget(chunk, stream_slot, line);
-        struct_get_key(chunk, "__mode", line);
+        struct_get_key(chunk, &ClassSlot::internal("__mode"), line);
     }
     call_import(chunks, current, "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1795,7 +1800,7 @@ pub fn emit_stream_get_meta_data(chunks: &mut [Chunk], current: usize, _argc: u8
         lget(chunk, meta_slot, line);
         push_str(chunk, "blocked", line);
         lget(chunk, stream_slot, line);
-        struct_get_key(chunk, "__blocked", line);
+        struct_get_key(chunk, &ClassSlot::internal("__blocked"), line);
     }
     call_import(chunks, current, "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);

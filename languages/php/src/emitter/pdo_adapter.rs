@@ -2,6 +2,9 @@
 //! `database_adapter.rs`; the mysqli surface lives in `mysqli_adapter.rs`.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_runtime::opcode::Op;
@@ -103,14 +106,14 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 #[allow(dead_code)]
@@ -273,7 +276,8 @@ fn stamp_pdo_type(chunk: &mut Chunk, conn_slot: u16, line: u32) {
     chunk.emit_else(line);
     lget(chunk, conn_slot, line);
     push_str(chunk, "PDO", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     chunk.emit_end(line);
 }
 
@@ -414,7 +418,7 @@ fn emit_resolve_bound_reference(
         chunk.emit_if(line);
 
         lget(chunk, value_slot, line);
-        struct_get_key(chunk, "__value", line);
+        struct_get_key(chunk, &ClassSlot::internal("__value"), line);
     }
     let inner_slot = alloc_local(&mut chunks[current]);
     {
@@ -742,21 +746,22 @@ fn emit_new_statement(
 
     lget(chunk, stmt_slot, line);
     push_str(chunk, "PDOStatement", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     if let Some(slot) = sql_slot {
         lget(chunk, stmt_slot, line);
         lget(chunk, slot, line);
-        struct_set_key(chunk, "commandtext", line);
+        struct_set_key(chunk, &ClassSlot::internal("commandtext"), line);
 
         lget(chunk, stmt_slot, line);
         lget(chunk, slot, line);
-        struct_set_key(chunk, "__prepared_commandtext", line);
+        struct_set_key(chunk, &ClassSlot::internal("__prepared_commandtext"), line);
     }
 
     lget(chunk, stmt_slot, line);
     lget(chunk, conn_slot, line);
-    struct_set_key(chunk, "__conn", line);
+    struct_set_key(chunk, &ClassSlot::internal("__conn"), line);
 
     lget(chunk, stmt_slot, line);
     if let Some(slot) = rows_slot {
@@ -765,21 +770,21 @@ fn emit_new_statement(
         emit_empty_array(chunks, current, line);
     }
     let chunk = &mut chunks[current];
-    struct_set_key(chunk, "__rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("__rows"), line);
 
     lget(chunk, stmt_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
     lget(chunk, stmt_slot, line);
     emit_empty_array(chunks, current, line);
     let chunk = &mut chunks[current];
-    struct_set_key(chunk, "__bound_params", line);
+    struct_set_key(chunk, &ClassSlot::internal("__bound_params"), line);
 
     lget(chunk, stmt_slot, line);
     emit_empty_array(chunks, current, line);
     let chunk = &mut chunks[current];
-    struct_set_key(chunk, "__bound_named_pairs", line);
+    struct_set_key(chunk, &ClassSlot::internal("__bound_named_pairs"), line);
 
     lget(chunk, stmt_slot, line);
 }
@@ -917,12 +922,12 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
 
     lget(&mut chunks[current], conn_slot, line);
     lget(&mut chunks[current], msg_slot, line);
-    struct_set_key(&mut chunks[current], "__pdo_error", line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__pdo_error"), line);
 
     emit_string_slot_nonempty(&mut chunks[current], msg_slot, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], conn_slot, line);
-    struct_get_key(&mut chunks[current], "__pdo_attr", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__pdo_attr"), line);
     push_const(&mut chunks[current], Value::F64(2.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -933,7 +938,7 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
     push_str(&mut chunks[current], "SQLSTATE[HY000]: General error: ", line);
     lset(&mut chunks[current], text_slot, line);
     concat_slot_with_slot(&mut chunks[current], text_slot, msg_slot, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], text_slot, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1007,7 +1012,7 @@ pub fn emit_php_pdo_set_attribute(chunks: &mut [Chunk], current: usize, _argc: u
 
     lget(chunk, conn_slot, line);
     lget(chunk, value_slot, line);
-    struct_set_key(chunk, "__pdo_attr", line);
+    struct_set_key(chunk, &ClassSlot::internal("__pdo_attr"), line);
     push_const(chunk, Value::Bool(true), line);
 }
 
@@ -1026,7 +1031,7 @@ fn emit_transaction_verb(chunks: &mut [Chunk], current: usize, verb: &str, in_tx
 
     lget(chunk, conn_slot, line);
     push_const(chunk, Value::Bool(in_tx), line);
-    struct_set_key(chunk, "__in_tx", line);
+    struct_set_key(chunk, &ClassSlot::internal("__in_tx"), line);
     lget(chunk, result_slot, line);
 }
 
@@ -1046,7 +1051,7 @@ pub fn emit_php_pdo_rollback(chunks: &mut [Chunk], current: usize, _argc: u8, li
 /// after `commit()`/`rollBack()`. Stack: `[conn]` → `[bool]`.
 pub fn emit_php_pdo_in_transaction(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "__in_tx", line);
+    struct_get_key(chunk, &ClassSlot::internal("__in_tx"), line);
     let flag_slot = alloc_local(chunk);
     lset(chunk, flag_slot, line);
     lget(chunk, flag_slot, line);
@@ -1100,7 +1105,7 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
     chunk.emit_if(line);
 
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__bound_named_pairs", line);
+    struct_get_key(chunk, &ClassSlot::internal("__bound_named_pairs"), line);
     let named_pairs_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, named_pairs_slot, line);
@@ -1115,7 +1120,7 @@ fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc
 
     chunk.emit_else(line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__bound_params", line);
+    struct_get_key(chunk, &ClassSlot::internal("__bound_params"), line);
     let params_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, params_slot, line);
@@ -1536,7 +1541,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         }
         lset(chunk, stmt_slot, line);
         lget(chunk, stmt_slot, line);
-        struct_get_key(chunk, "__prepared_commandtext", line);
+        struct_get_key(chunk, &ClassSlot::internal("__prepared_commandtext"), line);
     }
     let sql_text_slot = alloc_local(&mut chunks[current]);
     {
@@ -1548,7 +1553,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         let chunk = &mut chunks[current];
         lget(chunk, stmt_slot, line);
         emit_select_column_count_from_sql_slot(chunk, sql_text_slot, line);
-        struct_set_key(chunk, "field_count", line);
+        struct_set_key(chunk, &ClassSlot::internal("field_count"), line);
     }
 
     let effective_params_slot = alloc_local(&mut chunks[current]);
@@ -1567,11 +1572,11 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         {
             let chunk = &mut chunks[current];
             lget(chunk, stmt_slot, line);
-            struct_get_key(chunk, "__bound_params", line);
+            struct_get_key(chunk, &ClassSlot::internal("__bound_params"), line);
             lset(chunk, effective_params_slot, line);
 
             lget(chunk, stmt_slot, line);
-            struct_get_key(chunk, "__bound_named_pairs", line);
+            struct_get_key(chunk, &ClassSlot::internal("__bound_named_pairs"), line);
         }
         let named_pairs_slot = alloc_local(&mut chunks[current]);
         {
@@ -1650,7 +1655,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
 
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
-    struct_set_key(chunk, "commandtext", line);
+    struct_set_key(chunk, &ClassSlot::internal("commandtext"), line);
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     lget(chunk, effective_params_slot, line);
@@ -1660,16 +1665,16 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     lset(chunk, rows_slot, line);
     lget(chunk, stmt_slot, line);
     lget(chunk, rows_slot, line);
-    struct_set_key(chunk, "__rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("__rows"), line);
     lget(chunk, stmt_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
-    struct_set_key(chunk, "commandtext", line);
+    struct_set_key(chunk, &ClassSlot::internal("commandtext"), line);
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     lget(chunk, effective_params_slot, line);
@@ -1680,13 +1685,13 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     lget(chunk, stmt_slot, line);
     emit_empty_array(chunks, current, line);
     let chunk = &mut chunks[current];
-    struct_set_key(chunk, "__rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("__rows"), line);
     lget(chunk, stmt_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
     lget(chunk, stmt_slot, line);
     lget(chunk, count_slot, line);
-    struct_set_key(chunk, "__row_count", line);
+    struct_set_key(chunk, &ClassSlot::internal("__row_count"), line);
     lget(chunk, count_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
     vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
@@ -1721,10 +1726,10 @@ pub fn emit_php_pdo_statement_set_fetch_mode(
 
     lget(chunk, stmt_slot, line);
     lget(chunk, mode_slot, line);
-    struct_set_key(chunk, "__fetch_mode", line);
+    struct_set_key(chunk, &ClassSlot::internal("__fetch_mode"), line);
     lget(chunk, stmt_slot, line);
     lget(chunk, arg_slot, line);
-    struct_set_key(chunk, "__fetch_arg", line);
+    struct_set_key(chunk, &ClassSlot::internal("__fetch_arg"), line);
     chunk.emit_bool_const(true, line);
 }
 
@@ -1822,13 +1827,13 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     lset(chunk, stmt_slot, line);
 
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
 
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__cursor", line);
+    struct_get_key(chunk, &ClassSlot::internal("__cursor"), line);
     let cursor_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, cursor_slot, line);
@@ -1844,7 +1849,7 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, cursor_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
     // The effective mode is the explicit argument, else whatever a previous
     // `setFetchMode()` stored on the statement. A missing one is 0, which
@@ -1857,7 +1862,7 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
         }
         None => {
             lget(chunk, stmt_slot, line);
-            struct_get_key(chunk, "__fetch_mode", line);
+            struct_get_key(chunk, &ClassSlot::internal("__fetch_mode"), line);
             let chunk = &mut chunks[current];
             lset(chunk, eff_slot, line);
         }
@@ -1888,7 +1893,7 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     emit_base_mode_is(chunk, eff_slot, PDO_FETCH_INTO, line);
     chunk.emit_if_value(line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__fetch_arg", line);
+    struct_get_key(chunk, &ClassSlot::internal("__fetch_arg"), line);
     let target_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, target_slot, line);
@@ -1905,9 +1910,10 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     chunk.emit_if_value(line);
     lget(chunk, row_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__fetch_arg", line);
+    struct_get_key(chunk, &ClassSlot::internal("__fetch_arg"), line);
     let chunk = &mut chunks[current];
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     lget(chunk, row_slot, line);
     chunk.emit_else(line);
 
@@ -1947,7 +1953,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
     lset(chunk, stmt_slot, line);
 
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -2379,7 +2385,8 @@ pub fn emit_php_pdo_statement_fetch_object(
     if let Some(slot) = class_slot {
         lget(chunk, row_slot, line);
         lget(chunk, slot, line);
-        struct_set_key(chunk, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
     }
     lget(chunk, row_slot, line);
     chunk.emit_end(line);
@@ -2408,12 +2415,12 @@ pub fn emit_php_pdo_statement_fetch_column(
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__cursor", line);
+    struct_get_key(chunk, &ClassSlot::internal("__cursor"), line);
     let cursor_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, cursor_slot, line);
@@ -2428,7 +2435,7 @@ pub fn emit_php_pdo_statement_fetch_column(
     lget(chunk, cursor_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
     // row === null ? false : firstColumn(row)
     lget(chunk, row_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -2448,7 +2455,7 @@ pub fn emit_php_pdo_statement_row_count(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "__row_count", line);
+    struct_get_key(chunk, &ClassSlot::internal("__row_count"), line);
     // null → 0
     let n_slot = alloc_local(chunk);
     lset(chunk, n_slot, line);
@@ -2473,7 +2480,7 @@ pub fn emit_php_pdo_statement_column_count(
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -2493,7 +2500,7 @@ pub fn emit_php_pdo_statement_column_count(
     vybe_compiler::primitives::collections::emit_array_length(chunk, line);
     chunk.emit_else(line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "field_count", line);
+    struct_get_key(chunk, &ClassSlot::internal("field_count"), line);
     {
         let undef_idx = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(undef_idx, 1, line);
@@ -2503,7 +2510,7 @@ pub fn emit_php_pdo_statement_column_count(
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "field_count", line);
+    struct_get_key(chunk, &ClassSlot::internal("field_count"), line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -2517,7 +2524,7 @@ pub fn emit_php_pdo_statement_param_count(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "param_count", line);
+    struct_get_key(chunk, &ClassSlot::internal("param_count"), line);
     let n_slot = alloc_local(chunk);
     lset(chunk, n_slot, line);
     lget(chunk, n_slot, line);
@@ -2574,7 +2581,7 @@ pub fn emit_php_pdo_error_code(chunks: &mut [Chunk], current: usize, argc: u8, l
     lset(chunk, conn_slot, line);
     let msg_slot = alloc_local(&mut chunks[current]);
     lget(&mut chunks[current], conn_slot, line);
-    struct_get_key(&mut chunks[current], "__pdo_error", line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__pdo_error"), line);
     lset(&mut chunks[current], msg_slot, line);
 
     let code_slot = alloc_local(&mut chunks[current]);
@@ -2606,7 +2613,7 @@ pub fn emit_php_pdo_last_insert_id(chunks: &mut [Chunk], current: usize, argc: u
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(chunk);
     lset(chunk, rows_slot, line);
     lget(chunk, rows_slot, line);

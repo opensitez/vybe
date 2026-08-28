@@ -13,6 +13,9 @@
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -61,14 +64,14 @@ fn local_get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
-fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+fn struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn call_import(
@@ -89,32 +92,32 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
     let ms_slot = alloc_local(chunk);
     local_set(chunk, ms_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, type_tag, line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
 }
 
 pub fn emit_datetime_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TYPE_KEY, line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
 }
 
 /// `new DateTime(s)` / `new DateTimeImmutable(s)` constructor.
@@ -131,9 +134,9 @@ pub fn emit_datetime_clone(chunks: &mut [Chunk], current: usize, line: u32) {
 fn build_tz_getter(chunks: &mut Vec<Chunk>, field: &str, line: u32) -> usize {
     let mut c = Chunk::new("__dtz_getter");
     c.arity = 1;
-    let k = c.add_constant(Value::String(Arc::from(field)));
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -150,18 +153,18 @@ fn emit_wrap_tz(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let name_slot = alloc_local(chunk);
     local_set(chunk, name_slot, line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeZone", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, name_slot, line);
-    struct_set(chunk, TZNAME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TZNAME_KEY), line);
     // Stamp getName() as a bound method ref.
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::REF_FUNC, getname_idx as u16, line);
     chunk.emit(0, line);
-    struct_set(chunk, "getName", line);
+    struct_set(chunk, &ClassSlot::internal("getName"), line);
 }
 
 /// PHP `new DateTime($s [, $tz])` / `new DateTimeImmutable(...)`.
@@ -221,7 +224,7 @@ fn emit_datetime_ctor(
             let chunk = &mut chunks[current];
             chunk.emit_dup(line);
             local_get(chunk, slot, line);
-            struct_set(chunk, TZ_KEY, line);
+            struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
         }
         None => {
             // Save the object, build a fresh UTC zone, then attach it.
@@ -239,7 +242,7 @@ fn emit_datetime_ctor(
             local_get(chunk, obj_slot, line);
             chunk.emit_dup(line);
             local_get(chunk, tz, line);
-            struct_set(chunk, TZ_KEY, line);
+            struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
         }
     }
 }
@@ -261,7 +264,7 @@ pub fn emit_datetimezone_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 
 /// PHP `$dt->getTimezone()`. Stack: `[dt]` → `[tz]`.
 pub fn emit_datetime_get_timezone(chunks: &mut [Chunk], current: usize, line: u32) {
-    struct_get(&mut chunks[current], TZ_KEY, line);
+    struct_get(&mut chunks[current], &ClassSlot::internal(TZ_KEY), line);
 }
 
 /// PHP `$dt->getOffset()` / `$tz->getOffset($dt)` — UTC offset in seconds.
@@ -292,8 +295,8 @@ pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u3
 
     let old_name_slot = alloc_local(chunk);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_get(chunk, TZNAME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_get(chunk, &ClassSlot::internal(TZNAME_KEY), line);
     local_set(chunk, old_name_slot, line);
     let old_offset_slot = alloc_local(chunk);
     emit_timezone_offset_seconds_from_name_slot(chunk, old_name_slot, line);
@@ -308,18 +311,18 @@ pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u3
 
     local_get(chunk, dt_slot, line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, new_offset_slot, line);
     local_get(chunk, old_offset_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(MS_PER_SECOND), line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
 
     local_get(chunk, dt_slot, line);
     local_get(chunk, tz_slot, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -327,18 +330,18 @@ pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u3
 /// cloning the object's identity while swapping in a fresh instant.
 #[allow(dead_code)]
 fn emit_rewrap_like(chunk: &mut Chunk, dt_slot: u16, ms_slot: u16, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TYPE_KEY, line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
 }
 
 /// PHP `$dt->setDate($y, $m, $d)` — returns a new object with the calendar
@@ -385,7 +388,7 @@ pub fn emit_datetime_set_date(chunks: &mut [Chunk], current: usize, line: u32) {
     local_set(chunk, ms_slot, line);
     local_get(chunk, dt_slot, line);
     local_get(chunk, ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -432,7 +435,7 @@ pub fn emit_datetime_set_time(chunks: &mut [Chunk], current: usize, line: u32) {
     local_set(chunk, ms_slot, line);
     local_get(chunk, dt_slot, line);
     local_get(chunk, ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -449,7 +452,7 @@ pub fn emit_datetime_set_timestamp(chunks: &mut [Chunk], current: usize, line: u
     local_get(chunk, ts_slot, line);
     push_const(chunk, Value::F64(MS_PER_SECOND), line);
     chunk.emit_op(Op::F64_MUL, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -633,7 +636,7 @@ fn emit_datetime_create_from_format_impl(
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     let time_slot = alloc_local(chunk);
     local_set(chunk, time_slot, line);
     local_get(chunk, time_slot, line);
@@ -706,15 +709,15 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &s
 fn emit_timezone_name_from_obj_slot(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     let direct_slot = alloc_local(chunk);
     local_get(chunk, obj_slot, line);
-    struct_get(chunk, TZNAME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZNAME_KEY), line);
     local_set(chunk, direct_slot, line);
 
     local_get(chunk, direct_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     local_get(chunk, obj_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_get(chunk, TZNAME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_get(chunk, &ClassSlot::internal(TZNAME_KEY), line);
     chunk.emit_else(line);
     local_get(chunk, direct_slot, line);
     chunk.emit_end(line);
@@ -722,8 +725,8 @@ fn emit_timezone_name_from_obj_slot(chunk: &mut Chunk, obj_slot: u16, line: u32)
 
 fn emit_timezone_name_from_dt_slot(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_get(chunk, TZNAME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_get(chunk, &ClassSlot::internal(TZNAME_KEY), line);
 }
 
 fn emit_timezone_offset_seconds_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
@@ -1319,7 +1322,7 @@ fn emit_format_code_dispatch(
             |chunks, current| {
                 let chunk = &mut chunks[current];
                 chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
-                struct_get(chunk, TIME_KEY, line);
+                struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
                 push_const(chunk, Value::F64(MS_PER_SECOND), line);
                 chunk.emit_op(Op::F64_DIV, line);
                 chunk.emit_op(Op::F64_FLOOR, line);
@@ -1520,7 +1523,7 @@ fn emit_format_code_dispatch(
                 let chunk = &mut chunks[current];
                 // us = (__time mod 1000) * 1000
                 chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
-                struct_get(chunk, TIME_KEY, line);
+                struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
                 push_const(chunk, Value::F64(1000.0), line);
                 vybe_compiler::primitives::expressions::emit_f64_mod(chunk, line);
                 push_const(chunk, Value::F64(1000.0), line);
@@ -2611,7 +2614,7 @@ pub fn emit_php_strtotime(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// the rest of the surface treats numbers as f64 anyway).
 pub fn emit_datetime_get_timestamp(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     push_const(chunk, Value::F64(MS_PER_SECOND), line);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_FLOOR, line);
@@ -2627,23 +2630,23 @@ pub fn emit_datetime_get_timestamp(chunks: &mut [Chunk], current: usize, line: u
 fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     // tag = dt.__type
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TYPE_KEY, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
     push_str(chunk, "DateTimeImmutable", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     // Build the clone: STRUCT_NEW + copy __type + copy __time + copy __tz.
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
     // Stack: [clone]; replace dt_slot with the clone.
     local_set(chunk, dt_slot, line);
     chunk.emit_end(line);
@@ -2665,7 +2668,7 @@ fn emit_datetime_add_fixed_unit(chunks: &mut [Chunk], current: usize, ms_per_uni
     // (`__time`, clone-if-immutable) stays here because it is PHP's; only the
     // arithmetic is common.
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, n_slot, line);
     vybe_compiler::primitives::datetime::emit_add_scaled(chunk, ms_per_unit, line);
     let new_ms_slot = alloc_local(chunk);
@@ -2673,7 +2676,7 @@ fn emit_datetime_add_fixed_unit(chunks: &mut [Chunk], current: usize, ms_per_uni
 
     local_get(chunk, dt_slot, line);
     local_get(chunk, new_ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -2727,7 +2730,7 @@ fn emit_datetime_add_calendar(
     // stays in sync regardless of how the host fn implements mutation).
     local_get(chunk, dt_slot, line);
     local_get(chunk, new_ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
 }
 
@@ -3145,18 +3148,18 @@ pub fn emit_datetime_immutable_modify(chunks: &mut [Chunk], current: usize, line
 
     // Build a fresh DateTimeImmutable carrying the same __time, then
     // delegate to the mutable modify path on it.
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
     // Stack: [clone]. Push delta and run the mutating modify on the clone.
     local_get(chunk, delta_slot, line);
     emit_datetime_modify(chunks, current, line);
@@ -3165,7 +3168,7 @@ pub fn emit_datetime_immutable_modify(chunks: &mut [Chunk], current: usize, line
 /// Read an interval-component property as f64 (defaulting 0 if absent).
 fn emit_read_interval_component(chunk: &mut Chunk, interval_slot: u16, key: &str, line: u32) {
     local_get(chunk, interval_slot, line);
-    struct_get(chunk, key, line);
+    struct_get(chunk, &ClassSlot::internal(key), line);
 }
 
 /// Apply a `DateInterval` to the current `dt_slot` in place. `sign`
@@ -3179,7 +3182,7 @@ fn emit_apply_interval(chunk: &mut Chunk, dt_slot: u16, interval_slot: u16, sign
     // year/month shift is acceptable for the suite.
     let cur_ms_slot = alloc_local(chunk);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_set(chunk, cur_ms_slot, line);
 
     // y * 365.25 days * MS_PER_DAY
@@ -3226,7 +3229,7 @@ fn emit_apply_interval(chunk: &mut Chunk, dt_slot: u16, interval_slot: u16, sign
     local_set(chunk, new_ms_slot, line);
     local_get(chunk, dt_slot, line);
     local_get(chunk, new_ms_slot, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
 }
 
 /// PHP `$dt->add($interval)`. Stack: `[dt, interval]` → `[dt]`.
@@ -3264,18 +3267,18 @@ pub fn emit_datetime_immutable_add(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
 
     let clone_slot = alloc_local(chunk);
     local_set(chunk, clone_slot, line);
@@ -3291,18 +3294,18 @@ pub fn emit_datetime_immutable_sub(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
-    struct_set(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TZ_KEY, line);
-    struct_set(chunk, TZ_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
+    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
 
     let clone_slot = alloc_local(chunk);
     local_set(chunk, clone_slot, line);
@@ -3336,9 +3339,9 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // delta_ms = abs(other.__time - dt.__time)
     let delta_slot = alloc_local(chunk);
     local_get(chunk, other_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TIME_KEY, line);
+    struct_get(chunk, &ClassSlot::internal(TIME_KEY), line);
     chunk.emit_op(Op::F64_SUB, line);
     let signed_slot = alloc_local(chunk);
     chunk.emit_dup(line);
@@ -3399,34 +3402,34 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     local_set(chunk, invert_slot, line);
 
     // Build the DateInterval object.
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_dup(line);
     local_get(chunk, days_slot, line);
-    struct_set(chunk, "days", line);
+    struct_set(chunk, &ClassSlot::internal("days"), line);
     chunk.emit_dup(line);
     local_get(chunk, years_slot, line);
-    struct_set(chunk, "y", line);
+    struct_set(chunk, &ClassSlot::internal("y"), line);
     chunk.emit_dup(line);
     local_get(chunk, months_slot, line);
-    struct_set(chunk, "m", line);
+    struct_set(chunk, &ClassSlot::internal("m"), line);
     chunk.emit_dup(line);
     local_get(chunk, day_comp_slot, line);
-    struct_set(chunk, "d", line);
+    struct_set(chunk, &ClassSlot::internal("d"), line);
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set(chunk, "h", line);
+    struct_set(chunk, &ClassSlot::internal("h"), line);
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set(chunk, "i", line);
+    struct_set(chunk, &ClassSlot::internal("i"), line);
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set(chunk, "s", line);
+    struct_set(chunk, &ClassSlot::internal("s"), line);
     chunk.emit_dup(line);
     local_get(chunk, invert_slot, line);
-    struct_set(chunk, "invert", line);
+    struct_set(chunk, &ClassSlot::internal("invert"), line);
 }
 
 /// PHP `new DateInterval($iso)` — parses ISO 8601 duration
@@ -3457,10 +3460,10 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     local_set(chunk, m_slot, line);
     local_set(chunk, y_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
-    struct_set(chunk, TYPE_KEY, line);
+    struct_set(chunk, &ClassSlot::TypeIdentity, line);
 
     let pairs: &[(&str, u16)] = &[
         ("y", y_slot),
@@ -3473,14 +3476,14 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     for (key, slot) in pairs {
         chunk.emit_dup(line);
         local_get(chunk, *slot, line);
-        struct_set(chunk, key, line);
+        struct_set(chunk, &ClassSlot::internal(*key), line);
     }
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set(chunk, "days", line);
+    struct_set(chunk, &ClassSlot::internal("days"), line);
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set(chunk, "invert", line);
+    struct_set(chunk, &ClassSlot::internal("invert"), line);
 }
 
 /// `DateInterval::format($fmt)` — the RUNTIME path, mirroring
@@ -3570,7 +3573,7 @@ pub fn emit_dateinterval_format(chunks: &mut [Chunk], current: usize, line: u32)
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         local_get(chunk, iv_slot, line);
-        struct_get(chunk, field, line);
+        struct_get(chunk, &ClassSlot::internal(field), line);
         if width > 0 {
             emit_pad_to_width(chunk, width, line);
         } else {
@@ -3587,7 +3590,7 @@ pub fn emit_dateinterval_format(chunks: &mut [Chunk], current: usize, line: u32)
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         local_get(chunk, iv_slot, line);
-        struct_get(chunk, "invert", line);
+        struct_get(chunk, &ClassSlot::internal("invert"), line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "-", line);

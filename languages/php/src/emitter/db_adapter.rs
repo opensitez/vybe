@@ -9,6 +9,9 @@
 
 use std::sync::Arc;
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -40,14 +43,14 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -121,31 +124,33 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     // label = (conn.__type == "mysqli") ? "mysqli_stmt" : "PDOStatement"
     let label_slot = alloc_local(chunk);
     lget(chunk, conn_slot, line);
-    struct_get_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_id, Dest::Stack, line);
     emit_stmt_label_from_type(chunk, line);
     lset(chunk, label_slot, line);
 
     // stmt.__type = label
     lget(chunk, stmt_slot, line);
     lget(chunk, label_slot, line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     // Command text (PDO reads `commandtext`; mysqli reads `__sql`).
     for key in ["commandtext", "__prepared_commandtext", "__sql"] {
         lget(chunk, stmt_slot, line);
         lget(chunk, sql_slot, line);
-        struct_set_key(chunk, key, line);
+        struct_set_key(chunk, &ClassSlot::internal(key), line);
     }
     // Owning connection (PDO reads `__conn`; mysqli reads `__mysqli`).
     for key in ["__conn", "__mysqli"] {
         lget(chunk, stmt_slot, line);
         lget(chunk, conn_slot, line);
-        struct_set_key(chunk, key, line);
+        struct_set_key(chunk, &ClassSlot::internal(key), line);
     }
     // Cursor + bound-parameter scaffolding shared by both surfaces.
     lget(chunk, stmt_slot, line);
     chunk.emit_f64_const(0.0, line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
     for key in [
         "__rows",
         "__bound_params",
@@ -154,7 +159,7 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     ] {
         lget(&mut chunks[current], stmt_slot, line);
         emit_empty_array(chunks, current, line);
-        struct_set_key(&mut chunks[current], key, line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal(key), line);
     }
 
     // mysqli_stmt status properties (read as `$stmt->prop`). Defaults match a
@@ -168,15 +173,15 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     ] {
         lget(chunk, stmt_slot, line);
         chunk.emit_f64_const(val, line);
-        struct_set_key(chunk, key, line);
+        struct_set_key(chunk, &ClassSlot::internal(key), line);
     }
     lget(chunk, stmt_slot, line);
     emit_select_column_count_from_sql_slot(chunk, sql_slot, line);
-    struct_set_key(chunk, "field_count", line);
+    struct_set_key(chunk, &ClassSlot::internal("field_count"), line);
     for key in ["error", "sqlstate"] {
         lget(chunk, stmt_slot, line);
         push_str(chunk, if key == "sqlstate" { "00000" } else { "" }, line);
-        struct_set_key(chunk, key, line);
+        struct_set_key(chunk, &ClassSlot::internal(key), line);
     }
 
     // param_count = number of `?` placeholders = split(sql, "?").length - 1.
@@ -190,7 +195,7 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     vybe_compiler::primitives::collections::emit_array_length(chunk, line);
     chunk.emit_f64_const(1.0, line);
     chunk.emit_op(Op::F64_SUB, line);
-    struct_set_key(chunk, "param_count", line);
+    struct_set_key(chunk, &ClassSlot::internal("param_count"), line);
 
     lget(chunk, stmt_slot, line);
 }

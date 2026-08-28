@@ -16,6 +16,9 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 use vybe_compiler::primitives::ops::{emit_dyn_eq, emit_dyn_to_bool};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -426,8 +429,8 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let time_key = chunk.add_constant(Value::String(Arc::from("__time")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__time").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     let time_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, time_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, time_slot, line);

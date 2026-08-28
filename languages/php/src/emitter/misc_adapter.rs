@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_runtime::opcode::Op;
@@ -80,14 +83,14 @@ fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
     chunk.emit(0, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 }
 
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs_slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 fn dynamic_get_from_slots(chunk: &mut Chunk, obj_slot: u16, key_slot: u16, line: u32) {
@@ -112,7 +115,7 @@ fn dynamic_set_from_slots(
 fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32) {
     lget(chunk, obj_slot, line);
     lget(chunk, value_slot, line);
-    struct_set_key(chunk, key, line);
+    struct_set_key(chunk, &ClassSlot::internal(key), line);
 }
 
 /// Apply one PHP `header()` line through Node's response API.
@@ -906,11 +909,12 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
             lget(&mut helper, obj_slot, line);
             push_str(&mut helper, &ty.name, line);
-            struct_set_key(&mut helper, "__type", line);
+            let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+            class_slots::emit_class_set(&mut helper, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
             lget(&mut helper, obj_slot, line);
             push_str(&mut helper, &ty.name.to_lowercase(), line);
-            struct_set_key(&mut helper, "__control_name", line);
+            struct_set_key(&mut helper, &ClassSlot::internal("__control_name"), line);
 
             // No identity stamp here — `struct.new_default $T` above already
             // set the rtt at allocation. The `GLOBAL_GET __tid_<class>` +
@@ -920,7 +924,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             for field in &ty.fields {
                 lget(&mut helper, obj_slot, line);
                 helper.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-                struct_set_key(&mut helper, field, line);
+                struct_set_key(&mut helper, &ClassSlot::internal(field), line);
             }
 
             for (method_name, method_chunk_idx) in &ty.methods {
@@ -1202,7 +1206,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(&mut helper, out_slot, line);
         lget(&mut helper, out_slot, line);
         push_str(&mut helper, "array", line);
-        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        struct_set_key(&mut helper, &ClassSlot::internal(SERIAL_KIND_KEY), line);
 
         helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, items_slot, line);
@@ -1229,7 +1233,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         set_struct_from_slot(&mut helper, out_slot, "items", items_slot, line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "vybe$assoc_keys_csv", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("vybe$assoc_keys_csv"), line);
         lset(&mut helper, tmp_slot, line);
         lget(&mut helper, tmp_slot, line);
         helper.emit_dup(line);
@@ -1279,7 +1283,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_end(line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "__serialize", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("__serialize"), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -1310,9 +1314,10 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(&mut helper, out_slot, line);
         lget(&mut helper, out_slot, line);
         push_str(&mut helper, "custom_object", line);
-        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        struct_set_key(&mut helper, &ClassSlot::internal(SERIAL_KIND_KEY), line);
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut helper, ObjSource::Stack, &cs_id, Dest::Stack, line);
         lset(&mut helper, tmp_slot, line);
         set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
         lget(&mut helper, method_slot, line);
@@ -1329,7 +1334,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_end(line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "__sleep", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("__sleep"), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -1360,9 +1365,10 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(&mut helper, out_slot, line);
         lget(&mut helper, out_slot, line);
         push_str(&mut helper, "sleep_object", line);
-        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        struct_set_key(&mut helper, &ClassSlot::internal(SERIAL_KIND_KEY), line);
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut helper, ObjSource::Stack, &cs_id, Dest::Stack, line);
         lset(&mut helper, tmp_slot, line);
         set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
@@ -1403,9 +1409,10 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(&mut helper, out_slot, line);
         lget(&mut helper, out_slot, line);
         push_str(&mut helper, "object", line);
-        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        struct_set_key(&mut helper, &ClassSlot::internal(SERIAL_KIND_KEY), line);
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, "__type", line);
+        let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(&mut helper, ObjSource::Stack, &cs_id, Dest::Stack, line);
         lset(&mut helper, tmp_slot, line);
         set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
@@ -1540,7 +1547,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_end(line);
 
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, SERIAL_KIND_KEY, line);
+        struct_get_key(&mut helper, &ClassSlot::internal(SERIAL_KIND_KEY), line);
         lset(&mut helper, kind_slot, line);
         lget(&mut helper, kind_slot, line);
         helper.emit_dup(line);
@@ -1566,7 +1573,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, out_slot, line);
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, "items", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("items"), line);
         lset(&mut helper, items_slot, line);
         lget(&mut helper, items_slot, line);
         helper.emit_op(Op::ARRAY_LENGTH, line);
@@ -1592,7 +1599,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper_loop_end(&mut helper, items_loop, line);
 
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, "assoc", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("assoc"), line);
         lset(&mut helper, assoc_slot, line);
         lget(&mut helper, assoc_slot, line);
         helper.emit_dup(line);
@@ -1644,7 +1651,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         ref_func(&mut helper, alloc_idx, line);
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, "class", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("class"), line);
         call_ref(&mut helper, 1, line);
         lset(&mut helper, out_slot, line);
 
@@ -1653,7 +1660,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
-        struct_get_key(&mut helper, "__unserialize", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("__unserialize"), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -1684,7 +1691,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, out_slot, line);
         ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, "payload", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("payload"), line);
         call_ref(&mut helper, 1, line);
         call_ref(&mut helper, 2, line);
         helper.emit_op(Op::DROP, line);
@@ -1694,7 +1701,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_end(line);
 
         lget(&mut helper, node_slot, line);
-        struct_get_key(&mut helper, "fields", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("fields"), line);
         lset(&mut helper, fields_slot, line);
         lget(&mut helper, fields_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
@@ -1726,7 +1733,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
-        struct_get_key(&mut helper, "__wakeup", line);
+        struct_get_key(&mut helper, &ClassSlot::internal("__wakeup"), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -1846,7 +1853,8 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     lget(chunk, value_slot, line);
-    struct_get_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_id, Dest::Stack, line);
     let type_slot = alloc_local(chunk);
     lset(chunk, type_slot, line);
     lget(chunk, type_slot, line);
@@ -1884,8 +1892,8 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, base_len_slot, line);
 
     lget(chunk, value_slot, line);
-    let assoc_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, assoc_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("vybe$assoc_keys_csv").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
@@ -1964,9 +1972,9 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     let get_idx = {
         let mut c = Chunk::new("__weak_ref_get");
         c.arity = 1; // this
-        let weak_k = c.add_constant(Value::String(Arc::from("__weak")));
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__weak").to_string()), &PlainNames);
         c.emit_op_u16(Op::LOCAL_GET, 0, line);
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, weak_k, line);
+        class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
         {
             let idx = c.add_import("ecma:weakref", "deref");
             c.emit_call(idx, 1, line);
@@ -1985,7 +1993,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     // Create struct, store weak ref
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // this.__weak = REF_MAKE_WEAK(obj)
@@ -1995,15 +2003,15 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         let idx = chunk.add_import("ecma:weakref", "new");
         chunk.emit_call(idx, 1, line);
     }
-    let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, weak_k, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__weak").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     // Bind get method
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, get_idx as u16, line);
     chunk.emit(0, line);
-    let get_k = chunk.add_constant(Value::String(Arc::from("get")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, get_k, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("get").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     // Return the struct
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

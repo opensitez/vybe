@@ -11,6 +11,9 @@
 //! and the SimpleXML value shape.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -26,9 +29,9 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// PHP `$doc->saveXML($node?)` — serialize the node via the ECMA
@@ -67,5 +70,5 @@ pub fn emit_simplexml_load_string(chunks: &mut Vec<Chunk>, current: usize, argc:
     call_import(chunks, current, "web:dom-parser", "parse", 1, line);
     // → documentElement (the SimpleXML root)
     let chunk = &mut chunks[current];
-    struct_get_key(chunk, "documentElement", line);
+    struct_get_key(chunk, &ClassSlot::internal("documentElement"), line);
 }

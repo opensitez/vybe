@@ -43,6 +43,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::reflection;
+use vybe_compiler::primitives::class_slots;
 
 fn php_echo_expr(exprs: Vec<Expression>) -> Expression {
     let span = Span::default();
@@ -5438,6 +5439,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
             variable_case: Some(CaseMatch::Exact),
             callable_case: Some(CaseMatch::Folded),
             case_alphabet: Some(CaseAlphabet::Ascii),
+            // A php method CALL passes the receiver as a leading argument: the
+            // callable is the raw function off the class struct and carries no
+            // receiver of its own, unlike prototype dispatch (JS/Dart, which
+            // rides `__js_this`) or bind-on-access (Python, which burns the
+            // receiver in when the method is READ). Stated here so shared code
+            // reads a PROPERTY instead of asking whose language it is — this
+            // replaced `profile.name == "php"` in `call_supplies_receiver`.
+            method_receiver: Some(MethodReceiver::CallSite),
+            // `die("bye")` prints and exits 0; `exit(3)` exits 3 and prints
+            // nothing — one syntax, two meanings, decided at RUNTIME by the
+            // argument's type. Stated so the common exit emitter branches on a
+            // PROPERTY instead of shared code matching the spellings.
+            exit_argument: Some(ExitArgument::MessageOrStatus),
+            // `f(...['b' => 2])` binds by PARAMETER NAME, not position — and
+            // whether a given spread is named or positional depends on the
+            // array's KEYS at runtime. Stated so the shared call path probes
+            // for a named unpack on a PROPERTY, not on the language's name.
+            spread_arguments: Some(SpreadArguments::PositionalOrNamed),
+            // An omitted argument is `null`/undefined at the call boundary
+            // rather than an arity error, as in ECMA.
+            missing_arg_is_undefined: Some(true),
             // `$this` arrives in slot 0 like every non-ambient language, which
             // is the default — spread rather than listed so the next field
             // added here does not break this literal again.
@@ -5516,6 +5538,24 @@ fn walk_statement_kind(__php_w: &mut PhpWalker, pair: Pair<Rule>, rule: Rule) ->
 
         Rule::expression_statement => {
             let expr = walk_expression(__php_w, pair.into_inner().next().unwrap())?;
+            // `exit;` / `die;` are the argument-less spelling of the same
+            // builtin `exit(…)` / `die(…)` bind to. php's grammar surfaces them
+            // as a bare identifier, so the LANGUAGE lowers them to the 0-arg
+            // call rather than leaving shared code to recognise the spellings
+            // — that recognition used to be a `profile.name == "php"` arm in
+            // `primitives/statements.rs`.
+            let expr = match &expr.kind {
+                ExprKind::Ident(name)
+                    if name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die") =>
+                {
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(expr.clone()),
+                        args: Vec::new(),
+                        optional: false,
+                    })
+                }
+                _ => expr,
+            };
             StmtKind::Expr(php_drop_low_precedence_assignment_bool(expr))
         }
 
@@ -13481,7 +13521,7 @@ fn walk_assignment(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expressi
                             let setter = Expression::with_span(
                                 ExprKind::Member {
                                     object: Box::new(recv_ident()),
-                                    field: format!("__set_{field}"),
+                                    field: class_slots::setter_name(field),
                                     null_safe: false,
                                 },
                                 span.clone(),

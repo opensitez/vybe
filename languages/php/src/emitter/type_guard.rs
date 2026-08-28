@@ -15,6 +15,9 @@
 
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots::{
+    self,
+};
 
 /// What an argument is required to be for a builtin to accept it.
 #[derive(Clone, Copy)]
@@ -83,7 +86,7 @@ pub fn emit_throw_const(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(msg, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);

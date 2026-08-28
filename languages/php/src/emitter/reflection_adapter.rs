@@ -5,21 +5,24 @@
 //! struct so `$ref->getName()` dispatches via STRUCT_GET + callable invoke.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+};
 use vybe_compiler::primitives::reflection;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-fn sconst(c: &mut Chunk, s: &str) -> u16 {
-    c.add_constant(Value::String(Arc::from(s)))
+fn sconst(c: &mut Chunk, s: &str) -> ResolvedSlot {
+    class_slots::resolve_interned(c, &ClassSlot::internal(s), &PlainNames)
 }
 
 /// `() -> this.<field>`.
 fn build_field_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 1;
-    let k = sconst(&mut c, field);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -36,9 +39,9 @@ fn build_bool_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
 fn build_has_field(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 1;
-    let k = sconst(&mut c, field);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut c, line);
@@ -55,7 +58,7 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line); // this.field
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line); // this.field
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -70,7 +73,7 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line); // this.field
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line); // this.field
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // value
     reflection::emit_set_property_in_chunk(&mut c, line);
     c.emit_op(Op::DROP, line);
@@ -85,10 +88,10 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
 fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_invoke");
     c.arity = 3;
-    let method_k = sconst(&mut c, "method");
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("method").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, method_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
@@ -103,10 +106,10 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_implements");
     c.arity = 2; // this, interface_name
-    let ifaces_k = sconst(&mut c, "__interfaces");
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__interfaces").to_string()), &PlainNames);
     let indexof_i = c.add_import("ecma:array".to_string(), "indexOf".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, ifaces_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
@@ -130,10 +133,10 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, pub_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &pub_k, Dest::Stack, line);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, all_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &all_k, Dest::Stack, line);
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -145,17 +148,17 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_getProperties");
     c.arity = 2; // this, filter
-    let all_k = sconst(&mut c, "__fields");
-    let pub_k = sconst(&mut c, "__fields_public");
+    let cs_slot_1 = class_slots::resolve_interned(&mut c, &ClassSlot::Internal(("__fields").to_string()), &PlainNames);
+    let cs_slot_2 = class_slots::resolve_interned(&mut c, &ClassSlot::Internal(("__fields_public").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_f64_const(1.0, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, pub_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot_1, Dest::Stack, line);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, all_k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot_2, Dest::Stack, line);
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -349,8 +352,8 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         // this.__parent_ref = parent_ref
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
-        let pref_k = sconst(chunk, "__parent_ref");
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pref_k, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__parent_ref").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
     chunk.emit_end(line);
 

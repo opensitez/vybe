@@ -3,6 +3,9 @@
 //! `pdo_adapter.rs`. Both share the same in-memory backend shape.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_runtime::opcode::Op;
@@ -53,14 +56,14 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
@@ -164,55 +167,55 @@ fn emit_mysqli_field_object(
 
     lget(chunk, field_slot, line);
     lget(chunk, field_name_slot, line);
-    struct_set_key(chunk, "name", line);
+    struct_set_key(chunk, &ClassSlot::internal("name"), line);
 
     lget(chunk, field_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "table", line);
+    struct_set_key(chunk, &ClassSlot::internal("table"), line);
 
     lget(chunk, field_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "def", line);
+    struct_set_key(chunk, &ClassSlot::internal("def"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "max_length", line);
+    struct_set_key(chunk, &ClassSlot::internal("max_length"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "not_null", line);
+    struct_set_key(chunk, &ClassSlot::internal("not_null"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "primary_key", line);
+    struct_set_key(chunk, &ClassSlot::internal("primary_key"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "multiple_key", line);
+    struct_set_key(chunk, &ClassSlot::internal("multiple_key"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "unique_key", line);
+    struct_set_key(chunk, &ClassSlot::internal("unique_key"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "numeric", line);
+    struct_set_key(chunk, &ClassSlot::internal("numeric"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "blob", line);
+    struct_set_key(chunk, &ClassSlot::internal("blob"), line);
 
     lget(chunk, field_slot, line);
     push_str(chunk, "string", line);
-    struct_set_key(chunk, "type", line);
+    struct_set_key(chunk, &ClassSlot::internal("type"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "unsigned", line);
+    struct_set_key(chunk, &ClassSlot::internal("unsigned"), line);
 
     lget(chunk, field_slot, line);
     push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, "zerofill", line);
+    struct_set_key(chunk, &ClassSlot::internal("zerofill"), line);
 
     lget(chunk, field_slot, line);
     field_slot
@@ -231,25 +234,26 @@ fn emit_mysqli_result_object(
 
     lget(chunk, result_slot, line);
     push_str(chunk, "mysqli_result", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     lget(chunk, result_slot, line);
     lget(chunk, rows_slot, line);
-    struct_set_key(chunk, "__rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("__rows"), line);
 
     lget(chunk, result_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
     lget(chunk, result_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "__field_cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__field_cursor"), line);
 
     let fields_slot = emit_mysqli_result_fields(chunks, current, rows_slot, line);
     let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
     lget(chunk, fields_slot, line);
-    struct_set_key(chunk, "__fields", line);
+    struct_set_key(chunk, &ClassSlot::internal("__fields"), line);
 
     lget(chunk, result_slot, line);
     result_slot
@@ -290,19 +294,20 @@ pub fn emit_php_mysqli_init(chunks: &mut [Chunk], current: usize, argc: u8, line
     // Stamp the mysqli class identity + shape fields over the connection.
     lget(chunk, conn_slot, line);
     push_str(chunk, "mysqli", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     lget(chunk, conn_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "connect_errno", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_errno"), line);
 
     lget(chunk, conn_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "connect_error", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_error"), line);
 
     lget(chunk, conn_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "error", line);
+    struct_set_key(chunk, &ClassSlot::internal("error"), line);
 
     lget(chunk, conn_slot, line);
 }
@@ -466,13 +471,13 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     set_mysqli_error_state(chunk, 1.0, "Connection failed", line);
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    struct_set_key(chunk, "connect_errno", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_errno"), line);
     lget(chunk, dbh_slot, line);
     push_str(chunk, "Connection failed", line);
-    struct_set_key(chunk, "connect_error", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_error"), line);
     lget(chunk, dbh_slot, line);
     push_str(chunk, "Connection failed", line);
-    struct_set_key(chunk, "error", line);
+    struct_set_key(chunk, &ClassSlot::internal("error"), line);
     push_const(chunk, Value::Bool(false), line);
 
     chunk.emit_else(line);
@@ -481,13 +486,13 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     reset_mysqli_error_state(chunk, line);
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "connect_errno", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_errno"), line);
     lget(chunk, dbh_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "connect_error", line);
+    struct_set_key(chunk, &ClassSlot::internal("connect_error"), line);
     lget(chunk, dbh_slot, line);
     lget(chunk, conn_slot, line);
-    struct_set_key(chunk, "__connection", line);
+    struct_set_key(chunk, &ClassSlot::internal("__connection"), line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
@@ -576,7 +581,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, is_query_slot, line);
     chunk.emit_if_value(line);
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "__connection", line);
+    struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
@@ -590,13 +595,13 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "affected_rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("affected_rows"), line);
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "insert_id", line);
+    struct_set_key(chunk, &ClassSlot::internal("insert_id"), line);
     lget(chunk, dbh_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "error", line);
+    struct_set_key(chunk, &ClassSlot::internal("error"), line);
 
     let result_slot = emit_mysqli_result_object(chunks, current, rows_slot, line);
     let chunk = &mut chunks[current];
@@ -604,7 +609,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_else(line);
 
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "__connection", line);
+    struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
@@ -618,13 +623,13 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     lget(chunk, dbh_slot, line);
     lget(chunk, count_slot, line);
-    struct_set_key(chunk, "affected_rows", line);
+    struct_set_key(chunk, &ClassSlot::internal("affected_rows"), line);
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, "insert_id", line);
+    struct_set_key(chunk, &ClassSlot::internal("insert_id"), line);
     lget(chunk, dbh_slot, line);
     push_str(chunk, "", line);
-    struct_set_key(chunk, "error", line);
+    struct_set_key(chunk, &ClassSlot::internal("error"), line);
     push_const(chunk, Value::Bool(true), line);
 
     chunk.emit_end(line);
@@ -645,15 +650,16 @@ pub fn emit_php_mysqli_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, 
 
     lget(chunk, stmt_slot, line);
     push_str(chunk, "mysqli_stmt", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     lget(chunk, stmt_slot, line);
     lget(chunk, dbh_slot, line);
-    struct_set_key(chunk, "__mysqli", line);
+    struct_set_key(chunk, &ClassSlot::internal("__mysqli"), line);
 
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_slot, line);
-    struct_set_key(chunk, "__sql", line);
+    struct_set_key(chunk, &ClassSlot::internal("__sql"), line);
 
     lget(chunk, stmt_slot, line);
 }
@@ -673,10 +679,10 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
-    struct_set_key(chunk, "selected_db", line);
+    struct_set_key(chunk, &ClassSlot::internal("selected_db"), line);
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
-    struct_set_key(chunk, "database", line);
+    struct_set_key(chunk, &ClassSlot::internal("database"), line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
@@ -696,10 +702,10 @@ pub fn emit_php_mysqli_set_charset(chunks: &mut [Chunk], current: usize, _argc: 
     chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
     lget(chunk, charset_slot, line);
-    struct_set_key(chunk, "charset", line);
+    struct_set_key(chunk, &ClassSlot::internal("charset"), line);
     lget(chunk, dbh_slot, line);
     lget(chunk, charset_slot, line);
-    struct_set_key(chunk, "character_set_name", line);
+    struct_set_key(chunk, &ClassSlot::internal("character_set_name"), line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
@@ -710,7 +716,7 @@ pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     lset(chunk, dbh_slot, line);
 
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "__connection", line);
+    struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
@@ -757,7 +763,7 @@ pub fn emit_php_mysqli_affected_rows(chunks: &mut [Chunk], current: usize, _argc
     let dbh_slot = alloc_local(chunk);
     lset(chunk, dbh_slot, line);
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "affected_rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("affected_rows"), line);
 }
 
 pub fn emit_php_mysqli_insert_id(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -765,7 +771,7 @@ pub fn emit_php_mysqli_insert_id(chunks: &mut [Chunk], current: usize, _argc: u8
     let dbh_slot = alloc_local(chunk);
     lset(chunk, dbh_slot, line);
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "insert_id", line);
+    struct_get_key(chunk, &ClassSlot::internal("insert_id"), line);
 }
 
 pub fn emit_php_mysqli_num_fields(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -774,7 +780,7 @@ pub fn emit_php_mysqli_num_fields(chunks: &mut [Chunk], current: usize, _argc: u
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__fields", line);
+    struct_get_key(chunk, &ClassSlot::internal("__fields"), line);
     collections::emit_len(chunks, current, line);
 }
 
@@ -784,13 +790,13 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__fields", line);
+    struct_get_key(chunk, &ClassSlot::internal("__fields"), line);
     let fields_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, fields_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__field_cursor", line);
+    struct_get_key(chunk, &ClassSlot::internal("__field_cursor"), line);
     let cursor_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, cursor_slot, line);
@@ -822,7 +828,7 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
         lget(chunk, cursor_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
-        struct_set_key(chunk, "__field_cursor", line);
+        struct_set_key(chunk, &ClassSlot::internal("__field_cursor"), line);
     }
 
     let field_slot = emit_mysqli_field_object(chunks, current, field_name_slot, line);
@@ -849,7 +855,7 @@ pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: 
     collections::emit_array_new(chunks, current, 0, line);
     {
         let chunk = &mut chunks[current];
-        struct_set_key(chunk, "__rows", line);
+        struct_set_key(chunk, &ClassSlot::internal("__rows"), line);
     }
 
     {
@@ -860,18 +866,18 @@ pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: 
     collections::emit_array_new(chunks, current, 0, line);
     {
         let chunk = &mut chunks[current];
-        struct_set_key(chunk, "__fields", line);
+        struct_set_key(chunk, &ClassSlot::internal("__fields"), line);
     }
 
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        struct_set_key(chunk, "__cursor", line);
+        struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
         lget(chunk, result_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        struct_set_key(chunk, "__field_cursor", line);
+        struct_set_key(chunk, &ClassSlot::internal("__field_cursor"), line);
 
         push_const(chunk, Value::Bool(true), line);
     }
@@ -899,7 +905,7 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, dbh_slot, line);
 
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "__connection", line);
+    struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
 
@@ -909,14 +915,14 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
     {
         let chunk = &mut chunks[current];
         lget(chunk, dbh_slot, line);
-        struct_get_key(chunk, "__connection", line);
+        struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
     }
     call_import(chunks, current, "wasi:sql", "close", 1, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, dbh_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        struct_set_key(chunk, "__connection", line);
+        struct_set_key(chunk, &ClassSlot::internal("__connection"), line);
         push_const(chunk, Value::Bool(true), line);
         chunk.emit_end(line);
     }
@@ -966,7 +972,7 @@ pub fn emit_php_mysqli_character_set_name(
     lset(chunk, dbh_slot, line);
 
     lget(chunk, dbh_slot, line);
-    struct_get_key(chunk, "charset", line);
+    struct_get_key(chunk, &ClassSlot::internal("charset"), line);
     let charset_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, charset_slot, line);
@@ -1010,13 +1016,13 @@ pub fn emit_php_mysqli_fetch_array(chunks: &mut [Chunk], current: usize, argc: u
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__cursor", line);
+    struct_get_key(chunk, &ClassSlot::internal("__cursor"), line);
     let cursor_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, cursor_slot, line);
@@ -1032,7 +1038,7 @@ pub fn emit_php_mysqli_fetch_array(chunks: &mut [Chunk], current: usize, argc: u
     lget(chunk, cursor_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
     lget(chunk, row_slot, line);
 }
@@ -1043,13 +1049,13 @@ pub fn emit_php_mysqli_fetch_assoc(chunks: &mut [Chunk], current: usize, _argc: 
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__cursor", line);
+    struct_get_key(chunk, &ClassSlot::internal("__cursor"), line);
     let cursor_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, cursor_slot, line);
@@ -1065,7 +1071,7 @@ pub fn emit_php_mysqli_fetch_assoc(chunks: &mut [Chunk], current: usize, _argc: 
     lget(chunk, cursor_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set_key(chunk, "__cursor", line);
+    struct_set_key(chunk, &ClassSlot::internal("__cursor"), line);
 
     lget(chunk, row_slot, line);
 }
@@ -1081,7 +1087,7 @@ pub fn emit_php_mysqli_num_rows(chunks: &mut [Chunk], current: usize, _argc: u8,
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     collections::emit_len(chunks, current, line);
 }
 
@@ -1094,7 +1100,7 @@ pub fn emit_php_mysqli_fetch_all(chunks: &mut [Chunk], current: usize, _argc: u8
     lset(chunk, result_slot, line);
 
     lget(chunk, result_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
 }
 
 // ── mysqli_stmt method stubs ────────────────────────────────────────────────
@@ -1166,7 +1172,7 @@ pub fn emit_php_mysqli_stmt_bind_param(chunks: &mut [Chunk], current: usize, arg
     let chunk = &mut chunks[current];
     lget(chunk, stmt_slot, line);
     lget(chunk, arr_slot, line);
-    struct_set_key(chunk, "__bound_params", line);
+    struct_set_key(chunk, &ClassSlot::internal("__bound_params"), line);
     push_const(chunk, Value::Bool(true), line);
 }
 
@@ -1182,7 +1188,7 @@ pub fn emit_php_mysqli_stmt_get_result(chunks: &mut [Chunk], current: usize, _ar
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "__rows", line);
+    struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(chunk);
     lset(chunk, rows_slot, line);
     let result_slot = emit_mysqli_result_object(chunks, current, rows_slot, line);
@@ -1199,18 +1205,19 @@ pub fn emit_php_mysqli_stmt_result_metadata(
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     let meta_slot = alloc_local(chunk);
     lset(chunk, meta_slot, line);
 
     lget(chunk, meta_slot, line);
     push_str(chunk, "mysqli_result", line);
-    struct_set_key(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
 
     lget(chunk, meta_slot, line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "field_count", line);
-    struct_set_key(chunk, "field_count", line);
+    struct_get_key(chunk, &ClassSlot::internal("field_count"), line);
+    struct_set_key(chunk, &ClassSlot::internal("field_count"), line);
 
     lget(chunk, meta_slot, line);
 }

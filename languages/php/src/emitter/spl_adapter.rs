@@ -13,12 +13,15 @@
 //! SplFixedArray is handled entirely by the walker (→ `array_fill`).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+};
 use vybe_compiler::primitives::heap;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-fn sconst(c: &mut Chunk, s: &str) -> u16 {
-    c.add_constant(Value::String(Arc::from(s)))
+fn sconst(c: &mut Chunk, s: &str) -> ResolvedSlot {
+    class_slots::resolve_interned(c, &ClassSlot::internal(s), &PlainNames)
 }
 
 fn lget(c: &mut Chunk, slot: u16, line: u32) {
@@ -145,7 +148,7 @@ enum ConstMethodValue {
     Str(&'static str),
 }
 
-fn idx_key(chunk: &mut Chunk) -> u16 {
+fn idx_key(chunk: &mut Chunk) -> ResolvedSlot {
     sconst(chunk, "__idx")
 }
 
@@ -156,7 +159,7 @@ fn build_iter_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(0.0, line);
     let k = idx_key(&mut c);
-    c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -187,9 +190,9 @@ fn build_iter_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_current");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    let k = sconst(&mut c, "__first");
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -209,9 +212,9 @@ fn build_iter_magic_call_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_call");
     c.arity = 3;
     c.local_count = c.local_count.max(3);
-    let current = sconst(&mut c, "__spl_current");
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__spl_current").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, current, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -251,9 +254,8 @@ fn build_stream_fwrite_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 2;
     c.local_count = c.local_count.max(2);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    let buf = sconst(&mut c, "__buf");
-    c.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
+    let cs_p1 = class_slots::resolve(&ClassSlot::Internal(("__buf").to_string()), &PlainNames);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &cs_p1, ValueSource::Local(1), line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -264,9 +266,9 @@ fn build_stream_fgets_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_file_fgets");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    let buf = sconst(&mut c, "__buf");
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buf").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, buf, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -469,7 +471,7 @@ fn build_map_attach_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, 0, line);
     lget(&mut c, 2, line);
     let current = sconst(&mut c, "__spl_current");
-    c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &current, ValueSource::Stack, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -508,8 +510,8 @@ fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
         lget(c, 0, line);
         lget(c, value_slot, line);
-        let current = sconst(c, "__spl_current");
-        c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__spl_current").to_string()), &PlainNames);
+        class_slots::emit_class_set(c, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         c.emit_op(Op::RETURN, line);
     }
@@ -724,13 +726,7 @@ pub fn emit_spl_objectstorage_new(
     chunk.emit_call(map_new_i, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     // Bind methods as named props on the Map object
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
 
@@ -954,6 +950,25 @@ pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u
 /// props on it, and leave the array on the stack. This is the core of the
 /// "array IS the instance" pattern — `ecma:object.values` will iterate
 /// only the dense elements, methods sit as named props alongside them.
+
+/// Bind each compiled method as a named property on the instance.
+///
+/// `ValueSource::FuncRef` is the class-model owner's variant for a closure over
+/// a compiled function — `REF_FUNC idx` plus an upvalue count — which is what
+/// puts methods on an object here.
+fn bind_methods(chunk: &mut Chunk, this_slot: u16, binds: Vec<(&'static str, usize)>, line: u32) {
+    for (mname, midx) in binds {
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(mname.to_string()), &PlainNames);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Local(this_slot),
+            &cs_slot,
+            ValueSource::FuncRef { idx: midx as u16, upvalues: 0 },
+            line,
+        );
+    }
+}
+
 fn finish_array_instance(
     chunks: &mut [Chunk],
     current: usize,
@@ -973,13 +988,7 @@ fn finish_array_instance(
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // Bind each method as a named property on the array
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line); // 0 upvalues
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -1004,13 +1013,7 @@ fn finish_fixed_values_array_instance(
     chunk.emit_array_new_fixed(0, values.len() as u16, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -1036,13 +1039,7 @@ fn finish_second_child_array_instance(
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     }
 
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -1066,16 +1063,10 @@ fn finish_buffer_file_object(
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_string_const("", line);
-    let buf = sconst(chunk, "__buf");
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buf").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -1097,13 +1088,7 @@ fn finish_single_null_array_instance(
     chunk.emit_array_new_fixed(0, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -1130,30 +1115,24 @@ fn finish_array_iterator_instance(
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_f64_const(0.0, line);
-    let idx = sconst(chunk, "__idx");
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__idx").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    let first = sconst(chunk, "__first");
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, first, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let first = sconst(chunk, "__first");
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, first, line);
-    let spl_current = sconst(chunk, "__spl_current");
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, spl_current, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__spl_current").to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-    }
+    bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
