@@ -8,9 +8,12 @@
 //! Pattern: `emitter/dotnet/core/datetime_adapter.rs`.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
     chunk.emit_string_const(s, line);
@@ -23,10 +26,15 @@ fn push_f64(chunk: &mut Chunk, v: f64, line: u32) {
 /// `DUP → push value → STRUCT_SET key → DROP`
 /// Leaves the original object on the stack.
 fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32), line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     val_fn(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// Reserve a local scratch slot.
@@ -47,13 +55,12 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
-
-    set_field(chunk, "__type", |c, l| push_str(c, "DataTable", l), line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "tablename",
-        |c, l| c.emit_op_u16(Op::LOCAL_GET, name_slot, l),
+        "DataTable",
+        &[
+            (field_slot("tablename"), ValueSource::Local(name_slot)),
+        ],
         line,
     );
     set_field(
@@ -79,13 +86,12 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
-
-    set_field(chunk, "__type", |c, l| push_str(c, "DataSet", l), line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "datasetname",
-        |c, l| c.emit_op_u16(Op::LOCAL_GET, name_slot, l),
+        "DataSet",
+        &[
+            (field_slot("datasetname"), ValueSource::Local(name_slot)),
+        ],
         line,
     );
     set_field(
@@ -101,7 +107,7 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// Stack on entry: `[]` (no args)
 /// Stack on exit:  `[obj]`
 pub fn emit_datarow_new(chunk: &mut Chunk, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_field(chunk, "__type", |c, l| push_str(c, "DataRow", l), line);
 }
 
@@ -109,7 +115,13 @@ pub fn emit_datarow_new(chunk: &mut Chunk, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `table.NewRow()` — drops the table receiver, returns a fresh DataRow.

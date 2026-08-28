@@ -15,6 +15,8 @@ pub mod datetime_adapter;
 pub mod encoding_adapter;
 pub mod environment_adapter;
 pub mod exceptions;
+pub mod finalization;
+pub mod interop_classes;
 pub mod filesystem_adapter;
 pub mod financial_adapter;
 pub mod format_picture_adapter;

@@ -14,12 +14,15 @@
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots;
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
-    chunk.emit_dup(line);
-    chunk.emit_string_const(message, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_compiler::primitives::errors::emit_exception_new(
+        chunk,
+        exception_name,
+        class_slots::ValueSource::ConstStr(message.to_string()),
+        line,
+    );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 

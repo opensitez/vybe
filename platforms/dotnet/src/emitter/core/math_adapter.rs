@@ -10,6 +10,9 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+
+use super::object_fields::field_slot;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -21,7 +24,13 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `[a, b] → [{Quotient, Remainder, Item1, Item2}]`.
@@ -59,7 +68,7 @@ pub fn emit_div_rem(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_SUB, line);
     set(chunk, remainder, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set(chunk, pair, line);
     for (key, slot) in [
         ("Quotient", quotient),

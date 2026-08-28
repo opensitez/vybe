@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const ENCODING_KEY: &str = "__encoding";
@@ -22,10 +25,14 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_set_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(value)), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::ConstStr(value.to_string()),
+        line,
+    );
 }
 
 fn encoding_web_name(encoding: &str) -> &str {
@@ -43,27 +50,30 @@ fn encoding_web_name(encoding: &str) -> &str {
 pub fn emit_encoding_value(chunks: &mut [Chunk], current: usize, encoding: &str, line: u32) {
     let chunk = &mut chunks[current];
     let web_name = encoding_web_name(encoding);
-    chunk.emit_struct_new(0, 0, line);
-    emit_set_string_field(chunk, TYPE_KEY, "Encoding", line);
-    emit_set_string_field(chunk, ENCODING_KEY, encoding, line);
-    emit_set_string_field(chunk, "WebName", web_name, line);
-    emit_set_string_field(chunk, "webname", web_name, line);
-    emit_set_string_field(chunk, "HeaderName", web_name, line);
-    emit_set_string_field(chunk, "headername", web_name, line);
-    let read_only_idx = chunk.add_constant(Value::String(Arc::from("IsReadOnly")));
-    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
-    chunk.emit_bool_const(false, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, read_only_idx, line);
-    let read_only_lower_idx = chunk.add_constant(Value::String(Arc::from("isreadonly")));
-    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
-    chunk.emit_bool_const(false, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, read_only_lower_idx, line);
+    class_slots::emit_class_construct(
+        chunk,
+        "Encoding",
+        &[
+            (field_slot(ENCODING_KEY), ValueSource::ConstStr(encoding.to_string())),
+            (field_slot("WebName"), ValueSource::ConstStr(web_name.to_string())),
+            (field_slot("webname"), ValueSource::ConstStr(web_name.to_string())),
+            (field_slot("HeaderName"), ValueSource::ConstStr(web_name.to_string())),
+            (field_slot("headername"), ValueSource::ConstStr(web_name.to_string())),
+            (field_slot("IsReadOnly"), ValueSource::ConstBool(false)),
+            (field_slot("isreadonly"), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
 }
 
 fn emit_encoding_name_from_receiver(chunk: &mut Chunk, recv_slot: u16, fallback: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(ENCODING_KEY)));
-    chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(recv_slot),
+        &field_slot(ENCODING_KEY),
+        Dest::Stack,
+        line,
+    );
     let enc_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, enc_slot, line);
 
@@ -230,12 +240,10 @@ pub fn emit_encoding_get_bytes(
     chunks[current].emit_call(str_len_idx, 1, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("Unable to encode character.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         &mut chunks[current],
         "EncoderFallbackException",
+        class_slots::ValueSource::ConstStr("Unable to encode character.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
@@ -349,12 +357,10 @@ fn emit_throw_on_invalid_utf8_bytes(
     core_wasm::i32_const(&mut chunks[current], line, 247);
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("Unable to decode bytes.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         &mut chunks[current],
         "DecoderFallbackException",
+        class_slots::ValueSource::ConstStr("Unable to decode bytes.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
@@ -798,31 +804,35 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
         chunk.emit_end(line);
     }
 
-    chunk.emit_struct_new(0, 0, line);
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let enc_key = chunk.add_constant(Value::String(Arc::from(ENCODING_KEY)));
-    let web_key = chunk.add_constant(Value::String(Arc::from("WebName")));
-    let web_lower_key = chunk.add_constant(Value::String(Arc::from("webname")));
-    let header_key = chunk.add_constant(Value::String(Arc::from("HeaderName")));
-    let header_lower_key = chunk.add_constant(Value::String(Arc::from("headername")));
-    let readonly_key = chunk.add_constant(Value::String(Arc::from("IsReadOnly")));
+    class_slots::emit_class_alloc(chunk, line);
     vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Encoding")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    for key in [
-        enc_key,
-        web_key,
-        web_lower_key,
-        header_key,
-        header_lower_key,
-    ] {
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
+    for key in [ENCODING_KEY, "WebName", "webname", "HeaderName", "headername"] {
         vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(key),
+            ValueSource::Local(name_slot),
+            line,
+        );
     }
     vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, readonly_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("IsReadOnly"),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_encoding_equals(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -845,12 +855,23 @@ pub fn emit_object_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
 
-    let enc_key = chunk.add_constant(Value::String(Arc::from(ENCODING_KEY)));
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, enc_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(ENCODING_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, left_enc_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, enc_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(ENCODING_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, right_enc_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, left_enc_slot, line);

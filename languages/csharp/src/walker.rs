@@ -8,6 +8,7 @@ use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::memory as common_memory;
 use vybe_compiler::primitives::pointers as common_pointers;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
+use vybe_platform_dotnet::emitter::core::interop_classes as dotnet_interop;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
 thread_local! {
@@ -158,6 +159,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Install the shared .NET Exception hierarchy at the top of every C#
     // program. The BCL surface and constructor field semantics live in
     // platforms/dotnet so every .NET-shaped frontend can share them.
+    // Gated on the program naming the type — the interop base classes are .NET
+    // surface, not VB surface, so C# gets them on the same terms. Spliced in
+    // ahead of the exception hierarchy for the reason `interop_classes`
+    // documents: their bodies call their own methods, so they have to reach a
+    // frontend's implicit-self pass like any other declared class.
+    body.splice(0..0, dotnet_interop::synthesize_interop_classes(&source));
+
     let mut synthesized = dotnet_exceptions::synthesize_exception_classes();
     synthesized.extend(synthesize_checked_numeric_helpers());
     body.splice(0..0, synthesized);
@@ -174,7 +182,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // both live on the object and a read binds to the reference's
             // declared type. Stated once for the module — whether a given
             // declaration hides is `Modifiers::is_hiding`.
-            field_shadowing: Some(FieldShadowing::Hide),
+            field_shadowing: Some(vybe_ast::FieldShadowing::Hide),
+            // A dropped name makes its value ELIGIBLE for finalisation; the
+            // finaliser runs at a collection point (`GC.Collect` /
+            // `GC.WaitForPendingFinalizers`), never at the drop. That
+            // distinction IS the .NET convention — running it at the drop would
+            // make `Finalize` and `Dispose` the same thing.
+            name_drop: Some(vybe_ast::NameDrop::Defer),
+            // .NET spells a Boolean `True`/`False` wherever a string needs it —
+            // `Boolean.ToString` and every concatenation and interpolation.
+            bool_text: Some(vybe_ast::BoolText::TitleCase),
             ..Default::default()
         },
     };
@@ -1792,6 +1809,8 @@ fn rewrite_explicit_interface_accesses_in_expr(
     conflicted: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        // Leaf, like `This`/`Super` — no sub-expression to rewrite.
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             rewrite_explicit_interface_accesses_in_expr(callee, conflicted);
             for a in args {
@@ -7329,6 +7348,8 @@ fn rewrite_using_imports_in_expr(
     static_paths: &UsingStaticScope,
 ) {
     match &mut expr.kind {
+        // Leaf, like `This`/`Super` — no sub-expression to rewrite.
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             rewrite_using_imports_in_expr(callee, aliases, static_paths);
             for a in args {
@@ -8023,6 +8044,8 @@ fn rewrite_extension_calls_in_expr(
     extension_containers: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        // Leaf, like `This`/`Super` — no sub-expression to rewrite.
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             rewrite_extension_calls_in_expr(callee, extension_methods, extension_containers);
             for a in args {
@@ -13587,6 +13610,74 @@ fn walk_struct_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expressi
 // ── Interface ───────────────────────────────────────────────────────────────
 
 
+/// An `interface_member` as an ordinary `ClassMember`, body or no body.
+///
+/// ⛔ AN INTERFACE IS A DECLARED TYPE AND MUST BE ONE THING ACROSS LANGUAGES.
+/// C# emitted `StmtKind::InterfaceDecl`, which `statements.rs` compiles to a
+/// no-op — "interfaces are type-level only" — so no C# interface ever entered
+/// the class table. PHP emits `ClassDecl` with `ClassKind::Interface` and its
+/// interfaces do. That is not a tidiness difference: a PHP class implementing
+/// `IGreet` and a C# `is IGreet` have to be talking about the SAME declared
+/// type, and they cannot be while each frontend keeps its own private
+/// representation.
+///
+/// A member with a body is that method; a member without one is the same
+/// method declared abstract. Both are `ClassMember`s, which is what lets the
+/// shared declaration pass see an interface at all.
+fn interface_member_as_class_member(
+    __w: &mut CsWalker,
+    member: Pair<Rule>,
+) -> Result<Option<ClassMember>, String> {
+    let mut ret_type = None;
+    let mut mname = String::new();
+    let mut params = Vec::new();
+    let mut body: Option<Vec<Statement>> = None;
+    let mut is_method = false;
+    for p in member.into_inner() {
+        match p.as_rule() {
+            Rule::type_name => ret_type = Some(p.as_str().to_string()),
+            Rule::ident_name => mname = p.as_str().to_string(),
+            Rule::param_list => {
+                is_method = true;
+                params = walk_params(__w, p)?;
+            }
+            Rule::expression_body => {
+                if let Some(e) = p.into_inner().next() {
+                    body = Some(vec![walk_expression_body_stmt(__w, e, true)?]);
+                }
+            }
+            Rule::block_statement => body = Some(walk_body(__w, p)?),
+            _ => {}
+        }
+    }
+    // A property or event declares no parameter list; those keep their own
+    // member kinds and are not methods.
+    if !is_method || mname.is_empty() {
+        return Ok(None);
+    }
+    let has_body = body.is_some();
+    let is_sub = ret_type.as_deref() == Some("void");
+    Ok(Some(ClassMember::Method(Box::new(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: mname,
+            params,
+            return_type: ret_type,
+            body: body.unwrap_or_default(),
+            modifiers: Modifiers {
+                // No body means the implementer must supply one.
+                is_abstract: !has_body,
+                is_virtual: has_body,
+                ..Modifiers::default()
+            },
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub,
+        },
+        Span::default(),
+    )))))
+}
+
 /// If an `interface_member` carries a default body (`T M() => e;` / `{ ... }`),
 /// build it as an ordinary `ClassMember::Method` for injection into implementers.
 fn extract_interface_default_method(__w: &mut CsWalker, member: Pair<Rule>) -> Result<Option<ClassMember>, String> {
@@ -13695,8 +13786,8 @@ fn walk_interface_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expre
                         if let Ok(Some(dm)) = extract_interface_default_method(__w, m.clone()) {
                             defaults.push(dm);
                         }
-                        if let Ok(member) = walk_interface_member(__w, m) {
-                            members.push(member);
+                        if let Ok(Some(cm)) = interface_member_as_class_member(__w, m.clone()) {
+                            members.push(cm);
                         }
                     }
                 }
@@ -13708,10 +13799,28 @@ fn walk_interface_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expre
         }
     }
 
-    Ok(StmtKind::InterfaceDecl {
+    // ⛔ A `ClassDecl` THAT SAYS IT IS AN INTERFACE — the shape php already
+    // emits, and the only one the shared declaration pass can see.
+    // `StmtKind::InterfaceDecl` compiles to a no-op, so every C# interface was
+    // invisible to `classes.rs`: absent from the class table, unresolvable as
+    // an augmentation source, and unable to answer "does this type declare
+    // that member" for an interface-typed receiver.
+    //
+    // ⚠ `ClassKind::Interface` MATTERS AND JAVA DROPS IT. Java reaches the
+    // class table by emitting a bare `ClassDecl`, so the model cannot tell
+    // `interface IGreet` from `class IGreet` — which is exactly what
+    // `declared_kind` exists to prevent. Stating the kind is what keeps the
+    // declaration honest while it uses the shared machinery.
+    Ok(StmtKind::ClassDecl {
         name,
         parents,
+        interfaces: Vec::new(),
         members,
+        modifiers: ClassModifiers {
+            kind: ClassKind::Interface,
+            is_abstract: true,
+            ..ClassModifiers::default()
+        },
         decorators: decorators.to_vec(),
     })
 }
@@ -13860,12 +13969,40 @@ fn walk_enum_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression
 // ── Record ──────────────────────────────────────────────────────────────────
 
 fn walk_record_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+    // ⛔ A RECORD DECLARES ITS SEMANTICS. This built a plain `ClassDecl` and
+    // said so in its own comment — "they carry no policy yet. See the plan" —
+    // so `record` reached the shared record primitive as an ordinary class:
+    // no structural equality, and nothing for a `with` expression to copy
+    // through, which is why `with` grew a walker-private object-assign that
+    // returned a bare `{}`.
+    //
+    // `recordprimitiveplan.md`'s normalization table is the specification and
+    // this is the whole of the walker's job for it:
+    //
+    //     C# `record`         Reference storage, Structural equality
+    //     C# `record struct`  Value storage,     Structural equality
+    //
+    // Storage and equality are independent axes — a `record` ALIASES on
+    // assignment like any class and still compares field-wise; a
+    // `record struct` copies as well.
+    let is_value_record = matches!(pair.as_rule(), Rule::record_struct_declaration);
     let mut name = String::new();
     let mut params = Vec::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
     let mut base_args = None;
-    let mut record_mods = ClassModifiers::default();
+    let mut record_mods = ClassModifiers {
+        semantics: ValueSemantics {
+            storage: if is_value_record {
+                ValueStorage::Value
+            } else {
+                ValueStorage::Reference
+            },
+            equality: ValueEquality::Structural,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -18391,17 +18528,33 @@ fn build_general_pattern_cond(__w: &mut CsWalker,
                         push(&mut cond, test);
                     }
                     Rule::property_subpattern => {
-                        let mut sub = part.into_inner();
-                        let member = sub.next().ok_or("property pattern: missing member name")?;
+                        // ⛔ THE NAME IS A CHAIN, not one identifier. A C# 10
+                        // extended property pattern nests without a nested
+                        // brace — `{ Info.Code: 1 }` IS `{ Info: { Code: 1 } }`
+                        // — so every segment is another member hop off the
+                        // subject before the subpattern is applied.
+                        let mut sub = part.into_inner().peekable();
+                        let mut member_expr = subject.clone();
+                        let mut saw_member = false;
+                        while sub
+                            .peek()
+                            .is_some_and(|p| p.as_rule() == Rule::ident_name)
+                        {
+                            let segment = sub.next().expect("peeked");
+                            member_expr = Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(member_expr),
+                                    field: segment.as_str().trim().to_string(),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            );
+                            saw_member = true;
+                        }
+                        if !saw_member {
+                            return Err("property pattern: missing member name".into());
+                        }
                         let clause = sub.next().ok_or("property pattern: missing subpattern")?;
-                        let member_expr = Expression::with_span(
-                            ExprKind::Member {
-                                object: Box::new(subject.clone()),
-                                field: member.as_str().trim().to_string(),
-                                null_safe: false,
-                            },
-                            span.clone(),
-                        );
                         let test = build_general_pattern_cond(__w, member_expr, clause)?;
                         push(&mut cond, test);
                     }
@@ -18517,14 +18670,28 @@ fn collect_pattern_var_bindings(
             for part in pattern.into_inner() {
                 match part.as_rule() {
                     Rule::property_subpattern => {
-                        let mut sub = part.into_inner();
-                        let member = sub.next().ok_or("property pattern: missing member name")?;
+                        // The same chain the condition builder walks — a
+                        // `var` bound inside `{ Info.Code: var c }` binds
+                        // against `Info.Code`, not against `Info`.
+                        let mut sub = part.into_inner().peekable();
+                        let mut member_expr = subject.clone();
+                        let mut saw_member = false;
+                        while sub
+                            .peek()
+                            .is_some_and(|p| p.as_rule() == Rule::ident_name)
+                        {
+                            let segment = sub.next().expect("peeked");
+                            member_expr = Expression::new(ExprKind::Member {
+                                object: Box::new(member_expr),
+                                field: segment.as_str().trim().to_string(),
+                                null_safe: false,
+                            });
+                            saw_member = true;
+                        }
+                        if !saw_member {
+                            return Err("property pattern: missing member name".into());
+                        }
                         let clause = sub.next().ok_or("property pattern: missing subpattern")?;
-                        let member_expr = Expression::new(ExprKind::Member {
-                            object: Box::new(subject.clone()),
-                            field: member.as_str().trim().to_string(),
-                            null_safe: false,
-                        });
                         collect_pattern_var_bindings(&member_expr, clause, out)?;
                     }
                     // Trailing designation: `is Point { X: 1 } p` binds the

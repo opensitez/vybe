@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::loops;
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const PATTERN_KEY: &str = "__pattern";
 const TIMEOUT_KEY: &str = "__timeout";
@@ -75,9 +78,6 @@ fn emit_dotnet_match_collection_shape(
     count_slot: u16,
     line: u32,
 ) {
-    let count_key = chunk.add_constant(Value::String(Arc::from(COUNT_KEY)));
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    let success_key = chunk.add_constant(Value::String(Arc::from(SUCCESS_KEY)));
     let i_slot = reserve_slot(chunk);
     let match_slot = reserve_slot(chunk);
 
@@ -88,7 +88,13 @@ fn emit_dotnet_match_collection_shape(
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, count_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(COUNT_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_i32_const(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
@@ -111,12 +117,24 @@ fn emit_dotnet_match_collection_shape(
     chunk.emit_op_u16(Op::LOCAL_GET, match_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, match_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(SUCCESS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
@@ -130,59 +148,85 @@ fn emit_dotnet_match_collection_shape(
 }
 
 fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u32) {
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    let dotnet_value_key = chunk.add_constant(Value::String(Arc::from("Value")));
-    let success_key = chunk.add_constant(Value::String(Arc::from(SUCCESS_KEY)));
-    let dotnet_success_key = chunk.add_constant(Value::String(Arc::from("Success")));
-    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
-    let lower_length_key = chunk.add_constant(Value::String(Arc::from("length")));
     let group_slot = reserve_slot(chunk);
     let length_idx = chunk.add_import("wasm:js-string", "length");
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, group_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Value"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(SUCCESS_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Success"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_call(length_idx, 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, length_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Length"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_call(length_idx, 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, lower_length_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("length"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
 }
 
 fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u16, line: u32) {
     let object_get = chunk.add_import("ecma:object", "get");
     let length_idx = chunk.add_import("wasm:js-string", "length");
-    let dotnet_index_key = chunk.add_constant(Value::String(Arc::from("Index")));
-    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
-    let lower_length_key = chunk.add_constant(Value::String(Arc::from("length")));
-    let dotnet_success_key = chunk.add_constant(Value::String(Arc::from("Success")));
     let value_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -190,7 +234,13 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_string_const("index", line);
     chunk.emit_call(object_get, 2, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_index_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Index"),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -207,12 +257,24 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_call(length_idx, 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, length_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Length"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_call(length_idx, 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, lower_length_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("length"),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
@@ -220,18 +282,18 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Success"),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot: u16, line: u32) {
     let object_get = chunk.add_import("ecma:object", "get");
     let object_set = chunk.add_import("ecma:object", "set");
-    let groups_key = chunk.add_constant(Value::String(Arc::from(GROUPS_KEY)));
-    let group_values_key = chunk.add_constant(Value::String(Arc::from(GROUP_VALUES_KEY)));
-    let dotnet_groups_key = chunk.add_constant(Value::String(Arc::from("Groups")));
-    let public_groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
-    let count_key = chunk.add_constant(Value::String(Arc::from(COUNT_KEY)));
-    let dotnet_count_key = chunk.add_constant(Value::String(Arc::from("Count")));
     let groups_slot = reserve_slot(chunk);
     let group_values_slot = reserve_slot(chunk);
     let raw_groups_slot = reserve_slot(chunk);
@@ -252,19 +314,43 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, count_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(COUNT_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_count_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Count"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, count_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(COUNT_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_count_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Count"),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_i32_const(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
@@ -351,19 +437,43 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, groups_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUPS_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dotnet_groups_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Groups"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, public_groups_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("groups"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, group_values_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUP_VALUES_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// Populate `__group_names` on a freshly built Regex, from its own pattern.
@@ -401,7 +511,6 @@ fn emit_store_group_names(
     let match_all_idx = chunks[current].add_import("ecma:regexp", "matchAll");
     let split_idx = chunks[current].add_import("ecma:regexp", "split");
     let chunk = &mut chunks[current];
-    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
 
     let named_slot = reserve_slot(chunk);
     let unnamed_slot = reserve_slot(chunk);
@@ -469,7 +578,13 @@ fn emit_store_group_names(
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(",")), line);
     chunk.emit_call(split_idx, 2, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, group_names_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUP_NAMES_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `n = array.length; i = 0` — the counted-loop preamble.
@@ -505,13 +620,18 @@ fn emit_increment(chunk: &mut Chunk, slot: u16, line: u32) {
 
 pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
     match argc {
         0 => {
-            chunk.emit_struct_new(0, 0, line);
+            class_slots::emit_class_alloc(chunk, line);
             core_wasm::dup(chunk, line);
             push_const(chunk, Value::String(Arc::from("")), line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pattern_key, line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Stack,
+                &field_slot(PATTERN_KEY),
+                ValueSource::Stack,
+                line,
+            );
         }
         _ => {
             for _ in 1..argc {
@@ -519,15 +639,26 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
             }
             let pattern_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
-            let timeout_key = chunk.add_constant(Value::String(Arc::from(TIMEOUT_KEY)));
-            chunk.emit_struct_new(0, 0, line);
+            class_slots::emit_class_alloc(chunk, line);
             core_wasm::dup(chunk, line);
             chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pattern_key, line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Stack,
+                &field_slot(PATTERN_KEY),
+                ValueSource::Stack,
+                line,
+            );
             if argc >= 3 {
                 core_wasm::dup(chunk, line);
                 chunk.emit_bool_const(true, line);
-                chunk.emit_struct_field_op(Op::STRUCT_SET, 0, timeout_key, line);
+                class_slots::emit_class_set(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(TIMEOUT_KEY),
+                    ValueSource::Stack,
+                    line,
+                );
             }
             // The object is still the only thing on the stack here; park it in a
             // slot so the group-name scan can write to it, then hand it back.
@@ -544,27 +675,23 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
-    let timeout_key = chunk.add_constant(Value::String(Arc::from(TIMEOUT_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, timeout_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(TIMEOUT_KEY), Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_string_const("The regex operation timed out.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         chunk,
         "RegexMatchTimeoutException",
+        class_slots::ValueSource::ConstStr("The regex operation timed out.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_call(test_idx, 2, line);
 }
@@ -658,7 +785,6 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
     let replacement_slot = reserve_slot(chunk);
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, replacement_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
@@ -666,7 +792,7 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, replacement_slot, line);
     chunk.emit_call(replace_idx, 3, line);
 }
@@ -676,14 +802,13 @@ pub fn emit_regex_split(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
     chunk.emit_call(split_idx, 2, line);
 }
 
@@ -694,20 +819,17 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     let self_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
     let obj_slot = reserve_slot(chunk);
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    let success_key = chunk.add_constant(Value::String(Arc::from(SUCCESS_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_call(exec_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -721,7 +843,13 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_end(line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
@@ -729,7 +857,13 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(SUCCESS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
     emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
@@ -745,8 +879,6 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     let input_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
     let obj_slot = reserve_slot(chunk);
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    let success_key = chunk.add_constant(Value::String(Arc::from(SUCCESS_KEY)));
 
     for _ in 3..argc {
         chunk.emit_op(Op::DROP, line);
@@ -762,7 +894,7 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunk.emit_call(exec_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -776,7 +908,13 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_end(line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
@@ -784,7 +922,13 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, success_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(SUCCESS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
     emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
@@ -799,14 +943,13 @@ pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     let self_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
     let count_slot = reserve_slot(chunk);
-    let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
     chunk.emit_call(match_all_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     emit_dotnet_match_collection_shape(chunk, result_slot, count_slot, line);
@@ -841,21 +984,19 @@ pub fn emit_regex_static_matches(chunks: &mut [Chunk], current: usize, argc: u8,
 
 pub fn emit_regex_get_group_names(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
 
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, group_names_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
 }
 
 pub fn emit_regex_group_name_from_number(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let number_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
-    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, number_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, group_names_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
 }
@@ -878,12 +1019,11 @@ pub fn emit_regex_group_number_from_name(chunks: &mut [Chunk], current: usize, l
     let i_slot = reserve_slot(chunk);
     let n_slot = reserve_slot(chunk);
     let res_slot = reserve_slot(chunk);
-    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, group_names_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, names_slot, line);
 
     push_const(chunk, Value::F64(-1.0), line);

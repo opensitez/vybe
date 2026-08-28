@@ -2,6 +2,9 @@ use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+use super::object_fields::field_slot;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+
 const STATE_KEY: &str = "__state";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -33,10 +36,13 @@ fn emit_random_unit_from_receiver(
 ) {
     let chunk = &mut chunks[current];
     let state_slot = reserve_slot(chunk);
-    let key = state_key(chunk);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(receiver_slot),
+        &field_slot(STATE_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
@@ -57,9 +63,13 @@ fn emit_random_unit_from_receiver(
     vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(receiver_slot),
+        &field_slot(STATE_KEY),
+        ValueSource::Local(state_slot),
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
     push_const(chunk, Value::F64(2147483648.0), line);
@@ -82,11 +92,17 @@ pub fn emit_random_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             chunk.emit_op_u16(Op::LOCAL_SET, seed_slot, line);
         }
     }
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, seed_slot, line);
     let key = state_key(chunk);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(STATE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_random_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

@@ -21,6 +21,7 @@
 //! `Capacity`'s setter has to resize and can throw.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
@@ -28,6 +29,8 @@ use vybe_compiler::primitives::ops;
 use super::thread_adapter::DELAY_TOKEN_KEY;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const BUF: &str = "__ms_buf";
@@ -66,14 +69,26 @@ fn call(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
 /// `[obj, value] → []`
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `[] → [value]` — a field of the object in `slot`.
 fn field(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     get(chunk, slot, line);
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `[value] → []` — store into a field of the object in `slot`.
@@ -87,7 +102,7 @@ fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
 
 /// Throw a .NET exception of `class` with `message`.
 fn throw(chunk: &mut Chunk, class: &str, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     push_str(chunk, message, line);
     errors::emit_exception_new_finalize(chunk, class, line);
@@ -1023,10 +1038,15 @@ pub fn emit_copy_to_async(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     core_wasm::undefined(chunk, line);
     call(chunk, "ecma:promise", "resolve", 1, line);
     if let Some(slot) = token {
-        let key = chunk.add_constant(Value::String(Arc::from(DELAY_TOKEN_KEY)));
         core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(DELAY_TOKEN_KEY),
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 

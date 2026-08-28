@@ -20,9 +20,12 @@
 //! every `System.Net` call used to emit an unresolvable import.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 fn call_import(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunk.add_import(module, name);
@@ -195,9 +198,15 @@ pub fn emit_http_fetch(chunks: &mut [Chunk], current: usize, line: u32) {
 /// construction yields a typed marker. Stack: `[..args]` → `[obj]`.
 pub fn emit_http_client_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("HttpClient", line);
     let idx = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__type"),
+        ValueSource::Stack,
+        line,
+    );
 }

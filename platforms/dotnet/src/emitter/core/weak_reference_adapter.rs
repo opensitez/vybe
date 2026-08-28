@@ -19,27 +19,19 @@
 //! whether the target survives finalisation, and no finaliser runs here.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const TARGET_KEY: &str = "__wr_target";
 const TYPE_NAME: &str = "WeakReference";
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
-fn struct_set(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-}
 
-fn struct_get(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
-}
 
 /// `New WeakReference(obj)`, `New WeakReference(obj, trackResurrection)` and
 /// `New WeakReference(Of T)(obj)`.
@@ -61,16 +53,28 @@ pub fn emit_weakref_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
     }
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_string_const(TYPE_NAME, line);
-    struct_set(chunk, TYPE_KEY, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
-    struct_set(chunk, TARGET_KEY, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TARGET_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -80,14 +84,26 @@ pub fn emit_weakref_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 ///
 /// Stack on entry: `[wr]` ; on exit: `[target]`.
 pub fn emit_weakref_target(chunks: &mut [Chunk], current: usize, line: u32) {
-    struct_get(&mut chunks[current], TARGET_KEY, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(TARGET_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `wr.Target = v` / `wr.SetTarget(v)`.
 ///
 /// Stack on entry: `[wr, value]` ; on exit: `[]`.
 pub fn emit_weakref_set_target(chunks: &mut [Chunk], current: usize, line: u32) {
-    struct_set(&mut chunks[current], TARGET_KEY, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(TARGET_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `wr.IsAlive` — the target is still present. See the module note on why this
@@ -96,7 +112,13 @@ pub fn emit_weakref_set_target(chunks: &mut [Chunk], current: usize, line: u32) 
 /// Stack on entry: `[wr]` ; on exit: `[bool]`.
 pub fn emit_weakref_is_alive(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, TARGET_KEY, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TARGET_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     // ⛔ A Bool VALUE, not the raw i32 — `emit_dyn_to_bool`-shaped results

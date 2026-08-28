@@ -157,6 +157,23 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         None => ClassType::new(class.name),
     };
 
+    // Declared FIELDS, before properties, because they are different things and
+    // the value types had only the latter. A `Point` declared `X`/`Y` as
+    // properties — host getter/setter pairs — while its ctor composed `{x, y}`
+    // as struct fields in bytecode, so `ClassType.fields` was EMPTY for every
+    // value type. `fields` is documented as "field index = position in this
+    // Vec, ordering is part of the wire contract", so an empty list means there
+    // is no ordering to address by.
+    //
+    // ⚠ Deliberately NOT a constructor. `component_classes_data_drawing.rs`
+    // records why: these are composed in bytecode by `common_ctor_for` →
+    // `dotnet.*_new`, and a second constructor declaration either shadows that
+    // one as dead-but-live-looking text, or wins silently when it shouldn't.
+    // Declaring the field ORDER is not declaring a constructor.
+    for field in super::super::classes::drawing::fields_for(class.name) {
+        out = out.with_field(*field);
+    }
+
     for prop in class.properties {
         out = out.with_property(
             PropertyDef::new(*prop)

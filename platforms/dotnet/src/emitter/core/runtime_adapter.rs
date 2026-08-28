@@ -1,6 +1,7 @@
 //! Shared .NET-shaped helpers routed through runtime helper chunks.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
@@ -8,6 +9,8 @@ use vybe_compiler::primitives::loops;
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
 use vybe_runtime::Value;
+
+use super::object_fields::field_slot;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
@@ -197,12 +200,12 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     let is_primitive = chunk.alloc_scratch(1);
     let func = chunk.alloc_scratch(1);
 
-    let tostring_key = chunk.add_constant(Value::String(Arc::from(vybe_ast::protocol_slot_key(
-        vybe_ast::ProtocolSlot::ToString,
-    ))));
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    let value_key = chunk.add_constant(Value::String(Arc::from("__value")));
-    let buf_key = chunk.add_constant(Value::String(Arc::from("__buf")));
+    // The bound `ToString` ROLE, not the spelling `"tostring"`. `ClassSlot::Slot`
+    // is the one place a binding becomes a storage name.
+    let tostring = class_slots::resolve(
+        &class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::ToString),
+        &class_slots::PlainNames,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
 
@@ -255,9 +258,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_else(line);
 
     // Object: look up its shared `ToString` role member.
-    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, tostring_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, func, line);
+    class_slots::emit_class_get(chunk, ObjSource::Local(obj), &tostring, Dest::Local(func), line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
@@ -265,22 +266,46 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     // No `tostring` member: known .NET-shaped structs/classes render their
     // payload, otherwise fall back to ECMA String().
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__type"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_string_const("Guid", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__value"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__type"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_string_const("StringWriter", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__buf"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);

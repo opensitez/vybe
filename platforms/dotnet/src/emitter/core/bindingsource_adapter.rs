@@ -22,11 +22,14 @@
 //! Pattern: `emitter/core/datatable_adapter.rs`.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::HT_EXTERN;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const DATA_MEMBER_KEY: &str = "datamember";
 const DATA_SOURCE_KEY: &str = "datasource";
@@ -49,24 +52,39 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn struct_get(chunk: &mut Chunk, object_local: u16, key: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn struct_set_from_local(chunk: &mut Chunk, object_local: u16, key: &str, value: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `DUP → value → STRUCT_SET key`, leaving the object on the stack.
 fn set_field(chunk: &mut Chunk, key: &str, val: impl FnOnce(&mut Chunk, u32), line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     val(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `New BindingSource()` — every field the cursor owns, initialized.
@@ -78,14 +96,14 @@ fn set_field(chunk: &mut Chunk, key: &str, val: impl FnOnce(&mut Chunk, u32), li
 /// Stack in: `[]`   Stack out: `[obj]`
 pub fn emit_bindingsource_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "__type",
-        |c, l| c.emit_string_const("BindingSource", l),
+        "BindingSource",
+        &[
+            (field_slot(POSITION_KEY), ValueSource::ConstF64(0.0)),
+        ],
         line,
     );
-    set_field(chunk, POSITION_KEY, |c, l| c.emit_f64_const(0.0, l), line);
     set_field(
         chunk,
         DATA_SOURCE_KEY,

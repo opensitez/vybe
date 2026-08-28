@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::collections;
+
+use super::object_fields::field_slot;
 
 const ENV_OVERRIDES_GLOBAL: &str = "__dotnet_environment_overrides";
 #[allow(dead_code)]
@@ -51,9 +54,14 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
 pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32) {
     let user_info = chunks[current].add_import("node:os", "userInfo");
     let chunk = &mut chunks[current];
-    let username_key = chunk.add_constant(Value::String(Arc::from("username")));
     chunk.emit_call(user_info, 0, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, username_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("username"),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_environment_version(chunks: &mut Vec<Chunk>, current: usize, line: u32) {

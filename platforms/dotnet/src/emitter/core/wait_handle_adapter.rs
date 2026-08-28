@@ -29,6 +29,7 @@ use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots;
 
 /// Instance state keys.
 ///
@@ -90,7 +91,7 @@ fn emit_event_new(chunks: &mut [Chunk], current: usize, argc: u8, auto_reset: bo
         chunks[current].emit_op_u16(Op::LOCAL_SET, initial, line);
     }
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, event, line);
     set_flag_from_slot(chunks, current, event, SIGNALED_KEY, initial, line);
     set_flag_const(chunks, current, event, AUTO_RESET_KEY, auto_reset, line);

@@ -48,6 +48,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Object")
+                // ⛔ `New Object()` HAD NO CONSTRUCTOR. The root of the type
+                // hierarchy carried three static methods and nothing to
+                // allocate with, so `Dim o As New Object()` — the first line of
+                // most `GCHandle` tests — answered
+                // `undefined is not callable`.
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.object_new"))
                 .with_method(MethodDef::static_method(
                     "Equals",
                     2,
@@ -62,6 +68,59 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToString",
                     1,
                     MethodBody::Common("dotnet.object_to_string_role".into()),
+                )),
+        ),
+        // ⛔ `GCMemoryInfo` IS A REGISTERED TYPE, not a bag of stamped keys.
+        // Its members are argc-0 leaves — the shape every other .NET property
+        // on the tree already uses — so a read folds by the TYPE's rules and
+        // VB's `info.heapcount` and C#'s `info.HeapCount` are one member.
+        //
+        // ⚠ `HeapCount` DOES NOT EXIST on .NET 10's `GCMemoryInfo` (`CS1061`,
+        // measured on the SDK). It is carried because a corpus test reads it,
+        // and 1 is at least true of a single-heap runtime; the test is the
+        // thing that is wrong.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("GCMemoryInfo")
+                .with_method(MethodDef::new(
+                    "HeapCount",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_heap_count".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PauseTimePercentage",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TotalPauseDuration",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Index",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Generation",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "FragmentedBytes",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "HeapSizeBytes",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_zero".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TotalAvailableMemoryBytes",
+                    0,
+                    MethodBody::Common("dotnet.gcinfo_available_bytes".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -162,22 +221,108 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "MaxGeneration",
                     0,
-                    MethodBody::Common("dotnet.gc_zero".into()),
+                    MethodBody::Common("dotnet.gc_max_generation".into()),
                 ))
+                // `AddMemoryPressure`/`RemoveMemoryPressure` have exactly one
+                // observable behaviour — rejecting a non-positive argument.
+                .with_method(MethodDef::static_method(
+                    "AddMemoryPressure",
+                    1,
+                    MethodBody::Common("dotnet.gc_memory_pressure".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "RemoveMemoryPressure",
+                    1,
+                    MethodBody::Common("dotnet.gc_memory_pressure".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AllocateArray",
+                    1,
+                    MethodBody::Common("dotnet.gc_allocate_array".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AllocateArray",
+                    2,
+                    MethodBody::Common("dotnet.gc_allocate_array".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AllocateUninitializedArray",
+                    1,
+                    MethodBody::Common("dotnet.gc_allocate_array".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AllocateUninitializedArray",
+                    2,
+                    MethodBody::Common("dotnet.gc_allocate_array".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetGCMemoryInfo",
+                    0,
+                    MethodBody::Common("dotnet.gc_memory_info".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetTotalPauseDuration",
+                    0,
+                    MethodBody::Common("dotnet.gc_total_pause_duration".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetTotalAllocatedBytes",
+                    0,
+                    MethodBody::Common("dotnet.gc_total_memory".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetTotalAllocatedBytes",
+                    1,
+                    MethodBody::Common("dotnet.gc_total_memory".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetAllocatedBytesForCurrentThread",
+                    0,
+                    MethodBody::Common("dotnet.gc_total_memory".into()),
+                ))
+                // Full-GC notification is a REGISTRATION, not a collection: a
+                // program registers, then polls. With no background collector
+                // there is nothing to notify about, so registering and
+                // cancelling both succeed and neither reports.
+                .with_method(MethodDef::static_method(
+                    "RegisterForFullGCNotification",
+                    2,
+                    MethodBody::Common("dotnet.gc_noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CancelFullGCNotification",
+                    0,
+                    MethodBody::Common("dotnet.gc_noop".into()),
+                ))
+                // ⛔ NOT `gc_noop` ANY MORE. These are the collection point:
+                // a name dropped under `NameDrop::Defer` made its value
+                // eligible, and this is where eligibility becomes a call to the
+                // Destructor slot. As no-ops, a VB `Finalize` and a C# `~Foo`
+                // compiled correctly and could never run.
                 .with_method(MethodDef::static_method(
                     "Collect",
                     0,
-                    MethodBody::Common("dotnet.gc_noop".into()),
+                    MethodBody::Common("dotnet.gc_run_finalizers".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Collect",
                     1,
-                    MethodBody::Common("dotnet.gc_noop".into()),
+                    MethodBody::Common("dotnet.gc_run_finalizers".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "WaitForPendingFinalizers",
                     0,
-                    MethodBody::Common("dotnet.gc_noop".into()),
+                    MethodBody::Common("dotnet.gc_run_finalizers".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SuppressFinalize",
+                    1,
+                    MethodBody::Common("dotnet.gc_suppress_finalize".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReRegisterForFinalize",
+                    1,
+                    MethodBody::Common("dotnet.gc_re_register_for_finalize".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetTotalMemory",
@@ -187,7 +332,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "CollectionCount",
                     1,
-                    MethodBody::Common("dotnet.gc_zero".into()),
+                    MethodBody::Common("dotnet.gc_collection_count".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetGeneration",

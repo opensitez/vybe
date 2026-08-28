@@ -2,10 +2,17 @@
 //! language module; the common dispatcher delegates here).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::{Chunk, Value};
 
+/// The declared field order for a drawing value type — the SAME list that
+/// `class_to_component_class` puts on the `ClassType`, so the order a ctor
+/// pushes and the order the type declares cannot disagree.
+use crate::emitter::classes::drawing::fields_for as vt_fields;
+
 use vybe_runtime::opcode::Op;
+use crate::emitter::core::object_fields::field_slot;
 
 /// `Control.CreateGraphics()` — **`element.getContext("2d")`**, HTML §4.12.5.
 ///
@@ -47,7 +54,13 @@ fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
     // it painted nothing and raised nothing.
     core_wasm::dup(chunk, line); // [graphics, graphics]
     chunk.emit_string_const("Graphics", line); // [graphics, graphics, "Graphics"]
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line); // [graphics]
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__type"),
+        ValueSource::Stack,
+        line,
+    ); // [graphics]
 }
 
 /// VB `Choose(idx, v1, v2, ..., vN)` — variadic 1-indexed selector.
@@ -82,7 +95,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
 
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("name"), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
     emit_slot_is_nullish(chunk, name_slot, line);
@@ -91,7 +104,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     chunk.emit_br_if(0, line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__type"), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
     chunk.patch_block(use_name_block);
@@ -113,7 +126,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     chunk.emit_if(line);
     let exception_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, exception_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__exception_type"), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
@@ -122,16 +135,22 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, exception_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__exception_type"), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     let public_name_key = chunk.add_constant(Value::String(Arc::from("Name")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, public_name_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Name"),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
@@ -159,12 +178,10 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
-    chunk.emit_struct_new(0, 0, line);
-    chunk.emit_dup(line);
-    chunk.emit_string_const("Arithmetic operation resulted in an overflow.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         chunk,
         "OverflowException",
+        class_slots::ValueSource::ConstStr("Arithmetic operation resulted in an overflow.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
@@ -219,19 +236,29 @@ pub(crate) fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[
     for slot in slots.iter().rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, *slot, line);
     }
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     for (field, slot) in fields.iter().zip(&slots) {
-        let key = chunk.add_constant(Value::String(Arc::from(*field)));
         core_wasm::dup(chunk, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, *slot, line);
         // `struct.set` pops [obj, val] and pushes nothing, so the `dup` above
         // is what leaves the object on the stack for the next field.
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(field),
+            ValueSource::Local(*slot),
+            line,
+        );
     }
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(type_name, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__type"),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
@@ -291,43 +318,45 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // factory. Arity-guarded so an overload this does NOT handle
         // (`Rectangle(Point, Size)`, `Point(Size)`) falls through to a loud
         // "Unknown common emit" instead of silently building an empty value.
-        "dotnet.rectangle_new" if argc == 4 => emit_value_type_new(
-            &mut chunks[current],
-            "Rectangle",
-            &["x", "y", "width", "height"],
-            line,
-        ),
+        // ⚠ THE FIELD LISTS ARE NOT WRITTEN HERE. They come from
+        // `classes::drawing::fields_for`, which is also what declares them on
+        // the `ClassType`. Spelling them at the call site made each list have
+        // two authors — the ctor that pushes them and the reader that names
+        // them — and `COLOR_FIELDS` already carried the note about what drift
+        // between two such authors produces: objects that are wrong and look
+        // right. Order here IS the storage order, so it is the same contract
+        // `ClassType.fields` indexes by.
+        "dotnet.rectangle_new" if argc == 4 => {
+            emit_value_type_new(&mut chunks[current], "Rectangle", vt_fields("Rectangle"), line)
+        }
         "dotnet.point_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "Point", &["x", "y"], line)
+            emit_value_type_new(&mut chunks[current], "Point", vt_fields("Point"), line)
         }
         "dotnet.size_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "Size", &["width", "height"], line)
+            emit_value_type_new(&mut chunks[current], "Size", vt_fields("Size"), line)
         }
         // The `Single` mirrors. `emit_value_type_new` stores the arguments as
         // they arrive, so the only difference from the integer forms is the
         // `__type` — which is exactly the difference that matters, since a
         // value type compares by it.
         "dotnet.sizef_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "SizeF", &["width", "height"], line)
+            emit_value_type_new(&mut chunks[current], "SizeF", vt_fields("SizeF"), line)
         }
         "dotnet.pointf_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "PointF", &["x", "y"], line)
+            emit_value_type_new(&mut chunks[current], "PointF", vt_fields("PointF"), line)
         }
         "dotnet.rectanglef_new" if argc == 4 => emit_value_type_new(
             &mut chunks[current],
             "RectangleF",
-            &["x", "y", "width", "height"],
+            vt_fields("RectangleF"),
             line,
         ),
         // `Color` — four channels, composed in bytecode like every other value
         // type. The named statics (`Color.Red`) push their own RGBA and come
         // here, so no host function looks a colour up by NAME any more.
-        "dotnet.color_new" if argc == 4 => emit_value_type_new(
-            &mut chunks[current],
-            "Color",
-            crate::emitter::classes::drawing::COLOR_FIELDS,
-            line,
-        ),
+        "dotnet.color_new" if argc == 4 => {
+            emit_value_type_new(&mut chunks[current], "Color", vt_fields("Color"), line)
+        }
         // The zero-argument form, for the named statics. `MethodOp::NewDotnet`
         // only supports `argc = 0` (`classes/builder.rs` asserts it), so
         // `Color.Red` allocates the empty value here and stores its four
@@ -343,13 +372,25 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // defaulted both to false, and that default is the
         // contract, so it is reproduced here rather than left undefined — an
         // absent field reads as `undefined` and would render as a style.
+        // ⚠ THE ONE TYPE WHOSE PUSHED LIST IS SHORTER THAN ITS DECLARED LIST.
+        // `emit_value_type_new` pops one stack value per field, so it must be
+        // given the ARGUMENTS (2), while `ClassType.fields` must declare what
+        // the object ends up with (4). The pushed list is the declared list's
+        // PREFIX, taken as a slice so the two still cannot drift — passing
+        // `vt_fields("Font")` whole here would pop two values that were never
+        // pushed.
         "dotnet.font_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "Font", &["name", "size"], line);
-            for field in ["bold", "italic"] {
-                let key = chunks[current].add_constant(Value::String(Arc::from(field)));
+            let declared = vt_fields("Font");
+            emit_value_type_new(&mut chunks[current], "Font", &declared[..2], line);
+            for field in &declared[2..] {
                 core_wasm::dup(&mut chunks[current], line);
-                chunks[current].emit_bool_const(false, line);
-                chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+                class_slots::emit_class_set(
+                    &mut chunks[current],
+                    ObjSource::Stack,
+                    &field_slot(field),
+                    ValueSource::ConstBool(false),
+                    line,
+                );
             }
         }
         // A `Pen` and a `SolidBrush` are records too — the drawing bodies read
@@ -357,10 +398,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `color` is the ONLY field any of them reads. So the factory allocated
         // a two-field object and nothing else.
         "dotnet.pen_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "Pen", &["color", "width"], line)
+            emit_value_type_new(&mut chunks[current], "Pen", vt_fields("Pen"), line)
         }
         "dotnet.solid_brush_new" if argc == 1 => {
-            emit_value_type_new(&mut chunks[current], "SolidBrush", &["color"], line)
+            emit_value_type_new(&mut chunks[current], "SolidBrush", vt_fields("SolidBrush"), line)
         }
         // The two patterned brushes. Field names and ORDER are the contract the
         // retired factories set, reproduced exactly — a brush is read by
@@ -382,28 +423,32 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Graphics, which is why it needs no host function.
         "dotnet.graphics_new" if argc == 0 => {
             let chunk = &mut chunks[current];
-            chunk.emit_struct_new(0, 0, line);
+            class_slots::emit_class_alloc(chunk, line);
             for (field, value) in [
                 ("__type", "Graphics"),
                 ("__control_type", "Graphics"),
                 ("__control_name", "graphics"),
             ] {
-                let key = chunk.add_constant(Value::String(Arc::from(field)));
                 core_wasm::dup(chunk, line);
-                chunk.emit_string_const(value, line);
-                chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+                class_slots::emit_class_set(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(field),
+                    ValueSource::ConstStr(value.to_string()),
+                    line,
+                );
             }
         }
         "dotnet.hatch_brush_new" if argc == 3 => emit_value_type_new(
             &mut chunks[current],
             "HatchBrush",
-            &["backgroundcolor", "foregroundcolor", "hatchstyle"],
+            vt_fields("HatchBrush"),
             line,
         ),
         "dotnet.linear_gradient_brush_new" if argc == 4 => emit_value_type_new(
             &mut chunks[current],
             "LinearGradientBrush",
-            &["rectangle", "startcolor", "endcolor", "wrapmode"],
+            vt_fields("LinearGradientBrush"),
             line,
         ),
         "dotnet.get_type" => emit_get_type(&mut chunks[current], line),
@@ -1428,6 +1473,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.dict_trim_excess" => {
             crate::emitter::core::collections_adapter::emit_dict_trim_excess(chunks, current, line)
+        }
+        // The root object: an empty instance, allocated by the class-slot owner.
+        "dotnet.gc_suppress_finalize" => {
+            crate::emitter::core::finalization::emit_suppress_finalize(chunks, current, line)
+        }
+        "dotnet.gc_re_register_for_finalize" => {
+            crate::emitter::core::finalization::emit_re_register_for_finalize(chunks, current, line)
+        }
+        "dotnet.gc_run_finalizers" => {
+            crate::emitter::core::finalization::emit_run_finalizers(chunks, current, line)
+        }
+        "dotnet.object_new" => {
+            vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line)
         }
         "dotnet.blocking_collection_new" => {
             crate::emitter::core::collections_adapter::emit_blocking_collection_new(
@@ -2782,6 +2840,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.gc_noop" => {
             crate::emitter::core::gc_adapter::emit_gc_noop(chunks, current, argc, line)
         }
+        "dotnet.gc_max_generation" => {
+            crate::emitter::core::gc_adapter::emit_gc_max_generation(chunks, current, argc, line)
+        }
+        "dotnet.gc_memory_pressure" => {
+            crate::emitter::core::gc_adapter::emit_gc_memory_pressure(chunks, current, line)
+        }
+        "dotnet.gc_allocate_array" => {
+            crate::emitter::core::gc_adapter::emit_gc_allocate_array(chunks, current, argc, line)
+        }
+        "dotnet.gc_collection_count" => {
+            crate::emitter::core::gc_adapter::emit_gc_collection_count(chunks, current, argc, line)
+        }
+        "dotnet.gc_total_pause_duration" => {
+            crate::emitter::core::gc_adapter::emit_gc_total_pause_duration(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.gcinfo_heap_count" => {
+            crate::emitter::core::gc_adapter::emit_gc_memory_info_member(chunks, current, 1.0, line)
+        }
+        "dotnet.gcinfo_zero" => {
+            crate::emitter::core::gc_adapter::emit_gc_memory_info_member(chunks, current, 0.0, line)
+        }
+        "dotnet.gcinfo_available_bytes" => {
+            crate::emitter::core::gc_adapter::emit_gc_memory_info_member(
+                chunks,
+                current,
+                f64::from(u32::MAX),
+                line,
+            )
+        }
+        "dotnet.gc_memory_info" => {
+            crate::emitter::core::gc_adapter::emit_gc_memory_info(chunks, current, argc, line)
+        }
         "dotnet.gc_zero" => {
             crate::emitter::core::gc_adapter::emit_gc_zero(chunks, current, argc, line)
         }
@@ -3591,12 +3683,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
             chunk.emit_call(get, 2, line);
             chunk.emit_else(line);
-            chunk.emit_struct_new(0, 0, line);
-            chunk.emit_dup(line);
-            chunk.emit_string_const("The given key was not present in the dictionary.", line);
-            vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            vybe_compiler::primitives::errors::emit_exception_new(
                 chunk,
                 "KeyNotFoundException",
+                class_slots::ValueSource::ConstStr("The given key was not present in the dictionary.".to_string()),
                 line,
             );
             vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(

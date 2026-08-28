@@ -19,9 +19,12 @@
 //! literal chars or `String(args[idx])` substitutions.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -60,9 +63,14 @@ fn emit_dotnet_format_value_call(
         // the type stamp folded to `datetime` while C# stamps `DateTime`, and
         // a name comparison answered only one of them. `__time` is the date's
         // payload and is spelled the same from every front end.
-        let time_key = chunk.add_constant(Value::String(Arc::from("__time")));
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("__time"),
+            Dest::Stack,
+            line,
+        );
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if_value(line);

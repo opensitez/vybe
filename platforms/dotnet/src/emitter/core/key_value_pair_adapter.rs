@@ -21,6 +21,7 @@ use vybe_compiler::primitives::records;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots;
 
 /// Field names are written in BOTH spellings.
 ///
@@ -60,7 +61,7 @@ pub fn emit_key_value_pair_new(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
     for field in KEY_FIELDS {
         set_field(chunks, current, pair, field, key, line);

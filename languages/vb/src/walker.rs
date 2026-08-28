@@ -9,6 +9,7 @@ use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::memory as common_memory;
 use vybe_compiler::primitives::pointers as common_pointers;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
+use vybe_platform_dotnet::emitter::core::interop_classes as dotnet_interop;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_vb;
 
 const VB_PARTIAL_METHOD_MARKER: &str = "__vb_partial_method_decl";
@@ -108,6 +109,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     //
     // Measured: VB 4855 → 4889 with it off, and the three tests that moved were
     // a separate defect of mine, since fixed.
+    // ⛔ INJECTED BEFORE THE NORMALIZE PASSES, unlike the exception hierarchy
+    // below. `SafeHandle.Dispose` calls `ReleaseHandle()` — a bare call the
+    // DERIVED class overrides — and `normalize_vb_implicit_method_self_classes`
+    // is what binds a bare call inside a method to its own receiver. Appended
+    // after these passes the way the exceptions are, the call bound to nothing
+    // and `Dispose` silently ran the base's own body: the handle closed, the
+    // override never fired, and eight tests printed an empty string. The
+    // exceptions never noticed because no exception body calls another method.
+    body.splice(0..0, dotnet_interop::synthesize_interop_classes(source));
+
     normalize_vb_object_initializer_member_names(&mut body);
     normalize_vb_implicit_method_self_classes(&mut body);
     normalize_vb_static_constructor_field_initializers(&mut body);
@@ -128,7 +139,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // shadows; both live on the object and a read binds to the
             // reference's declared type. Stated once for the module — whether
             // a given declaration shadows is `Modifiers::is_hiding`.
-            field_shadowing: Some(FieldShadowing::Hide),
+            field_shadowing: Some(vybe_ast::FieldShadowing::Hide),
+            // A dropped name makes its value ELIGIBLE for finalisation; the
+            // finaliser runs at a collection point (`GC.Collect` /
+            // `GC.WaitForPendingFinalizers`), never at the drop. That
+            // distinction IS the .NET convention — running it at the drop would
+            // make `Finalize` and `Dispose` the same thing.
+            name_drop: Some(vybe_ast::NameDrop::Defer),
+            // .NET spells a Boolean `True`/`False` wherever a string needs it —
+            // `Boolean.ToString` and every concatenation and interpolation.
+            bool_text: Some(vybe_ast::BoolText::TitleCase),
             // VB.NET identifiers are case-insensitive, ASCII. The IDE
             // re-cases a reference to its declaration's spelling, which is
             // exactly the normalisation `Scope::resolve` performs: fold once
@@ -1128,12 +1148,9 @@ fn collect_vb_interface_inheritance_info(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::InterfaceDecl {
-                name,
-                parents,
-                members,
-                ..
-            } => {
+            _ if vb_stmt_as_interface(stmt).is_some() => {
+                let (name, parents, members) =
+                    vb_stmt_as_interface(stmt).expect("guard just matched");
                 let key = vb_interface_type_key(name);
                 if !info.interfaces.iter().any(|item| item == &key) {
                     info.interfaces.push(key.clone());
@@ -1147,12 +1164,9 @@ fn collect_vb_interface_inheritance_info(
                 );
                 let entry = info.members.entry(key).or_default();
                 for member in members {
-                    let member_name = match member {
-                        InterfaceMember::Method { name, .. }
-                        | InterfaceMember::Property { name, .. }
-                        | InterfaceMember::Event { name, .. } => name,
-                    };
-                    entry.insert(member_name.to_ascii_lowercase());
+                    if let Some(member_name) = vb_class_member_declared_name(member) {
+                        entry.insert(member_name.to_ascii_lowercase());
+                    }
                 }
             }
             StmtKind::ClassDecl { members, .. }
@@ -5394,29 +5408,31 @@ fn collect_vb_interface_member_owners(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::InterfaceDecl {
-                name,
-                members: interface_members,
-                ..
-            } => {
+            _ if vb_stmt_as_interface(stmt).is_some() => {
+                let (name, _, interface_members) =
+                    vb_stmt_as_interface(stmt).expect("guard just matched");
                 let interface = vb_interface_type_key(name);
                 let interface_key = interface.to_ascii_lowercase();
                 for member in interface_members {
-                    let member_name = match member {
-                        InterfaceMember::Method { name, .. }
-                        | InterfaceMember::Property { name, .. }
-                        | InterfaceMember::Event { name, .. } => name,
+                    let Some(member_name) = vb_class_member_declared_name(member) else {
+                        continue;
                     };
                     let entry = members.entry(member_name.to_ascii_lowercase()).or_default();
                     if !entry.iter().any(|item| item == &interface_key) {
                         entry.push(interface_key.clone());
                     }
-                    if let InterfaceMember::Method { params, .. } = member {
-                        let arity_key =
-                            format!("{}#{}", member_name.to_ascii_lowercase(), params.len());
-                        let entry = members.entry(arity_key).or_default();
-                        if !entry.iter().any(|item| item == &interface_key) {
-                            entry.push(interface_key.clone());
+                    // ⛔ ARITY IS PART OF THE KEY. `Implements IFoo.Bar` picks
+                    // ONE overload, so the mapping is `name#argc` as well as
+                    // `name` — dropping it maps every `Implements` to whichever
+                    // overload was seen last.
+                    if let ClassMember::Method(stmt) = member {
+                        if let StmtKind::FunctionDecl { params, .. } = &stmt.kind {
+                            let arity_key =
+                                format!("{}#{}", member_name.to_ascii_lowercase(), params.len());
+                            let entry = members.entry(arity_key).or_default();
+                            if !entry.iter().any(|item| item == &interface_key) {
+                                entry.push(interface_key.clone());
+                            }
                         }
                     }
                 }
@@ -5883,27 +5899,26 @@ fn collect_vb_interface_names(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::InterfaceDecl { name, members, .. } => {
+            _ if vb_stmt_as_interface(stmt).is_some() => {
+                let (name, _, members) = vb_stmt_as_interface(stmt).expect("guard just matched");
                 let key = vb_interface_type_key(name).to_ascii_lowercase();
                 interfaces.insert(key.clone());
                 let mut seen = std::collections::HashSet::new();
                 for member in members {
-                    if matches!(
-                        member,
-                        InterfaceMember::Method {
-                            signature_source: Some(source),
-                            ..
-                        } if source.eq_ignore_ascii_case("shadows")
-                    ) {
-                        shadowing_interfaces.insert(key.clone());
+                    // `Shadows` rode `signature_source` on the interface node;
+                    // on a class member it is `Modifiers::is_hiding`, the field
+                    // that already means exactly this.
+                    if let ClassMember::Method(m) = member {
+                        if let StmtKind::FunctionDecl { modifiers, .. } = &m.kind {
+                            if modifiers.is_hiding {
+                                shadowing_interfaces.insert(key.clone());
+                            }
+                        }
                     }
-                    let member_name = match member {
-                        InterfaceMember::Method { name, .. }
-                        | InterfaceMember::Property { name, .. }
-                        | InterfaceMember::Event { name, .. } => name,
-                    }
-                    .to_ascii_lowercase();
-                    if !seen.insert(member_name) {
+                    let Some(member_name) = vb_class_member_declared_name(member) else {
+                        continue;
+                    };
+                    if !seen.insert(member_name.to_ascii_lowercase()) {
                         shadowing_interfaces.insert(key.clone());
                     }
                 }
@@ -5950,47 +5965,83 @@ fn collect_vb_interface_names(
     }
 }
 
+/// A nested interface's members, re-declared on the enclosing one under
+/// `Nested.Member`. Now over `ClassMember`, since an interface IS a class.
+/// The declared name of a class member, for the passes that only need names.
+///
+/// ⛔ THESE PASSES USED TO MATCH `StmtKind::InterfaceDecl`. When VB's
+/// interfaces became `ClassDecl { kind: Interface }` those arms did not fail to
+/// compile — they simply stopped matching, and every interface-inheritance
+/// pass silently saw nothing. Twelve tests went red with no error anywhere,
+/// which is the same silent-miss shape a renamed key produces.
+fn vb_class_member_declared_name(member: &ClassMember) -> Option<&str> {
+    match member {
+        ClassMember::Method(stmt) => match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. } => Some(name.as_str()),
+            _ => None,
+        },
+        ClassMember::Property { name, .. }
+        | ClassMember::Event { name, .. }
+        | ClassMember::Field { name, .. }
+        | ClassMember::Const { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether this declaration is an interface, whatever node carries it.
+fn vb_stmt_as_interface(stmt: &Statement) -> Option<(&String, &Vec<String>, &Vec<ClassMember>)> {
+    match &stmt.kind {
+        StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            modifiers,
+            ..
+        } if modifiers.kind == ClassKind::Interface => Some((name, parents, members)),
+        _ => None,
+    }
+}
+
 fn append_vb_nested_interface_members(
-    members: &mut Vec<InterfaceMember>,
+    members: &mut Vec<ClassMember>,
     nested_name: &str,
-    nested_members: Vec<InterfaceMember>,
+    nested_members: Vec<ClassMember>,
 ) {
     for member in nested_members {
         match member {
-            InterfaceMember::Method {
-                name,
-                params,
-                return_type,
-                is_sub,
-                signature_source,
-            } => {
-                members.push(InterfaceMember::Method {
-                    name: format!("{nested_name}.{name}"),
-                    params,
-                    return_type,
-                    is_sub,
-                    signature_source,
-                });
+            ClassMember::Method(mut stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &mut stmt.kind {
+                    *name = format!("{nested_name}.{name}");
+                }
+                members.push(ClassMember::Method(stmt));
             }
-            InterfaceMember::Property {
+            ClassMember::Property {
                 name,
                 type_hint,
-                is_readonly,
-                is_writeonly,
-            } => {
-                members.push(InterfaceMember::Property {
-                    name: format!("{nested_name}.{name}"),
-                    type_hint,
-                    is_readonly,
-                    is_writeonly,
-                });
-            }
-            InterfaceMember::Event { name, type_hint } => {
-                members.push(InterfaceMember::Event {
-                    name: format!("{nested_name}.{name}"),
-                    type_hint,
-                });
-            }
+                getter,
+                setter,
+                is_auto,
+                modifiers,
+            } => members.push(ClassMember::Property {
+                name: format!("{nested_name}.{name}"),
+                type_hint,
+                getter,
+                setter,
+                is_auto,
+                modifiers,
+            }),
+            ClassMember::Event {
+                name,
+                type_hint,
+                params,
+                visibility,
+            } => members.push(ClassMember::Event {
+                name: format!("{nested_name}.{name}"),
+                type_hint,
+                params,
+                visibility,
+            }),
+            other => members.push(other),
         }
     }
 }
@@ -9239,7 +9290,24 @@ fn normalize_vb_implicit_method_self_expr(
             let key = name.to_ascii_lowercase();
             if fields.contains(&key) && !locals.contains(&key) {
                 let field = name.clone();
-                let object = if static_context && static_fields.contains(&key) {
+                // ⛔ WHAT DECIDES THE RECEIVER IS THE FIELD, NOT THE METHOD.
+                // This used to also require `static_context` — whether the
+                // ENCLOSING method was Shared. A `Shared` field written from an
+                // INSTANCE method then bound to `Me`, while every qualified
+                // read went to the class, so one field had two storages:
+                //
+                //     Class C
+                //         Public Shared Cnt As Integer = 0
+                //         Public Sub R()
+                //             Cnt += 1        ' landed on the instance
+                //         End Sub
+                //     End Class               ' C.Cnt still reads 0
+                //
+                // In VB a `Shared` member referenced unqualified resolves to the
+                // class from either context. A counter that stays 0 reads as an
+                // uninitialised field rather than a failure, which is why it
+                // survived: nothing traps, the number is just wrong.
+                let object = if static_fields.contains(&key) {
                     Expression::ident(owner_name)
                 } else {
                     Expression::new(ExprKind::This)
@@ -9256,7 +9324,66 @@ fn normalize_vb_implicit_method_self_expr(
 }
 
 fn normalize_vb_bitwise_logic(module: &mut Module) {
-    rewrite_vb_bitwise_logic_statements(&mut module.body, &mut HashMap::new());
+    // ⛔ THE PASS NEEDS DECLARED FIELD TYPES. `Not x` becomes BITWISE unless
+    // `x` is known to be Boolean, and `vb_infer_expr_type` asked the .NET
+    // surface about a member access but never the program's own classes. So
+    //
+    //     Class H : Public F As Boolean : End Class
+    //     h.F = True : Console.WriteLine(Not h.F)      →  -2
+    //
+    // — `Not True` computed as a bitwise complement of 1. A local or a literal
+    // was fine; only a FIELD lost its type. `-2` is truthy, so every
+    // `If Not <flag> Then` inside a class took the branch it was written to
+    // skip. C# answers `False` through the same compiler.
+    let mut seed = HashMap::new();
+    collect_vb_class_field_types(&module.body, None, &mut seed);
+    rewrite_vb_bitwise_logic_statements(&mut module.body, &mut seed);
+}
+
+/// `$field:<class>.<field>` → the field's DECLARED type, for every class in the
+/// program. Keyed the way [`vb_infer_expr_type`] reads it, and lowercased
+/// because VB is case-insensitive.
+fn collect_vb_class_field_types(
+    body: &[Statement],
+    scope: Option<&str>,
+    out: &mut HashMap<String, String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. }
+            | StmtKind::ModuleDecl { name, members, .. } => {
+                let class = name.to_ascii_lowercase();
+                for member in members {
+                    match member {
+                        ClassMember::Field {
+                            name,
+                            type_hint: Some(type_hint),
+                            ..
+                        }
+                        | ClassMember::Property {
+                            name,
+                            type_hint: Some(type_hint),
+                            ..
+                        } => {
+                            out.insert(
+                                format!("$field:{class}.{}", name.to_ascii_lowercase()),
+                                vb_canonical_type_name(type_hint),
+                            );
+                        }
+                        ClassMember::NestedType(stmt) => {
+                            collect_vb_class_field_types(std::slice::from_ref(stmt), None, out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                collect_vb_class_field_types(body, scope, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn normalize_vb_trycast_known_locals(module: &mut Module) {
@@ -9701,7 +9828,13 @@ fn rewrite_vb_bitwise_logic_statement(stmt: &mut Statement, locals: &mut HashMap
             }
         }
         StmtKind::FunctionDecl { params, body, .. } => {
-            let mut scoped = HashMap::new();
+            // ⛔ INHERIT THE ENCLOSING SCOPE. This started a FRESH map, so a
+            // method body knew nothing about its own class: the declared field
+            // types and `$self:` seeded above were dropped at the function
+            // boundary, and every member access inside a method inferred as
+            // untyped. That is what made `If Not <Boolean field> Then` compile
+            // to a bitwise complement.
+            let mut scoped = locals.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
                     scoped.insert(
@@ -9712,11 +9845,15 @@ fn rewrite_vb_bitwise_logic_statement(stmt: &mut Statement, locals: &mut HashMap
             }
             rewrite_vb_bitwise_logic_statements(body, &mut scoped);
         }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
+        StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }
+        | StmtKind::ModuleDecl { name, members, .. } => {
+            // `$self:` is how a member body resolves `Me.F` — the receiver
+            // carries no type of its own.
+            let mut scoped = locals.clone();
+            scoped.insert("$self:".to_string(), name.to_ascii_lowercase());
             for member in members {
-                rewrite_vb_bitwise_logic_member(member);
+                rewrite_vb_bitwise_logic_member(member, &scoped);
             }
         }
         StmtKind::If {
@@ -10060,13 +10197,13 @@ fn eval_vb_int_const_expr(expr: &Expression, locals: &HashMap<String, String>) -
     }
 }
 
-fn rewrite_vb_bitwise_logic_member(member: &mut ClassMember) {
+fn rewrite_vb_bitwise_logic_member(member: &mut ClassMember, seed: &HashMap<String, String>) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_vb_bitwise_logic_statement(stmt, &mut HashMap::new());
+            rewrite_vb_bitwise_logic_statement(stmt, &mut seed.clone());
         }
         ClassMember::Constructor { params, body, .. } => {
-            let mut locals = HashMap::new();
+            let mut locals = seed.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
                     locals.insert(
@@ -10079,10 +10216,10 @@ fn rewrite_vb_bitwise_logic_member(member: &mut ClassMember) {
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                rewrite_vb_bitwise_logic_statements(getter, &mut HashMap::new());
+                rewrite_vb_bitwise_logic_statements(getter, &mut seed.clone());
             }
             if let Some(setter) = setter {
-                let mut locals = HashMap::new();
+                let mut locals = seed.clone();
                 if let Some(type_hint) = &setter.param.type_hint {
                     locals.insert(
                         setter.param.name.to_ascii_lowercase(),
@@ -15471,7 +15608,9 @@ fn add_vb_dotnet_namespace_import_aliases(path: &str, aliases: &mut HashMap<Stri
         // ALSO registered here as `dotnet.System` component classes —
         // qualifying them makes `Catch ex As ArgumentException` name a class
         // that does not exist.
-        if dotnet_exceptions::is_synthesized_exception_class(&class.name) {
+        if dotnet_exceptions::is_synthesized_exception_class(&class.name)
+            || dotnet_interop::is_synthesized_interop_class(&class.name)
+        {
             continue;
         }
         let qualified = format!("{export_namespace}.{}", class.name);
@@ -16042,6 +16181,8 @@ fn rewrite_vb_alias_name(name: &str, aliases: &HashMap<String, String>) -> Optio
 
 fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, String>) {
     match &mut expr.kind {
+        // Leaf, like `This`/`Super` — no sub-expression to rewrite.
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             rewrite_vb_aliases_in_expr(callee, aliases);
             for a in args {
@@ -16595,6 +16736,7 @@ fn normalize_vb_date_literal_statement(
 
 fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String, Expression>) {
     match &mut expr.kind {
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             normalize_vb_date_literal_expr(callee, dates);
             for a in args {
@@ -17327,6 +17469,22 @@ fn vb_infer_expr_type(expr: &Expression, locals: &HashMap<String, String>) -> Op
             dotted_expr_name(class).map(|name| vb_canonical_type_name(&name))
         }
         ExprKind::Member { object, field, .. } => {
+            // A field declared on one of the PROGRAM's OWN classes. Seeded by
+            // `collect_vb_class_field_types`; `Me.F` resolves through `$self:`
+            // because the receiver expression carries no type.
+            let declaring_class = match &object.kind {
+                ExprKind::This => locals.get("$self:").cloned(),
+                _ => vb_infer_expr_type(object, locals).map(|ty| {
+                    vb_canonical_type_name(&ty).to_ascii_lowercase()
+                }),
+            };
+            if let Some(class) = &declaring_class {
+                if let Some(declared) =
+                    locals.get(&format!("$field:{class}.{}", field.to_ascii_lowercase()))
+                {
+                    return Some(declared.clone());
+                }
+            }
             if field.eq_ignore_ascii_case("Message")
                 && matches!(
                     &object.kind,
@@ -18444,6 +18602,7 @@ fn normalize_vb_delegate_binding_expr(
     bindings: &HashMap<String, VbDelegateBinding>,
 ) {
     match &mut expr.kind {
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             normalize_vb_delegate_binding_expr(callee, delegates, locals, bindings);
             for a in args {
@@ -20027,11 +20186,13 @@ fn normalize_vb_pointer_ref_statement(stmt: &mut Statement) {
                             .as_deref()
                             .is_some_and(|type_name| vb_type_name_ends(type_name, "GCHandle"))
                     {
-                        decl.init = Some(dotnet_vb::gchandle_expr(
-                            Expression::null(),
-                            Expression::bool(false),
-                            Expression::bool(false),
-                        ));
+                        // An unassigned `Dim h As GCHandle` is a real, empty
+                        // handle — `Free` on it throws, the way .NET's
+                        // default-valued struct does.
+                        decl.init = Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("GCHandle")),
+                            args: Vec::new(),
+                        }));
                     }
                     decl.type_hint = None;
                 }
@@ -20167,17 +20328,18 @@ fn normalize_vb_pointer_ref_case_condition(cond: &mut CaseCondition) {
     }
 }
 
+/// ⛔ `Free` AND `AddrOfPinnedObject` ARE NO LONGER REWRITTEN HERE. They are
+/// methods on the synthesized `GCHandle` class (`dotnet::interop_classes`), so
+/// they work wherever VB can write a call — the rewrites only ever recognised
+/// two statement SHAPES, which is why `h1 = h2`, `GetHashCode`, `CType` to
+/// `IntPtr` and `Target` on a weak handle all reached
+/// `undefined is not callable`.
+///
+/// What remains is the one judgement a class cannot make: whether a PINNED
+/// allocation names a non-blittable type. That is a compile-time fact about
+/// the declared type, not a property of the value at run time.
 fn rewrite_vb_gchandle_statement(stmt: &Statement) -> Option<Statement> {
     match &stmt.kind {
-        StmtKind::Expr(expr) => {
-            if let Some(handle) = vb_gchandle_free_receiver(expr) {
-                return Some(vb_gchandle_free_statement(handle));
-            }
-            if let Some(handle) = vb_gchandle_addr_receiver(expr) {
-                return Some(vb_gchandle_addr_statement(handle, None));
-            }
-            None
-        }
         StmtKind::VarDecl { declarations, kind } if declarations.len() == 1 => {
             let decl = declarations.first()?;
             if let Some(init) = &decl.init {
@@ -20193,44 +20355,11 @@ fn rewrite_vb_gchandle_statement(stmt: &Statement) -> Option<Statement> {
     }
 }
 
-fn expand_vb_gchandle_addr_vardecl(stmt: &Statement) -> Option<Vec<Statement>> {
-    let StmtKind::VarDecl { declarations, kind } = &stmt.kind else {
-        return None;
-    };
-    if declarations.len() != 1 {
-        return None;
-    }
-    let decl = declarations.first()?;
-    let init = decl.init.as_ref()?;
-    let handle = vb_gchandle_addr_receiver(init)?;
-    let mut out = decl.clone();
-    out.type_hint = None;
-    out.init = None;
-    let BindingPattern::Ident(name) = &out.pattern else {
-        return None;
-    };
-    let assign_addr = Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(name)],
-        value: common_pointers::make_carray_ptr(
-            member_expr(handle.clone(), "Target"),
-            Expression::int(0),
-        ),
-        by_ref: false,
-    });
-    Some(vec![
-        Statement::new(StmtKind::VarDecl {
-            declarations: vec![out],
-            kind: kind.clone(),
-        }),
-        Statement::new(StmtKind::If {
-            cond: vb_gchandle_not_pinned(handle),
-            then_body: vec![vb_throw_statement(
-                "InvalidOperationException:Handle is not pinned",
-            )],
-            elifs: Vec::new(),
-            else_body: Some(vec![assign_addr]),
-        }),
-    ])
+fn expand_vb_gchandle_addr_vardecl(_stmt: &Statement) -> Option<Vec<Statement>> {
+    // ⛔ RETIRED. `AddrOfPinnedObject` is a method on the synthesized
+    // `GCHandle` class; it needs no statement-shape expansion and it throws
+    // from its own body.
+    None
 }
 
 fn vb_gchandle_free_receiver(expr: &Expression) -> Option<Expression> {
@@ -20536,18 +20665,10 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
         {
             return Some((**object).clone());
         }
-        if args.is_empty() && field.eq_ignore_ascii_case("Free") {
-            return Some(Expression::new(ExprKind::Assign {
-                target: Box::new(member_expr((**object).clone(), "IsAllocated")),
-                value: Box::new(Expression::bool(false)),
-            }));
-        }
-        if args.is_empty() && field.eq_ignore_ascii_case("AddrOfPinnedObject") {
-            return Some(common_pointers::make_carray_ptr(
-                member_expr((**object).clone(), "Target"),
-                Expression::int(0),
-            ));
-        }
+        // ⛔ `Free` AND `AddrOfPinnedObject` ARE GCHandle METHODS NOW. Both
+        // used to be rewritten here on the NAME ALONE, with no idea what the
+        // receiver was — so a `Free` on anything at all became
+        // `x.IsAllocated = False`, and neither could throw the way .NET does.
     }
 
     if vb_callee_ends(callee, &["IntPtr", "Add"]) || vb_callee_ends(callee, &["UIntPtr", "Add"]) {
@@ -20568,24 +20689,11 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
             ));
         }
     }
-    if vb_callee_ends(callee, &["GCHandle", "Alloc"]) {
-        if let Some(first) = args.first() {
-            let pinned = args
-                .get(1)
-                .map(|arg| vb_gchandle_type_arg_is_pinned(&arg.value))
-                .unwrap_or(false);
-            return Some(dotnet_vb::gchandle_expr(
-                first.value.clone(),
-                Expression::bool(true),
-                Expression::bool(pinned),
-            ));
-        }
-    }
-    if vb_callee_ends(callee, &["GCHandle", "ToIntPtr"])
-        || vb_callee_ends(callee, &["GCHandle", "FromIntPtr"])
-    {
-        return args.first().map(|arg| arg.value.clone());
-    }
+    // ⛔ `GCHandle.Alloc` / `ToIntPtr` / `FromIntPtr` ARE `Shared` METHODS ON
+    // THE SYNTHESIZED CLASS. `Alloc` used to answer an anonymous object
+    // literal, which is why the handle had no methods and no identity: `=`,
+    // `<>`, `GetHashCode` and a `CType` round-trip all reached
+    // `undefined is not callable`.
     // ⛔ `BitConverter`'s bit-cast family is NOT rewritten here any more. It
     // MOVED to `platforms/dotnet` — `bitconverter_adapter::emit_*_bits` +
     // leaves on the `BitConverter` ClassType — which calls the SAME shared
@@ -25517,12 +25625,12 @@ fn collect_vb_default_indexer_types(body: &[Statement], types: &mut HashMap<Stri
                     }
                 }
             }
-            StmtKind::InterfaceDecl { name, members, .. } => {
+            _ if vb_stmt_as_interface(stmt).is_some() => {
+                let (name, _, members) = vb_stmt_as_interface(stmt).expect("guard just matched");
                 if members.iter().any(|member| {
                     matches!(
                         member,
-                        InterfaceMember::Property { name, .. }
-                            if name.eq_ignore_ascii_case("Item")
+                        ClassMember::Property { name, .. } if name.eq_ignore_ascii_case("Item")
                     )
                 }) {
                     types.insert(vb_canonical_type_name(name).to_ascii_lowercase(), true);
@@ -25965,7 +26073,7 @@ fn vb_default_indexer_setter_call_from_root(
             let setter_name = if field.eq_ignore_ascii_case("Item") {
                 "__setitem__".to_string()
             } else {
-                format!("__set_{field}")
+                vybe_compiler::primitives::class_slots::setter_name(field)
             };
             return Some(call_expr(
                 member_expr((**object).clone(), &setter_name),
@@ -26476,7 +26584,7 @@ fn vb_custom_property_setter_call(
         return None;
     }
     Some(call_expr(
-        member_expr((**object).clone(), &format!("__set_{field}")),
+        member_expr((**object).clone(), &vybe_compiler::primitives::class_slots::setter_name(field)),
         vec![Argument::positional(value)],
     ))
 }
@@ -28807,6 +28915,7 @@ fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
 
 fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
     match &mut expr.kind {
+        ExprKind::GlobalNamespace => false,
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             let mut changed = rewrite_vb_err_expr(callee);
             for a in args {
@@ -30071,7 +30180,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::generic_suffix => consume_vb_generic_suffix(p.as_str()),
             Rule::property_decl => members.extend(parse_property_decl_to_members(p)?),
             Rule::auto_property_decl => {
@@ -30439,7 +30548,7 @@ fn parse_auto_property_as_field(pair: Pair<Rule>) -> Result<VarDeclarator, Strin
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::type_name => var_type = Some(p.as_str().to_string()),
             Rule::expression => initializer = Some(parse_expression(p)?),
             Rule::from_initializer => {
@@ -30982,6 +31091,37 @@ fn normalize_vb_implicit_property_self(class_name: &str, members: &mut Vec<Class
             _ => None,
         })
         .collect();
+    // ⛔ WHICH MEMBERS ARE `Shared`, not which METHODS are.
+    //
+    // The receiver for an unqualified member used to be chosen by the
+    // ENCLOSING method's staticness alone, so a `Shared` field written from an
+    // INSTANCE method bound to `Me` while every qualified read went to the
+    // class. One field, two storages:
+    //
+    //     Class C
+    //         Public Shared Cnt As Integer = 0
+    //         Public Sub R()
+    //             Cnt += 1        ' landed on the instance
+    //         End Sub
+    //     End Class               ' C.Cnt still read 0
+    //
+    // A counter that stays 0 reads as an uninitialised field rather than a
+    // failure, which is how it survived. In VB a `Shared` member referenced
+    // unqualified resolves to the CLASS from either context.
+    let shared_markers: Vec<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name, modifiers, ..
+            }
+            | ClassMember::Property {
+                name, modifiers, ..
+            } if modifiers.is_static || modifiers.is_shared => {
+                Some(format!("$shared:{}", name.to_ascii_lowercase()))
+            }
+            _ => None,
+        })
+        .collect();
     if properties.is_empty() {
         for member in members {
             if let ClassMember::NestedType(stmt) = member {
@@ -31010,8 +31150,9 @@ fn normalize_vb_implicit_property_self(class_name: &str, members: &mut Vec<Class
                         .collect();
                     if modifiers.is_static || modifiers.is_shared {
                         locals.insert("$static_member".to_string());
-                        locals.insert(format!("$class:{class_name}"));
                     }
+                    locals.insert(format!("$class:{class_name}"));
+                    locals.extend(shared_markers.iter().cloned());
                     normalize_vb_implicit_property_self_statements(
                         body,
                         &properties,
@@ -31303,7 +31444,8 @@ fn vb_expr_is_mybase_member(expr: &Expression, property: &str) -> bool {
 }
 
 fn vb_property_self_expr_with_locals(name: &str, locals: &HashSet<String>) -> Expression {
-    let object = if locals.contains("$static_member") {
+    let member_is_shared = locals.contains(&format!("$shared:{}", name.to_ascii_lowercase()));
+    let object = if locals.contains("$static_member") || member_is_shared {
         vb_static_member_class_name(locals)
             .map(build_dotted_expr)
             .unwrap_or_else(|| Expression::new(ExprKind::This))
@@ -32272,7 +32414,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                 }
             }
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::property_decl => {
                 for mut member in parse_property_decl_to_members(p)? {
                     apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
@@ -33979,7 +34121,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
     for p in inner {
         match p.as_str().to_lowercase().as_str() {
             _ => match p.as_rule() {
-                Rule::identifier => name = p.as_str().to_string(),
+                Rule::identifier => name = normalize_vb_identifier(p.as_str()),
                 Rule::param_list => parameters = parse_param_list(p)?,
                 Rule::type_name => return_type = Some(p.as_str().to_string()),
                 Rule::property_get => getter = Some(parse_property_get(p)?),
@@ -34078,7 +34220,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
             let setter_name = if has_default_indexer_alias {
                 "__setitem__".to_string()
             } else {
-                format!("__set_{name}")
+                vybe_compiler::primitives::class_slots::setter_name(&name)
             };
             let mut setter_params = parameters.clone();
             setter_params.push(setter.param.clone());
@@ -34102,7 +34244,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
             if has_default_indexer_alias {
                 members.push(ClassMember::Method(Box::new(Statement::new(
                     StmtKind::FunctionDecl {
-                        name: format!("__set_{name}"),
+                        name: vybe_compiler::primitives::class_slots::setter_name(&name),
                         params: setter_params.clone(),
                         return_type: None,
                         body: setter.body.clone(),
@@ -34154,7 +34296,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
         if !setter.body.is_empty() {
             members.push(ClassMember::Method(Box::new(Statement::new(
                 StmtKind::FunctionDecl {
-                    name: format!("__set_{name}"),
+                    name: vybe_compiler::primitives::class_slots::setter_name(&name),
                     params: vec![setter.param.clone()],
                     return_type: None,
                     body: setter.body.clone(),
@@ -34353,7 +34495,7 @@ fn parse_delegate_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::visibility_modifier => visibility = parse_visibility(p.as_str()),
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::generic_suffix => {
                 name.push_str(p.as_str());
                 consume_vb_generic_suffix(p.as_str());
@@ -34472,7 +34614,7 @@ fn parse_const_declaration_part(pair: Pair<Rule>) -> Result<VarDeclarator, Strin
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::expression => init = Some(parse_expression(p)?),
             Rule::array_literal => init = Some(parse_array_literal(p)?),
@@ -34608,7 +34750,7 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
 
         for p in part.into_inner() {
             match p.as_rule() {
-                Rule::identifier => name = p.as_str().to_string(),
+                Rule::identifier => name = normalize_vb_identifier(p.as_str()),
                 Rule::array_rank_spec => {
                     array_rank_count += 1;
                     if array_bounds.is_none() {
@@ -34789,7 +34931,7 @@ fn parse_redim_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::preserve_keyword => preserve = true,
-            Rule::identifier => array = p.as_str().to_string(),
+            Rule::identifier => array = normalize_vb_identifier(p.as_str()),
             Rule::array_bounds => {
                 bounds = parse_array_bounds_pair(p)?;
             }
@@ -35732,7 +35874,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 let mut arguments = Vec::new();
                 for part in pair.into_inner() {
                     match part.as_rule() {
-                        Rule::identifier => name = strip_vb_generic_suffix(part.as_str()),
+                        Rule::identifier => name = normalize_vb_identifier(&strip_vb_generic_suffix(part.as_str())),
                         Rule::generic_suffix => {
                             generic_target_type = vb_generic_suffix_first_type(part.as_str())
                         }
@@ -36475,7 +36617,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 let mut arguments = Vec::new();
                 for part in pair.into_inner() {
                     match part.as_rule() {
-                        Rule::identifier => name = strip_vb_generic_suffix(part.as_str()),
+                        Rule::identifier => name = normalize_vb_identifier(&strip_vb_generic_suffix(part.as_str())),
                         Rule::generic_suffix => {
                             generic_target_type = vb_generic_suffix_first_type(part.as_str())
                         }
@@ -38023,7 +38165,7 @@ fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 let mut resource_expr = None;
                 for rp in p.clone().into_inner() {
                     match rp.as_rule() {
-                        Rule::identifier => var_name = rp.as_str().to_string(),
+                        Rule::identifier => var_name = normalize_vb_identifier(rp.as_str()),
                         Rule::type_name => {}
                         Rule::new_expression | Rule::expression => {
                             resource_expr = Some(parse_expression(rp)?);
@@ -38267,7 +38409,7 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
             Rule::dim_new_keyword => {
                 is_new = true;
             }
-            Rule::identifier => field_name = fp.as_str().to_string(),
+            Rule::identifier => field_name = normalize_vb_identifier(fp.as_str()),
             Rule::type_name => field_type = Some(fp.as_str().to_string()),
             Rule::array_rank_spec => {
                 field_bounds = Some(parse_array_bounds_pair(fp)?);
@@ -38588,11 +38730,11 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut _visibility = Visibility::Public;
     let mut name = String::new();
     let mut parents: Vec<String> = Vec::new();
-    let mut members: Vec<InterfaceMember> = Vec::new();
+    let mut members: Vec<ClassMember> = Vec::new();
 
     for p in inner {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::inherits_statement => {
                 for tp in p.into_inner() {
                     if tp.as_rule() == Rule::type_name {
@@ -38617,13 +38759,13 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => {}
                     }
                 }
-                members.push(InterfaceMember::Method {
-                    name: sname,
+                members.push(vb_interface_method_member(
+                    sname,
                     params,
-                    return_type: None,
-                    is_sub: true,
-                    signature_source: is_shadows.then(|| "shadows".to_string()),
-                });
+                    None,
+                    true,
+                    is_shadows,
+                ));
             }
             Rule::interface_function => {
                 let mut fname = String::new();
@@ -38644,13 +38786,13 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => {}
                     }
                 }
-                members.push(InterfaceMember::Method {
-                    name: fname,
+                members.push(vb_interface_method_member(
+                    fname,
                     params,
-                    return_type: ret,
-                    is_sub: false,
-                    signature_source: is_shadows.then(|| "shadows".to_string()),
-                });
+                    ret,
+                    false,
+                    is_shadows,
+                ));
             }
             Rule::interface_property => {
                 let mut pname = String::new();
@@ -38666,16 +38808,22 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
                 for pp in p.into_inner() {
                     match pp.as_rule() {
-                        Rule::identifier => pname = pp.as_str().to_string(),
+                        Rule::identifier => pname = normalize_vb_identifier(pp.as_str()),
                         Rule::type_name => ptype = Some(pp.as_str().to_string()),
                         _ => {}
                     }
                 }
-                members.push(InterfaceMember::Property {
+                members.push(ClassMember::Property {
                     name: pname,
                     type_hint: ptype,
-                    is_readonly,
-                    is_writeonly,
+                    getter: None,
+                    setter: None,
+                    is_auto: false,
+                    modifiers: Modifiers {
+                        is_abstract: true,
+                        is_readonly: is_readonly || is_writeonly,
+                        ..Modifiers::default()
+                    },
                 });
             }
             Rule::interface_event => {
@@ -38683,19 +38831,21 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 let mut etype: Option<String> = None;
                 for ep in p.into_inner() {
                     match ep.as_rule() {
-                        Rule::identifier => ename = ep.as_str().to_string(),
+                        Rule::identifier => ename = normalize_vb_identifier(ep.as_str()),
                         Rule::type_name => etype = Some(ep.as_str().to_string()),
                         _ => {}
                     }
                 }
-                members.push(InterfaceMember::Event {
+                members.push(ClassMember::Event {
                     name: ename,
                     type_hint: etype,
+                    params: Vec::new(),
+                    visibility: Visibility::Public,
                 });
             }
             Rule::interface_decl => {
                 let nested = parse_interface_decl(p)?;
-                if let StmtKind::InterfaceDecl {
+                if let StmtKind::ClassDecl {
                     name: nested_name,
                     members: nested_members,
                     ..
@@ -38711,15 +38861,56 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    // ⛔ A `ClassDecl` THAT SAYS IT IS AN INTERFACE — php's shape, and the only
+    // one `classes.rs` can see. `StmtKind::InterfaceDecl` compiles to a no-op,
+    // so no VB interface ever entered the class table.
+    //
+    // This is a CROSS-LANGUAGE fact, not a tidiness one: a php class
+    // implementing `IGreet` and a VB `TypeOf x Is IGreet` can only be talking
+    // about the same declared type if both reach the same table.
     Ok(Statement::with_span(
-        StmtKind::InterfaceDecl {
+        StmtKind::ClassDecl {
             name,
             parents,
+            interfaces: Vec::new(),
             members,
+            modifiers: ClassModifiers {
+                kind: ClassKind::Interface,
+                is_abstract: true,
+                ..ClassModifiers::default()
+            },
             decorators,
         },
         span,
     ))
+}
+
+/// An interface method as an abstract `ClassMember`.
+///
+/// VB's `Shadows` rode `InterfaceMember::signature_source`; on a `ClassMember`
+/// it is `Modifiers::is_hiding`, which is the field that already means it.
+fn vb_interface_method_member(
+    name: String,
+    params: Vec<Param>,
+    return_type: Option<String>,
+    is_sub: bool,
+    is_shadows: bool,
+) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type,
+        body: Vec::new(),
+        modifiers: Modifiers {
+            is_abstract: true,
+            is_hiding: is_shadows,
+            ..Modifiers::default()
+        },
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub,
+    })))
 }
 
 fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -38737,7 +38928,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::attribute_line => {
                 pending_member_decorators.extend(parse_vb_attribute_specs(p.as_str()));
             }
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::implements_statement => {
                 for tp in p.into_inner() {
                     if tp.as_rule() == Rule::type_name {
@@ -39069,7 +39260,7 @@ fn parse_event_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, Str
 
     for p in inner {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => name = normalize_vb_identifier(p.as_str()),
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::type_name => event_type = Some(p.as_str().to_string()),
             Rule::visibility_modifier => {

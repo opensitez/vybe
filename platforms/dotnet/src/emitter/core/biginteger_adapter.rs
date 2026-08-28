@@ -24,6 +24,9 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const PAYLOAD: &str = "__bi";
@@ -43,7 +46,13 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `[obj] → [bigint]` — the payload, accepting a bare BigInt or a Number too so
@@ -58,8 +67,13 @@ fn unwrap_payload(chunk: &mut Chunk, line: u32) {
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     get(chunk, v, line);
-    let k = chunk.add_constant(Value::String(Arc::from(PAYLOAD)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PAYLOAD),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_else(line);
     get(chunk, v, line);
     call(chunk, "ecma:bigint", "BigInt", 1, line);
@@ -89,7 +103,7 @@ fn emit_value_body(chunk: &mut Chunk, line: u32) -> u16 {
     let payload = chunk.alloc_scratch(2);
     let obj = payload + 1;
     set(chunk, payload, line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set(chunk, obj, line);
     get(chunk, obj, line);
     chunk.emit_string_const("BigInteger", line);
@@ -1205,7 +1219,7 @@ pub fn emit_div_rem(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     set(chunk, remainder, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set(chunk, pair, line);
     // `Quotient`/`Remainder` are the .NET 7 tuple's names and `Item1`/`Item2`
     // the positional ones. A `ValueTuple` answers to both, so both are stored.

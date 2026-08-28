@@ -18,27 +18,19 @@
 //! The flag is dropped rather than stored because nothing can observe it.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const FACTORY_KEY: &str = "__factory";
 const VALUE_KEY: &str = "__value";
 const CREATED_KEY: &str = "__created";
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
-fn struct_set(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-}
 
-fn struct_get(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
-}
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -81,19 +73,43 @@ pub fn emit_lazy_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
 
         lget(chunk, obj_slot, line);
         chunk.emit_string_const("Lazy", line);
-        struct_set(chunk, TYPE_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(TYPE_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
         lget(chunk, factory_slot, line);
-        struct_set(chunk, FACTORY_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(FACTORY_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        struct_set(chunk, VALUE_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(VALUE_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
         chunk.emit_bool_const(false, line);
-        struct_set(chunk, CREATED_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATED_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
     }
@@ -113,7 +129,13 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     {
         let chunk = &mut chunks[current];
         lget(chunk, obj_slot, line);
-        struct_get(chunk, CREATED_KEY, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATED_KEY),
+            Dest::Stack,
+            line,
+        );
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         // Void `if`: the arms only store to the object, nothing crosses the
@@ -122,20 +144,44 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
         lget(chunk, obj_slot, line);
         lget(chunk, obj_slot, line);
-        struct_get(chunk, FACTORY_KEY, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(FACTORY_KEY),
+            Dest::Stack,
+            line,
+        );
     }
     vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 0, line);
     {
         let chunk = &mut chunks[current];
-        struct_set(chunk, VALUE_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(VALUE_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
         chunk.emit_bool_const(true, line);
-        struct_set(chunk, CREATED_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATED_KEY),
+            ValueSource::Stack,
+            line,
+        );
         chunk.emit_end(line);
 
         lget(chunk, obj_slot, line);
-        struct_get(chunk, VALUE_KEY, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(VALUE_KEY),
+            Dest::Stack,
+            line,
+        );
     }
 }
 
@@ -143,5 +189,11 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 ///
 /// Stack on entry: `[lazy]` ; on exit: `[bool]`.
 pub fn emit_lazy_is_value_created(chunks: &mut [Chunk], current: usize, line: u32) {
-    struct_get(&mut chunks[current], CREATED_KEY, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(CREATED_KEY),
+        Dest::Stack,
+        line,
+    );
 }

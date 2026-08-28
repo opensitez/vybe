@@ -22,12 +22,15 @@
 //! unannotated argument: `Int32` for a whole number, `Double` otherwise.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::strings as shared_strings;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const STREAM: &str = "__bio_stream";
@@ -59,13 +62,25 @@ fn call(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
 
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn field(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     get(chunk, slot, line);
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
@@ -77,10 +92,12 @@ fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
 }
 
 fn throw(chunk: &mut Chunk, class: &str, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_string_const(message, line);
-    errors::emit_exception_new_finalize(chunk, class, line);
+    errors::emit_exception_new(
+        chunk,
+        class,
+        class_slots::ValueSource::ConstStr(message.to_string()),
+        line,
+    );
     errors::emit_throw(chunk, line);
 }
 
@@ -143,7 +160,7 @@ fn build(chunk: &mut Chunk, type_name: &str, argc: u8, line: u32) {
         }
     }
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set(chunk, obj, line);
     get(chunk, obj, line);
     chunk.emit_string_const(type_name, line);

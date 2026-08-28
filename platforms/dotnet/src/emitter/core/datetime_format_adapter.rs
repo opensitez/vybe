@@ -10,8 +10,11 @@
 //! from a second implementation.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 /// Month names, FIXED WIDTH so a name is one `substring` away — no array
 /// construction and no per-month branch. 9 = `"September"`.
@@ -101,8 +104,13 @@ fn pad(chunk: &mut Chunk, width: i32, line: u32) {
 /// A field of the DateTime / DateTimeOffset in local 0. `[] → [value]`
 fn field(chunk: &mut Chunk, name: &str, line: u32) {
     get(chunk, 0, line);
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(name),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `[a, b] → [i32 0/1]`
@@ -275,8 +283,13 @@ fn build_chunk(line: u32) -> Chunk {
     // `Value`/`value` is the NAME (`CStr(d.DayOfWeek)` prints `Friday`), so
     // the index comes off `__index`.
     field(c, "DayOfWeek", line);
-    let dow_key = c.add_constant(Value::String(Arc::from("__index")));
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, dow_key, line);
+    class_slots::emit_class_get(
+        c,
+        ObjSource::Stack,
+        &field_slot("__index"),
+        Dest::Stack,
+        line,
+    );
     set(c, s.dow, line);
 
     // `__offset_ms` exists on DateTimeOffset only; a DateTime is UTC-relative

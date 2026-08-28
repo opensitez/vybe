@@ -67,7 +67,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.extend(component_classes_network::exports());
         exports.extend(component_classes_uri::exports());
         exports.extend(component_classes_io::exports());
-        exports.extend(component_classes_xml::exports());
+            exports.extend(component_classes_xml::exports());
         exports
     });
     EXPORTS.as_slice()

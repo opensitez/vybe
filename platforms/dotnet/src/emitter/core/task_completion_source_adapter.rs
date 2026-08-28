@@ -30,9 +30,12 @@
 //! is a second place for it to drift.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const PROMISE_KEY: &str = "__tcs_promise";
@@ -41,19 +44,8 @@ const REJECT_KEY: &str = "__tcs_reject";
 const DONE_KEY: &str = "__tcs_done";
 const TYPE_NAME: &str = "TaskCompletionSource";
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
-fn struct_set(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-}
 
-fn struct_get(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
-}
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -65,10 +57,12 @@ fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, a
 }
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
-    chunk.emit_dup(line);
-    chunk.emit_string_const(message, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_compiler::primitives::errors::emit_exception_new(
+        chunk,
+        exception_name,
+        class_slots::ValueSource::ConstStr(message.to_string()),
+        line,
+    );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
@@ -98,12 +92,18 @@ pub fn emit_tcs_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, deferred_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     lget(chunk, obj_slot, line);
     chunk.emit_string_const(TYPE_NAME, line);
-    struct_set(chunk, TYPE_KEY, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     for (field, source) in [
         (PROMISE_KEY, "promise"),
@@ -112,13 +112,31 @@ pub fn emit_tcs_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     ] {
         lget(chunk, obj_slot, line);
         lget(chunk, deferred_slot, line);
-        struct_get(chunk, source, line);
-        struct_set(chunk, field, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(source),
+            Dest::Stack,
+            line,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(field),
+            ValueSource::Stack,
+            line,
+        );
     }
 
     lget(chunk, obj_slot, line);
     chunk.emit_bool_const(false, line);
-    struct_set(chunk, DONE_KEY, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(DONE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     lget(chunk, obj_slot, line);
 }
@@ -127,7 +145,13 @@ pub fn emit_tcs_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
 ///
 /// Stack on entry: `[tcs]` ; on exit: `[task]`.
 pub fn emit_tcs_task(chunks: &mut [Chunk], current: usize, line: u32) {
-    struct_get(&mut chunks[current], PROMISE_KEY, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(PROMISE_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// Which settler a completion runs, and what a repeat completion does.
@@ -180,12 +204,10 @@ pub fn emit_tcs_settle(
             // `SetCanceled()` carries no value — the rejection reason is the
             // cancellation itself, minted here.
             chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-            chunk.emit_struct_new(0, 0, line);
-            chunk.emit_dup(line);
-            chunk.emit_string_const("A task was canceled.", line);
-            vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            vybe_compiler::primitives::errors::emit_exception_new(
                 chunk,
                 "TaskCanceledException",
+                class_slots::ValueSource::ConstStr("A task was canceled.".to_string()),
                 line,
             );
             chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
@@ -195,7 +217,13 @@ pub fn emit_tcs_settle(
         }
 
         lget(chunk, obj_slot, line);
-        struct_get(chunk, DONE_KEY, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(DONE_KEY),
+            Dest::Stack,
+            line,
+        );
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         if try_variant {
@@ -207,10 +235,22 @@ pub fn emit_tcs_settle(
         // ── not yet completed: settle, and mark it ──
         lget(chunk, obj_slot, line);
         chunk.emit_bool_const(true, line);
-        struct_set(chunk, DONE_KEY, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(DONE_KEY),
+            ValueSource::Stack,
+            line,
+        );
 
         lget(chunk, obj_slot, line);
-        struct_get(chunk, settle.settler(), line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(settle.settler()),
+            Dest::Stack,
+            line,
+        );
         lget(chunk, value_slot, line);
     }
     // The settler is an ECMA bound function; calling it is what actually
@@ -233,9 +273,21 @@ pub fn emit_tcs_settle(
         // both read `Faulted` and `IsCanceled` is False after a cancel.
         if settle == Settle::Canceled {
             lget(chunk, obj_slot, line);
-            struct_get(chunk, PROMISE_KEY, line);
+            class_slots::emit_class_get(
+                chunk,
+                ObjSource::Stack,
+                &field_slot(PROMISE_KEY),
+                Dest::Stack,
+                line,
+            );
             chunk.emit_string_const("Canceled", line);
-            struct_set(chunk, "status", line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Stack,
+                &field_slot("status"),
+                ValueSource::Stack,
+                line,
+            );
         }
 
         if try_variant {

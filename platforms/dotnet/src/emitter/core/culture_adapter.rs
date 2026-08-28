@@ -29,6 +29,7 @@ use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots;
 
 // ⛔ Every member is written in BOTH spellings. A dotnet type with no property
 // accessor resolves its properties as a LOWERCASED struct-field read, so a
@@ -94,7 +95,7 @@ fn set_slot_both(chunks: &mut [Chunk], current: usize, object: u16, key: &str, v
 /// separators are not.
 fn emit_number_format(chunks: &mut [Chunk], current: usize, currency: &str, line: u32) -> u16 {
     let nf = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nf, line);
     set_string_both(chunks, current, nf, "NumberDecimalSeparator", ".", line);
     set_string_both(chunks, current, nf, "NumberGroupSeparator", ",", line);
@@ -109,7 +110,7 @@ fn emit_number_format(chunks: &mut [Chunk], current: usize, currency: &str, line
 /// class; the object only has to exist and carry its culture's name.
 fn emit_text_info(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
     let ti = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ti, line);
     set_string_both(chunks, current, ti, "CultureName", name, line);
     ti
@@ -132,7 +133,7 @@ fn emit_culture(
     let ti = emit_text_info(chunks, current, name, line);
 
     let culture = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, culture, line);
     set_string_both(chunks, current, culture, "Name", name, line);
     set_string_both(chunks, current, culture, "DisplayName", name, line);

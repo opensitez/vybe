@@ -1613,6 +1613,14 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     {
         return Some("Type");
     }
+    // `GC.GetGCMemoryInfo()` answers a registered type, so its members resolve
+    // through the tree — which is what lets `info.HeapCount` and VB's folded
+    // `info.heapcount` be ONE member. Without the declared return the value
+    // has no identity and the read falls back to a stamped string key, which
+    // is the two-spellings bug this replaced.
+    if class.eq_ignore_ascii_case("GC") && method_name.eq_ignore_ascii_case("GetGCMemoryInfo") {
+        return Some("GCMemoryInfo");
+    }
     if class.eq_ignore_ascii_case("Object")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),

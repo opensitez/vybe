@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::{collections, sets};
+
+use super::object_fields::field_slot;
 
 const VB_COLLECTION_ITEMS: &str = "__dotnet_vb_collection_items";
 const VB_COLLECTION_KEYS: &str = "__dotnet_vb_collection_keys";
@@ -262,7 +265,7 @@ pub fn emit_readonly_observable_collection_new(_chunks: &mut [Chunk], _current: 
 pub fn emit_property_changed_event_args_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let property_name = stash_args(chunks, current, 1, line);
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
     emit_set_field(chunks, current, args, "PropertyName", property_name, line);
     emit_set_field(chunks, current, args, "propertyname", property_name, line);
@@ -276,7 +279,7 @@ pub fn emit_notify_collection_changed_event_args_new(
 ) {
     let action = stash_args(chunks, current, 1, line);
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
     emit_set_field(chunks, current, args, "Action", action, line);
     emit_set_field(chunks, current, args, "action", action, line);
@@ -453,7 +456,7 @@ pub fn emit_blocking_collection_new(chunks: &mut [Chunk], current: usize, argc: 
     let capacity_slot = obj_slot + 2;
     let lifo_slot = obj_slot + 3;
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     if argc > 0 {
@@ -625,7 +628,7 @@ fn emit_observable_event_args(
     line: u32,
 ) -> u16 {
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
 
     let action_value = chunks[current].alloc_scratch(1);
@@ -712,7 +715,7 @@ fn emit_property_changed_args(
     line: u32,
 ) -> u16 {
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
 
     let value = chunks[current].alloc_scratch(1);
@@ -762,12 +765,10 @@ fn emit_throw_dotnet_exception(
     message: &str,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const(message, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         &mut chunks[current],
         exception_name,
+        class_slots::ValueSource::ConstStr(message.to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
@@ -1461,16 +1462,25 @@ fn emit_linked_list_node_from_index(
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let value_key = chunks[current].add_constant(Value::String(Arc::from("Value")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("Value"),
+        ValueSource::Local(value_slot),
+        line,
+    );
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let lower_value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, lower_value_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("value"),
+        ValueSource::Stack,
+        line,
+    );
 
     if include_next {
         let next_index_slot = chunks[current].alloc_scratch(1);
@@ -1489,8 +1499,13 @@ fn emit_linked_list_node_from_index(
         chunks[current].emit_else(line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
-        let next_key = chunks[current].add_constant(Value::String(Arc::from("Next")));
-        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, next_key, line);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &field_slot("Next"),
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 
@@ -1535,11 +1550,15 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("value"),
+        ValueSource::Local(value_slot),
+        line,
+    );
     chunks[current].emit_end(line);
 }
 
@@ -1549,7 +1568,7 @@ pub fn emit_vb_collection_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let items = base + 1;
     let keys = base + 2;
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
 
     collections::emit_array_new(chunks, current, 0, line);

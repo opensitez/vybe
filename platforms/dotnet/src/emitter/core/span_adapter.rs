@@ -12,36 +12,45 @@
 //! array here, so these compose the same helpers `List<T>` uses.
 
 use super::array_adapter;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
     chunk.alloc_scratch(n)
 }
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
-    chunk.add_constant(Value::String(name.into()))
-}
-
 fn set_field(chunk: &mut Chunk, object_slot: u16, field: &str, value_slot: u16, line: u32) {
-    let field_key = key(chunk, field);
-    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(object_slot),
+        &field_slot(field),
+        ValueSource::Local(value_slot),
+        line,
+    );
 }
 
 fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &str, line: u32) {
-    let value_slot = chunk.alloc_scratch(1);
-    chunk.emit_string_const(value, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    set_field(chunk, object_slot, field, value_slot, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(object_slot),
+        &field_slot(field),
+        ValueSource::ConstStr(value.to_string()),
+        line,
+    );
 }
 
 fn get_field(chunk: &mut Chunk, object_slot: u16, field: &str, line: u32) {
-    let field_key = key(chunk, field);
-    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(object_slot),
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn emit_array_segment_from_slots(
@@ -53,7 +62,7 @@ fn emit_array_segment_from_slots(
     line: u32,
 ) {
     let object_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, object_slot, line);
     set_field(&mut chunks[current], object_slot, "Array", array_slot, line);
     set_field(&mut chunks[current], object_slot, "array", array_slot, line);
@@ -84,9 +93,8 @@ fn emit_array_with_length(chunks: &mut [Chunk], current: usize, count_slot: u16,
 
 pub fn emit_array_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
     let pool_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_construct(&mut chunks[current], "ArrayPool", &[], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
-    set_string_field(&mut chunks[current], pool_slot, "__type", "ArrayPool", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, pool_slot, line);
 }
 
@@ -112,15 +120,8 @@ pub fn emit_array_pool_return(chunks: &mut [Chunk], current: usize, argc: u8, li
 
 pub fn emit_memory_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
     let pool_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_construct(&mut chunks[current], "MemoryPool", &[], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
-    set_string_field(
-        &mut chunks[current],
-        pool_slot,
-        "__type",
-        "MemoryPool",
-        line,
-    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, pool_slot, line);
 }
 
@@ -132,15 +133,8 @@ pub fn emit_memory_pool_rent(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     emit_array_with_length(chunks, current, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_construct(&mut chunks[current], "MemoryPoolOwner", &[], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
-    set_string_field(
-        &mut chunks[current],
-        owner_slot,
-        "__type",
-        "MemoryPoolOwner",
-        line,
-    );
     set_field(&mut chunks[current], owner_slot, "Memory", array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, owner_slot, line);
 }
@@ -152,15 +146,8 @@ pub fn emit_memory_pool_rent_static(chunks: &mut [Chunk], current: usize, line: 
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     emit_array_with_length(chunks, current, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_construct(&mut chunks[current], "MemoryPoolOwner", &[], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
-    set_string_field(
-        &mut chunks[current],
-        owner_slot,
-        "__type",
-        "MemoryPoolOwner",
-        line,
-    );
     set_field(&mut chunks[current], owner_slot, "Memory", array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, owner_slot, line);
 }

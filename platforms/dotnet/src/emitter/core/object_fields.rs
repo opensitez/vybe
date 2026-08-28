@@ -18,10 +18,23 @@
 //! `namespaces.rs` owns which queries fold. This is about a raw struct field,
 //! which no resolver ever sees.
 
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+};
+use vybe_runtime::Chunk;
 
-use std::sync::Arc;
+/// An engine-internal slot on a .NET value object — `__ms_pos`, `__content`,
+/// `__bi` and the rest of this platform's representation state.
+///
+/// ⚠ `Internal`, never `InstanceField`. Only the variants carrying a `class`
+/// reach the canonicalising path; these keys are literal storage names and a
+/// canonicalised one is a DIFFERENT key, which reads back `undefined` rather
+/// than failing. The `__ms_*` trio is the reason this is scoped by
+/// representation rather than by adapter: binary_io, memory_stream and
+/// stream_io all address the same three slots.
+pub fn field_slot(key: &str) -> ResolvedSlot {
+    class_slots::resolve(&ClassSlot::internal(key), &PlainNames)
+}
 
 /// Store the value in `value_slot` on the object in `obj_slot` under `key`,
 /// under both the declared spelling and its folded one.
@@ -39,9 +52,12 @@ pub fn set_both_spellings(
         &[key, folded.as_str()]
     };
     for spelling in spellings {
-        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        let idx = chunk.add_constant(Value::String(Arc::from(*spelling)));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Local(obj_slot),
+            &field_slot(spelling),
+            ValueSource::Local(value_slot),
+            line,
+        );
     }
 }

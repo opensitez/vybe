@@ -1,11 +1,14 @@
 //! Shared Microsoft.VisualBasic runtime helpers for .NET languages.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{fs_path, paths};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const VB_FILE_PATH_BY_HANDLE: &str = "__vb_file_path_by_handle";
 const VB_FILE_EOF_BY_HANDLE: &str = "__vb_file_eof_by_handle";
@@ -568,7 +571,6 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let modified_key = chunks[current].add_constant(Value::String(Arc::from("modified")));
     let path_slot = {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
@@ -593,14 +595,19 @@ pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, modified_key, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("modified"),
+            Dest::Stack,
+            line,
+        );
     }
     crate::emitter::core::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let size_key = chunks[current].add_constant(Value::String(Arc::from("size")));
     let handle_slot = {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
@@ -640,7 +647,13 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_const(&mut chunks[current], Value::I32(0), line);
 
     chunks[current].emit_else(line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, size_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("size"),
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -743,7 +756,6 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
 pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let spawn_sync = chunks[current].add_import("node:child_process", "spawnSync");
-    let pid_key = chunks[current].add_constant(Value::String(Arc::from("pid")));
     let command_slot = {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
@@ -761,7 +773,13 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         lget(chunk, command_slot, line);
         chunk.emit_array_new_fixed(0, 2, line);
         chunk.emit_call(spawn_sync, 2, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pid_key, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("pid"),
+            Dest::Stack,
+            line,
+        );
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }

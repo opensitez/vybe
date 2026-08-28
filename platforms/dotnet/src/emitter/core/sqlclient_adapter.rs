@@ -21,9 +21,12 @@
 //! Pattern: `convert_adapter.rs` (loops), `datatable_adapter.rs` (structs).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::{collections, convert, ops};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const COL_NAMES_KEY: &str = "__col_names";
 const CONN_ID_KEY: &str = "__conn_id";
@@ -57,26 +60,41 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 
 /// `obj.key` — reads a property off the object held in `obj_slot`.
 fn get_prop(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     lget(chunk, obj_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `obj.key = <local>` — consumes nothing from the stack.
 fn set_prop_local(chunk: &mut Chunk, obj_slot: u16, key: &str, val_slot: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     lget(chunk, obj_slot, line);
     lget(chunk, val_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `DUP → <value> → STRUCT_SET key`, leaving the object on the stack. The
 /// struct-literal builder: see `datatable_adapter::set_field`.
 fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32), line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_dup(line);
     val_fn(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `void` return — every ADO member that answers nothing pushes a null ref, the
@@ -115,14 +133,14 @@ fn emit_params_collection(chunks: &mut [Chunk], current: usize, line: u32) -> u1
     let items_slot = reserve_slot(chunk);
     lset(chunk, items_slot, line);
     let slot = reserve_slot(chunk);
-    chunk.emit_struct_new(0, 0, line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "__type",
-        |c, l| c.emit_string_const("SqlParameterCollection", l),
+        "SqlParameterCollection",
+        &[
+            (field_slot(ITEMS_KEY), ValueSource::Local(items_slot)),
+        ],
         line,
     );
-    set_field(chunk, ITEMS_KEY, |c, l| lget(c, items_slot, l), line);
     lset(chunk, slot, line);
     slot
 }
@@ -144,34 +162,19 @@ pub fn emit_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let raw_slot = reserve_slot(chunk);
     lset(chunk, raw_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "__type",
-        |c, l| c.emit_string_const("SqlConnection", l),
+        "SqlConnection",
+        &[
+            (field_slot("__conn_id"), ValueSource::ConstF64(0.0)),
+            (field_slot("connectionstring"), ValueSource::Local(raw_slot)),
+            (field_slot("provider"), ValueSource::ConstStr("".to_string())),
+            (field_slot("serverversion"), ValueSource::ConstStr("".to_string())),
+            (field_slot("connectiontimeout"), ValueSource::ConstF64(30.0)),
+            (field_slot("state"), ValueSource::ConstStr("Closed".to_string())),
+        ],
         line,
     );
-    set_field(chunk, "__conn_id", |c, l| c.emit_f64_const(0.0, l), line);
-    set_field(
-        chunk,
-        "connectionstring",
-        |c, l| lget(c, raw_slot, l),
-        line,
-    );
-    set_field(chunk, "provider", |c, l| c.emit_string_const("", l), line);
-    set_field(
-        chunk,
-        "serverversion",
-        |c, l| c.emit_string_const("", l),
-        line,
-    );
-    set_field(
-        chunk,
-        "connectiontimeout",
-        |c, l| c.emit_f64_const(30.0, l),
-        line,
-    );
-    set_field(chunk, "state", |c, l| c.emit_string_const("Closed", l), line);
 }
 
 /// `connection.Open()` — open over the real WIT, then copy what the returned
@@ -239,7 +242,13 @@ pub fn emit_connection_open(chunks: &mut [Chunk], current: usize, line: u32) {
         let state_idx = chunk.add_constant(Value::String(Arc::from("state")));
         lget(chunk, conn_slot, line);
         chunk.emit_string_const("Open", line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, state_idx, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("state"),
+            ValueSource::Stack,
+            line,
+        );
 
         chunk.emit_else(line);
         chunk.emit_string_const("wasi:sql/types connection.open: ", line);
@@ -292,7 +301,13 @@ pub fn emit_connection_close(chunks: &mut [Chunk], current: usize, line: u32) {
     let state_idx = chunk.add_constant(Value::String(Arc::from("state")));
     lget(chunk, conn_slot, line);
     chunk.emit_string_const("Closed", line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, state_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("state"),
+        ValueSource::Stack,
+        line,
+    );
 
     push_void(chunk, line);
 }
@@ -336,15 +351,15 @@ pub fn emit_connection_begin_transaction(chunks: &mut [Chunk], current: usize, l
     chunks[current].emit_op(Op::DROP, line);
 
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "__type",
-        |c, l| c.emit_string_const("SqlTransaction", l),
+        "SqlTransaction",
+        &[
+            (field_slot(CONN_ID_KEY), ValueSource::Local(id_slot)),
+            (field_slot(IS_CLOSED_KEY), ValueSource::ConstBool(false)),
+        ],
         line,
     );
-    set_field(chunk, CONN_ID_KEY, |c, l| lget(c, id_slot, l), line);
-    set_field(chunk, IS_CLOSED_KEY, |c, l| c.emit_bool_const(false, l), line);
 
     chunk.emit_else(line);
     push_void(chunk, line);
@@ -365,7 +380,7 @@ fn emit_command_struct(
 ) {
     let params_slot = emit_params_collection(chunks, current, line);
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_field(
         chunk,
         "__type",
@@ -561,11 +576,23 @@ fn emit_command_sql_and_params(
         chunk.emit_op(Op::ARRAY_GET, line);
         lset(chunk, item, line);
         lget(chunk, item, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_idx, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("name"),
+            Dest::Stack,
+            line,
+        );
         convert::emit_to_string(chunk, line);
         lset(chunk, nm, line);
         lget(chunk, item, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_idx, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("value"),
+            Dest::Stack,
+            line,
+        );
         lset(chunk, vl, line);
 
         lget(chunk, nm, line);
@@ -829,7 +856,7 @@ pub fn emit_command_create_parameter(chunks: &mut [Chunk], current: usize, argc:
     }
     chunk.emit_op(Op::DROP, line); // receiver
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_field(
         chunk,
         "__type",
@@ -879,11 +906,16 @@ fn emit_col_names_of(chunks: &mut [Chunk], current: usize, rows_slot: u16, line:
         chunk.emit_i32_const(0, line);
         chunk.emit_op(Op::I32_GT_S, line);
         chunk.emit_if(line);
-        let key = chunk.add_constant(Value::String(Arc::from(COL_NAMES_KEY)));
         lget(chunk, rows_slot, line);
         chunk.emit_i32_const(0, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(COL_NAMES_KEY),
+            Dest::Stack,
+            line,
+        );
         lset(chunk, first_slot, line);
         lget(chunk, first_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
@@ -915,7 +947,7 @@ fn emit_data_table(
     names_slot: u16,
     line: u32,
 ) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_field(
         chunk,
         "__type",
@@ -1018,19 +1050,19 @@ fn emit_reader_struct(chunks: &mut [Chunk], current: usize, rows_slot: u16, line
     lset(&mut chunks[current], count_slot, line);
 
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "__type",
-        |c, l| c.emit_string_const("SqlDataReader", l),
+        "SqlDataReader",
+        &[
+            (field_slot(ROWS_KEY), ValueSource::Local(rows_slot)),
+            (field_slot(COL_NAMES_KEY), ValueSource::Local(names_slot)),
+            (field_slot(POS_KEY), ValueSource::ConstF64(-1.0)),
+            (field_slot("hasrows"), ValueSource::Local(has_slot)),
+            (field_slot("fieldcount"), ValueSource::Local(count_slot)),
+            (field_slot(IS_CLOSED_KEY), ValueSource::ConstBool(false)),
+        ],
         line,
     );
-    set_field(chunk, ROWS_KEY, |c, l| lget(c, rows_slot, l), line);
-    set_field(chunk, COL_NAMES_KEY, |c, l| lget(c, names_slot, l), line);
-    set_field(chunk, POS_KEY, |c, l| c.emit_f64_const(-1.0, l), line);
-    set_field(chunk, "hasrows", |c, l| lget(c, has_slot, l), line);
-    set_field(chunk, "fieldcount", |c, l| lget(c, count_slot, l), line);
-    set_field(chunk, IS_CLOSED_KEY, |c, l| c.emit_bool_const(false, l), line);
 }
 
 // ── SqlConnection.GetSchema ───────────────────────────────────────────────────
@@ -1215,7 +1247,7 @@ pub fn emit_data_adapter_new(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunk.emit_op(Op::DROP, line);
     }
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_field(
         chunk,
         "__type",
@@ -1501,7 +1533,13 @@ pub fn emit_reader_close(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let closed_idx = chunk.add_constant(Value::String(Arc::from(IS_CLOSED_KEY)));
     chunk.emit_bool_const(true, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, closed_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(IS_CLOSED_KEY),
+        ValueSource::Stack,
+        line,
+    );
     push_void(chunk, line);
 }
 
@@ -1543,7 +1581,7 @@ pub fn emit_reader_get_schema_table(chunks: &mut [Chunk], current: usize, line: 
     lget(&mut chunks[current], out_slot, line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(chunk, line);
         set_field(
             chunk,
             "ColumnName",
@@ -1574,12 +1612,12 @@ pub fn emit_reader_get_schema_table(chunks: &mut [Chunk], current: usize, line: 
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    set_field(chunk, "__type", |c, l| c.emit_string_const("DataTable", l), line);
-    set_field(
+    class_slots::emit_class_construct(
         chunk,
-        "tablename",
-        |c, l| c.emit_string_const("SchemaTable", l),
+        "DataTable",
+        &[
+            (field_slot("tablename"), ValueSource::ConstStr("SchemaTable".to_string())),
+        ],
         line,
     );
     set_field(
@@ -1613,15 +1651,15 @@ pub fn emit_params_add_with_value(chunks: &mut [Chunk], current: usize, line: u3
     {
         let chunk = &mut chunks[current];
         get_prop(chunk, params_slot, ITEMS_KEY, line);
-        chunk.emit_struct_new(0, 0, line);
-        set_field(
+        class_slots::emit_class_construct(
             chunk,
-            "__type",
-            |c, l| c.emit_string_const("SqlParameter", l),
+            "SqlParameter",
+            &[
+                (field_slot("name"), ValueSource::Local(name_slot)),
+                (field_slot("value"), ValueSource::Local(value_slot)),
+            ],
             line,
         );
-        set_field(chunk, "name", |c, l| lget(c, name_slot, l), line);
-        set_field(chunk, "value", |c, l| lget(c, value_slot, l), line);
     }
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1654,7 +1692,13 @@ pub fn emit_params_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack in: `[params]`  Stack out: `[number]`
 pub fn emit_params_count(chunks: &mut [Chunk], current: usize, line: u32) {
     let items_idx = chunks[current].add_constant(Value::String(Arc::from(ITEMS_KEY)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, items_idx, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(ITEMS_KEY),
+        Dest::Stack,
+        line,
+    );
     collections::emit_len(chunks, current, line);
 }
 
@@ -1690,7 +1734,13 @@ fn emit_transaction_verb(chunks: &mut [Chunk], current: usize, sql: &str, line: 
     let closed_idx = chunk.add_constant(Value::String(Arc::from(IS_CLOSED_KEY)));
     lget(chunk, tx_slot, line);
     chunk.emit_bool_const(true, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, closed_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(IS_CLOSED_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     lget(chunk, ok_slot, line);
 }

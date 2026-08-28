@@ -8,10 +8,13 @@
 //! Both functions are WASI 0.2 spec and already registered in vybe_host.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::{Chunk, Value, opcode::Op};
+
+use super::object_fields::field_slot;
 
 const CANCELLED_KEY: &str = "__dotnet_cancelled";
 const CANCEL_AT_MS_KEY: &str = "__dotnet_cancel_at_ms";
@@ -56,12 +59,24 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_task_wait_method_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -117,16 +132,15 @@ fn emit_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Stack: [] -> [token_source_or_token]
 pub fn emit_cancellation_token_source_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(SOURCE_TYPE)), line);
-    struct_set_drop(chunk, "__type", line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, CANCELLED_KEY, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, REQUESTED_KEY, line);
+    class_slots::emit_class_construct(
+        chunk,
+        SOURCE_TYPE,
+        &[
+            (field_slot(CANCELLED_KEY), ValueSource::ConstBool(false)),
+            (field_slot(REQUESTED_KEY), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
     core_wasm::dup(chunk, line);
     core_wasm::dup(chunk, line);
     struct_set_drop(chunk, TOKEN_KEY, line);
@@ -136,19 +150,16 @@ pub fn emit_cancellation_token_source_new(chunks: &mut [Chunk], current: usize, 
 /// Stack: [] -> [token]
 pub fn emit_cancellation_token_none(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("CancellationToken")), line);
-    struct_set_drop(chunk, "__type", line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, CANCELLED_KEY, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, REQUESTED_KEY, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, "CanBeCanceled", line);
+    class_slots::emit_class_construct(
+        chunk,
+        "CancellationToken",
+        &[
+            (field_slot(CANCELLED_KEY), ValueSource::ConstBool(false)),
+            (field_slot(REQUESTED_KEY), ValueSource::ConstBool(false)),
+            (field_slot("CanBeCanceled"), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
 }
 
 fn emit_fire_cancellation_registrations(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -298,7 +309,7 @@ pub fn emit_cancellation_token_register(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_GET, callback_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
 }
 
 /// `token.CanBeCanceled`.
@@ -322,7 +333,7 @@ pub fn emit_cancellation_token_can_be_canceled(chunks: &mut [Chunk], current: us
 /// Stack: [token] -> [handle]
 pub fn emit_cancellation_token_wait_handle(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
 }
 
 /// `token.IsCancellationRequested` / `cts.IsCancellationRequested`.
@@ -371,12 +382,10 @@ fn emit_throw_task_cancelled(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const("The operation was canceled.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         &mut chunks[current],
         "OperationCanceledException",
+        class_slots::ValueSource::ConstStr("The operation was canceled.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
@@ -387,7 +396,7 @@ fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line
 }
 
 fn emit_cancelled_task_object(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("Task", line);
     struct_set_drop(&mut chunks[current], "__type", line);

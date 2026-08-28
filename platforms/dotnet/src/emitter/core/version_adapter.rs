@@ -1,11 +1,14 @@
 //! .NET `System.Version` adapter — bytecode-only.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const TYPES_KEY: &str = "__types";
@@ -39,10 +42,12 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_string_const(message, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_compiler::primitives::errors::emit_exception_new(
+        chunk,
+        exception_name,
+        class_slots::ValueSource::ConstStr(message.to_string()),
+        line,
+    );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
@@ -292,41 +297,69 @@ fn emit_build_version_from_slots(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let types_key = chunk.add_constant(Value::String(Arc::from(TYPES_KEY)));
-    let major_key = chunk.add_constant(Value::String(Arc::from(MAJOR_KEY)));
-    let minor_key = chunk.add_constant(Value::String(Arc::from(MINOR_KEY)));
-    let build_key = chunk.add_constant(Value::String(Arc::from(BUILD_KEY)));
-    let revision_key = chunk.add_constant(Value::String(Arc::from(REVISION_KEY)));
-    let major_revision_key = chunk.add_constant(Value::String(Arc::from(MAJOR_REVISION_KEY)));
-    let minor_revision_key = chunk.add_constant(Value::String(Arc::from(MINOR_REVISION_KEY)));
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     push_const(chunk, Value::String(Arc::from("Object")), line);
     chunk.emit_array_new_fixed(0, 2, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPES_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, major_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(MAJOR_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minor_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(MINOR_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, build_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, build_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUILD_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, revision_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(REVISION_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
@@ -334,7 +367,13 @@ fn emit_build_version_from_slots(
     chunk.emit_i32_const(16, line);
     chunk.emit_op(Op::I32_SHR_U, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_revision_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(MAJOR_REVISION_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
@@ -342,7 +381,13 @@ fn emit_build_version_from_slots(
     chunk.emit_i32_const(0xffff, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_revision_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(MINOR_REVISION_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
@@ -352,9 +397,14 @@ fn emit_build_version_from_slots(
 }
 
 fn emit_version_part(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key: &str, line: u32) {

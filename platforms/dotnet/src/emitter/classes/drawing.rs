@@ -1393,6 +1393,56 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
 /// be different objects that both look right.
 pub(crate) const COLOR_FIELDS: &[&str] = &["r", "g", "b", "a"];
 
+/// Every drawing value type's fields, in the order its ctor pushes them.
+///
+/// The reasoning on `COLOR_FIELDS` above applies to all of them, so they live
+/// together: each list had TWO authors — the `emit_value_type_new` call in
+/// `dispatch.rs` and the reader in the drawing bodies — and a drift between
+/// them produces objects that are wrong but look right.
+///
+/// ⚠ ORDER IS A WIRE CONTRACT, not presentation. `ClassType.fields` is
+/// documented as "field index = position in this Vec", which is what M6 indexes
+/// a typed GC struct by; these lists are where that ordering is decided for the
+/// value types. A reorder here silently renumbers fields.
+///
+/// ⚠ `Font` carries four, not two: `dotnet.font_new` takes `(name, size)` and
+/// then writes `bold`/`italic` itself, because the drawing bodies read them off
+/// a font argument and an absent field reads as `undefined` — which renders as
+/// a style. The declared list is what the object ENDS UP with.
+pub(crate) const VALUE_TYPE_FIELDS: &[(&str, &[&str])] = &[
+    ("Point", &["x", "y"]),
+    ("PointF", &["x", "y"]),
+    ("Size", &["width", "height"]),
+    ("SizeF", &["width", "height"]),
+    ("Rectangle", &["x", "y", "width", "height"]),
+    ("RectangleF", &["x", "y", "width", "height"]),
+    ("Color", COLOR_FIELDS),
+    ("Font", &["name", "size", "bold", "italic"]),
+    ("Pen", &["color", "width"]),
+    ("SolidBrush", &["color"]),
+    (
+        "HatchBrush",
+        &["backgroundcolor", "foregroundcolor", "hatchstyle"],
+    ),
+    (
+        "LinearGradientBrush",
+        &["rectangle", "startcolor", "endcolor", "wrapmode"],
+    ),
+];
+
+/// The declared field order for a value type, or empty for anything else.
+///
+/// Empty is the honest answer for a non-value type: a `Form` or a `Button` is
+/// not composed field-by-field in bytecode, so it has no ctor-pushed ordering
+/// to declare and `ClassType.fields` stays empty rather than guessing one.
+pub(crate) fn fields_for(name: &str) -> &'static [&'static str] {
+    VALUE_TYPE_FIELDS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| *f)
+        .unwrap_or(&[])
+}
+
 macro_rules! color_static {
     ($konst:ident, $r:literal, $g:literal, $b:literal, $a:literal) => {
         const $konst: &[MethodOp] = &[

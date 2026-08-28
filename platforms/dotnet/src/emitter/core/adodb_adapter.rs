@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_runtime::opcode::Op;
@@ -7,6 +8,8 @@ use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::collections;
 
 use crate::emitter::core::sqlclient_adapter;
+
+use super::object_fields::field_slot;
 
 const COL_NAMES_KEY: &str = "__col_names";
 const COMMAND_TYPE_KEY: &str = "commandtype";
@@ -39,31 +42,51 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     push_const(chunk, value, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn set_local_prop(chunk: &mut Chunk, key: &str, local: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn set_object_local_prop(chunk: &mut Chunk, object_local: u16, key: &str, local: u16, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value: Value, line: u32) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     push_const(chunk, value, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// A comparison result that is about to be STORED as `EOF`/`IsClosed`, turned
@@ -89,15 +112,20 @@ fn get_prop_to_local(
     target_local: u16,
     line: u32,
 ) {
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
 }
 
 fn build_field_object(chunks: &mut [Chunk], current: usize, value_local: u16, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_local_prop(chunk, VALUE_KEY, value_local, line);
 }
 
@@ -135,7 +163,7 @@ fn emit_reader_to_adodb_recordset(
         (count_slot, eof_slot)
     };
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_local_prop(chunk, ROWS_KEY, rows_slot, line);
     set_local_prop(chunk, COL_NAMES_KEY, cols_slot, line);
     set_const_prop(chunk, POS_KEY, Value::F64(0.0), line);
@@ -269,7 +297,7 @@ pub fn emit_adodb_command_create_parameter(
 
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_local_prop(chunk, "name", name_slot, line);
     set_local_prop(chunk, VALUE_KEY, value_slot, line);
 }
@@ -277,7 +305,7 @@ pub fn emit_adodb_command_create_parameter(
 // ── ADODB.Recordset ───────────────────────────────────────────────────────────
 
 pub fn emit_adodb_recordset_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     collections::emit_array_new(chunks, current, 0, line);
     let rows_slot = {
         let chunk = &mut chunks[current];
@@ -472,10 +500,8 @@ pub fn emit_adodb_recordset_fields(chunks: &mut [Chunk], current: usize, line: u
     };
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::LOCAL_GET, rs_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, rows_key, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, rs_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+        class_slots::emit_class_get(chunk, ObjSource::Local(rs_slot), &field_slot(ROWS_KEY), Dest::Stack, line);
+        class_slots::emit_class_get(chunk, ObjSource::Local(rs_slot), &field_slot(POS_KEY), Dest::Stack, line);
         chunk.emit_op(Op::I32_FROM_F64, line);
     }
     collections::emit_get(chunks, current, line);

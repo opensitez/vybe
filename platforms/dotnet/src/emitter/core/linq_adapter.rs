@@ -24,6 +24,7 @@ use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::generators;
 use vybe_compiler::primitives::loops;
 use vybe_compiler::primitives::ops;
+use vybe_compiler::primitives::class_slots;
 
 /// Allocate `count` consecutive scratch locals; returns the first slot.
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
@@ -337,12 +338,10 @@ fn emit_invalid_operation_exception(
     // Handing it a bare message throws something with no type and no message,
     // so `Catch ex As InvalidOperationException` cannot match it and `ex.Message`
     // is empty.
-    chunks[current].emit_struct_new(0, 0, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const(message, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         &mut chunks[current],
         "InvalidOperationException",
+        class_slots::ValueSource::ConstStr(message.to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);

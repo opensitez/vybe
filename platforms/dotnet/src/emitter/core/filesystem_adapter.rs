@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::{fs_path, paths};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
@@ -6,6 +7,8 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::{collections, loops};
+
+use super::object_fields::field_slot;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -21,17 +24,27 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn set_field_from_slot(chunk: &mut Chunk, obj_slot: u16, name: &str, value_slot: u16, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(name),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn set_field_const(chunk: &mut Chunk, obj_slot: u16, name: &str, val: Value, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, val, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(name),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn set_field_with_stack_value(chunk: &mut Chunk, obj_slot: u16, name: &str, line: u32) {
@@ -70,7 +83,7 @@ fn emit_throw_io(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(prefix, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
@@ -187,7 +200,7 @@ fn emit_file_stream_object(
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     set_field_const(
         chunk,
@@ -259,7 +272,7 @@ pub fn emit_file_create(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_write_or_throw(chunks, current, path_slot, line);
 
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     set_field_const(
         chunk,
@@ -292,9 +305,6 @@ pub fn emit_file_open_read(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buf_key = chunk.add_constant(Value::String(Arc::from("__buf")));
-    let path_key = chunk.add_constant(Value::String(Arc::from("__path")));
-    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
     let stream_slot = reserve_slot(chunk);
     let byte_slot = reserve_slot(chunk);
     let buf_slot = reserve_slot(chunk);
@@ -302,7 +312,13 @@ pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u
     chunk.emit_op_u16(Op::LOCAL_SET, byte_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__buf"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
@@ -310,18 +326,48 @@ pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u
     chunk.emit_op_u16(Op::LOCAL_GET, byte_slot, line);
     host::emit(chunk, "wasm:js-string", "fromCharCode", 1, line);
     host::emit(chunk, "ecma:string", "concat", 2, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__buf"),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__buf"),
+        Dest::Stack,
+        line,
+    );
     host::emit(chunk, "wasm:js-string", "length", 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, length_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("Length"),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__path"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__buf"),
+        Dest::Stack,
+        line,
+    );
     fs_path::emit_write_file(chunk, line);
     // The write's success is DROPPED here and only here: the whole buffer is
     // rewritten on every `WriteByte`, so a failure surfaces on the next one or
@@ -337,7 +383,7 @@ pub fn emit_file_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     set_field_const(
         chunk,

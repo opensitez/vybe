@@ -6,11 +6,14 @@
 //! changes.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const VALUE_KEY: &str = "__value";
@@ -43,9 +46,14 @@ fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {
 
 fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
     let mut method = create_function_chunk("__guid_tostring", 1);
-    let value_key = method.add_constant(Value::String(Arc::from(VALUE_KEY)));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
     method.emit_op(Op::RETURN, line);
     method.local_count = 1;
     chunks.push(method);
@@ -70,19 +78,29 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
 
 fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
     let obj_slot = reserve_slot(chunk);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     bind_guid_to_string(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -96,23 +114,38 @@ fn emit_wrap_guid_with_bytes_from_slots(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    let bytes_key = chunk.add_constant(Value::String(Arc::from(BYTES_KEY)));
     let obj_slot = reserve_slot(chunk);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TYPE_KEY),
+        ValueSource::Stack,
+        line,
+    );
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        ValueSource::Stack,
+        line,
+    );
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, bytes_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BYTES_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     bind_guid_to_string(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -267,14 +300,24 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
 
 pub fn emit_guid_to_byte_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let bytes_key = chunk.add_constant(Value::String(Arc::from(BYTES_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, bytes_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BYTES_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_guid_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
     push_const(chunk, Value::F64(0.0), line);
     let char_code_idx = chunk.add_import("ecma:string", "charCodeAt");
     chunk.emit_call(char_code_idx, 2, line);
@@ -285,7 +328,6 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let fmt_slot = reserve_slot(chunk);
-    let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
     // `argc` COUNTS THE RECEIVER — `Guid.ToString` is declared only as an
     // INSTANCE method, and `InstanceMethodTarget::Common` calls with
     // `arg_exprs.len() + 1`. Bare `g.ToString()` therefore arrives as `1`, so
@@ -297,7 +339,13 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     }
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
     if has_format {
         let value_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);

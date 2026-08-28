@@ -11,12 +11,15 @@
 //! `DateTimeKind` means when converting.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::datetime as shared_datetime;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use super::{datetime_adapter, timespan_adapter};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 /// The tzdb identifier the object stands for. Every member reads it back from
@@ -39,14 +42,26 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 /// `[obj, value] → []`
 fn set_field(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `[] → [value]`
 fn get_field_from(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// Both spellings of one field. A case-insensitive front end folds the member

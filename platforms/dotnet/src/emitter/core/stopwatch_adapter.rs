@@ -5,9 +5,12 @@
 //!   `{__type: "Stopwatch", __start_ns: f64, __accumulated_ns: f64, isrunning: bool}`
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -21,12 +24,24 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_monotonic_now(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -62,19 +77,16 @@ fn emit_stopwatch_elapsed_ns_value(chunks: &mut [Chunk], current: usize, line: u
 /// Create a stopped Stopwatch object. Stack: `[]` → `[sw]`.
 pub fn emit_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("Stopwatch")), line);
-    struct_set_drop(chunk, "__type", line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::F64(0.0), line);
-    struct_set_drop(chunk, "__start_ns", line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::F64(0.0), line);
-    struct_set_drop(chunk, "__accumulated_ns", line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_drop(chunk, "isrunning", line);
+    class_slots::emit_class_construct(
+        chunk,
+        "Stopwatch",
+        &[
+            (field_slot("__start_ns"), ValueSource::ConstF64(0.0)),
+            (field_slot("__accumulated_ns"), ValueSource::ConstF64(0.0)),
+            (field_slot("isrunning"), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
 }
 
 /// `Stopwatch.StartNew()` — create and immediately start. Stack: `[]` → `[sw]`.
@@ -211,8 +223,13 @@ pub fn emit_stopwatch_elapsed(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `sw.IsRunning` — Stack: `[sw]` → `[bool]`.
 pub fn emit_stopwatch_is_running(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let key = chunk.add_constant(Value::String(Arc::from("isrunning")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("isrunning"),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `Stopwatch.Frequency` — nanosecond source expressed as ticks per second.

@@ -24,9 +24,12 @@
 //! shared with the rest of `compiler_common::dispatch`).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 /// Emit `CONST <idx>` for a literal value — `Chunk` doesn't expose
 /// this directly the way the compiler's `emit_const` helper does,
@@ -53,13 +56,23 @@ fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
 }
 
 // ─── Dns ─────────────────────────────────────────────────────────────────
@@ -98,7 +111,7 @@ pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunk.emit_call(resolve_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, addresses_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -139,7 +152,7 @@ pub fn emit_ip_address_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);

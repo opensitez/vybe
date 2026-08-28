@@ -31,11 +31,14 @@
 //!     `"StreamReader"` or `"StreamWriter"` plus the per-class fields.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const CONTENT_KEY: &str = "__content";
@@ -68,21 +71,23 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_object_disposed(chunk: &mut Chunk, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_string_const("Cannot read from a closed TextReader.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new(
         chunk,
         "ObjectDisposedException",
+        class_slots::ValueSource::ConstStr("Cannot read from a closed TextReader.".to_string()),
         line,
     );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 fn emit_throw_if_disposed(chunk: &mut Chunk, reader_slot: u16, line: u32) {
-    let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, disposed_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(DISPOSED_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_if_value(line);
     emit_throw_object_disposed(chunk, line);
     chunk.emit_end(line);
@@ -95,11 +100,20 @@ fn bind_string_writer_to_string(
     line: u32,
 ) {
     let mut method = create_function_chunk("__string_writer_tostring", 1);
-    let builder_key = method.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    let sb_buffer_key = method.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
-    method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
-    method.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Local(0),
+        &field_slot(BUILDER_KEY),
+        Dest::Stack,
+        line,
+    );
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Stack,
+        &field_slot(SB_BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     method.emit_op(Op::RETURN, line);
     method.local_count = 1;
     chunks.push(method);
@@ -119,26 +133,35 @@ fn bind_string_writer_to_string(
 }
 
 fn emit_set_writer_buffer(chunk: &mut Chunk, writer_slot: u16, new_buf_slot: u16, line: u32) {
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-    let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    let sb_buffer_key = chunk.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
     let builder_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, new_buf_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(BUF_KEY),
+        ValueSource::Local(new_buf_slot),
+        line,
+    );
 
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(BUILDER_KEY),
+        Dest::Local(builder_slot),
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, new_buf_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(builder_slot),
+        &field_slot(SB_BUFFER_KEY),
+        ValueSource::Local(new_buf_slot),
+        line,
+    );
     chunk.emit_end(line);
 }
 
@@ -156,29 +179,38 @@ const MS_LEN: &str = "__ms_len";
 /// second reader over the same stream sees nothing left, which is what .NET's
 /// buffering does in practice.
 fn emit_decode_stream_tail(chunk: &mut Chunk, stream_slot: u16, line: u32) {
-    let buf_key = chunk.add_constant(Value::String(Arc::from(MS_BUF)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(MS_POS)));
-    let len_key = chunk.add_constant(Value::String(Arc::from(MS_LEN)));
-
     // decoder first: `decode` is receiver-first.
     host::emit(chunk, "web:encoding", "decoderNew", 0, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, len_key, line);
+    for key in [MS_BUF, MS_POS, MS_LEN] {
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(stream_slot),
+            &field_slot(key),
+            Dest::Stack,
+            line,
+        );
+    }
     host::emit(chunk, "ecma:array", "slice", 3, line);
     // ⛔ `decode` takes a BufferSource: a plain Array decodes to the EMPTY
     // STRING rather than failing.
     host::emit(chunk, "ecma:uint8array", "newFromIterable", 1, line);
     host::emit(chunk, "web:encoding", "decode", 2, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, len_key, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(stream_slot),
+        &field_slot(MS_LEN),
+        Dest::Stack,
+        line,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(stream_slot),
+        &field_slot(MS_POS),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `[…, argN]` → `[arg0]` — drop the trailing constructor arguments .NET
@@ -194,11 +226,6 @@ fn emit_drop_extra_args(chunk: &mut Chunk, argc: u8, line: u32) {
 /// Stack: `[source, …]` → `[reader]`.
 pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
-    let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
-
     emit_drop_extra_args(chunk, argc, line);
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
@@ -218,57 +245,34 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
     chunk.emit_end(line);
 
-    // STRUCT_NEW → [obj]
-    chunk.emit_struct_new(0, 0, line);
-
-    // __type = "StreamReader"
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(READER_TYPE)), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-
-    // __content = content
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, content_key, line);
-
-    // __pos = 0
-    core_wasm::dup(chunk, line);
-    core_wasm::i32_const(chunk, line, 0);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
-
-    core_wasm::dup(chunk, line);
-    chunk.emit_bool_const(false, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
+    class_slots::emit_class_construct(
+        chunk,
+        READER_TYPE,
+        &[
+            (field_slot(CONTENT_KEY), ValueSource::Local(content_slot)),
+            (field_slot(POS_KEY), ValueSource::ConstI32(0)),
+            (field_slot(DISPOSED_KEY), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
 }
 
 /// `new StringReader(text)` — cache the supplied string and initialise
 /// `__pos = 0`. Stack: `[text]` → `[reader]`.
 pub fn emit_string_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
-    let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
-
-    let content_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_struct_new(0, 0, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(STRING_READER_TYPE)), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, content_key, line);
-
-    core_wasm::dup(chunk, line);
-    core_wasm::i32_const(chunk, line, 0);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
-
-    core_wasm::dup(chunk, line);
-    chunk.emit_bool_const(false, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
+    // `__content` comes straight off the stack — the construct owner spills it
+    // for us, so the adapter no longer reserves a slot to hold it.
+    class_slots::emit_class_construct(
+        chunk,
+        STRING_READER_TYPE,
+        &[
+            (field_slot(CONTENT_KEY), ValueSource::Stack),
+            (field_slot(POS_KEY), ValueSource::ConstI32(0)),
+            (field_slot(DISPOSED_KEY), ValueSource::ConstBool(false)),
+        ],
+        line,
+    );
 }
 
 /// `reader.ReadLine()` — return next line up to (excluding) `\n`,
@@ -276,9 +280,6 @@ pub fn emit_string_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
 /// Stack: `[reader]` → `[line_or_null]`.
 pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
-
     let reader_slot = reserve_slot(chunk);
     let content_slot = reserve_slot(chunk);
     let pos_slot = reserve_slot(chunk);
@@ -292,13 +293,22 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     emit_throw_if_disposed(chunk, reader_slot, line);
 
     // content = reader.__content
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(CONTENT_KEY),
+        Dest::Local(content_slot),
+        line,
+    );
 
     // pos = reader.__pos
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
 
@@ -381,11 +391,16 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     // reader.__pos = end + 1 (skip past `\n`); clamp to len.
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_end(line);
     chunk.patch_block(done_block);
@@ -398,20 +413,27 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 /// advancing `__pos` to end. Stack: `[reader]` → `[remaining]`.
 pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
-
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
     emit_throw_if_disposed(chunk, reader_slot, line);
 
     // content = reader.__content
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(CONTENT_KEY),
+        Dest::Stack,
+        line,
+    );
 
     // pos = reader.__pos (i32)
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::I32_FROM_F64, line);
 
     // end = wasm:js-string.length(content). Need to dup content first since substring consumes it.
@@ -428,29 +450,41 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
     // reader.__pos = wasm:js-string.length(content) — fully consumed.
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `reader.AtEndOfStream` — `__pos >= wasm:js-string.length(__content)`.
 /// Stack: `[reader]` → `[bool]`.
 pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
-
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
     emit_throw_if_disposed(chunk, reader_slot, line);
 
     // pos
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        Dest::Stack,
+        line,
+    );
     // len
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(CONTENT_KEY),
+        Dest::Stack,
+        line,
+    );
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     // pos < len → DYN_NOT → at-end
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
@@ -462,23 +496,20 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
 /// destination + an empty `__buf`. Stack: `[destination, …]` → `[writer]`.
 pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
-    let stream_key = chunk.add_constant(Value::String(Arc::from(STREAM_KEY)));
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-    let nl_key = chunk.add_constant(Value::String(Arc::from("NewLine")));
-    let nl_lower_key = chunk.add_constant(Value::String(Arc::from("newline")));
-
     emit_drop_extra_args(chunk, argc, line);
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
-    chunk.emit_struct_new(0, 0, line);
-
-    // __type = "StreamWriter"
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+    class_slots::emit_class_construct(
+        chunk,
+        WRITER_TYPE,
+        &[
+            (field_slot(BUF_KEY), ValueSource::ConstStr(String::new())),
+            (field_slot("NewLine"), ValueSource::ConstStr("\n".to_string())),
+            (field_slot("newline"), ValueSource::ConstStr("\n".to_string())),
+        ],
+        line,
+    );
 
     // A string destination is a file PATH; anything else is a byte STREAM the
     // flush appends to. Which one it is decides where `Flush` writes.
@@ -490,103 +521,85 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     host::emit(chunk, "wasm:js-string", "test", 1, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, path_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(PATH_KEY),
+        ValueSource::Local(path_slot),
+        line,
+    );
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, stream_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(STREAM_KEY),
+        ValueSource::Local(path_slot),
+        line,
+    );
     chunk.emit_end(line);
-
-    // __buf = ""
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_key, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_lower_key, line);
 }
 
 /// `new StringWriter()` / `new StringWriter(StringBuilder)` — initialise an
 /// in-memory buffer. Stack: `[]` or `[builder]` → `[writer]`.
 pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-    let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    let sb_type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let sb_buffer_key = chunk.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
-    let nl_key = chunk.add_constant(Value::String(Arc::from("NewLine")));
-    let nl_lower_key = chunk.add_constant(Value::String(Arc::from("newline")));
-    let encoding_key = chunk.add_constant(Value::String(Arc::from("Encoding")));
-    let encoding_lower_key = chunk.add_constant(Value::String(Arc::from("encoding")));
-    let web_name_key = chunk.add_constant(Value::String(Arc::from("WebName")));
-    let web_name_lower_key = chunk.add_constant(Value::String(Arc::from("webname")));
-
     let initial_slot = reserve_slot(chunk);
     let builder_slot = reserve_slot(chunk);
     if argc > 0 {
         chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(builder_slot),
+            &field_slot(SB_BUFFER_KEY),
+            Dest::Local(initial_slot),
+            line,
+        );
     } else {
         push_const(chunk, Value::String(Arc::from("")), line);
         chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
 
-        chunk.emit_struct_new(0, 0, line);
+        class_slots::emit_class_construct(
+            chunk,
+            "StringBuilder",
+            &[(field_slot(SB_BUFFER_KEY), ValueSource::Local(initial_slot))],
+            line,
+        );
         chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-        push_const(chunk, Value::String(Arc::from("StringBuilder")), line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_type_key, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_buffer_key, line);
     }
 
-    chunk.emit_struct_new(0, 0, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from(STRING_WRITER_TYPE)), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
-
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, builder_key, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_key, line);
-
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_lower_key, line);
+    class_slots::emit_class_construct(
+        chunk,
+        STRING_WRITER_TYPE,
+        &[
+            (field_slot(BUF_KEY), ValueSource::Local(initial_slot)),
+            (field_slot(BUILDER_KEY), ValueSource::Local(builder_slot)),
+            (field_slot("NewLine"), ValueSource::ConstStr("\n".to_string())),
+            (field_slot("newline"), ValueSource::ConstStr("\n".to_string())),
+        ],
+        line,
+    );
 
     let encoding_slot = reserve_slot(chunk);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_construct(
+        chunk,
+        "Encoding",
+        &[
+            (field_slot("WebName"), ValueSource::ConstStr("utf-16".to_string())),
+            (field_slot("webname"), ValueSource::ConstStr("utf-16".to_string())),
+        ],
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, encoding_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    push_const(chunk, Value::String(Arc::from("utf-16")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, web_name_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    push_const(chunk, Value::String(Arc::from("utf-16")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, web_name_lower_key, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, encoding_key, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, encoding_lower_key, line);
+    for key in ["Encoding", "encoding"] {
+        core_wasm::dup(chunk, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(key),
+            ValueSource::Local(encoding_slot),
+            line,
+        );
+    }
 
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
@@ -599,7 +612,6 @@ pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
 /// `writer.Write(s)` — append `s` to `__buf`. Stack: `[writer, s]` → `[null]`.
 pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
     let s_slot = reserve_slot(chunk);
     let writer_slot = reserve_slot(chunk);
     let new_buf_slot = reserve_slot(chunk);
@@ -608,9 +620,13 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
     let left_slot = reserve_slot(chunk);
     let right_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(BUF_KEY),
+        Dest::Local(left_slot),
+        line,
+    );
     super::console_adapter::emit_dotnet_stringify(chunk, left_slot, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
@@ -670,8 +686,6 @@ pub fn emit_stream_writer_write_3(chunks: &mut Vec<Chunk>, current: usize, line:
 /// Stack: `[writer, s]` → `[null]`.
 pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-    let nl_key = chunk.add_constant(Value::String(Arc::from("newline")));
     let s_slot = reserve_slot(chunk);
     let writer_slot = reserve_slot(chunk);
     let new_buf_slot = reserve_slot(chunk);
@@ -681,16 +695,24 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     let left_slot = reserve_slot(chunk);
     let right_slot = reserve_slot(chunk);
     let nl_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot(BUF_KEY),
+        Dest::Local(left_slot),
+        line,
+    );
     super::console_adapter::emit_dotnet_stringify(chunk, left_slot, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     super::console_adapter::emit_dotnet_stringify(chunk, right_slot, right_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, nl_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, nl_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(writer_slot),
+        &field_slot("newline"),
+        Dest::Local(nl_slot),
+        line,
+    );
     super::console_adapter::emit_dotnet_stringify(chunk, nl_slot, nl_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
@@ -710,16 +732,19 @@ pub fn emit_stream_writer_write_line_async(chunks: &mut [Chunk], current: usize,
 /// `StringWriter.ToString()` — return accumulated buffer.
 pub fn emit_string_writer_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    let sb_buffer_key = chunk.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
+    for key in [BUILDER_KEY, SB_BUFFER_KEY] {
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
+    }
 }
 
 pub fn emit_string_writer_get_string_builder(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
-    let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot(BUILDER_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 /// `StringWriter.Flush/Close/Dispose()` — no-op for in-memory writers.
@@ -742,8 +767,6 @@ pub fn emit_string_reader_read(chunks: &mut [Chunk], current: usize, line: u32) 
 /// Stack: `[reader, buffer, index, count]` -> `[read_count]`.
 pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
     let reader_slot = reserve_slot(chunk);
     let buffer_slot = reserve_slot(chunk);
     let index_slot = reserve_slot(chunk);
@@ -760,12 +783,21 @@ pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
     emit_throw_if_disposed(chunk, reader_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(CONTENT_KEY),
+        Dest::Local(content_slot),
+        line,
+    );
 
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
 
@@ -817,19 +849,22 @@ pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line
     chunk.emit_end(line);
     chunk.patch_block(outer);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, read_slot, line);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, read_slot, line);
 }
 
 fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32, advance: bool) {
     let chunk = &mut chunks[current];
-    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
-    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
     let reader_slot = reserve_slot(chunk);
     let content_slot = reserve_slot(chunk);
     let pos_slot = reserve_slot(chunk);
@@ -838,11 +873,20 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
 
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
     emit_throw_if_disposed(chunk, reader_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(CONTENT_KEY),
+        Dest::Local(content_slot),
+        line,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(reader_slot),
+        &field_slot(POS_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -859,11 +903,16 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     if advance {
-        chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_i32_const(1, line);
         chunk.emit_op(Op::I32_ADD, line);
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Local(reader_slot),
+            &field_slot(POS_KEY),
+            ValueSource::Stack,
+            line,
+        );
     }
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -875,36 +924,33 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
 /// flushes do not write the text twice.
 fn emit_writer_persist(chunks: &mut [Chunk], current: usize, writer_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
-    let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
-    let stream_key = chunk.add_constant(Value::String(Arc::from(STREAM_KEY)));
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
+    let obj = ObjSource::Local(writer_slot);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, stream_key, line);
+    class_slots::emit_class_get(chunk, obj, &field_slot(STREAM_KEY), Dest::Stack, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
 
     // Stream-backed: the buffered text, UTF-8 encoded, through the stream's
     // own write — which is what grows it and moves its cursor.
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, stream_key, line);
+    class_slots::emit_class_get(chunk, obj, &field_slot(STREAM_KEY), Dest::Stack, line);
     host::emit(chunk, "web:encoding", "encoderNew", 0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(chunk, obj, &field_slot(BUF_KEY), Dest::Stack, line);
     host::emit(chunk, "web:encoding", "encode", 2, line);
     super::memory_stream_adapter::emit_write(chunks, current, 1, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        obj,
+        &field_slot(BUF_KEY),
+        ValueSource::ConstStr(String::new()),
+        line,
+    );
 
     chunk.emit_else(line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    class_slots::emit_class_get(chunk, obj, &field_slot(PATH_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(chunk, obj, &field_slot(BUF_KEY), Dest::Stack, line);
     vybe_compiler::primitives::fs_path::emit_write_file(chunk, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -924,15 +970,16 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
 /// Stack: `[stream]` → `[null]`.
 pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
-    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-
     let stream_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(stream_slot),
+        &field_slot(TYPE_KEY),
+        Dest::Stack,
+        line,
+    );
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 
@@ -952,8 +999,12 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: `[reader]` → `[null]`.
 pub fn emit_stream_reader_close(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
-    chunk.emit_bool_const(true, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(DISPOSED_KEY),
+        ValueSource::ConstBool(true),
+        line,
+    );
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

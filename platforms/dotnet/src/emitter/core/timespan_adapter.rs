@@ -14,11 +14,14 @@
 //! impls so callers continue to work.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::math;
+
+use super::object_fields::field_slot;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -42,8 +45,14 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
     }
 }
 
-fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+fn struct_set_field(chunk: &mut Chunk, key: &str, line: u32) {
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(key),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
@@ -179,7 +188,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);
-    struct_set_field(chunk, type_key, line);
+    struct_set_field(chunk, "__type", line);
 
     // ⛔ The COMPONENT properties — `Days`/`Hours`/`Minutes`/`Seconds`/
     // `Milliseconds`. Every one of them was already COMPUTED above, into
@@ -200,7 +209,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
         let key = string_key(chunk, lower);
         core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        struct_set_field(chunk, key, line);
+        struct_set_field(chunk, lower, line);
 
         core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -209,7 +218,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    struct_set_field(chunk, total_ms_key, line);
+    struct_set_field(chunk, "totalmilliseconds", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -219,7 +228,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(10_000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
-    struct_set_field(chunk, ticks_key, line);
+    struct_set_field(chunk, "ticks", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -231,7 +240,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    struct_set_field(chunk, total_sec_key, line);
+    struct_set_field(chunk, "totalseconds", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -243,7 +252,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(60_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    struct_set_field(chunk, total_min_key, line);
+    struct_set_field(chunk, "totalminutes", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -255,7 +264,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(3_600_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    struct_set_field(chunk, total_hr_key, line);
+    struct_set_field(chunk, "totalhours", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -267,7 +276,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    struct_set_field(chunk, total_day_key, line);
+    struct_set_field(chunk, "totaldays", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -684,12 +693,21 @@ const TIMESPAN_OPERATOR_SLOTS: &[vybe_ast::ProtocolSlot] = &[
 /// the same functions.
 fn emit_inherit_operator_slots(chunk: &mut Chunk, src_local: u16, dst_local: u16, line: u32) {
     for slot in TIMESPAN_OPERATOR_SLOTS {
-        let key = vybe_ast::protocol_slot_key(*slot);
-        let key_idx = string_key(chunk, &key);
-        chunk.emit_op_u16(Op::LOCAL_GET, dst_local, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, src_local, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
-        struct_set_field(chunk, key_idx, line);
+        // A BOUND PROTOCOL SLOT, not a spelling. `ClassSlot::Slot` is the one
+        // place a binding becomes a storage name, so these inherit under the
+        // same identity the language bound them with.
+        let bound = class_slots::resolve(
+            &class_slots::ClassSlot::Slot(*slot),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_get(chunk, ObjSource::Local(src_local), &bound, Dest::Stack, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Local(dst_local),
+            &bound,
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 

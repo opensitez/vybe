@@ -76,8 +76,15 @@ modifier = {
     "public" | "private" | "protected" | "internal"
     | static_kw | abstract_kw | sealed_kw | partial_kw
     | virtual_kw | override_kw | readonly_kw | "new"
-    | async_kw | "const" | "volatile" | "extern" | required_kw
+    | async_kw | "const" | "volatile" | "extern" | required_kw | file_kw
 }
+
+// C# 11 `file` — file-local type visibility, and a CONTEXTUAL keyword like
+// `required` beside it: it means "visible only in this file" in modifier
+// position and stays a legal identifier everywhere else, so it is matched
+// here and not reserved. A `file` type is `internal` narrowed to one file,
+// and we compile a file at a time, so the narrowing is already in force.
+file_kw = @{ "file" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // C# 11 `required` — a CONTEXTUAL keyword: it only means "must be set by
 // an object initializer" in modifier position, and stays a legal
@@ -242,6 +249,15 @@ var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
 // `new int[] { 1, 2, 3 }` per ECMA-334 §17.7. The bare-brace form is
 // only allowed in variable / field declarators; the walker materialises
 // the missing `new T[]` prefix from the declared type.
+// ⚠ `System.Index idx = ^2;` IS STILL A PARSE ERROR, DELIBERATELY.
+//
+// Allowing `range_argument | from_end_index` here parses it — and produced a
+// program that printed NOTHING and exited 0, which is worse than the error it
+// replaced. `walk_index_part` is the only consumer of `from_end_index` and it
+// lowers `^N` to `len(RECEIVER) - N`; a declarator has no receiver, because
+// `Index` and `Range` are VALUES that carry "from the end" until something
+// applies them. That is a value representation, not a grammar rule, and the
+// grammar must not accept what nothing can build.
 var_declarator = { ident_name ~ ("=" ~ ref_initializer? ~ (array_initializer | expression))? }
 
 // The `ref` in `= ref val`. Consumed and discarded: what it aliases is decided
@@ -733,7 +749,11 @@ property_pattern = {
 when_kw = @{ "when" ~ !(ASCII_ALPHANUMERIC | "_") }
 // A subpattern value admits `or` (`{ Kind: "err" or "fail" }`), which
 // `pattern_clause` itself does not.
-property_subpattern = { ident_name ~ ":" ~ property_pattern_value }
+// ⛔ THE NAME IS A CHAIN. C# 10 extended property patterns nest without a
+// nested brace: `is { Info.Code: 1 }` is `is { Info: { Code: 1 } }`. Matching
+// one `ident_name` failed the whole `is` at the dot, so every extended pattern
+// was a parse error rather than a semantic gap.
+property_subpattern = { ident_name ~ ("." ~ ident_name)* ~ ":" ~ property_pattern_value }
 property_pattern_value = { pattern_clause ~ (pattern_or_kw ~ pattern_clause)* }
 pattern_or_kw = { "or" }
 pattern_type = { base_type ~ generic_type_args? ~ array_rank* }
@@ -1174,7 +1194,30 @@ param = {
 // escape the callee. That is a compile-time escape-analysis restriction with
 // no run-time component, so it is accepted and dropped, exactly like the
 // `readonly` half of `ref readonly`.
-param_modifier = { scoped_kw ~ (ref_readonly_kw | "ref" | "out" | "in")? | "params" | ref_readonly_kw | "ref" | "out" | "this" }
+// ⛔ `in` WAS REACHABLE ONLY AFTER `scoped`. A bare `in int a` — C# 7.2's
+// read-only by-reference parameter, and the ordinary spelling — matched no
+// alternative, so the whole declaration was a parse error.
+//
+// ⛔ AND EVERY WORD HERE NEEDS ITS BOUNDARY. As bare strings, `"out"` matches
+// the first three characters of a parameter named `outValue` and leaves
+// `Value` to be read as the type: a mis-parse, not an error, which is the
+// pitfall `add_vybex_language.md` documents. `@{ … ~ !(ALNUM|"_") }` is the
+// shape that refuses.
+param_modifier = {
+    scoped_kw ~ (ref_readonly_kw | ref_kw | out_kw | in_kw)?
+    | params_kw
+    | ref_readonly_kw
+    | ref_kw
+    | out_kw
+    | in_kw
+    | this_kw
+}
+
+// `in_kw` and `this_kw` are already defined above — `foreach (x in y)` and the
+// `: this(...)` initializer — and one definition per word is the point.
+ref_kw = @{ "ref" ~ !(ASCII_ALPHANUMERIC | "_") }
+out_kw = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
+params_kw = @{ "params" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 scoped_kw = @{ "scoped" ~ !(ASCII_ALPHANUMERIC | "_") }
 

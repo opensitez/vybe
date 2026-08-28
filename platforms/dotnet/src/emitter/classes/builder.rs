@@ -25,11 +25,13 @@
 //! `wasm:string-constants` import.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use super::MethodOp;
+use crate::emitter::core::object_fields::field_slot;
 
 /// Push a string as a pool constant. Wrapper chunks must not use
 /// `Chunk::emit_string_const` — it registers a `wasm:string-constants`
@@ -105,7 +107,7 @@ fn compile_body_offset(
             MethodOp::PushThisField(field) => {
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(field), Dest::Stack, line);
             }
             MethodOp::PushArgField(n, field) => {
                 debug_assert!(
@@ -116,7 +118,7 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(field), Dest::Stack, line);
             }
             MethodOp::PushArgFieldField(n, f1, f2) => {
                 debug_assert!(
@@ -127,9 +129,9 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
-                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k1, line);
+                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(f1), Dest::Stack, line);
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
-                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k2, line);
+                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(f2), Dest::Stack, line);
             }
             MethodOp::PushConstInt(v) => {
                 chunk.emit_f64_const(v as f64, line);
@@ -181,7 +183,13 @@ fn compile_body_offset(
             }
             MethodOp::SetField(field) => {
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+                class_slots::emit_class_set(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(field),
+                    ValueSource::Stack,
+                    line,
+                );
             }
             MethodOp::Drop => {
                 chunk.emit_op(Op::DROP, line);

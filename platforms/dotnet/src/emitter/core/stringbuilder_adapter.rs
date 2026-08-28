@@ -15,9 +15,12 @@
 //! and the emit decides at compile time which body to lay out.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+use super::object_fields::field_slot;
 
 const BUFFER_KEY: &str = "__buffer";
 // ⛔ ONE spelling. These used to be two: a PascalCase key AND a lowercase one,
@@ -30,27 +33,6 @@ const BUFFER_KEY: &str = "__buffer";
 const CAPACITY_KEY: &str = "capacity";
 const CAPACITY_LOWER_KEY: &str = CAPACITY_KEY;
 const MAX_CAPACITY_KEY: &str = "maxcapacity";
-const MAX_CAPACITY_LOWER_KEY: &str = MAX_CAPACITY_KEY;
-
-fn emit_set_field_const_i32(chunk: &mut Chunk, key: &str, value: i32, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(key)));
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::I32(value), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-}
-
-fn emit_set_field_from_slot(
-    chunk: &mut Chunk,
-    obj_slot: u16,
-    key: &str,
-    value_slot: u16,
-    line: u32,
-) {
-    let key = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-}
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -98,19 +80,16 @@ fn emit_format_append_value(chunk: &mut Chunk, value_slot: u16, line: u32) {
 }
 
 fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) {
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
-    let capacity_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_KEY)));
-    let capacity_lower_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_LOWER_KEY)));
     let len_slot = reserve_slot(chunk);
     let capacity_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, capacity_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
@@ -121,10 +100,22 @@ fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) 
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_LOWER_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_end(line);
 }
@@ -136,26 +127,19 @@ fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) 
 /// Stack on exit: `[obj]` — Object with `__buffer` field set
 pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
-    let capacity_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_KEY)));
-    let max_capacity_key = chunk.add_constant(Value::String(Arc::from(MAX_CAPACITY_KEY)));
     match argc {
+        // `new StringBuilder()` — the whole object in one construct.
         0 => {
-            // [] → STRUCT_NEW → [obj]
-            chunk.emit_struct_new(0, 0, line);
-            // [obj] → DUP → [obj, obj] → push "" → [obj, obj, ""]
-            core_wasm::dup(chunk, line);
-            push_const(chunk, Value::String(Arc::from("")), line);
-            // STRUCT_SET pops [obj, val] and pushes [val]; we then drop val.
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            core_wasm::dup(chunk, line);
-            push_const(chunk, Value::I32(16), line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            emit_set_field_const_i32(chunk, CAPACITY_LOWER_KEY, 16, line);
-            core_wasm::dup(chunk, line);
-            push_const(chunk, Value::I32(i32::MAX), line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            emit_set_field_const_i32(chunk, MAX_CAPACITY_LOWER_KEY, i32::MAX, line);
+            class_slots::emit_class_construct(
+                chunk,
+                "StringBuilder",
+                &[
+                    (field_slot(BUFFER_KEY), ValueSource::ConstStr(String::new())),
+                    (field_slot(CAPACITY_KEY), ValueSource::ConstI32(16)),
+                    (field_slot(MAX_CAPACITY_KEY), ValueSource::ConstI32(i32::MAX)),
+                ],
+                line,
+            );
         }
         _ => {
             let max_slot = reserve_slot(chunk);
@@ -172,7 +156,15 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             let obj_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, init_slot, line);
 
-            chunk.emit_struct_new(0, 0, line);
+            // `__maxcapacity` is known in both arms; `__buffer`/`capacity`
+            // depend on whether the argument is a capacity or a seed string,
+            // so they are written by the branch below.
+            class_slots::emit_class_construct(
+                chunk,
+                "StringBuilder",
+                &[(field_slot(MAX_CAPACITY_KEY), ValueSource::Local(max_slot))],
+                line,
+            );
             chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
@@ -180,32 +172,38 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             chunk.emit_if(line);
 
             // StringBuilder(int capacity): empty buffer, explicit capacity.
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            push_const(chunk, Value::String(Arc::from("")), line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            emit_set_field_from_slot(chunk, obj_slot, CAPACITY_LOWER_KEY, init_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            emit_set_field_from_slot(chunk, obj_slot, MAX_CAPACITY_LOWER_KEY, max_slot, line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Local(obj_slot),
+                &field_slot(BUFFER_KEY),
+                ValueSource::ConstStr(String::new()),
+                line,
+            );
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Local(obj_slot),
+                &field_slot(CAPACITY_KEY),
+                ValueSource::Local(init_slot),
+                line,
+            );
 
             chunk.emit_else(line);
 
             // StringBuilder(string value): seed buffer, default capacity.
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            push_const(chunk, Value::I32(16), line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            emit_set_field_const_i32(chunk, CAPACITY_LOWER_KEY, 16, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line);
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            emit_set_field_from_slot(chunk, obj_slot, MAX_CAPACITY_LOWER_KEY, max_slot, line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Local(obj_slot),
+                &field_slot(BUFFER_KEY),
+                ValueSource::Local(init_slot),
+                line,
+            );
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Local(obj_slot),
+                &field_slot(CAPACITY_KEY),
+                ValueSource::ConstI32(16),
+                line,
+            );
 
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -219,7 +217,6 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
 /// Stack on exit: `[sb]`
 pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let count_slot = reserve_slot(chunk);
     let start_slot = reserve_slot(chunk);
     let s_slot = reserve_slot(chunk);
@@ -248,7 +245,7 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     if argc == 3 {
         let i_slot = reserve_slot(chunk);
         push_const(chunk, Value::I32(0), line);
@@ -284,7 +281,13 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     }
     // STRUCT_SET pops [sb, buffer+s], pushes [buffer+s]; drop it.
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -294,7 +297,6 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// Stack on entry: `[sb]` or `[sb, s]` ; Stack on exit: `[sb]`
 pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let s_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
@@ -311,12 +313,18 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     emit_format_append_value(chunk, s_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -372,21 +380,25 @@ pub fn emit_sb_append_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     super::string_format_adapter::emit_string_format(chunks, current, value_argc, line);
 
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     chunk.emit_op_u16(Op::LOCAL_SET, formatted_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, formatted_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
 pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let values_slot = reserve_slot(chunk);
     let separator_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
@@ -403,10 +415,16 @@ pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, joined_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -416,7 +434,6 @@ pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb]` or `[sb, start, count]` ; Stack on exit: `[buffer_string]`
 pub fn emit_sb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     if argc == 3 {
         let count_slot = reserve_slot(chunk);
         let start_slot = reserve_slot(chunk);
@@ -425,14 +442,14 @@ pub fn emit_sb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
     } else {
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     }
 }
 
@@ -441,12 +458,17 @@ pub fn emit_sb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 /// Stack on entry: `[sb]` ; Stack on exit: `[null]`
 pub fn emit_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let sb_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -455,22 +477,18 @@ pub fn emit_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb]` ; Stack on exit: `[length:i32]`
 pub fn emit_sb_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
 }
 
 /// `sb.Capacity` — tracked as a numeric field, defaulting to 16.
 pub fn emit_sb_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let capacity_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, capacity_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
 }
 
 pub fn emit_sb_set_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let capacity_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_KEY)));
-    let capacity_lower_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_LOWER_KEY)));
     let value_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
@@ -478,21 +496,37 @@ pub fn emit_sb_set_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_LOWER_KEY),
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_sb_max_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let max_capacity_key = chunk.add_constant(Value::String(Arc::from(MAX_CAPACITY_KEY)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, max_capacity_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(MAX_CAPACITY_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let new_len_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
     let buf_slot = reserve_slot(chunk);
@@ -501,7 +535,7 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, new_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
@@ -519,7 +553,13 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     push_const(chunk, Value::I32(0), line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_len_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_else(line);
 
@@ -548,7 +588,13 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_end(line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -557,8 +603,6 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let capacity_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_KEY)));
-    let capacity_lower_key = chunk.add_constant(Value::String(Arc::from(CAPACITY_LOWER_KEY)));
     let desired_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
     let capacity_slot = reserve_slot(chunk);
@@ -566,7 +610,7 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_SET, desired_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, capacity_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
@@ -576,19 +620,30 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_LOWER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, capacity_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
 }
 
 pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let count_slot = reserve_slot(chunk);
     let dest_index_slot = reserve_slot(chunk);
     let dest_slot = reserve_slot(chunk);
@@ -607,7 +662,7 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
     push_const(chunk, Value::I32(0), line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
@@ -655,16 +710,15 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_sb_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let other_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, other_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 }
 
@@ -677,7 +731,6 @@ pub fn emit_sb_equals(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `wasm:js-string.substring` / `.length` imports + `emit_dyn_add`.
 pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let text_slot = reserve_slot(chunk);
     let idx_slot = reserve_slot(chunk);
     let buf_slot = reserve_slot(chunk);
@@ -690,7 +743,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Read sb.__buffer once and stash.
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     // before = buf.substring(0, idx)
@@ -719,7 +772,13 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     // Stack: [sb, full]
 
     // sb.__buffer = full
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -729,7 +788,6 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb, start, count]` ; Stack on exit: `[null]`
 pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let count_slot = reserve_slot(chunk);
     let start_slot = reserve_slot(chunk);
     let buf_slot = reserve_slot(chunk);
@@ -740,7 +798,7 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -758,7 +816,13 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -768,14 +832,13 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb, index]` ; Stack on exit: `[char_string]`
 pub fn emit_sb_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let index_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     host::emit(chunk, "ecma:string", "charAt", 2, line);
 }
@@ -785,7 +848,6 @@ pub fn emit_sb_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb, index, value]` ; Stack on exit: `[sb]`
 pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let value_slot = reserve_slot(chunk);
     let index_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
@@ -796,7 +858,7 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -819,7 +881,13 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -833,7 +901,6 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let replace_idx = chunks[current].add_import("ecma:string", "replaceAll");
     let chunk = &mut chunks[current];
-    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let count_slot = reserve_slot(chunk);
     let start_slot = reserve_slot(chunk);
     let new_slot = reserve_slot(chunk);
@@ -851,7 +918,7 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     if argc == 5 {
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
         chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -880,7 +947,13 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+        class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
         return;
     }
@@ -888,7 +961,7 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // [sb, sb, buf, old, new] — buffer + replace args
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, old_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);
 
@@ -896,6 +969,12 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_call(replace_idx, 3, line);
     // Stack: [sb, replaced]
 
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
