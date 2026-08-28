@@ -19,8 +19,14 @@ impl Compiler {
             | StmtKind::FunctionDecl { body, .. } => {
                 self.predeclare_interface_signatures_in_body(body);
             }
-            StmtKind::InterfaceDecl { name, members, .. } => {
+            StmtKind::InterfaceDecl {
+                name,
+                members,
+                parents,
+                ..
+            } => {
                 self.register_interface_method_signatures(name, members);
+                self.register_interface_as_pending_class(name, members, parents);
             }
             StmtKind::ClassDecl { members, .. }
             | StmtKind::StructDecl { members, .. }
@@ -40,6 +46,73 @@ impl Compiler {
                 _ => {}
             }
         }
+    }
+
+    /// Put an interface in the class table.
+    ///
+    /// ⛔ `StmtKind::InterfaceDecl` COMPILES TO A NO-OP — "interfaces are
+    /// type-level only" — and that is right about EMISSION and wrong about
+    /// KNOWLEDGE. An interface declares members, and everything that asks "does
+    /// this type declare that name" was answering NO for every interface in
+    /// every program: `--dump-classes` on a C# file declaring `IGreet` lists
+    /// the classes and no interface at all.
+    ///
+    /// The immediate consumer is augmentation. C# default interface methods are
+    /// copied into implementers today by a walker-private `HashMap` +
+    /// `inject_interface_defaults` pass, which is `AugmentationMode::Copy` with
+    /// `AugmentationPosition::AfterOwn` written out by hand. It cannot move to
+    /// the shared model while `apply_augmentations` has nothing to resolve
+    /// `from: "IGreet"` against.
+    ///
+    /// Registered with members and NO constructor: an interface is not
+    /// constructible, and nothing here gives it a ctor global or an allocation.
+    /// `declared_kind` already exists on the normalized model for exactly this.
+    pub(super) fn register_interface_as_pending_class(
+        &mut self,
+        interface_name: &str,
+        members: &[InterfaceMember],
+        parents: &[String],
+    ) {
+        let canonical = self.canon(interface_name);
+        if canonical.is_empty() || self.pending_classes.contains_key(&canonical) {
+            return;
+        }
+        let mut instance_member_names = Vec::new();
+        for member in members {
+            let name = match member {
+                InterfaceMember::Method { name, .. }
+                | InterfaceMember::Property { name, .. }
+                | InterfaceMember::Event { name, .. } => name,
+                _ => continue,
+            };
+            let stored = self.js_member_storage_name_for_class(&canonical, name);
+            if !instance_member_names.contains(&stored) {
+                instance_member_names.push(stored);
+            }
+        }
+        let bases: Vec<String> = parents.iter().map(|p| self.canon(p)).collect();
+        let parent = bases.first().cloned();
+        self.pending_classes.insert(
+            canonical,
+            PendingClass {
+                parent,
+                bases,
+                enclosing_class: self.current_class.clone(),
+                fields: Vec::new(),
+                field_storage_names: HashMap::new(),
+                is_value_type: false,
+                instance_member_names,
+                instance_pointer_method_names: Vec::new(),
+                instance_field_types: HashMap::new(),
+                static_fields: Vec::new(),
+                static_field_types: HashMap::new(),
+                static_method_names: Vec::new(),
+                instance_method_overloads: HashMap::new(),
+                static_method_overloads: HashMap::new(),
+                nested_types: Vec::new(),
+                statics: Vec::new(),
+            },
+        );
     }
 
     pub(super) fn register_interface_method_signatures(

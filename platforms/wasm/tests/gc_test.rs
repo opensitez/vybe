@@ -51,6 +51,7 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
     }
+    ..Default::default()
 }
 
 #[test]
@@ -62,9 +63,28 @@ fn gc_emission_maps_chunk_type_index_to_wasm_struct_type_index() {
     chunk.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![chunk]);
+    // ⚠ THE IMMEDIATE IS 1-BASED, so `STRUCT_NEW_DEFAULT 1` is type **A**,
+    // whose described Wasm type index is 0 — not type B at index 2.
+    //
+    // This assertion used to demand `[0xFB, 0x01, 0x02]` and called typeidx 1
+    // "the second chunk-local type", i.e. it read the immediate as 0-based and
+    // pinned an off-by-one in `wasm_struct_type_for_chunk_type`. Every other
+    // consumer disagrees: `resolve_gc_rtt` indexes `type_imm - 1`,
+    // `struct_type_by_index` indexes `module_index - 1`, `TypeEntry::parent_index`
+    // is documented 1-based with 0 meaning "none", and `classes.rs` reserves 0
+    // for the dynamic form. The writer was the lone outlier and this test was
+    // what held it in place.
+    //
+    // A has one descriptor-carrying type, so the allocation is
+    // `global.get <desc> ; struct.new_default_desc 0` (0xFB 0x21), not
+    // `struct.new_default` — see `encode_global_section_with_descriptors`.
     assert!(
-        has_bytes(&wasm, &[0xFB, 0x01, 0x02]),
-        "second chunk-local type should map to described Wasm type index 2"
+        has_bytes(&wasm, &[0xFB, 0x21, 0x00]),
+        "chunk-local type 1 is A, whose described Wasm type index is 0"
+    );
+    assert!(
+        !has_bytes(&wasm, &[0xFB, 0x01, 0x02]),
+        "must not emit the old off-by-one mapping to type B"
     );
 }
 
@@ -692,6 +712,7 @@ fn array_init_data_copies_into_array() {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     });
     let i8_array_type = 1u16;
     {
@@ -790,15 +811,18 @@ fn struct_get_u_reads_from_fields_array() {
 // (0xFB 0x20 / 0x21 / 0x22)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ⚠ These read the descriptor back with `ref.get_desc`, NOT by fetching the
+// reserved `__descriptor` property with `struct.get`. Where the descriptor is
+// stored is an implementation detail the proposal does not expose; asserting
+// on it made the tests pass for a stub that allocated an empty object and
+// ignored both its type index and its field operands.
+
 #[test]
 fn struct_new_desc_attaches_descriptor() {
-    // struct.new_desc: pops descriptor → creates struct with __descriptor property
     let r = run(|c| {
-        let desc_key = c.add_constant(Value::String(Arc::from("__descriptor")));
-        c.emit_string_const("my-type", 0); // descriptor
-        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-        // read __descriptor back
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
+        c.emit_string_const("my-type", 0); // descriptor — the LAST operand
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     });
     assert_eq!(r.as_str(), "my-type");
 }
@@ -806,23 +830,68 @@ fn struct_new_desc_attaches_descriptor() {
 #[test]
 fn struct_new_default_desc_attaches_descriptor() {
     let r = run(|c| {
-        let desc_key = c.add_constant(Value::String(Arc::from("__descriptor")));
         c.emit_i32_const(42, 0);
         c.emit_op_u16(Op::STRUCT_NEW_DEFAULT_DESC, 0, 0);
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     });
     assert_eq!(r.as_i32(), 42);
 }
 
 #[test]
 fn ref_get_desc_retrieves_descriptor() {
-    // ref.get_desc: pops struct → pushes its __descriptor property
     let r = run(|c| {
         c.emit_string_const("tag", 0);
-        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
         c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     });
     assert_eq!(r.as_str(), "tag");
+}
+
+// The descriptor is the LAST operand, so the field values sit BENEATH it on
+// the stack (Overview.md §"Allocation With Descriptors"). The stub popped only
+// the descriptor, which left every field value stranded on the stack.
+#[test]
+fn struct_new_desc_pops_its_field_operands() {
+    let r = run(|c| {
+        c.emit_i32_const(7, 0); // a field value
+        c.emit_string_const("d", 0); // descriptor on top
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 1, 0);
+        // If the field operand were left behind, the struct ref would not be
+        // on top and `ref.get_desc` would receive the stray i32 instead.
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
+    });
+    assert_eq!(r.as_str(), "d");
+}
+
+// `test/core/custom-descriptors/struct_new_desc.wast:492-497` — a null
+// descriptor traps, and does so for both allocation forms.
+#[test]
+fn struct_new_desc_traps_on_a_null_descriptor() {
+    let e = run_err(|c| {
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
+    });
+    assert!(e.contains("null descriptor reference"), "{e}");
+}
+
+#[test]
+fn struct_new_default_desc_traps_on_a_null_descriptor() {
+    let e = run_err(|c| {
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_op_u16(Op::STRUCT_NEW_DEFAULT_DESC, 0, 0);
+    });
+    assert!(e.contains("null descriptor reference"), "{e}");
+}
+
+// `ref_get_desc.wast:400-406` — the result type is non-nullable, so a null
+// input cannot be passed through.
+#[test]
+fn ref_get_desc_traps_on_a_null_reference() {
+    let e = run_err(|c| {
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
+    });
+    assert!(e.contains("null reference"), "{e}");
 }
 
 #[test]
@@ -852,7 +921,7 @@ fn ref_get_desc_on_struct_without_desc_returns_null() {
 /// name a different one — exactly the identity semantics these casts test.
 fn push_described_ref_and_descriptor(c: &mut Chunk, desc: &str, operand: &str) {
     c.emit_string_const(desc, 0);
-    c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
     c.emit_string_const(operand, 0);
 }
 
@@ -874,7 +943,7 @@ fn ref_cast_desc_eq_traps_on_a_different_descriptor() {
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
-        err.contains("descriptor mismatch"),
+        err.contains("descriptor cast failure"),
         "a descriptor that is not the allocated one must trap, got: {err}"
     );
 }
@@ -886,7 +955,7 @@ fn ref_cast_desc_eq_traps_on_a_null_descriptor_before_looking_at_the_reference()
     // message must be the null-descriptor one, not the mismatch one.
     let err = run_err(|c| {
         c.emit_string_const("vtable-a", 0);
-        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // descriptor operand = null
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
@@ -906,7 +975,7 @@ fn ref_cast_desc_eq_traps_on_a_reference_with_no_descriptor() {
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
-        err.contains("descriptor mismatch"),
+        err.contains("descriptor cast failure"),
         "an undescribed reference must fail the cast, got: {err}"
     );
 }
@@ -920,8 +989,15 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
         c.emit_string_const(desc_text, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
+    // ⚠ "descriptor cast failure", NOT "null reference". This assertion used
+    // to demand the latter, which is the wording `ref.get_desc` uses; for a
+    // CAST the proposal's suite is explicit that a null reference is an
+    // ordinary failed cast:
+    //   ref_cast_desc_eq.wast:820
+    //     (assert_trap (invoke "self-nonnullable-null-desc")
+    //                  "descriptor cast failure")
     assert!(
-        err.contains("null reference"),
+        err.contains("descriptor cast failure"),
         "the (ref ht) form does not admit null, got: {err}"
     );
 
@@ -947,7 +1023,7 @@ fn ref_cast_desc_eq_null_still_traps_on_a_mismatched_non_null_reference() {
         push_described_ref_and_descriptor(c, "vtable-a", "vtable-b");
         c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
     });
-    assert!(err.contains("descriptor mismatch"), "got: {err}");
+    assert!(err.contains("descriptor cast failure"), "got: {err}");
 }
 
 /// Runs one `br_on_cast_desc_eq`-family instruction inside a block and reports
@@ -1030,7 +1106,7 @@ fn br_on_cast_desc_eq_fail_traps_on_a_null_descriptor() {
         // descriptor VALUE rides the string-constant global route.
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
         c.emit_string_const("vtable-a", 0);
-        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+        c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::BR_ON_CAST_DESC_EQ_FAIL, 0);
         c.emit((desc >> 8) as u8, 0);
@@ -1051,7 +1127,7 @@ fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
     // what has to survive is the instruction AFTER it.
     let mut chunk = Chunk::new("<script>");
     chunk.emit_string_const("vtable-a", 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
     chunk.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0); // the marker that must still decode
@@ -1081,7 +1157,7 @@ fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
 fn descriptor_casts_round_trip_through_the_binary_format() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_string_const("vtable-a", 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
     chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -1108,7 +1184,7 @@ fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
     let mut chunk = Chunk::new("<script>");
     let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
     chunk.emit_string_const("vtable-a", 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
     chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op(Op::BR_ON_CAST_DESC_EQ, 0);
     chunk.emit((desc >> 8) as u8, 0);
@@ -1222,6 +1298,7 @@ fn emit_three_element_array(c: &mut Chunk) {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     });
     c.emit_i32_const(0, 0); // fill value
     c.emit_i32_const(3, 0); // length

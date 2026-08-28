@@ -17,6 +17,7 @@
 //! Per-language quirks (negative-index wrap, `step == 0` policy) are captured
 //! by [`Options`]; [`Options::for_language`] holds the quirk table.
 
+use crate::primitives::class_slots;
 use crate::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -289,7 +290,7 @@ fn normalize_slice_into(
         ops::emit_dyn_eq(&mut chunks[current], line);
         ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
-        chunks[current].emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("slice step cannot be zero", line);
         errors::emit_exception_new_finalize(&mut chunks[current], opts.value_error, line);

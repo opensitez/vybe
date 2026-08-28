@@ -28,6 +28,19 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     if data.len() < 8 || &data[0..4] != &WASM_MAGIC {
         return Err("Invalid WASM: bad magic".into());
     }
+    // ⚠ THE VERSION IS HALF THE HEADER, and it was never checked. The magic
+    // was compared and the next four bytes skipped, so a module declaring
+    // version 2 — or any other number — decoded as if it were version 1.
+    //
+    // The spec's preamble is `magic version`, both fixed, and its own suite
+    // asserts the failure by MESSAGE:
+    //   (assert_malformed (module binary "\00asm" "\02\00\00\00")
+    //                     "unknown binary version")
+    // The writer has always emitted `WASM_VERSION`; only the reader was
+    // failing to require what we ourselves produce.
+    if &data[4..8] != &WASM_VERSION {
+        return Err("unknown binary version".into());
+    }
     let mut pos = 8;
     let mut custom_data: Option<Vec<u8>> = None;
     let mut sections = StandardSections::default();
@@ -63,6 +76,13 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
 
         match section_id {
             SECTION_CUSTOM => {
+                // A custom section's ID is a NAME, so it is UTF-8 validated
+                // like any other — `utf8-custom-section-id.wast` asserts
+                // "malformed UTF-8 encoding" for a bad one. The section's
+                // CONTENTS stay uninterpreted, which is what makes a custom
+                // section custom; its id is still part of the format.
+                let mut npos = 0usize;
+                read_name(&section_data, &mut npos)?;
                 // Check if it's our "vybe" custom section
                 let (nlen, nr) = read_leb128_u32(&section_data);
                 if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"vybe") {
@@ -92,10 +112,20 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
         return decode_vybe_section(cd);
     }
 
-    // Otherwise, decode as standard WASM module
-    if sections.code_section.is_empty() {
-        return Err("No code section in WASM module".into());
-    }
+    // Otherwise, decode as standard WASM module.
+    //
+    // ⚠ A MODULE WITH NO CODE SECTION IS VALID. `(module)` is the smallest
+    // legal module there is — eight bytes of magic and version — and every
+    // section, code included, is optional (spec §5.5.16: a module is a
+    // SEQUENCE of optional sections). Rejecting it was not a harmless
+    // conservatism: `assert_malformed (module binary …)` asks "do these bytes
+    // fail to decode", so a decoder that rejects a well-formed module answers
+    // MALFORMED for a module that is fine, and the assertion passes for the
+    // wrong reason. That inverts the very check it is used for.
+    //
+    // The func section still has to agree with the code section — a declared
+    // function with no body is genuinely malformed — and that is
+    // `validate_standard_sections`' job, which runs either way.
     validate_standard_sections(&sections)?;
     decode_standard_wasm(
         &sections.type_section,
@@ -143,6 +173,10 @@ fn section_order_rank(section_id: u8) -> u8 {
 }
 
 fn validate_standard_sections(sections: &StandardSections) -> Result<(), String> {
+    // Strict pass FIRST: the lenient decoder below cannot report a malformed
+    // type section, so anything it would silently accept has to be rejected
+    // here.
+    validate_type_section(&sections.type_section)?;
     let types = parse_type_section(&sections.type_section);
     let func_type_indices = parse_function_section(&sections.func_section);
     let imports = parse_import_details(&sections.import_section)?;
@@ -158,7 +192,13 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
         }
     }
 
-    let code_count = section_count(&sections.code_section)?;
+    // ⚠ `_or_zero`: an ABSENT code section is not an error, it is zero
+    // functions — `(module)` has no sections at all and is valid. `section_count`
+    // errors on an empty slice ("missing required section count"), which made
+    // the smallest legal module undecodable. The real invariant is the one
+    // below: however many functions the func section declares, the code section
+    // must supply exactly that many bodies — and 0 == 0 satisfies it.
+    let code_count = section_count_or_zero(&sections.code_section)?;
     if code_count as usize != func_type_indices.len() {
         return Err("Invalid WASM: function/code count mismatch".into());
     }
@@ -257,6 +297,39 @@ fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
     }
 }
 
+/// Read a spec `name` — `vec(byte)` that MUST be valid UTF-8 — advancing `pos`.
+///
+/// ⚠ A wasm name is not "some bytes". The spec defines `name` as a byte vector
+/// whose contents are a valid UTF-8 encoding (§5.2.4), and the core suite
+/// devotes three whole files to it — `utf8-import-module.wast`,
+/// `utf8-import-field.wast`, `utf8-custom-section-id.wast` — asserting
+/// "malformed UTF-8 encoding" for continuation bytes without a prefix, overlong
+/// encodings, surrogate halves and out-of-range code points.
+///
+/// The import reader used to SKIP names outright (`pos += read + len`), so none
+/// of that was ever looked at. `str::from_utf8` enforces exactly the spec's
+/// rules — it rejects overlong forms and surrogates — so the check is the
+/// conversion itself.
+fn read_name(data: &[u8], pos: &mut usize) -> Result<String, String> {
+    let (len, read) = read_leb128_u32(&data[*pos..]);
+    if read == 0 {
+        return Err("Invalid WASM: malformed name length".into());
+    }
+    *pos += read;
+    let end = pos
+        .checked_add(len as usize)
+        .ok_or_else(|| "Invalid WASM: name length overflow".to_string())?;
+    if end > data.len() {
+        return Err("Invalid WASM: truncated name".into());
+    }
+    let bytes = &data[*pos..end];
+    *pos = end;
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Err("malformed UTF-8 encoding".into()),
+    }
+}
+
 fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
     if data.is_empty() {
         return Ok(Vec::new());
@@ -266,10 +339,10 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
     pos += read;
     let mut imports = Vec::new();
     for _ in 0..count {
-        let (mlen, read) = read_leb128_u32(&data[pos..]);
-        pos += read + mlen as usize;
-        let (nlen, read) = read_leb128_u32(&data[pos..]);
-        pos += read + nlen as usize;
+        // Both halves of an import are NAMES, so both are UTF-8 validated.
+        // These used to be skipped by length without being read.
+        let _module = read_name(data, &mut pos)?;
+        let _field = read_name(data, &mut pos)?;
         if pos >= data.len() {
             return Err("Invalid WASM: malformed import section".into());
         }
@@ -1651,7 +1724,18 @@ fn decode_standard_wasm(
             let (count, read) = read_leb128_u32(&code_sec[cpos..]);
             cpos += read;
             cpos += 1; // type byte
-            local_count += count;
+            // ⛔ A DECODER MUST REJECT MALFORMED INPUT, NEVER PANIC ON IT.
+            //
+            // This was `local_count += count`, and `binary.wast` feeds exactly
+            // the module that breaks it: local group counts that sum past
+            // 2^32, which the spec calls malformed ("too many locals"). In a
+            // debug build the add panicked and took the process down; in
+            // release it would have WRAPPED and decoded a module the spec
+            // rejects. Both are wrong, and the panic was only unreachable
+            // while `(module binary …)` was skipped instead of decoded.
+            local_count = local_count
+                .checked_add(count)
+                .ok_or_else(|| "too many locals".to_string())?;
         }
 
         // Get function name from exports
@@ -2891,13 +2975,21 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         // used to fall through to the operand-less default arm, so the bytes
         // of the immediate were decoded as if they were the NEXT instruction —
         // desynchronising everything after the first descriptor op in a module.
-        _ if op == Op::STRUCT_NEW_DESC
-            || op == Op::STRUCT_NEW_DEFAULT_DESC
-            || op == Op::REF_GET_DESC =>
-        {
+        _ if op == Op::STRUCT_NEW_DEFAULT_DESC || op == Op::REF_GET_DESC => {
             let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             chunk.emit_op_u16(op, type_idx as u16, 0);
+        }
+        // `struct.new_desc` additionally carries a field count in OUR
+        // bytecode (the binary format implies it from the declared type, the
+        // same asymmetry `struct.new` already has). Zero is the right value
+        // to synthesise: the VM sizes the allocation from the type registry
+        // whenever the typeidx resolves, and only falls back to the count for
+        // a type it does not know — which a decoded module always is not.
+        _ if op == Op::STRUCT_NEW_DESC => {
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            chunk.emit_op_u16_u16(op, type_idx as u16, 0, 0);
         }
         _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
             skip_heaptype(wasm, pos);
@@ -3109,6 +3201,160 @@ fn parse_tag_section(data: &[u8], types: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 /// byte and continue — which neither skipped the type nor kept alignment, so a
 /// module carrying GC types desynchronised the parse from its first struct on.
 /// Encodings per `proposals/gc/proposals/gc/MVP.md` §Binary Format.
+/// STRICT type-section validation — the half `parse_type_section` structurally
+/// cannot do.
+///
+/// `parse_type_section` returns a `Vec` and never an error: it is a lenient
+/// decoder that stops when the bytes run out. So no malformity in the type
+/// section could ever be REPORTED, and `assert_malformed` fixtures aimed at it
+/// all decoded happily. This pass exists solely to say no.
+///
+/// It enforces the Custom Descriptors encoding rules
+/// (`proposals/custom-descriptors/Overview.md` § Binary Format):
+///
+/// * **At most one `describes` and at most one `descriptor`** per subtype.
+/// * **`describes` (0x4C) precedes `descriptor` (0x4D).** The valid three-type
+///   chain in `binary-descriptors.wast` spells the middle type
+///   `4C <idx> 4D <idx> 5F …`; the malformed twin swaps them.
+/// * **`exact` (0x62) is a HEAPTYPE prefix, not a value type.** It is legal
+///   only directly after `ref`/`ref null` (0x64 / 0x63), and never twice —
+///   `exact.wast` asserts both a bare `0x62` and a repeated `0x64 0x62 0x62`
+///   as "malformed storage type".
+///
+/// Anything it does not understand it ACCEPTS: this is a targeted rejecter for
+/// rules with fixtures, not a second decoder to drift from the first.
+fn validate_type_section(data: &[u8]) -> Result<(), String> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let mut pos = 0usize;
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    for _ in 0..count {
+        if pos >= data.len() {
+            break;
+        }
+        if data[pos] == GC_REC {
+            pos += 1;
+            let (group_len, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..group_len {
+                validate_subtype(data, &mut pos)?;
+            }
+        } else {
+            validate_subtype(data, &mut pos)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_subtype(data: &[u8], pos: &mut usize) -> Result<(), String> {
+    if data.get(*pos).is_none() {
+        return Ok(());
+    }
+    if matches!(data.get(*pos), Some(&GC_SUB) | Some(&GC_SUB_FINAL)) {
+        *pos += 1;
+        let (supers, read) = read_leb128_u32(&data[*pos..]);
+        *pos += read;
+        for _ in 0..supers {
+            skip_leb128(data, pos);
+        }
+    }
+    // The clauses sit between the supertype vector and the composite type, and
+    // may appear with or without a `sub` header.
+    let mut seen_describes = false;
+    let mut seen_descriptor = false;
+    while let Some(&tag) = data.get(*pos) {
+        match tag {
+            CD_DESCRIBES => {
+                if seen_describes {
+                    return Err("malformed definition type: repeated describes clause".into());
+                }
+                if seen_descriptor {
+                    return Err(
+                        "malformed definition type: describes clause after descriptor".into(),
+                    );
+                }
+                seen_describes = true;
+            }
+            CD_DESCRIPTOR => {
+                if seen_descriptor {
+                    return Err("malformed definition type: repeated descriptor clause".into());
+                }
+                seen_descriptor = true;
+            }
+            _ => break,
+        }
+        *pos += 1;
+        skip_leb128(data, pos);
+    }
+    validate_comptype(data, pos)
+}
+
+fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), String> {
+    let Some(&tag) = data.get(*pos) else {
+        return Ok(());
+    };
+    *pos += 1;
+    match tag {
+        TYPE_FUNC => {
+            let (params, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            for _ in 0..params {
+                validate_value_type(data, pos)?;
+            }
+            let (results, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            for _ in 0..results {
+                validate_value_type(data, pos)?;
+            }
+        }
+        GC_STRUCT => {
+            let (fields, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            for _ in 0..fields {
+                validate_value_type(data, pos)?;
+                // mutability byte
+                *pos += 1;
+            }
+        }
+        GC_ARRAY => {
+            validate_value_type(data, pos)?;
+            *pos += 1; // mutability
+        }
+        // Anything else is not a shape this pass claims to understand.
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_value_type(data: &[u8], pos: &mut usize) -> Result<(), String> {
+    let Some(&tag) = data.get(*pos) else {
+        return Ok(());
+    };
+    // `0x62` is a HEAPTYPE prefix. Reaching it in VALUE-type position means
+    // there was no `ref` / `ref null` in front of it.
+    if tag == HEAPTYPE_EXACT {
+        return Err("malformed storage type: exact outside a reference type".into());
+    }
+    *pos += 1;
+    // 0x63 = (ref null ht), 0x64 = (ref ht) — both take a heaptype.
+    if tag == 0x63 || tag == 0x64 {
+        if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
+            *pos += 1;
+            if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
+                return Err("malformed storage type: repeated exact prefix".into());
+            }
+            // `heaptype ::= 0x62 x:u32` — a plain u32, which is what makes an
+            // exact ABSTRACT heap type unencodable.
+            skip_leb128(data, pos);
+        } else {
+            skip_leb128(data, pos);
+        }
+    }
+    Ok(())
+}
+
 fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     if data.is_empty() {
         return vec![];
@@ -3152,12 +3398,21 @@ fn parse_subtype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>
         for _ in 0..supers {
             skip_leb128(data, pos);
         }
-        // Custom Descriptors may insert `(descriptor $x)` / `(describes $x)`
-        // between the supertype vector and the composite type.
-        while matches!(data.get(*pos), Some(&CD_DESCRIPTOR) | Some(&CD_DESCRIBES)) {
-            *pos += 1;
-            skip_leb128(data, pos);
-        }
+    }
+    // ⚠ THE CLAUSES DO NOT REQUIRE A `sub` HEADER, and this loop used to sit
+    // INSIDE the branch above — so `4D <idx> 5F 00`, a descriptor-carrying
+    // struct with no supertype, fell straight into `parse_comptype` with tag
+    // 0x4D. That is not a composite type, so the entry was never pushed, every
+    // later type index shifted, and a module whose func section referenced the
+    // last type failed with "function type index out of range". The spec places
+    // the clauses between the (optional) supertype vector and the composite
+    // type, so they are read whether or not a header preceded them.
+    //
+    // Ordering and at-most-once are enforced by `validate_type_section`; this
+    // decoder stays lenient and only needs to CONSUME them correctly.
+    while matches!(data.get(*pos), Some(&CD_DESCRIPTOR) | Some(&CD_DESCRIBES)) {
+        *pos += 1;
+        skip_leb128(data, pos);
     }
     parse_comptype(data, pos, types)
 }
@@ -4107,6 +4362,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     implements,
                     constructor_chunk,
                     field_descriptors,
+                                    ..Default::default()
                 });
             }
         }

@@ -5,6 +5,7 @@
 //! multi-return, future Wasm multi-value bridges, and similar surfaces.
 //! It is intentionally separate from `packing.rs`, which is binary/data layout.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -22,10 +23,20 @@ fn save(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Stamp the array-like value on top of stack as a multi-value packet.
 /// Stack: `[array] -> [array]`.
 pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
-    let tag = chunks[current].add_constant(Value::String(Arc::from(MULTI_VALUE_TAG)));
+    let tag = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(MULTI_VALUE_TAG),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_dup(line);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, tag, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &tag,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Pack the top `n` stack values into a shared multi-value packet.
@@ -39,8 +50,17 @@ pub fn emit_from_stack(chunks: &mut [Chunk], current: usize, n: u16, line: u32) 
 /// Push i32 truthiness for whether `slot` is a shared multi-value packet.
 pub fn emit_is_multi_value_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     load(chunk, slot, line);
-    let tag = chunk.add_constant(Value::String(Arc::from(MULTI_VALUE_TAG)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, tag, line);
+    let tag = class_slots::resolve(
+        &class_slots::ClassSlot::internal(MULTI_VALUE_TAG),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &tag,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
 }

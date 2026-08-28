@@ -182,7 +182,13 @@ pub enum CompositeKind {
 /// A compile-time type definition — WASM GC type section entry.
 /// Describes a class/struct with named fields and vtable methods.
 /// Loaded into TypeRegistry before execution.
-#[derive(Debug, Clone)]
+///
+/// ⛔ `Default` is derived so a new field can be added WITHOUT breaking every
+/// exhaustive literal at once — directives.md §7: derive, migrate literals to
+/// `..Default::default()` per file, only then add the field. A required field
+/// on `CtorSpec` broke the build for the user and another agent simultaneously
+/// on 2026-08-07; this is that sequence.
+#[derive(Debug, Clone, Default)]
 pub struct TypeEntry {
     pub name: String,
     /// WASM GC composite shape (struct / array / func). Determines the runtime
@@ -215,6 +221,17 @@ pub struct TypeEntry {
     /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).
     /// Maps field_name → descriptor. Fields without entries default to PropertyDescriptor::standard().
     pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor>,
+    /// ⛔ **BACK-POINTER, not a parsed name.** When non-zero this row is the
+    /// DESCRIPTOR struct for the class at this **1-based index** in the same
+    /// table; `0` means an ordinary class row.
+    ///
+    /// The writer has to answer "which class does this descriptor belong to"
+    /// when laying out the `(described 2i, descriptor 2i+1)` pairs, and the
+    /// alternative was splitting it out of the row's NAME. Deriving a link by
+    /// string-splitting is exactly the fold-at-a-write-site shape that made
+    /// `FieldType.hint` store a lowercased spelling the tree could never match
+    /// again — so the link is a real field.
+    pub describes_index: u16,
 }
 
 /// A constant initialization expression (Extended Const Expressions proposal).
@@ -963,6 +980,18 @@ impl Chunk {
     /// `struct.new $t N` — typeidx 0 means the dynamic object-literal form,
     /// where `count` is the number of key/value pairs on the stack. A real
     /// typeidx takes its field count from the type, per the GC spec.
+    /// `struct.new_desc $t N` — the Custom Descriptors allocation form.
+    ///
+    /// Same immediates as [`Chunk::emit_struct_new`]: the descriptor is a
+    /// STACK operand (pushed last, above the field values), not an immediate.
+    pub fn emit_struct_new_desc(&mut self, typeidx: u16, count: u16, line: u32) {
+        self.emit_op(Op::STRUCT_NEW_DESC, line);
+        self.emit((typeidx >> 8) as u8, line);
+        self.emit((typeidx & 0xff) as u8, line);
+        self.emit((count >> 8) as u8, line);
+        self.emit((count & 0xff) as u8, line);
+    }
+
     pub fn emit_struct_new(&mut self, typeidx: u16, count: u16, line: u32) {
         self.emit_op(Op::STRUCT_NEW, line);
         self.emit((typeidx >> 8) as u8, line);

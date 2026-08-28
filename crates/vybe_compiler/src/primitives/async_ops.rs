@@ -14,6 +14,7 @@
 //! language's async API fell through to missing globals ("undefined is not
 //! callable", measured 2026-08-04 as csharp_async_await_flow 0/5).
 
+use crate::primitives::class_slots;
 use super::*;
 use vybe_ast::{AsyncOp, JoinMode};
 
@@ -100,15 +101,13 @@ impl Compiler {
                 self.emit_host_call(wr, 0);
                 let wr_slot = self.define_local("__sleep_resolvers");
                 self.emit_u16(Op::LOCAL_TEE, wr_slot);
-                let resolve_key = self.str_const("resolve");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, resolve_key);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("resolve"));
                 self.compile_expr(duration)?;
                 let set_timeout = self.import("web:timers", "setTimeout");
                 self.emit_host_call(set_timeout, 2);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, wr_slot);
-                let promise_key = self.str_const("promise");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, promise_key);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("promise"));
             }
             // Eager-continuation await — a DIFFERENT suspending import from
             // ECMA's `jspi.await`. The semantics were chosen at NORMALIZATION

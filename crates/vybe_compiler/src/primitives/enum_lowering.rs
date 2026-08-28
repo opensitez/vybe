@@ -47,7 +47,10 @@ pub const ORDINAL_FIELD: &str = "__ordinal";
 pub const VALUE_FIELD: &str = "__value";
 /// The declaring type's name — identity across frontends, since a tree type has
 /// no rtt of its own.
-pub const TYPE_FIELD: &str = "__type";
+// ⛔ ONE OWNER. A THIRD constant for `"__type"`, under a third name
+// (`TYPE_FIELD` vs `FIELD_TYPE`) — the word order alone defeated the grep
+// that found the other two.
+pub use crate::primitives::reflection::FIELD_TYPE as TYPE_FIELD;
 /// The integer-coercion method. Its NAME is private to this lowering — every
 /// language spells the coercion (`(int)e`, `Ord(e)`, `ordinal()`), never the
 /// method, so it is reached through the `Int` slot and not by this spelling.

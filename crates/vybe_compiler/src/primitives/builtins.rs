@@ -4,6 +4,7 @@
 //! file navigable — same pattern as `calls.rs`/`classes.rs`. Methods are
 //! private-by-convention, called from the core compile paths in `mod.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 /// Compile-time `u8` from a literal instruction argument (a SIMD lane index).
@@ -49,9 +50,17 @@ fn expr_str_lit(expr: Option<&Expression>) -> String {
 /// folded `(ref null $T)` carries a `null` marker → `(name, true)`. The name is
 /// recovered from the first ident found so either shape resolves.
 fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
+    let (name, nullable, _exact) = wasm_heap_type_ref_exact(expr);
+    (name, nullable)
+}
+
+/// As [`wasm_heap_type_ref`], plus whether the reftype was spelled
+/// `(ref null? (exact $t))` — Custom Descriptors' exact types.
+fn wasm_heap_type_ref_exact(expr: Option<&Expression>) -> (String, bool, bool) {
     let Some(e) = expr else {
-        return (String::new(), false);
+        return (String::new(), false, false);
     };
+    let mut exact = false;
     let (name, nullable) = match &e.kind {
         ExprKind::Ident(n) => (n.clone(), false),
         ExprKind::Lit(Literal::Str(s)) => (s.to_string(), false),
@@ -61,7 +70,7 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
         _ => {
             let mut name = String::new();
             let mut nullable = false;
-            collect_heap_type_ref(e, &mut name, &mut nullable);
+            collect_heap_type_ref(e, &mut name, &mut nullable, &mut exact);
             (name, nullable)
         }
     };
@@ -73,17 +82,22 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
     // and could never be true.
     match vybe_runtime::opcode::heaptype::HeapType::from_spec_reftype_name(&name) {
         Some((heap, abbreviation_is_nullable)) => {
-            (heap.to_string(), nullable || abbreviation_is_nullable)
+            (heap.to_string(), nullable || abbreviation_is_nullable, exact)
         }
-        None => (name, nullable),
+        None => (name, nullable, exact),
     }
 }
 
 /// Walk a folded ref-type expression collecting the first non-`null` ident as
 /// the type name and noting whether a `null` keyword appears (nullable).
-fn collect_heap_type_ref(e: &Expression, name: &mut String, nullable: &mut bool) {
+fn collect_heap_type_ref(e: &Expression, name: &mut String, nullable: &mut bool, exact: &mut bool) {
     match &e.kind {
         ExprKind::Ident(n) if n == "null" => *nullable = true,
+        // ⚠ MUST precede the "first ident is the name" arm below. `exact` is a
+        // MARKER, the same as `null`, and the wast walker pushes it ahead of
+        // the heap type — so without this arm it is captured as the type NAME
+        // and the real type is dropped.
+        ExprKind::Ident(n) if n == "exact" => *exact = true,
         // `ref` is the reftype-constructor keyword in a folded `(ref [null] ht)`
         // operand, NOT a heap-type name — skip it so the real heap type (`i31`,
         // `$T`, …) is what gets recorded.
@@ -91,11 +105,12 @@ fn collect_heap_type_ref(e: &Expression, name: &mut String, nullable: &mut bool)
         ExprKind::Ident(n) if name.is_empty() => *name = n.clone(),
         ExprKind::Lit(Literal::Null) => *nullable = true,
         ExprKind::Lit(Literal::Str(s)) if &**s == "null" => *nullable = true,
+        ExprKind::Lit(Literal::Str(s)) if &**s == "exact" => *exact = true,
         ExprKind::Lit(Literal::Str(s)) if name.is_empty() => *name = s.to_string(),
         ExprKind::Call { callee, args, .. } => {
-            collect_heap_type_ref(callee, name, nullable);
+            collect_heap_type_ref(callee, name, nullable, exact);
             for a in args {
-                collect_heap_type_ref(&a.value, name, nullable);
+                collect_heap_type_ref(&a.value, name, nullable, exact);
             }
         }
         _ => {}
@@ -235,11 +250,14 @@ impl Compiler {
 
             inst!(self, core_wasm::dup);
             self.emit_const(Value::String(Arc::from("__main__")));
-            let name_key = self.str_const("__name__");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("__name__"),
+                class_slots::ValueSource::Stack,
+            );
             inst!(self, core_wasm::dup);
-            let keys_key = self.str_const("__keys");
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+            let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
+            self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
             self.emit_const(Value::String(Arc::from("__name__")));
             common::collections::emit_push(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
@@ -253,12 +271,14 @@ impl Compiler {
                 }
                 inst!(self, core_wasm::dup);
                 self.emit_var_get(&global);
-                let key = self.str_const(&global);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(&global),
+                    class_slots::ValueSource::Stack,
+                );
 
                 inst!(self, core_wasm::dup);
-                let keys_key = self.str_const("__keys");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__keys"));
                 self.emit_const(Value::String(Arc::from(global.as_str())));
                 common::collections::emit_push(&mut self.chunks, self.current, line);
                 self.emit(Op::DROP);
@@ -686,8 +706,7 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from("length")));
                         self.emit_proxy_get()?;
                     } else {
-                        let length_key = self.str_const("length");
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, length_key);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("length"));
                     }
                     // §10.1.8.1 OrdinaryGet: a missing own `length` walks
                     // the prototype chain like any other key (e.g.
@@ -750,8 +769,8 @@ impl Compiler {
                     let normalized = Self::normalize_type_hint(&type_hint);
                     if normalized == "datetime" || normalized.ends_with(".datetime") {
                         self.compile_expr(&args[0])?;
-                        let idx = self.str_const(&field_name);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                        let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                         return Ok(true);
                     }
                 }
@@ -1254,6 +1273,74 @@ impl Compiler {
                     }
                     return Ok(true);
                 }
+                // `struct.new_desc $T` / `struct.new_default_desc $T` — the
+                // Custom Descriptors allocation forms. Identical to
+                // `__wast_stamp_type` above except that the descriptor is
+                // pushed LAST, on top of the field values, which is the operand
+                // order the proposal specifies:
+                //
+                //   struct.new_desc x : t* (ref null (exact y)) -> (ref (exact x))
+                //
+                // A type carrying a `(descriptor $d)` clause CANNOT be
+                // allocated with `struct.new`, so this is not an optimisation
+                // of the plain path — it is the only legal one for such a type.
+                "__wast_stamp_desc_type" => {
+                    let type_name = expr_str_lit(args.get(1).copied());
+                    let typeidx = self.chunks[0]
+                        .types
+                        .iter()
+                        .position(|t| t.name == type_name)
+                        .map(|i| i as u16 + 1);
+                    match (typeidx, args.first().map(|e| &e.kind)) {
+                        (Some(tidx), Some(ExprKind::Object(props))) => {
+                            let count = props.len() as u16;
+                            for p in props.to_vec() {
+                                match p {
+                                    ObjectProperty::KeyValue { value, .. } => {
+                                        self.compile_expr(&value)?
+                                    }
+                                    _ => self.emit_null(),
+                                }
+                            }
+                            // The descriptor operand, on top of the fields.
+                            if let Some(desc) = args.get(2) {
+                                self.compile_expr(desc)?;
+                            } else {
+                                self.emit_null();
+                            }
+                            let l = self.line;
+                            self.chunk().emit_struct_new_desc(tidx, count, l);
+                        }
+                        _ => {
+                            // Unregistered type: compile the operand and the
+                            // descriptor so neither is silently dropped, and
+                            // leave the allocation dynamic.
+                            if let Some(obj) = args.first() {
+                                self.compile_expr(obj)?;
+                            }
+                        }
+                    }
+                    return Ok(true);
+                }
+                // `ref.get_desc $T` — [ref] → [descriptor]. The type immediate
+                // is resolved rather than left at 0: the VM does not read it,
+                // but the wasm writer maps it to a real type index and a 0
+                // would name whatever type happens to sit at index 0.
+                "__wast_ref_get_desc" => {
+                    let type_name = expr_str_lit(args.get(1).copied());
+                    let typeidx = self.chunks[0]
+                        .types
+                        .iter()
+                        .position(|t| t.name == type_name)
+                        .map(|i| i as u16 + 1)
+                        .unwrap_or(0);
+                    if let Some(obj) = args.first() {
+                        self.compile_expr(obj)?;
+                    }
+                    let l = self.line;
+                    self.chunk().emit_op_u16(Op::REF_GET_DESC, typeidx, l);
+                    return Ok(true);
+                }
                 // `array.new_fixed $T N` — the SPEC instruction, whose first
                 // immediate IS the type index. Push the N element values, then
                 // `ARRAY_NEW_FIXED $T N`: the VM resolves the rtt from the
@@ -1298,6 +1385,38 @@ impl Compiler {
                 }
                 "ref.cast" | "ref_cast" | "ref.cast_null" | "ref_cast_null" => {
                     self.emit_ref_type_op(args, true)?;
+                    return Ok(true);
+                }
+                // `ref.cast_desc_eq rt` — Custom Descriptors. Unlike `ref.cast`
+                // this takes TWO stack operands: the reference, then the
+                // descriptor to compare against, which ends up on top. That
+                // matches the VM, which pops the descriptor and leaves the
+                // reference in place exactly as `ref.cast` does.
+                //
+                // Nullability comes from the immediate's own spelling —
+                // `(ref $a)` vs `(ref null $a)` — the same way it does for
+                // `ref.cast`, which is why the proposal gives the two forms
+                // separate opcodes rather than a flag.
+                "ref.cast_desc_eq" | "ref_cast_desc_eq" => {
+                    let (type_name, nullable) = wasm_heap_type_ref(args.first().copied());
+                    for a in &args[1..] {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    let op = if nullable {
+                        Op::REF_CAST_DESC_EQ_NULL
+                    } else {
+                        Op::REF_CAST_DESC_EQ
+                    };
+                    // NOT `emit_ref_type_test`: that emits a variable-width
+                    // LEB heaptype, and these opcodes are declared `U16` — the
+                    // VM reads a fixed two bytes, so a one- or three-byte LEB
+                    // desynchronises the instruction stream. The operand is a
+                    // constant-pool index naming the target type, which is what
+                    // the wasm writer's `resolve_heaptype_from_name` expects.
+                    let name_idx = self.chunks[self.current]
+                        .add_constant(vybe_runtime::Value::String(type_name.as_str().into()));
+                    self.chunks[self.current].emit_op_u16(op, name_idx, l);
                     return Ok(true);
                 }
                 "array_get" => {
@@ -1398,16 +1517,23 @@ impl Compiler {
     /// heaptype HERE: abstract for the spec's own spellings, otherwise an
     /// index into the module's type section.
     fn emit_ref_type_op(&mut self, args: &[&Expression], is_cast: bool) -> Result<(), String> {
-        let (type_name, nullable) = wasm_heap_type_ref(args.first().copied());
+        let (type_name, nullable, exact) = wasm_heap_type_ref_exact(args.first().copied());
         for a in &args[1..] {
             self.compile_expr(a)?;
         }
         let l = self.line;
-        let op = match (is_cast, nullable) {
-            (false, false) => Op::REF_TEST,
-            (false, true) => Op::REF_TEST_NULL,
-            (true, false) => Op::REF_CAST,
-            (true, true) => Op::REF_CAST_NULL,
+        // Exactness narrows the comparison from "subtype of" to "is", so it
+        // selects a different opcode rather than a different operand — the
+        // same way nullability already does.
+        let op = match (is_cast, nullable, exact) {
+            (false, false, false) => Op::REF_TEST,
+            (false, true, false) => Op::REF_TEST_NULL,
+            (true, false, false) => Op::REF_CAST,
+            (true, true, false) => Op::REF_CAST_NULL,
+            (false, false, true) => Op::REF_TEST_EXACT,
+            (false, true, true) => Op::REF_TEST_EXACT_NULL,
+            (true, false, true) => Op::REF_CAST_EXACT,
+            (true, true, true) => Op::REF_CAST_EXACT_NULL,
         };
         self.emit_ref_type_test(op, &type_name, l);
         Ok(())
@@ -4978,8 +5104,7 @@ impl Compiler {
             "classname" => {
                 // ClassName(obj) → obj.__type
                 self.compile_expr(args[0])?;
-                let idx = self.str_const("__type");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::TypeIdentity);
             }
             "pos" => {
                 // Pos(substr, s) → IndexOf(s, substr) + 1 (Pascal 1-based)

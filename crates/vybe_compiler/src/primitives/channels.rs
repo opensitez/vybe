@@ -23,6 +23,7 @@
 //! same shape the retired AST builders produced (the queue cell keeps the
 //! buffer shared across go-pointer copies), plus `__zero`.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 
 use vybe_ast::{ChanOp, ExprKind, Expression, ObjectProperty, SelectArm, Statement};
@@ -35,9 +36,6 @@ use crate::primitives::errors;
 use crate::primitives::instructions::core_wasm;
 use crate::primitives::ops;
 
-fn key(c: &mut Chunk, name: &str) -> u16 {
-    c.add_constant(Value::String(Arc::from(name)))
-}
 
 /// TOS: [maybe-cell] → [value]. A go pointer / the queue field wraps its
 /// target in `{__ref_kind: "cell", __value}`; unwrap if present. Imports
@@ -68,14 +66,32 @@ fn deref_cell_into(imports: &mut Chunk, c: &mut Chunk, line: u32) {
     }
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, obj, line);
-    let kind_key = key(c, "__ref_kind");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
+    let kind_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__ref_kind"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &kind_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_string_const("cell", line);
     ops::emit_dyn_eq_into(imports, c, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, obj, line);
-    let value_key = key(c, "__value");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    let value_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__value"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &value_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_op_u16(Op::LOCAL_SET, out, line);
     c.emit_end(line);
     c.emit_end(line);
@@ -84,8 +100,17 @@ fn deref_cell_into(imports: &mut Chunk, c: &mut Chunk, line: u32) {
 
 /// TOS: [ch] → [queue-array]. Assumes ch already deref'd and non-null.
 fn queue_into(imports: &mut Chunk, c: &mut Chunk, line: u32) {
-    let queue_key = key(c, "queue");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, queue_key, line);
+    let queue_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("queue"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &queue_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     deref_cell_into(imports, c, line);
 }
 
@@ -107,8 +132,17 @@ fn nil_check(c: &mut Chunk, slot: u16, msg: &str, line: u32) {
 /// Stack: [] → [i32 bool]. Read the `closed` flag of the channel in `slot`.
 fn closed_flag(imports: &mut Chunk, c: &mut Chunk, slot: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let closed_key = key(c, "closed");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, closed_key, line);
+    let closed_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("closed"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &closed_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool_into(imports, c, line);
 }
 
@@ -118,8 +152,17 @@ fn closed_flag(imports: &mut Chunk, c: &mut Chunk, slot: u16, line: u32) {
 fn has_buffered(imports: &mut Chunk, c: &mut Chunk, slot: u16, line: u32) {
     let _ = imports;
     c.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let k = key(c, "__futex");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__futex"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
     atomic(c, Op::I32_ATOMIC_LOAD, line);
     core_wasm::i32_const(c, line, 0);
     c.emit_op(Op::I32_GT_S, line);
@@ -158,8 +201,17 @@ fn atomic(c: &mut Chunk, op: Op, line: u32) {
 /// [ ] → [ ] — load ch.__futex into `addr_slot` (i32-valued property).
 fn load_futex_addr(c: &mut Chunk, ch: u16, addr_slot: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let k = key(c, "__futex");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__futex"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_op_u16(Op::LOCAL_SET, addr_slot, line);
 }
 
@@ -270,8 +322,18 @@ pub fn build_chan_send(imports: &mut Chunk) -> Chunk {
     nil_check(&mut c, ch, DEADLOCK, line);
     load_futex_addr(&mut c, ch, addr, line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let cap_key = key(&mut c, "capacity");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
+    let cap_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("capacity"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &cap_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_op_u16(Op::LOCAL_SET, cap, line);
     // eff = cap == 0 ? 1 : cap  (unbuffered = one-slot rendezvous)
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
@@ -453,8 +515,18 @@ fn build_chan_recv_impl(
         c.emit_op(Op::THROW, line);
     } else {
         c.emit_op_u16(Op::LOCAL_GET, ch, line);
-        let zero_key = key(&mut c, "__zero");
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, zero_key, line);
+        let zero_key = class_slots::resolve_interned(
+            &mut c,
+            &class_slots::ClassSlot::internal("__zero"),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_get(
+            &mut c,
+            class_slots::ObjSource::Stack,
+            &zero_key,
+            class_slots::Dest::Stack,
+            line,
+        );
         if with_ok {
             c.emit_bool_const(false, line);
             collections::emit_array_new_into(imports, &mut c, 2, line);
@@ -504,8 +576,18 @@ pub fn build_chan_len(imports: &mut Chunk) -> Chunk {
     c.emit_else(line);
     // The COUNT word — authoritative under the blocking protocol.
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let k = key(&mut c, "__futex");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("__futex"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
     atomic(&mut c, Op::I32_ATOMIC_LOAD, line);
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
@@ -528,8 +610,18 @@ pub fn build_chan_cap(imports: &mut Chunk) -> Chunk {
     core_wasm::i32_const(&mut c, line, 0);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let cap_key = key(&mut c, "capacity");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
+    let cap_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("capacity"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &cap_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c
@@ -552,9 +644,19 @@ pub fn build_chan_close(imports: &mut Chunk) -> Chunk {
     c.emit_end(line);
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let closed_key = key(&mut c, "closed");
+    let closed_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("closed"),
+        &class_slots::PlainNames,
+    );
     c.emit_bool_const(true, line);
-    c.emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
+    class_slots::emit_class_set(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &closed_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     // Wake every blocked receiver/sender: receivers observe `closed` and
     // yield the zero value; a blocked sender panics (Go semantics).
     let addr = c.local_count;
@@ -616,13 +718,29 @@ pub fn build_chan_ready_send(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
     atomic(&mut c, Op::I32_ATOMIC_LOAD, line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let cap_key = key(&mut c, "capacity");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
+    let cap_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("capacity"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &cap_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     ops::emit_dyn_lt_into(imports, &mut c, line); // count < cap
     ops::emit_dyn_to_bool_into(imports, &mut c, line);
     // OR: unbuffered with a parked receiver
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &cap_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     core_wasm::i32_const(&mut c, line, 0);
     ops::emit_dyn_eq_into(imports, &mut c, line);
     ops::emit_dyn_to_bool_into(imports, &mut c, line);
@@ -713,8 +831,18 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let cap_key = key(&mut c, "capacity");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
+    let cap_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("capacity"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &cap_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_op_u16(Op::LOCAL_SET, cap, line);
     load_futex_addr(&mut c, ch, addr, line);
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
@@ -796,8 +924,17 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
 /// result (`ch` must be non-nil and deref'd).
 fn emit_zero_false_pair(imports: &mut Chunk, c: &mut Chunk, ch: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
-    let zero_key = key(c, "__zero");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, zero_key, line);
+    let zero_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__zero"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &zero_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_bool_const(false, line);
     collections::emit_array_new_into(imports, c, 2, line);
 }
@@ -1072,13 +1209,22 @@ pub fn build_task_new(imports: &mut Chunk) -> Chunk {
     c.local_count = 3; // tid, base, obj
     let (tid, base, obj, line) = (0u16, 1u16, 2u16, 0u32);
 
-    c.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut c, line);
     c.emit_op_u16(Op::LOCAL_SET, obj, line);
     let set = |c: &mut Chunk, name: &str, push: &dyn Fn(&mut Chunk)| {
         c.emit_op_u16(Op::LOCAL_GET, obj, line);
         push(c);
-        let k = key(c, name);
-        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        let k = class_slots::resolve(
+            &class_slots::ClassSlot::internal(name),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            c,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     };
     set(&mut c, "__type", &|c| c.emit_string_const("Task", line));
     set(&mut c, "__thread_id", &|c| {
@@ -1117,8 +1263,18 @@ pub fn build_task_wait(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, task, line);
     nil_check(&mut c, task, "Task.Wait on null task", line);
     c.emit_op_u16(Op::LOCAL_GET, task, line);
-    let fk = key(&mut c, "__futex");
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, fk, line);
+    let fk = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::internal("__futex"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &fk,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_i32_const(4, line);
     c.emit_op(Op::I32_ADD, line);
     c.emit_op_u16(Op::LOCAL_SET, addr, line);
@@ -1275,8 +1431,11 @@ impl crate::primitives::Compiler {
                     line,
                 );
                 self.emit_u16(Op::LOCAL_GET, addr_slot);
-                let futex_key = self.str_const("__futex");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, futex_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__futex"),
+                    class_slots::ValueSource::Stack,
+                );
                 Ok(())
             }
             ChanOp::Send { channel, value } => {

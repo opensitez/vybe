@@ -5,6 +5,7 @@
 //! insertion-ordered iteration, and native set algebra. Language adapters layer
 //! their quirks above this module instead of exposing `ecma:set` directly.
 
+use crate::primitives::class_slots;
 pub use vybe_ast::{
     SetAlgebraArity, SetMembership, SetMissingDelete, SetMutationResult, SetSemantics,
 };
@@ -404,7 +405,7 @@ pub fn emit_delete_or_key_error(chunks: &mut [Chunk], current: usize, line: u32)
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     crate::primitives::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
@@ -421,7 +422,7 @@ pub fn emit_delete_mode(chunks: &mut [Chunk], current: usize, semantics: SetSema
             crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_op(Op::I32_EQZ, line);
             chunks[current].emit_if(line);
-            chunks[current].emit_struct_new(0, 0, line);
+            class_slots::emit_class_alloc(&mut chunks[current], line);
             chunks[current].emit_dup(line);
             chunks[current].emit_string_const("", line);
             crate::primitives::errors::emit_exception_new_finalize(

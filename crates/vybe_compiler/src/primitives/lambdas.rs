@@ -2,6 +2,7 @@
 //!
 //! Extracted from `primitives/calls.rs` (`impl Compiler`).
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -404,7 +405,7 @@ impl Compiler {
         // Same `!is_generator` gate as the declaration/method sites: an
         // async GENERATOR expression completes/throws through `resume`;
         // its promise surface is the attached `.next()` driver.
-        let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
+        let async_try = if is_async && !is_generator && self.async_wraps_body_in_try() {
             let line = self.line;
             { common::functions::emit_async_body_start(&mut self.chunks[self.current], line); Some(()) }
         } else {
@@ -453,7 +454,7 @@ impl Compiler {
             self.emit(Op::RETURN);
             self.current_result_slot = saved_rs;
         } else if matches!(body, LambdaBody::Block(_)) {
-            if self.profile.has_undefined_value {
+            if self.has_undefined_value() {
                 inst!(self, core_wasm::undefined);
                 self.emit(Op::RETURN);
             } else {
@@ -556,8 +557,11 @@ impl Compiler {
 
             inst!(self, core_wasm::dup);
             self.emit_const(Value::F64(length as f64));
-            let length_key = self.str_const("length");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("length"),
+                class_slots::ValueSource::Stack,
+            );
 
             inst!(self, core_wasm::dup);
             {
@@ -585,8 +589,11 @@ impl Compiler {
             // construct path checks this marker.
             inst!(self, core_wasm::dup);
             self.emit_const(Value::Bool(true));
-            let non_ctor_key = self.str_const("__vybe_non_ctor");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("__vybe_non_ctor"),
+                class_slots::ValueSource::Stack,
+            );
 
             // §10.2.9/§10.2.10: name/length are non-enumerable.
             inst!(self, core_wasm::dup);
@@ -602,8 +609,11 @@ impl Compiler {
             if is_arrow {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(true));
-                let arrow_key = self.str_const("__fn_arrow");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, arrow_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__fn_arrow"),
+                    class_slots::ValueSource::Stack,
+                );
             }
         }
         if has_rest {

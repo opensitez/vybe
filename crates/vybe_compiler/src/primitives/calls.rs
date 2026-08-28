@@ -4,6 +4,7 @@
 //! refactor (Phase G) where `wasm:js-*` imports get replaced by
 //! inline WASM GC sequences.
 
+use crate::primitives::class_slots;
 use super::*;
 
 fn python_is_identifier_literal(value: &str) -> bool {
@@ -751,26 +752,19 @@ fn class_or_ancestor_has_static(
     class_canon: &str,
     method_canon: &str,
 ) -> bool {
-    let mut current = Some(class_canon.to_string());
-    let mut guard = 0;
-    while let Some(name) = current {
-        guard += 1;
-        if guard > 64 {
-            break;
-        }
-        let Some(pending) = compiler.pending_classes.get(name.as_str()) else {
-            break;
-        };
-        if pending
-            .static_method_names
-            .iter()
-            .any(|n| n == method_canon)
-        {
-            return true;
-        }
-        current = pending.parent.as_ref().map(|p| compiler.canon(p));
-    }
-    false
+    // ⛔ ONE ANSWER: `Compiler::resolution_chain`. This walked `parent` alone,
+    // with its own `guard > 64`, so a class with several bases saw only the
+    // first one's chain — the same defect that made `D(B, C)` resolve `who` to
+    // A instead of C, and the same shape `nearest_declaring_ancestor` and
+    // `resolve_instance_method_overload` each had privately. A LINEARIZATION IS
+    // NOT A CHAIN: `resolution_chain` C3-linearizes when there are several
+    // bases and walks ancestry otherwise, self-first, and refuses to spin on a
+    // cycle so the private guard is not needed either.
+    compiler
+        .resolution_chain(class_canon)
+        .iter()
+        .filter_map(|name| compiler.pending_classes.get(name.as_str()))
+        .any(|pending| pending.static_method_names.iter().any(|n| n == method_canon))
 }
 
 fn has_explicit_constructor_signature(compiler: &Compiler, class_name: &str) -> bool {
@@ -901,10 +895,11 @@ impl Compiler {
             let value_slot = self.define_local(&format!("__fortran_type_ctor_arg_{}", index));
             self.emit_u16(Op::LOCAL_SET, value_slot);
 
-            let field_idx = self.str_const(&field_name);
-            self.emit_u16(Op::LOCAL_GET, obj_slot);
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+            self.class_set(
+                class_slots::ObjSource::Local(obj_slot),
+                &class_slots::ClassSlot::internal(&field_name),
+                class_slots::ValueSource::Local(value_slot),
+            );
         }
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -1104,10 +1099,54 @@ impl Compiler {
     ) -> Option<PendingMethodOverload> {
         let receiver_type = resolve_receiver_type_hint(self, object)?;
         let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
-        let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
-        let overloads = pending.instance_method_overloads.get(&method_key)?;
-        self.match_method_overload(overloads, arg_exprs, include_receiver)
+        // ⛔ ASK THE CHAIN, NOT JUST THE CLASS. This looked in the receiver's
+        // OWN `instance_method_overloads` and gave up — but an INHERITED
+        // overload set lives on the ancestor that declared it, and a derived
+        // class that adds nothing has an empty table. The call then fell back
+        // to the bound slot, which carries `overloads.first()` and therefore
+        // ONE arity:
+        //
+        //     Class B
+        //         Public Sub D(flag As Boolean) …
+        //         Public Sub D() …
+        //     End Class
+        //     Class C : Inherits B : End Class
+        //
+        //     b.D()   →  zero-arg          ✅ B declares them, resolved here
+        //     c.D()   →  ONE-ARG           ⛔ C declares nothing, slot wins
+        //
+        // The same call, the same arguments, a different answer for a subclass
+        // that adds nothing at all. It is what breaks the standard .NET
+        // dispose pattern — `Dispose()` calling `Dispose(True)` reaches
+        // `Dispose()` again in any DERIVED class and recurses until the stack
+        // goes.
+        //
+        // `ancestry_of` is the shared self-first walk and already refuses to
+        // spin on a cyclic parent.
+        // ⛔ ONE ANSWER: `Compiler::resolution_chain`. This resolver turns
+        // `d.who()` into a DIRECT call on the declaring class's chunk, so the
+        // class it picks IS the method that runs — and it had its own `parent`
+        // walk, which answered `'A'` for a diamond whose C3 order says `'C'`.
+        // The instance bindings and `__mro__` were both correct; this bypassed
+        // them.
+        let chain = self.resolution_chain(&class_name);
+        for owner in chain {
+            let Some(pending) = self.pending_classes.get(owner.as_str()) else {
+                continue;
+            };
+            // The storage key is computed against the DECLARING class: that is
+            // whose spelling rules named the slot.
+            let method_key = self.js_member_storage_name_for_class(&owner, method_name);
+            let Some(overloads) = pending.instance_method_overloads.get(&method_key) else {
+                continue;
+            };
+            if let Some(found) =
+                self.match_method_overload(overloads, arg_exprs, include_receiver)
+            {
+                return Some(found);
+            }
+        }
+        None
     }
 
     pub(super) fn pending_class_has_method_name_for_type(
@@ -1146,10 +1185,16 @@ impl Compiler {
         arg_count: u8,
     ) -> Option<String> {
         let scope = &self.profile.namespaces.type_scopes;
-        let mut current = self
+        let start = self
             .resolve_pending_class_name_for_type_hint(type_hint)
             .unwrap_or_else(|| Self::tree_type_key(type_hint));
-        loop {
+        // ⛔ ONE ANSWER: `Compiler::resolution_chain`. This climbed `parent`
+        // alone, so a class with several bases consulted only the first one's
+        // ancestry — the same private walk that made `D(B, C)` answer `A`.
+        // The interleaving is unchanged: a REGISTERED tree type finishes the
+        // chain with its own members, and a user class that DECLARES the member
+        // stops it (the override is the class's business, not the framework's).
+        for current in self.resolution_chain(&start) {
             if vybe_runtime::namespaces::is_registered_type(scope, &current, self.tree_fold()) {
                 // Platform class — its registered members finish the chain.
                 return vybe_runtime::namespaces::lookup_type_instance_target(
@@ -1170,8 +1215,8 @@ impl Compiler {
             {
                 return None;
             }
-            current = pending.parent.clone()?;
         }
+        None
     }
 
     fn direct_receiver_has_own_pending_method(
@@ -1844,10 +1889,10 @@ impl Compiler {
             return;
         }
 
-        let rest_key = self.str_const("__vybe_rest_fixed_arity");
+        let rest_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"));
         let rest_arity_slot = self.define_local("__call_rest_fixed_arity");
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, rest_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &rest_key);
         self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
 
         let used_rest_slot = self.define_local("__call_used_rest_arity");
@@ -1908,9 +1953,7 @@ impl Compiler {
                 let result_slot = self.define_local("__call_runtime_result");
                 let has_own_marker_slot =
                     self.emit_js_has_own_receiver_marker(callee_slot, "__js_receiver_call_marker");
-                let receiver_key = self.str_const("__vybe_method_receiver");
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
                 let marker_slot = self.define_local("__js_receiver_call_marker_value");
                 self.emit_u16(Op::LOCAL_SET, marker_slot);
 
@@ -2001,9 +2044,7 @@ impl Compiler {
     ) {
         let has_own_marker_slot =
             self.emit_js_has_own_receiver_marker(callee_slot, "__js_receiver_host_marker");
-        let receiver_key = self.str_const("__vybe_method_receiver");
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+        self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
         let marker_slot = self.define_local("__js_receiver_host_marker_value");
         self.emit_u16(Op::LOCAL_SET, marker_slot);
 
@@ -2239,10 +2280,10 @@ impl Compiler {
     ) {
         let rest_fixed_counts: Vec<u8> = self.rest_fixed_arities.iter().copied().collect();
         if !rest_fixed_counts.is_empty() {
-            let rest_key = self.str_const("__vybe_rest_fixed_arity");
+            let rest_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"));
             let rest_arity_slot = self.define_local("__spread_rest_fixed_arity");
             self.emit_u16(Op::LOCAL_GET, callee_slot);
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, rest_key);
+            self.class_get_resolved(class_slots::ObjSource::Stack, &rest_key);
             self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
 
             let used_rest_slot = self.define_local("__spread_used_rest_arity");
@@ -2731,7 +2772,7 @@ impl Compiler {
         let msg_val = self.define_local("__exc_msg_val");
         self.emit_u16(Op::LOCAL_SET, msg_val);
 
-        self.emit_struct_new(0, 0);
+        self.class_alloc();
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_GET, msg_val);
         let line = self.line;
@@ -2748,7 +2789,7 @@ impl Compiler {
         let exc_tmp = self.define_local("__exc_tmp");
         self.emit_u16(Op::LOCAL_SET, exc_tmp);
 
-        if self.profile.ecma_error_object_shape {
+        if self.ecma_error_object_shape() {
             // Fix property descriptors to be non-enumerable per ECMA-262 §20.5.
             // message, name, and internal properties (__type, __exception_type) should be non-enumerable.
             let define_prop_idx = self.import("ecma:object", "defineProperty");
@@ -2759,14 +2800,21 @@ impl Compiler {
                 common::dict::emit_new(&mut self.chunks, self.current, line);
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
-                let prop_key = self.str_const(prop_name);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, prop_key);
-                let val_key = self.str_const("value");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(*prop_name));
+                let val_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &val_key,
+                    class_slots::ValueSource::Stack,
+                );
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(false));
-                let enum_key = self.str_const("enumerable");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
+                let enum_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("enumerable"));
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &enum_key,
+                    class_slots::ValueSource::Stack,
+                );
                 // §20.5 instance property descriptors are
                 // { writable: true, enumerable: false, configurable: true } —
                 // omitting these lets defineProperty default them to false,
@@ -2775,8 +2823,11 @@ impl Compiler {
                 for flag in ["writable", "configurable"] {
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::Bool(true));
-                    let flag_key = self.str_const(flag);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(flag),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
                 self.emit_host_call(define_prop_idx, 3);
                 self.emit(Op::DROP);
@@ -2788,25 +2839,32 @@ impl Compiler {
             common::dict::emit_new(&mut self.chunks, self.current, line);
             inst!(self, core_wasm::dup);
             inst!(self, core_wasm::string_const, "Error");
-            let val_key = self.str_const("value");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
+            let val_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
+            self.class_set_resolved(
+                class_slots::ObjSource::Stack,
+                &val_key,
+                class_slots::ValueSource::Stack,
+            );
             inst!(self, core_wasm::dup);
             inst!(self, core_wasm::bool_const, false);
-            let enum_key = self.str_const("enumerable");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
+            let enum_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("enumerable"));
+            self.class_set_resolved(
+                class_slots::ObjSource::Stack,
+                &enum_key,
+                class_slots::ValueSource::Stack,
+            );
             self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
         }
 
         self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
         self.emit_u16(Op::LOCAL_GET, exc_tmp);
-        let msg_k = self.str_const("message");
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, msg_k);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("message"));
         fn_call!(self, "wasm:js-string", "concat", 2);
         let stack_val = self.define_local("__stack_val");
         self.emit_u16(Op::LOCAL_SET, stack_val);
 
-        if self.profile.ecma_error_object_shape {
+        if self.ecma_error_object_shape() {
             // Set stack as non-enumerable using Object.defineProperty
             let define_prop_idx = self.import("ecma:object", "defineProperty");
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -2814,22 +2872,31 @@ impl Compiler {
             common::dict::emit_new(&mut self.chunks, self.current, line);
             inst!(self, core_wasm::dup);
             self.emit_u16(Op::LOCAL_GET, stack_val);
-            let val_key = self.str_const("value");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("value"),
+                class_slots::ValueSource::Stack,
+            );
             inst!(self, core_wasm::dup);
             inst!(self, core_wasm::bool_const, false);
-            let enum_key = self.str_const("enumerable");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("enumerable"),
+                class_slots::ValueSource::Stack,
+            );
             self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
         } else {
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
             self.emit_u16(Op::LOCAL_GET, stack_val);
-            let stack_key = self.str_const("stack");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, stack_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("stack"),
+                class_slots::ValueSource::Stack,
+            );
         }
 
-        if self.profile.ecma_error_object_shape {
+        if self.ecma_error_object_shape() {
             for name in Self::error_instanceof_chain(type_name) {
                 crate::primitives::reflection::emit_instanceof_chain(
                     &mut self.chunks,
@@ -2842,7 +2909,7 @@ impl Compiler {
         }
 
         self.emit_u16(Op::LOCAL_GET, exc_tmp);
-        if self.profile.ecma_error_object_shape {
+        if self.ecma_error_object_shape() {
             // §20.5: link [[Prototype]] to the prelude-wired
             // `__ctor_<Kind>.prototype` and drop the own `name` stamp —
             // instances resolve `name`/`toString` through the chain.
@@ -2873,19 +2940,26 @@ impl Compiler {
             } else {
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, self.line);
             }
-            let errors_key = self.str_const("errors");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, errors_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("errors"),
+                class_slots::ValueSource::Stack,
+            );
 
             if let Some(opts_arg) = args.get(2) {
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 self.compile_expr(opts_arg)?;
-                let cause_key = self.str_const("cause");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, cause_key);
+                let cause_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("cause"));
+                self.class_get_resolved(class_slots::ObjSource::Stack, &cause_key);
                 let cause_val = self.define_local("__agg_cause_val");
                 self.emit_u16(Op::LOCAL_SET, cause_val);
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 self.emit_u16(Op::LOCAL_GET, cause_val);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, cause_key);
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &cause_key,
+                    class_slots::ValueSource::Stack,
+                );
             }
 
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -2894,7 +2968,7 @@ impl Compiler {
 
         if type_name.trim() == "SuppressedError" {
             let idx = self.import("ecma:error", "SuppressedError");
-            self.emit_struct_new(0, 0);
+            self.class_alloc();
             for arg in args {
                 self.compile_expr(arg)?;
             }
@@ -2945,18 +3019,27 @@ impl Compiler {
 
         inst!(self, core_wasm::dup);
         self.emit_const(Value::Bool(true));
-        let marker_key = self.str_const("__vybe_generator_control");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_generator_control"),
+            class_slots::ValueSource::Stack,
+        );
 
         inst!(self, core_wasm::dup);
         self.emit_const(Value::String(Arc::from(op)));
-        let op_key = self.str_const("op");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, op_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("op"),
+            class_slots::ValueSource::Stack,
+        );
 
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        let value_key = self.str_const("value");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("value"),
+            class_slots::ValueSource::Stack,
+        );
     }
 
     pub(crate) fn reorder_named_args_with_signatures(
@@ -3798,9 +3881,10 @@ impl Compiler {
                     .and_then(|pc| pc.parent.clone());
                 let self_kw = self.profile.self_keyword.clone();
                 let self_slot = self.scope().resolve(&self_kw);
+                let parent_name_for_super = parent_name.clone();
 
                 if let Some(_parent) = parent_name {
-                    if self.profile.class_multiple_inheritance {
+                    if self.super_is_cooperative() {
                         // Cooperative super (multiple inheritance): resolve the NEXT
                         // method by walking the instance's runtime C3 MRO from the
                         // class this `super()` textually belongs to — so B.f's
@@ -3827,9 +3911,47 @@ impl Compiler {
                         // [[HomeObject]].[[Prototype]] at call time. For
                         // instance methods that is `C.prototype.__proto__`,
                         // so prototype rebinding remains observable.
-                        self.emit_js_super_home_base();
-                        let method_idx = self.str_const(&canon_field);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                        //
+                        // ⛔ …but the lookup ON that object is an ordinary
+                        // `[[Get]]`, which WALKS the chain, and ours does not:
+                        // `resolve_property` reads own properties, then the
+                        // type registry when `type_id > 0`. A class prototype
+                        // is a plain object with `type_id` 0, so when the
+                        // immediate parent declares NOTHING the method one
+                        // level further up was invisible and `super.m()` threw
+                        // — measured in js, python and kotlin. Ordinary
+                        // dispatch was always fine because it walks the TYPE
+                        // chain, which is exactly why this survived: two
+                        // lookups, two mechanisms, one of them walking.
+                        //
+                        // So walk the DECLARED class graph and take the home
+                        // base from the nearest ancestor that actually
+                        // declares the member. When that IS the immediate
+                        // parent — the overwhelmingly common case — nothing
+                        // changes and the runtime `ProtoLink` read is kept, so
+                        // prototype rebinding stays observable exactly where it
+                        // was before.
+                        let declaring = class_name.as_deref().and_then(|cn| {
+                            self.nearest_declaring_ancestor(cn, &canon_field)
+                        });
+                        let parent_declares = match (&declaring, &parent_name_for_super) {
+                            (Some(d), Some(p)) => self.canon(d) == self.canon(p),
+                            _ => false,
+                        };
+                        match declaring {
+                            Some(ancestor) if !parent_declares => {
+                                self.emit_var_get(&ancestor);
+                                if !self.current_member_is_static {
+                                    self.class_get(
+                                        class_slots::ObjSource::Stack,
+                                        &class_slots::ClassSlot::Prototype,
+                                    );
+                                }
+                            }
+                            _ => self.emit_js_super_home_base(),
+                        }
+                        let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&canon_field));
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
                     } else {
                         // Typed languages have no prototype chain to walk —
                         // the constructor saved the parent's implementation
@@ -3842,7 +3964,7 @@ impl Compiler {
                         let owner = self.canon(class_name.as_deref().unwrap_or(""));
                         let base_key =
                             self.str_const(&format!("__base_{}${}", owner, canon_field));
-                        let method_idx = self.str_const(&canon_field);
+                        let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&canon_field));
                         let line = self.line;
                         if let Some(s) = self_slot {
                             self.emit_u16(Op::LOCAL_GET, s);
@@ -3860,7 +3982,7 @@ impl Compiler {
                         } else {
                             self.emit_null();
                         }
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, picked);
                         self.chunk().emit_end(line);
@@ -4262,10 +4384,12 @@ impl Compiler {
 
                             self.emit_u16(Op::LOCAL_GET, promise_slot);
                             self.emit_var_get(&class_canon);
-                            let proto_key = self.str_const("prototype");
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key);
-                            let proto_link_key = self.str_const("__proto__");
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::Prototype);
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::ProtoLink,
+                                class_slots::ValueSource::Stack,
+                            );
 
                             self.emit_u16(Op::LOCAL_GET, promise_slot);
                             return Ok(());
@@ -4309,13 +4433,12 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let method_name =
                             self.js_member_storage_name_for_class(&class_canon, field);
-                        let method_idx = self.str_const(&method_name);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                        let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
                     }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let method_idx = self.str_const(&self.canon(field));
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(field)));
                 }
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
                 if args.len() == 1 && !args[0].spread {
@@ -4578,8 +4701,7 @@ impl Compiler {
                     let namespace_slot = self.define_local("__host_namespace_call_ns");
                     self.emit_u16(Op::LOCAL_SET, namespace_slot);
                     self.emit_u16(Op::LOCAL_GET, namespace_slot);
-                    let field_idx = self.str_const(field);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(field));
                     let callee_slot = self.define_local("__host_namespace_call_callee");
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
                     self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
@@ -4783,8 +4905,7 @@ impl Compiler {
                     self.emit_global_read(&class_canon);
                     let method_canon = self.canon(&method_name);
                     let qualified_method = self.canon(&format!("{}.{}", class_canon, method_name));
-                    let method_idx = self.str_const(&method_canon);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&method_canon));
                     // A FRESH slot per call site: reusing a same-named
                     // `__early_static_fn` slot aliases the outer callee when a
                     // nested call (`f(g(x))`) resolves the same name, so the
@@ -5174,8 +5295,8 @@ impl Compiler {
                                                 }
                                             } else {
                                                 // No value method — STRUCT_GET and call_ref
-                                                let idx = self.str_const(method_name);
-                                                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                                                let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(method_name));
+                                                self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                                                 for a in &arg_exprs {
                                                     self.compile_expr(a)?;
                                                 }
@@ -5192,12 +5313,12 @@ impl Compiler {
                                     let method_name = ns_parts.last().cloned().unwrap_or_default();
                                     self.emit_global_read(&ns_parts[0]);
                                     for part in &ns_parts[1..ns_parts.len() - 1] {
-                                        let idx = self.str_const(part);
-                                        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                                        let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(part));
+                                        self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                                     }
-                                    let method_idx = self.str_const(&method_name);
+                                    let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
                                     inst!(self, core_wasm::dup);
-                                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                                    self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
                                     let fn_tmp = self.define_local("__ns_fn");
                                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
                                     let obj_tmp = self.define_local("__ns_obj");
@@ -5214,8 +5335,7 @@ impl Compiler {
 
                                 self.emit_global_read(&ns_parts[0]);
                                 for part in &ns_parts[1..] {
-                                    let idx = self.str_const(part);
-                                    self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(part));
                                 }
                                 let is_const = ns_parts
                                     .last()
@@ -5416,8 +5536,7 @@ impl Compiler {
                                                 }
                                             }
                                         } else {
-                                            let midx = self.str_const(method_name);
-                                            self.emit_struct_field_op(Op::STRUCT_GET, 0, midx);
+                                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(method_name));
                                             for a in &arg_exprs {
                                                 self.compile_expr(a)?;
                                             }
@@ -5589,13 +5708,12 @@ impl Compiler {
                                 self.chunk().emit(0, line);
                             } else {
                                 self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                                let method_idx = self.str_const(&method_name);
-                                self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                                let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
+                                self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
                             }
                         } else {
                             self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                            let method_idx = self.str_const(&method_name);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&method_name));
                         }
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                         let saved_js_this = self.save_js_this("__js_prev_this_static_method");
@@ -5721,8 +5839,7 @@ impl Compiler {
                     self.emit_global_read(&canon);
                     inst!(self, core_wasm::dup);
                     let m = self.canon(field);
-                    let method_idx = self.str_const(&m);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&m));
                     // Stack: [class, fn] — swap so we have [fn, class, ...args]
                     let fn_tmp = self
                         .scope()
@@ -5894,16 +6011,14 @@ impl Compiler {
                             .unwrap_or(false);
                         if nested_ok {
                             self.emit_global_read(&outer_canon);
-                            let nested_idx = self.str_const(&self.canon(nested_name));
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, nested_idx);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(nested_name)));
                             let cls_tmp = self
                                 .scope()
                                 .resolve("__nested_static_cls")
                                 .unwrap_or_else(|| self.define_local("__nested_static_cls"));
                             self.emit_u16(Op::LOCAL_SET, cls_tmp);
                             self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                            let method_idx = self.str_const(&self.canon(field));
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(field)));
                             let fn_tmp = self
                                 .scope()
                                 .resolve("__nested_static_fn")
@@ -6500,14 +6615,10 @@ impl Compiler {
                         // `obj::method` values) don't come through here and
                         // keep the stamp as their dispatch mechanism.
                         let field_name = self.js_member_storage_name_for_receiver(object, field);
-                        let prop = self.str_const(&field_name);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        self.class_get(class_slots::ObjSource::Local(obj_tmp), &class_slots::ClassSlot::internal(&field_name));
                         let fn_tmp = self.define_local("__shadowed_value_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        let receiver_key = self.str_const("__vybe_method_receiver");
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                        self.class_get(class_slots::ObjSource::Local(fn_tmp), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
                         let receiver_slot = self.define_local("__shadowed_value_bound_recv");
                         self.emit_u16(Op::LOCAL_SET, receiver_slot);
                         {
@@ -6950,7 +7061,7 @@ impl Compiler {
                         // JS spec §23.1.3.10: returns undefined when no match;
                         // other languages stick with Null for cross-compat
                         // (Python None / VB Nothing / .NET null match Null).
-                        if self.profile.has_undefined_value {
+                        if self.has_undefined_value() {
                             inst!(self, core_wasm::undefined);
                         } else {
                             self.emit_null();
@@ -7488,9 +7599,7 @@ impl Compiler {
                         self.compile_expr(object)?;
                         let obj_tmp = self.define_local("__pascal_callable_field_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                        let prop = self.str_const(&canon_field);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        self.class_get(class_slots::ObjSource::Local(obj_tmp), &class_slots::ClassSlot::internal(&canon_field));
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
@@ -7574,19 +7683,20 @@ impl Compiler {
                         let field_name = self.js_member_storage_name_for_class(&class_name, field);
                         private_storage_name = field_name.clone();
                         self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
-                        let prop = self.str_const(&field_name);
+                        let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                     }
                 } else {
                     let field_name = self.js_member_storage_name_for_receiver(object, field);
                     private_storage_name = field_name.clone();
                     self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
-                    let prop = self.str_const(&field_name);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
-                    self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                    self.class_get_to(
+                        class_slots::ObjSource::Local(obj_tmp),
+                        &class_slots::ClassSlot::internal(&field_name),
+                        fn_tmp,
+                    );
                 }
 
                 let saved_js_this = self.save_js_this("__js_prev_this_private_call");
@@ -7654,7 +7764,7 @@ impl Compiler {
 
                     let value_slot = self.define_local("__gen_return_value");
                     let done_slot = self.define_local("__gen_return_done");
-                    let returned_key = self.str_const("__vybe_gen_returned");
+                    let returned_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_gen_returned"));
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let is_done_idx = self.import("ecma:value", "isGeneratorDone");
@@ -7691,17 +7801,27 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, returned_key);
+                    self.class_set_resolved(
+                        class_slots::ObjSource::Stack,
+                        &returned_key,
+                        class_slots::ValueSource::Stack,
+                    );
 
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    let value_key = self.str_const("value");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("value"),
+                        class_slots::ValueSource::Stack,
+                    );
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
-                    let done_key = self.str_const("done");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("done"),
+                        class_slots::ValueSource::Stack,
+                    );
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
@@ -7731,21 +7851,19 @@ impl Compiler {
                     // rejects on a body throw); regular method dispatch
                     // below calls it.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let async_gen_key = self.str_const("__vybe_async_gen");
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, async_gen_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_async_gen"));
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     self.emit(Op::I32_EQZ);
                     self.emit(Op::I32_AND);
                     self.chunk().emit_if(gen_if_line);
                     let value_slot = self.define_local("__gen_value");
                     let done_slot = self.define_local("__gen_done");
-                    let started_key = self.str_const("__vybe_gen_started");
+                    let started_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_gen_started"));
                     // If a previous `.return()` stamped the cont as
                     // returned, short-circuit to `{value: undefined,
                     // done: true}` per ECMA-262 §27.5.1.2 step 2.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let returned_key2 = self.str_const("__vybe_gen_returned");
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, returned_key2);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_gen_returned"));
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7814,19 +7932,29 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
+                    self.class_set_resolved(
+                        class_slots::ObjSource::Stack,
+                        &started_key,
+                        class_slots::ValueSource::Stack,
+                    );
                     // Both the early-`returned` short-circuit and the
                     // GEN_NEXT/RESUME paths converge here to build the
                     // `{value, done}` wrapper.
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    let value_key = self.str_const("value");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("value"),
+                        class_slots::ValueSource::Stack,
+                    );
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
-                    let done_key = self.str_const("done");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("done"),
+                        class_slots::ValueSource::Stack,
+                    );
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
@@ -7843,10 +7971,10 @@ impl Compiler {
 
                     let value_slot = self.define_local("__gen_throw_value");
                     let done_slot = self.define_local("__gen_throw_done");
-                    let started_key = self.str_const("__vybe_gen_started");
+                    let started_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_gen_started"));
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &started_key);
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7865,7 +7993,11 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
+                    self.class_set_resolved(
+                        class_slots::ObjSource::Stack,
+                        &started_key,
+                        class_slots::ValueSource::Stack,
+                    );
 
                     self.emit_u16(Op::LOCAL_GET, has_more_slot);
                     {
@@ -7905,20 +8037,26 @@ impl Compiler {
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    let value_key = self.str_const("value");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("value"),
+                        class_slots::ValueSource::Stack,
+                    );
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
-                    let done_key = self.str_const("done");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("done"),
+                        class_slots::ValueSource::Stack,
+                    );
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
                     self.chunk().emit_end(gen_if_line);
                 }
 
-                let prop = self.str_const(&method_name);
-                let receiver_marker = self.str_const("__vybe_method_receiver");
+                let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
+                let receiver_marker = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_method_receiver"));
                 let js_prefers_typed_dispatch = self
                     .infer_expr_type_hint(object)
                     .as_deref()
@@ -7944,7 +8082,7 @@ impl Compiler {
 
                     if js_prefers_typed_dispatch {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                         let fn_slot = self.define_local("__js_typed_method_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_slot);
 
@@ -7979,7 +8117,7 @@ impl Compiler {
                         self.chunk().emit_else(miss_line);
 
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_marker);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_marker);
                         let marker_slot = self.define_local("__js_typed_receiver_marker");
                         self.emit_u16(Op::LOCAL_SET, marker_slot);
 
@@ -8027,12 +8165,12 @@ impl Compiler {
 
                 if js_prefers_typed_dispatch {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                     let fn_slot = self.define_local("__js_typed_method_fn");
                     self.emit_u16(Op::LOCAL_SET, fn_slot);
 
                     self.emit_u16(Op::LOCAL_GET, fn_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_marker);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_marker);
                     let marker_slot = self.define_local("__js_typed_receiver_marker");
                     self.emit_u16(Op::LOCAL_SET, marker_slot);
 
@@ -8087,7 +8225,7 @@ impl Compiler {
                         .is_some();
                 if receiver_is_pending_class {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                     let class_fn_slot = self.define_local("__js_class_dispatch_fn");
                     self.emit_u16(Op::LOCAL_SET, class_fn_slot);
                     if args.iter().any(|arg| arg.spread) {
@@ -8374,7 +8512,7 @@ impl Compiler {
             }
 
             let field_name = self.js_member_storage_name_for_receiver(object, field);
-            let prop = self.str_const(&field_name);
+            let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
 
             if self.profile.parens_for_index && !arg_exprs.is_empty() {
                 let is_indexable_typed = self
@@ -8387,7 +8525,7 @@ impl Compiler {
                     });
                 if is_indexable_typed {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                     for arg in &arg_exprs {
                         self.compile_array_index_operand_for_owner(callee, arg)?;
                         let line = self.line;
@@ -8420,12 +8558,12 @@ impl Compiler {
                     return Ok(());
                 }
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                let receiver_key = self.str_const("__vybe_method_receiver");
+                let receiver_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_method_receiver"));
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_key);
                 let receiver_slot = self.define_local("__member_call_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -8464,7 +8602,7 @@ impl Compiler {
                 }
             }
 
-            let receiver_key = self.str_const("__vybe_method_receiver");
+            let receiver_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_method_receiver"));
 
             let buffered_generator_end = if self.profile.buffered_iterator_methods {
                 self.emit_buffered_generator_method_dispatch(obj_tmp, &field_name, &arg_exprs)?
@@ -8530,11 +8668,11 @@ impl Compiler {
                 }
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_key);
                 let receiver_slot = self.define_local("__member_fast_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
                 if self.class_prototype_dispatch() {
@@ -8968,8 +9106,7 @@ impl Compiler {
                     self.emit_autoderef_pointer_cell();
                     let overload_field =
                         self.overload_storage_name(&field_name, &overload.param_types);
-                    let overload_prop = self.str_const(&overload_field);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, overload_prop);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&overload_field));
                     let virtual_fn_tmp = self.define_local("__virtual_instance_method_fn");
                     self.emit_u16(Op::LOCAL_SET, virtual_fn_tmp);
                     if overload.signature.has_rest {
@@ -9035,7 +9172,7 @@ impl Compiler {
                 resolve_pointer_receiver_instance_method_owner(self, object, field)
             {
                 self.emit_global_read(&class_name);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                 let fn_tmp = self.define_local("__go_pending_instance_fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
 
@@ -9074,7 +9211,7 @@ impl Compiler {
 
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
             self.emit_autoderef_pointer_cell();
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+            self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp);
             // A php-only direct bind of a statically resolved overload used to
@@ -9677,93 +9814,7 @@ impl Compiler {
                 }
             }
 
-            if self.is_php_profile()
-                && (name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die"))
-            {
-                // `exit` / `die` carry TWO different arguments under one syntax,
-                // which is why the status used to get lost here: a string is a
-                // farewell MESSAGE (printed, status 0), an int is the exit
-                // STATUS (not printed). Which one it is can only be known at
-                // runtime, so the status is computed into a slot.
-                let status_slot = self.define_local("__php_exit_status");
-                self.emit_const(Value::F64(0.0));
-                self.emit_u16(Op::LOCAL_SET, status_slot);
-
-                if let Some(arg) = arg_exprs.first() {
-                    let arg_slot = self.define_local("__php_exit_arg");
-                    self.compile_expr(arg)?;
-                    self.emit_u16(Op::LOCAL_SET, arg_slot);
-
-                    // Non-string argument: the value IS the status.
-                    self.emit_u16(Op::LOCAL_GET, arg_slot);
-                    self.emit_u16(Op::LOCAL_SET, status_slot);
-
-                    self.emit_u16(Op::LOCAL_GET, arg_slot);
-                    let typeof_idx = self.import("ecma:value", "typeof");
-                    self.emit_host_call(typeof_idx, 1);
-                    self.emit_const(Value::String(Arc::from("string")));
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                    };
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    self.chunk().emit_if(line);
-
-                    // The farewell message goes through THE write, so it lands
-                    // in the innermost output buffer when one is open, exactly
-                    // as `echo` does. `wasi:logging/logging.log` is
-                    // line-oriented and appended a newline real php never
-                    // writes (`die("bye")` measured as `bye\n` against php's
-                    // `bye`), and writing straight to stdout jumped ahead of
-                    // buffered content (`ob_start(); echo 'buffered';
-                    // die('goodbye');` → php `bufferedgoodbye`).
-                    let line = self.line;
-                    self.emit_u16(Op::LOCAL_GET, arg_slot);
-                    self.emit_common("php.echo_stringify", 1, line);
-                    let current = self.current;
-                    common::io::emit_write_or_buffer(&mut self.chunks, current, line);
-                    // `exit("message")` prints and exits SUCCESSFULLY — the
-                    // string is output, never a status.
-                    self.emit_const(Value::F64(0.0));
-                    self.emit_u16(Op::LOCAL_SET, status_slot);
-
-                    self.chunk().emit_end(line);
-                }
-
-                // End the RUN, not the current chunk. This was a bare
-                // `emit_return_through_finally`, which only returns from the
-                // enclosing function — measured 2026-08-02, `exit(3)` inside a
-                // function let the caller carry on and the process still exited
-                // 0, where real php stops everything and exits 3.
-                // `wasi:cli/exit.exit-with-code` unwinds every frame and hands
-                // the status to the embedder.
-                //
-                // Flush open buffers FIRST. The module epilogue already does
-                // this for a program that runs off the end, but ending the run
-                // here skips the epilogue — `ob_start(); echo 'x'; exit(0);`
-                // printed nothing where php prints `x`.
-                // Real php runs shutdown handlers on the `exit` path too, and
-                // BEFORE the buffers are flushed — which is what lets a check
-                // registered with `register_shutdown_function` survive an
-                // `exit(1)` in the middle of a script.
-                self.emit_php_run_shutdown_fns();
-
-                let line = self.line;
-                let current = self.current;
-                common::io::emit_ob_flush_all(&mut self.chunks, current, line);
-                let exit_idx = self.import("wasi:cli/exit", "exit-with-code");
-                self.emit_u16(Op::LOCAL_GET, status_slot);
-                self.emit_host_call(exit_idx, 1);
-
-                // Unreachable once the host call takes effect, but the chunk
-                // still has to be well formed for the paths that validate it.
-                self.emit_null();
-                self.emit_return_through_finally(1)?;
-                return Ok(());
-            }
-
-            // Inside a class: bare call to a static method should bind to
+// Inside a class: bare call to a static method should bind to
             // the class object before any generic function lookup. Static
             // methods are also registered as ordinary functions, so this
             // must run ahead of `is_known_func`.
@@ -9774,8 +9825,7 @@ impl Compiler {
                 if !is_local {
                     if let Some(class_name) = self.is_class_static_method(name) {
                         self.emit_global_read(&class_name);
-                        let method_idx = self.str_const(&self.canon(name));
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(name)));
                         let fn_tmp = self.define_local("__bare_static_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
 
@@ -9982,9 +10032,7 @@ impl Compiler {
                     self.emit_var_get(name);
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
 
-                    let table_idx_key = self.str_const("__table_idx");
-                    self.emit_u16(Op::LOCAL_GET, callee_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, table_idx_key);
+                    self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__table_idx"));
                     let table_idx_slot = self.define_local("__paren_ambig_table_idx");
                     self.emit_u16(Op::LOCAL_SET, table_idx_slot);
 
@@ -10011,9 +10059,7 @@ impl Compiler {
                     }
                     self.chunk().emit_else(line);
 
-                    let receiver_key = self.str_const("__vybe_method_receiver");
-                    self.emit_u16(Op::LOCAL_GET, callee_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                    self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
                     let receiver_slot = self.define_local("__paren_ambig_receiver");
                     self.emit_u16(Op::LOCAL_SET, receiver_slot);
 
@@ -10097,9 +10143,9 @@ impl Compiler {
                         // fields (Pascal procedure/function members) should be
                         // invoked as plain function values.
                         let field_name = self.canon(name);
-                        let prop = self.str_const(&field_name);
+                        let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                         inst!(self, core_wasm::dup);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                         let fn_tmp = self.define_local("__bare_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                         let obj_tmp = self.define_local("__bare_obj");
@@ -10147,7 +10193,14 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.profile.name == "php" && args.len() == 1 && args[0].spread {
+                // A spread that may bind by NAME — see
+                // `Directives::spread_arguments`. This was
+                // `profile.name == "php"`.
+                if self.directives().spread_arguments
+                    == Some(vybe_ast::SpreadArguments::PositionalOrNamed)
+                    && args.len() == 1
+                    && args[0].spread
+                {
                     if let Some(signature) = self
                         .function_signatures
                         .get(&self.canon(name))
@@ -10295,8 +10348,7 @@ impl Compiler {
                             self.emit_var_get(name);
                         } else {
                             self.emit_global_read(&module_name);
-                            let member_idx = self.str_const(&canon_name);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, member_idx);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&canon_name));
                         }
                     } else {
                         self.emit_var_get(name);
@@ -10307,9 +10359,7 @@ impl Compiler {
                 let callee_slot = self.define_local("__ident_spread_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
                 self.emit_callable_value_resolution(callee_slot);
-                let receiver_key = self.str_const("__vybe_method_receiver");
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
                 let receiver_slot = self.define_local("__ident_spread_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
                 self.emit_call_ref_with_args_array(
@@ -10355,9 +10405,7 @@ impl Compiler {
                 // `__vybe_rest_fixed_arity` stamp, which the hand-written
                 // invokes below did not: a variadic `__invoke(string $t,
                 // ...$args)` received its arguments unpacked.
-                let receiver_key = self.str_const("__vybe_method_receiver");
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
                 let receiver_slot = self.define_local("__py_call_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -10394,8 +10442,7 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
-                let call_prop = self.str_const("call");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, call_prop);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("call"));
                 let call_slot = self.define_local("__py_call_method");
                 self.emit_u16(Op::LOCAL_SET, call_slot);
                 self.emit_u16(Op::LOCAL_GET, call_slot);
@@ -10468,8 +10515,7 @@ impl Compiler {
                         self.emit_var_get(name);
                     } else {
                         self.emit_global_read(&module_name);
-                        let member_idx = self.str_const(&canon_name);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, member_idx);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&canon_name));
                     }
                 } else {
                     // Nothing at compile time claims this name: not a local, not
@@ -10484,9 +10530,7 @@ impl Compiler {
             }
             self.emit_u16(Op::LOCAL_SET, callee_slot);
             self.emit_callable_value_resolution(callee_slot);
-            let receiver_key = self.str_const("__vybe_method_receiver");
-            self.emit_u16(Op::LOCAL_GET, callee_slot);
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+            self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
             let receiver_slot = self.define_local("__direct_call_receiver");
             self.emit_u16(Op::LOCAL_SET, receiver_slot);
             if let Some(signature) = rest_signature.as_ref() {
@@ -10902,9 +10946,7 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         let has_by_ref_args = args.iter().any(|arg| arg.by_ref);
-        let receiver_key = self.str_const("__vybe_method_receiver");
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+        self.class_get(class_slots::ObjSource::Local(callee_slot), &class_slots::ClassSlot::internal("__vybe_method_receiver"));
         let receiver_slot = self.define_local("__call_ref_receiver");
         self.emit_u16(Op::LOCAL_SET, receiver_slot);
 

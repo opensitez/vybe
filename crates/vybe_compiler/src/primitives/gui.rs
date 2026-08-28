@@ -27,6 +27,7 @@
 //! Switching the host's GUI backend (or running on a non-Vybe VM with a
 //! different GUI binding) requires no compiler changes.
 
+use crate::primitives::class_slots;
 use super::Compiler;
 use super::{collections, ops, strings};
 use std::sync::Arc;
@@ -1530,8 +1531,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, font);
                     for (field, css) in [("italic", "italic "), ("bold", "bold ")] {
                         self.emit_u16(Op::LOCAL_GET, font);
-                        let key = self.str_const(field);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(field));
                         ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         emit_string_const(self.chunk(), css, line);
@@ -1541,15 +1541,13 @@ impl Compiler {
                     }
                     ops::emit_dyn_add(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
-                    let size_key = self.str_const("size");
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, size_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("size"));
                     strings::emit_to_string(self.chunk(), line);
                     ops::emit_dyn_add(self.chunk(), line);
                     emit_string_const(self.chunk(), "px ", line);
                     ops::emit_dyn_add(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
-                    let name_key = self.str_const("name");
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, name_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("name"));
                     ops::emit_dyn_add(self.chunk(), line);
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, 4);
@@ -2140,16 +2138,19 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        let type_key = self.str_const(CONTROL_TYPE_FIELD);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD));
         let undef_idx = self.import("wasm:js-undefined", "test");
         self.emit_host_call(undef_idx, 1);
         self.chunk().emit_if(line);
         // Not a control — the ordinary object property, exactly as before.
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
         self.emit_u16(Op::LOCAL_GET, value_tmp);
-        let prop_key = self.str_const(&self.canon(prop));
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, prop_key);
+        let prop_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&self.canon(prop)));
+        self.class_set_resolved(
+            class_slots::ObjSource::Stack,
+            &prop_key,
+            class_slots::ValueSource::Stack,
+        );
         self.chunk().emit_else(line);
         // A control. There is no class to ask for a ROLE here — that is what
         // "late bound" means — so the property's own spelling IS the role, the
@@ -2180,14 +2181,12 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        let type_key = self.str_const(CONTROL_TYPE_FIELD);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD));
         let undef_idx = self.import("wasm:js-undefined", "test");
         self.emit_host_call(undef_idx, 1);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        let prop_key = self.str_const(&self.canon(prop));
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(prop)));
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
         self.emit_gui_property_get(&prop.to_ascii_lowercase(), line);
@@ -2439,8 +2438,11 @@ impl Compiler {
         let element = self.define_local("__gui_stamped_element");
         self.emit_u16(Op::LOCAL_TEE, element);
         self.emit_const(Value::String(Arc::from(stamped.as_str())));
-        let key = self.str_const(CONTROL_TYPE_FIELD);
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD),
+            class_slots::ValueSource::Stack,
+        );
 
         // A control has a NAME whether the program gives it one or not. Every
         // framework here guarantees it — WinForms' designer assigns `Button1`,
@@ -2559,16 +2561,34 @@ pub const CONTROL_TYPE_FIELD: &str = "__control_type";
 /// Stack on entry: [control_obj]
 /// Stack on exit: [name_string]
 pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(CONTROL_NAME_FIELD)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(CONTROL_NAME_FIELD),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// Emit a struct_get to read the control's type tag field.
 /// Stack on entry: [control_obj]
 /// Stack on exit: [type_string]
 pub fn emit_get_control_type(chunk: &mut Chunk, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(CONTROL_TYPE_FIELD)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 

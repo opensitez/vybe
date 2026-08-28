@@ -263,8 +263,45 @@ pub fn collect_globals(
 
 /// Encode the global section — all globals are (mut externref), initialized to null.
 pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
+    encode_global_section_with_descriptors(globals, None)
+}
+
+/// The global section, plus one immutable descriptor SINGLETON per class.
+///
+/// Custom Descriptors forbids `struct.new` / `struct.new_default` from
+/// allocating a type carrying a `(descriptor …)` clause, and `types.rs` stamps
+/// one on every class — so every class allocation needs a descriptor value as
+/// its last operand, and that value must be one singleton per class rather than
+/// one per allocation (`ref.cast_desc_eq` is identity, and descriptor field 0
+/// is the JS prototype every instance of the class must share).
+///
+/// Each singleton is emitted as
+///
+/// ```text
+/// (global (ref (exact $C.desc)) (struct.new_default $C.desc))
+/// ```
+///
+/// * **Non-nullable and immutable.** `struct.new_default_desc` traps on a null
+///   descriptor; typing the global `(ref …)` rather than `(ref null …)` makes
+///   that trap unreachable by construction instead of by argument.
+/// * **`exact`.** The proposal types the descriptor operand
+///   `(ref null (exact y))` — a non-exact reference does not satisfy it, so
+///   `0x62` is load-bearing here, not decoration.
+/// * **`struct.new_default` is legal on the DESCRIPTOR type.** The prohibition
+///   is on allocating a type with a `descriptor` clause; a descriptor struct
+///   carries `describes` and has no descriptor of its own. It is also a
+///   constant instruction, which is what lets this be a global initialiser at
+///   all rather than start-function code.
+///
+/// Appended AFTER every module-defined global, so the index space the compiler
+/// assigned (`chunk::global_index_space`) is untouched.
+pub fn encode_global_section_with_descriptors(
+    globals: &[String],
+    descriptors: Option<&crate::writer::types::WasmTypeContext>,
+) -> Vec<u8> {
     let mut out = Vec::new();
-    write_leb128_u32(&mut out, globals.len() as u32);
+    let desc_count = descriptors.map_or(0, |c| c.descriptor_global_count());
+    write_leb128_u32(&mut out, globals.len() as u32 + desc_count);
     for _ in globals {
         out.push(0x6F); // externref
         out.push(0x01); // mutable
@@ -272,6 +309,22 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
         out.push(0xD0);
         out.push(0x6F); // ref.null extern
         out.push(0x0B); // end
+    }
+    if desc_count > 0 {
+        // In class-ordinal order — `desc_global()` derives the index from the
+        // same `(2i, 2i+1)` layout, so this loop and that lookup cannot drift.
+        for i in 0..desc_count {
+            let desc_type_idx = i * 2 + 1;
+            out.push(0x64); // (ref ht) — non-nullable
+            out.push(0x62); // (exact x)
+            write_leb128_u32(&mut out, desc_type_idx);
+            out.push(0x00); // immutable
+            // Init expr: struct.new_default $C.desc
+            out.push(0xFB);
+            write_leb128_u32(&mut out, 0x01);
+            write_leb128_u32(&mut out, desc_type_idx);
+            out.push(0x0B); // end
+        }
     }
     out
 }

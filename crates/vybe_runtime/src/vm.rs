@@ -272,15 +272,20 @@ impl<'a> HostContext<'a> {
         unsafe {
         let vals: &mut Vec<Value> = &mut *self.globals_slot;
         let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
-        let idx = match index.get(name) {
-            Some(&i) => i as usize,
-            None => {
-                let i = vals.len();
-                index.insert(name.to_string(), i as u32);
-                vals.push(Value::Null);
-                i
-            }
-        };
+        // ⚠ A GLOBAL IS NEVER CREATED HERE.
+        //
+        // This used to mint an entry — `index.insert(name); vals.push(Null)` —
+        // for any unknown name. That is not something WASM can express: a
+        // module's global index space is fixed at instantiation, so a global
+        // conjured by name at runtime cannot exist on a stock engine, and any
+        // program depending on one would not run there.
+        //
+        // Every global a module actually uses is assigned a `globalidx` by the
+        // compiler's global-table normalisation pass before the module is
+        // handed to the VM. A name that misses here was never declared, so
+        // writing it would be writing to a global the module does not have.
+        let Some(&i) = index.get(name) else { return };
+        let idx = i as usize;
         if idx >= vals.len() {
             vals.resize(idx + 1, Value::Null);
         }

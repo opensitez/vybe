@@ -15,6 +15,7 @@
 //! `classes::emit_value_equality_stamp` when the declaration says
 //! `ValueEquality::Structural`.
 
+use crate::primitives::class_slots;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -113,8 +114,17 @@ pub fn emit_is_value_copy(chunk: &mut Chunk, slot: u16, line: u32) {
 /// for a check that needs three. Paying for a general case that cannot occur.
 fn emit_reads_stamp(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal(key),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
 }
@@ -312,19 +322,33 @@ pub fn emit_variant_region_init(chunk: &mut Chunk, this_slot: u16, size: u32, li
     chunk.emit_call(buffer, 1, line);
     let view = chunk.add_import("ecma:dataview", "new");
     chunk.emit_call(view, 1, line);
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        VARIANT_REGION_FIELD,
-    )));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(VARIANT_REGION_FIELD),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Push `this.__variant` for a getter/setter body whose `this` is local 0.
 fn emit_region_get(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        VARIANT_REGION_FIELD,
-    )));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(VARIANT_REGION_FIELD),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// `function (this) { return dv.getX(this.__variant, offset, LE) }`

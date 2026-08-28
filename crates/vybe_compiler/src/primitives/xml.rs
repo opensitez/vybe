@@ -15,7 +15,11 @@ use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::opcode::Op;
 
 pub const XML_NAME_TYPE: &str = "XmlName";
-pub const FIELD_TYPE: &str = "__type";
+// ⛔ ONE OWNER. This was a SECOND `FIELD_TYPE = "__type"`, identically named
+// and identically valued to `reflection::FIELD_TYPE`, in a different module —
+// two homes for one key, which no grep for either spelling would connect.
+// Re-exported so the name still resolves here and cannot drift from it.
+pub use crate::primitives::reflection::FIELD_TYPE;
 pub const FIELD_LOCAL: &str = "localName";
 pub const FIELD_NAMESPACE: &str = "namespaceURI";
 pub const FIELD_PREFIX: &str = "prefix";

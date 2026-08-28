@@ -3,6 +3,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -10,16 +11,17 @@ impl Compiler {
         if let Some(ref class_name) = self.current_class {
             let mut owner = Some(class_name.clone());
             while let Some(start) = owner {
-                let mut current = Some(start.as_str());
-                while let Some(cn) = current {
-                    if let Some(pc) = self.pending_classes.get(cn) {
-                        let canon = self.canon(name);
-                        if let Some(type_hint) = pc.static_field_types.get(&canon) {
-                            return Some(type_hint.clone());
-                        }
-                        current = pc.parent.as_deref();
-                    } else {
-                        break;
+                // ⛔ ONE ANSWER: `Compiler::resolution_chain`. A hand-rolled
+                // `parent` climb answers a DIAMOND by taking the first base's
+                // chain and never seeing the others — the defect that made
+                // `D().who()` return `'A'` where C3 says `'C'`.
+                for cn in self.resolution_chain(&start) {
+                    let Some(pc) = self.pending_classes.get(cn.as_str()) else {
+                        continue;
+                    };
+                    let canon = self.canon(name);
+                    if let Some(type_hint) = pc.static_field_types.get(&canon) {
+                        return Some(type_hint.clone());
                     }
                 }
                 owner = self.next_enclosing_class_name(&start);
@@ -33,21 +35,18 @@ impl Compiler {
         if let Some(ref class_name) = self.current_class {
             let mut owner = Some(class_name.clone());
             while let Some(start) = owner {
-                let mut current = Some(start.as_str());
-                while let Some(cn) = current {
-                    if let Some(pc) = self.pending_classes.get(cn) {
-                        if pc.nested_types.iter().any(|n| {
-                            if self.case_sensitive {
-                                n == name
-                            } else {
-                                n.eq_ignore_ascii_case(name)
-                            }
-                        }) {
-                            return Some(cn.to_string());
+                for cn in self.resolution_chain(&start) {
+                    let Some(pc) = self.pending_classes.get(cn.as_str()) else {
+                        continue;
+                    };
+                    if pc.nested_types.iter().any(|n| {
+                        if self.case_sensitive {
+                            n == name
+                        } else {
+                            n.eq_ignore_ascii_case(name)
                         }
-                        current = pc.parent.as_deref();
-                    } else {
-                        break;
+                    }) {
+                        return Some(cn.to_string());
                     }
                 }
                 owner = self.next_enclosing_class_name(&start);
@@ -90,21 +89,18 @@ impl Compiler {
         if let Some(ref class_name) = self.current_class {
             let mut owner = Some(class_name.clone());
             while let Some(start) = owner {
-                let mut current = Some(start.as_str());
-                while let Some(cn) = current {
-                    if let Some(pc) = self.pending_classes.get(cn) {
-                        if pc.static_method_names.iter().any(|m| {
-                            if self.case_sensitive {
-                                m == name
-                            } else {
-                                m.eq_ignore_ascii_case(name)
-                            }
-                        }) {
-                            return Some(cn.to_string());
+                for cn in self.resolution_chain(&start) {
+                    let Some(pc) = self.pending_classes.get(cn.as_str()) else {
+                        continue;
+                    };
+                    if pc.static_method_names.iter().any(|m| {
+                        if self.case_sensitive {
+                            m == name
+                        } else {
+                            m.eq_ignore_ascii_case(name)
                         }
-                        current = pc.parent.as_deref();
-                    } else {
-                        break;
+                    }) {
+                        return Some(cn.to_string());
                     }
                 }
                 owner = self.next_enclosing_class_name(&start);
@@ -168,20 +164,19 @@ impl Compiler {
             return false;
         }
         let canon = self.canon(name);
-        let mut current = self.current_class.as_deref().map(|c| self.canon(c));
-        let mut guard = 0;
-        while let Some(class_key) = current {
-            guard += 1;
-            if guard > 64 {
-                break;
-            }
-            let Some(pending) = self.pending_classes.get(&class_key) else {
-                break;
+        // ⛔ ONE ANSWER. This also carried its own `guard > 64` cycle cap —
+        // `resolution_chain` is cycle-safe by construction, so the private
+        // counter goes with the private walk.
+        let Some(start) = self.current_class.as_deref().map(|c| self.canon(c)) else {
+            return false;
+        };
+        for class_key in self.resolution_chain(&start) {
+            let Some(pending) = self.pending_classes.get(class_key.as_str()) else {
+                continue;
             };
             if pending.instance_member_names.iter().any(|m| m == &canon) {
                 return true;
             }
-            current = pending.parent.as_ref().map(|p| self.canon(p));
         }
         false
     }
@@ -209,18 +204,132 @@ impl Compiler {
     /// class pipeline stays language-agnostic; languages opt in via the
     /// profile, never via name checks.
     pub(crate) fn class_prototype_dispatch(&self) -> bool {
-        self.profile.class_method_dispatch == "prototype"
+        self.method_receiver_model() == Some(vybe_ast::MethodReceiver::Prototype)
     }
 
-    /// REMAINING language-name check, kept here beside `is_python_profile`
-    /// rather than in a `php_lang` module of its own — a file named after a
-    /// language in shared code invites more of the same, and the whole point
-    /// is that this predicate should keep shrinking. Each surviving call site
-    /// is a profile property, a normalization, or an adapter that has not been
-    /// written yet, not a permanent fixture.
-    pub(crate) fn is_php_profile(&self) -> bool {
-        self.profile.name == "php"
+    /// Reading a method produces a fresh callable with the receiver already
+    /// bound (Python). One of the three dispatch models.
+    pub(crate) fn methods_bind_on_access(&self) -> bool {
+        self.method_receiver_model() == Some(vybe_ast::MethodReceiver::BindOnAccess)
     }
+
+    /// How a method call obtains its receiver, for this UNIT.
+    ///
+    /// The three models are mutually exclusive and were previously spread
+    /// across three unrelated spellings — a profile string
+    /// (`class_method_dispatch = "prototype"`), a profile bool
+    /// (`methods_bind_on_access`), and a language NAME (`profile.name ==
+    /// "php"`). One question, three answers, none of which could see the
+    /// others; nothing prevented a profile from declaring two of them.
+    ///
+    /// Now one directive with three variants, stated by the walker on
+    /// `Module.directives`, so it travels with the UNIT — a multi-language
+    /// bundle answers per unit, which a profile installed once per compilation
+    /// structurally cannot do.
+    /// Cooperative `super()` over a C3 linearization, vs a static parent.
+    /// Is `super()` COOPERATIVE — resolved by walking the C3 linearization from
+    /// the class the call textually belongs to — rather than static dispatch to
+    /// the declared parent?
+    ///
+    /// ⛔ This was `class_multiple_inheritance`, and that name made one field
+    /// answer THREE different questions (§5, "reusing a field as a marker"):
+    /// "does this class have several bases" (which `class.bases` already
+    /// answers, so the flag was redundant), "bind ancestors only for a diamond",
+    /// and this one. The first meaning colliding with the third is what
+    /// truncated python's `__mro__`: C3 was gated on `bases.len() > 1`, and **C3
+    /// over a one-parent chain IS the chain**, so every grandparent was lost.
+    ///
+    /// ⚠ Cooperative super is not the same feature as C-style multiple
+    /// inheritance — ruby has the former without the latter — which is the
+    /// clearest evidence the old name was describing the wrong thing.
+    ///
+    /// ⛔ Still the WRONG CARRIER: by directives.md §3 this describes how a
+    /// CALLEE is dispatched, which is question 3 — a property of the
+    /// declaration, not of a region of code. It reads one channel rather than
+    /// two, which is the most that can be fixed without the declaration-side
+    /// field existing.
+    pub(crate) fn super_is_cooperative(&self) -> bool {
+        self.profile.class_multiple_inheritance
+    }
+
+    /// A missing argument binds `undefined` (ECMA-262 §10.2.1.1).
+    pub(crate) fn missing_arg_is_undefined(&self) -> bool {
+        self.directives().missing_arg_is_undefined.unwrap_or(false)
+    }
+
+    /// Static fields are own properties of the class object.
+    pub(crate) fn static_fields_are_own_properties(&self) -> bool {
+        self.directives().static_fields_are_own_properties.unwrap_or(false)
+    }
+
+    /// Private members are internal slots, not properties (JS `#x`).
+    pub(crate) fn supports_private_fields(&self) -> bool {
+        self.profile.supports_private_fields
+    }
+
+    /// Properties and methods occupy separate namespaces.
+    pub(crate) fn separate_property_method_namespace(&self) -> bool {
+        self.profile.separate_property_method_namespace
+    }
+
+    /// The class object carries `__name__` / `__mro__` / `__bases__`.
+    pub(crate) fn class_introspection_metadata(&self) -> bool {
+        self.profile.class_introspection_metadata
+    }
+
+    /// Default argument expressions evaluate once at definition time.
+    pub(crate) fn default_args_evaluated_once(&self) -> bool {
+        self.profile.default_args_evaluated_once
+    }
+
+    /// ECMA `new` dispatch (§10.2.2): an explicitly returned object wins.
+    pub(crate) fn ecma_new_dispatch(&self) -> bool {
+        self.profile.ecma_new_dispatch
+    }
+
+    /// An `async` body is implicitly wrapped in try/catch.
+    pub(crate) fn async_wraps_body_in_try(&self) -> bool {
+        self.profile.async_wraps_body_in_try
+    }
+
+    /// Every function has an implicit `arguments` object.
+    pub(crate) fn has_arguments_object(&self) -> bool {
+        self.profile.has_arguments_object
+    }
+
+    /// Thrown errors carry the ECMA `Error` shape.
+    pub(crate) fn ecma_error_object_shape(&self) -> bool {
+        self.profile.ecma_error_object_shape
+    }
+
+    /// Methods are overridable without an explicit marker.
+    pub(crate) fn methods_virtual_by_default(&self) -> bool {
+        self.profile.methods_virtual_by_default
+    }
+
+    /// Wrong-arity calls are accepted rather than an error.
+    pub(crate) fn relaxed_call_arity(&self) -> bool {
+        self.profile.relaxed_call_arity
+    }
+
+    /// The language has `undefined` distinct from `null`.
+    pub(crate) fn has_undefined_value(&self) -> bool {
+        self.profile.has_undefined_value
+    }
+
+    /// Class members carry declared metadata readable at run time.
+    pub(crate) fn class_member_metadata(&self) -> bool {
+        self.profile.class_member_metadata
+    }
+
+
+    pub(crate) fn method_receiver_model(&self) -> Option<vybe_ast::MethodReceiver> {
+        if let Some(model) = self.directives().method_receiver {
+            return Some(model);
+        }
+        None
+    }
+
 
     // `static_methods_take_receiver` is GONE. It answered "do STATIC methods
     // carry the called class as a receiver" with `profile.name == "php"` — a
@@ -249,7 +358,13 @@ impl Compiler {
     /// because `CallSignature` carries no receiver flag and a dynamic callee
     /// slot cannot reach its chunk. Thread it there and this predicate goes.
     pub(crate) fn call_supplies_receiver(&self) -> bool {
-        self.profile.name == "php"
+        // Stated by the walker on `Module.directives`, so it travels with the
+        // UNIT and a multi-language bundle answers per unit. A profile is
+        // installed once per compilation and cannot.
+        if let Some(model) = self.directives().method_receiver {
+            return model == vybe_ast::MethodReceiver::CallSite;
+        }
+        false
     }
 
     /// True for profiles whose comparison/equality operators dispatch to a
@@ -374,13 +489,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, is_object_slot);
 
         // ── rung 1: ProtocolSlot::Bool ──────────────────────────────────
-        let bool_key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Bool));
+        let bool_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Bool)));
         let bool_method = self.define_local("__truth_bool_method");
         self.emit_ref_null_local(bool_method);
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, bool_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &bool_key);
         self.emit_u16(Op::LOCAL_SET, bool_method);
         self.chunk().emit_end(line);
 
@@ -395,13 +510,13 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         // ── rung 2: ProtocolSlot::Len on a user class ───────────────────
-        let len_key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len));
+        let len_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len)));
         let len_method = self.define_local("__truth_len_method");
         self.emit_ref_null_local(len_method);
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, len_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &len_key);
         self.emit_u16(Op::LOCAL_SET, len_method);
         self.chunk().emit_end(line);
 

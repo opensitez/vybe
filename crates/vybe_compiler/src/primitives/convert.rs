@@ -32,6 +32,89 @@ pub fn emit_i64_extend(chunk: &mut Chunk, line: u32) {
 // ── Host imports (string conversions) ───────────────────────
 
 /// Any value → string representation. Stack: [value] → [string]
+/// Render an f64 the way a language with a distinct `double` type does:
+/// an integral value keeps its `.0`, and the IEEE specials are named.
+///
+/// ⛔ THIS EXISTED THREE TIMES. dart (`string_adapter::emit_dart_double_to_string`),
+/// java (`platforms/jvm/.../list_adapter::emit_double_to_string`) and kotlin
+/// (`emitter/numbers::emit_double_to_string`) each wrote it, and **each handled a
+/// different subset of the edge cases** — dart had NaN and infinities, kotlin had
+/// signed zero, java had neither. That is not three policies; it is one mechanic
+/// that drifted, and the drift was a real bug: java printed `0.0` for `-0.0`
+/// where Java prints `-0.0`.
+///
+/// ECMA's `ToString` renders `10.0` as `"10"` and `-0.0` as `"0"`, so this is a
+/// `primitives/*` gap by definition — a thing real languages need that ECMA does
+/// not hand you — not a licence for each frontend to write its own.
+///
+/// The general case still delegates to `ecma:number.toString`, which all three
+/// already did, so only the specials are decided here.
+pub fn emit_float_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    use crate::primitives::instructions::host;
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+
+    // NaN
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host::emit(&mut chunks[current], "ecma:number", "isNaN", 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("NaN", line);
+    chunks[current].emit_else(line);
+
+    // ±Infinity
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    crate::primitives::math::emit_signbit(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("-Infinity", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("Infinity", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    // Negative zero: compares EQUAL to zero, so the sign bit is the only
+    // witness. This is the case java lacked.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    crate::primitives::math::emit_signbit(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("-0.0", line);
+    chunks[current].emit_else(line);
+    emit_float_to_string_finite(chunks, current, v, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_float_to_string_finite(chunks, current, v, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// An integral double keeps one fractional digit (`10` → `"10.0"`); anything
+/// else renders as ECMA does.
+fn emit_float_to_string_finite(chunks: &mut [Chunk], current: usize, v: u16, line: u32) {
+    use crate::primitives::instructions::host;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host::emit(&mut chunks[current], "ecma:number", "isInteger", 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_i32_const(1, line);
+    host::emit(&mut chunks[current], "ecma:number", "toFixed", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host::emit(&mut chunks[current], "ecma:number", "toString", 1, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_to_string(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:string", "String");
     chunk.emit_call(idx, 1, line);

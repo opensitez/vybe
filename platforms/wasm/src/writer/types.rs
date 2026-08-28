@@ -25,6 +25,23 @@ pub struct WasmTypeContext {
     pub struct_type_by_module_index: Vec<u32>,
     /// type_name → WASM type index for the descriptor struct (vtable + proto)
     pub desc_type_indices: std::collections::HashMap<String, u32>,
+    /// Absolute WASM global index of the FIRST per-class descriptor singleton,
+    /// or `None` when the module declares no classes.
+    ///
+    /// Custom Descriptors forbids `struct.new` / `struct.new_default` from
+    /// allocating a type that carries a `(descriptor …)` clause — and
+    /// `build_type_context` stamps one on every class — so each allocation
+    /// needs a descriptor VALUE as its last operand. That value has to be one
+    /// singleton per class, not one per allocation: `ref.cast_desc_eq` compares
+    /// descriptors by IDENTITY, so per-allocation descriptors would make two
+    /// instances of the same class fail to match each other, and each instance
+    /// would reflect its own JS prototype out of descriptor field 0.
+    ///
+    /// The singletons are appended AFTER every module-defined global so that
+    /// the index space `chunk::global_index_space` hands the compiler is
+    /// untouched — class `i` (the same ordinal `desc_type_indices` is built
+    /// from) owns `desc_global_base + i`.
+    pub desc_global_base: Option<u32>,
     /// type_name → vec of field names in order (for field index lookup)
     pub struct_fields: std::collections::HashMap<String, Vec<String>>,
     /// WASM type index for the dynamic array type — `(array (mut externref))`.
@@ -127,6 +144,59 @@ impl WasmTypeContext {
         self.desc_type_indices.get(&name.to_lowercase()).copied()
     }
 
+    /// How many per-class descriptor singletons this module declares — one per
+    /// class, so one per described/descriptor pair.
+    pub fn descriptor_global_count(&self) -> u32 {
+        self.desc_type_indices.len() as u32
+    }
+
+    /// The global holding class `name`'s descriptor singleton.
+    ///
+    /// Derived from the descriptor TYPE index rather than a second map, so the
+    /// two cannot drift: `build_type_context` lays each class out as the pair
+    /// `(2i, 2i+1)`, so `desc_type_indices[name] == 2i + 1` and the class
+    /// ordinal is `(idx - 1) / 2`.
+    pub fn desc_global(&self, name: &str) -> Option<u32> {
+        let base = self.desc_global_base?;
+        let desc_idx = self.desc_type(name)?;
+        Some(base + (desc_idx - 1) / 2)
+    }
+
+    /// The descriptor singleton for a class given its DESCRIBED wasm type
+    /// index — the index that actually reaches the binary.
+    ///
+    /// Use this when the type was resolved rather than named: the dynamic
+    /// `struct.new` path guesses a wasm type from the field count and never
+    /// holds a module index, but the guess can still land on a
+    /// descriptor-carrying class. Described types are the even members of the
+    /// `(2i, 2i+1)` layout, so an odd index (a descriptor struct, which has no
+    /// descriptor of its own) or one past the pairs correctly answers `None`.
+    pub fn desc_global_for_described(&self, described_idx: u32) -> Option<u32> {
+        let base = self.desc_global_base?;
+        if described_idx % 2 != 0 {
+            return None;
+        }
+        let ordinal = described_idx / 2;
+        if ordinal as usize >= self.struct_type_by_module_index.len() {
+            return None;
+        }
+        Some(base + ordinal)
+    }
+
+    /// The descriptor singleton for a 1-based MODULE type index.
+    ///
+    /// ⚠ Prefer this over the by-name form inside the code encoder. The type
+    /// table lives on `chunks[0]` ONLY, and `encode_code_section` walks every
+    /// chunk, so a name lookup through `chunk.types` silently misses in every
+    /// chunk but the first — which is where constructors live.
+    pub fn desc_global_by_index(&self, module_index: u32) -> Option<u32> {
+        let base = self.desc_global_base?;
+        if module_index == 0 || module_index as usize > self.struct_type_by_module_index.len() {
+            return None;
+        }
+        Some(base + module_index - 1)
+    }
+
     /// Look up the field index for a field name within a struct type.
     pub fn field_index(&self, type_name: &str, field_name: &str) -> Option<u32> {
         let fields = self.struct_fields.get(&type_name.to_lowercase())?;
@@ -149,6 +219,7 @@ pub fn build_type_context(
         struct_type_indices: std::collections::HashMap::new(),
         struct_type_by_module_index: Vec::new(),
         desc_type_indices: std::collections::HashMap::new(),
+        desc_global_base: None,
         struct_fields: std::collections::HashMap::new(),
         array_type_idx: 0,
         string_array_type_idx: 0,
@@ -165,10 +236,19 @@ pub fn build_type_context(
         uses_stack_switching: false,
     };
 
-    // Collect TypeEntry definitions from chunk 0
+    // Collect TypeEntry definitions from chunk 0.
+    //
+    // ⛔ DESCRIPTOR ROWS ARE NOT CLASSES — skip them here.
+    //
+    // Each entry below emits a `(described 2i, descriptor 2i+1)` PAIR, so a
+    // row that IS a descriptor would get a pair of its own: `#desc base`
+    // acquiring `#desc base__desc`, doubling the type section and leaving the
+    // real descriptor unreferenced. `describes_index` is a back-pointer (0 for
+    // an ordinary class row), which is what makes the test exact rather than a
+    // guess at the row's name.
     let type_entries: Vec<&vybe_runtime::chunk::TypeEntry> = chunks
         .first()
-        .map(|c| c.types.iter().collect())
+        .map(|c| c.types.iter().filter(|t| t.describes_index == 0).collect())
         .unwrap_or_default();
 
     // Layout:
@@ -310,6 +390,52 @@ pub fn build_type_context(
     // Populate the name→typeidx maps up front so the supertype link in
     // each subtype can resolve a parent that appears later in the same
     // rec group.
+    // ⚠ `struct_type_by_module_index` is keyed by MODULE index, and the module
+    // index space includes the descriptor rows that `type_entries` filtered
+    // out. Building it from the filtered list would shift every entry past the
+    // first descriptor row, so it is built separately over ALL rows below —
+    // a class row answers with its described index, a descriptor row with its
+    // paired `2i+1`, resolved through the `describes_index` back-pointer.
+    {
+        let all_rows: &[vybe_runtime::chunk::TypeEntry] =
+            chunks.first().map(|c| c.types.as_slice()).unwrap_or(&[]);
+        // Module index (0-based here) → class ordinal, for class rows only.
+        let mut class_ordinal: Vec<Option<u32>> = vec![None; all_rows.len()];
+        let mut next = 0u32;
+        for (i, t) in all_rows.iter().enumerate() {
+            if t.describes_index == 0 {
+                class_ordinal[i] = Some(next);
+                next += 1;
+            }
+        }
+        ctx.struct_type_by_module_index = all_rows
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                if t.describes_index == 0 {
+                    class_ordinal[i].map_or(0, |k| k * 2)
+                } else {
+                    // `describes_index` is 1-BASED into the same table.
+                    class_ordinal
+                        .get(t.describes_index as usize - 1)
+                        .copied()
+                        .flatten()
+                        .map_or(0, |k| k * 2 + 1)
+                }
+            })
+            .collect();
+        // A descriptor row is nameable too — `struct.new #desc <C>` has to
+        // resolve to the descriptor struct, not to nothing.
+        for (i, t) in all_rows.iter().enumerate() {
+            if t.describes_index != 0 {
+                if let Some(&idx) = ctx.struct_type_by_module_index.get(i) {
+                    ctx.struct_type_indices.insert(t.name.to_lowercase(), idx);
+                    ctx.struct_fields
+                        .insert(t.name.to_lowercase(), t.fields.clone());
+                }
+            }
+        }
+    }
     for (i, te) in type_entries.iter().enumerate() {
         let described_idx = (i as u32) * 2;
         let descriptor_idx = (i as u32) * 2 + 1;
@@ -319,7 +445,6 @@ pub fn build_type_context(
         ctx.desc_type_indices
             .insert(name_lower.clone(), descriptor_idx);
         ctx.struct_fields.insert(name_lower, te.fields.clone());
-        ctx.struct_type_by_module_index.push(described_idx);
     }
 
     // Types with children must be left "open" (`sub`) rather than

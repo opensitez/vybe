@@ -3,6 +3,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -50,6 +51,39 @@ impl Compiler {
         }
         let status_slot = self.define_local("__exit_status");
         self.emit_u16(Op::LOCAL_SET, status_slot);
+
+        // One syntax, two meanings — see `Directives::exit_argument`. php's
+        // `die("bye")` prints a farewell MESSAGE and exits 0, while `exit(3)`
+        // exits with STATUS 3 and prints nothing; which one it is depends on
+        // the value's TYPE, so it cannot be decided by a lowering. Every other
+        // language leaves this `None` and the argument is simply the status.
+        //
+        // This replaced two `profile.name == "php"` checks that matched the
+        // SPELLINGS `exit`/`die` in shared code.
+        if argc >= 1
+            && self.directives().exit_argument == Some(vybe_ast::ExitArgument::MessageOrStatus)
+        {
+            // `status_slot` currently holds the ARGUMENT.
+            self.emit_u16(Op::LOCAL_GET, status_slot);
+            let typeof_idx = self.import("ecma:value", "typeof");
+            self.emit_host_call(typeof_idx, 1);
+            self.emit_const(Value::String(std::sync::Arc::from("string")));
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_if(line);
+            // The message goes through THE write so it lands in the innermost
+            // output buffer exactly as `echo` does: `wasi:logging` appends a
+            // newline real php never writes, and writing straight to stdout
+            // jumps ahead of buffered content.
+            self.emit_u16(Op::LOCAL_GET, status_slot);
+            self.emit_common("php.echo_stringify", 1, line);
+            let current = self.current;
+            common::io::emit_write_or_buffer(&mut self.chunks, current, line);
+            // A message exits SUCCESSFULLY — the string is output, never a status.
+            self.emit_const(Value::F64(0.0));
+            self.emit_u16(Op::LOCAL_SET, status_slot);
+            self.chunk().emit_end(line);
+        }
 
         let current = self.current;
         common::io::emit_ob_flush_all(&mut self.chunks, current, line);
@@ -101,8 +135,8 @@ impl Compiler {
         let line = self.line;
         let _iterator_key = self.str_const("iterator");
         let _next_key_c = self.str_const("next");
-        let done_key_c = self.str_const("done");
-        let value_key_c = self.str_const("value");
+        let done_key_c = self.resolve_slot_interned(&class_slots::ClassSlot::internal("done"));
+        let value_key_c = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
 
         // it = iter_slot.iterator() with __js_this = iter_slot
         let it_slot = self.define_local("__cit_it");
@@ -117,8 +151,7 @@ impl Compiler {
         // methods registered by crate::primitives::classes::register_type, including
         // "iterator" (the walker-normalized [Symbol.iterator]).
         self.emit_u16(Op::LOCAL_GET, iter_slot);
-        let iterator_key = self.str_const("iterator");
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, iterator_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("iterator"));
         let iter_fn_slot = self.define_local("__cit_iter_fn");
         self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
 
@@ -136,8 +169,7 @@ impl Compiler {
 
         // next_method = it.next via STRUCT_GET
         self.emit_u16(Op::LOCAL_GET, it_slot);
-        let next_key_c = self.str_const("next");
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, next_key_c);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("next"));
         self.emit_u16(Op::LOCAL_SET, next_method_slot);
 
         // Call next() with __js_this = it
@@ -163,7 +195,7 @@ impl Compiler {
 
         // step.done check
         self.emit_u16(Op::LOCAL_GET, step_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key_c);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &done_key_c);
         self.emit_u16(Op::LOCAL_SET, done_slot);
         self.emit_u16(Op::LOCAL_GET, done_slot);
         {
@@ -174,7 +206,7 @@ impl Compiler {
 
         // var = step.value
         self.emit_u16(Op::LOCAL_GET, step_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, value_key_c);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &value_key_c);
         let var_slot = self.define_source_local(var);
         self.emit_u16(Op::LOCAL_SET, var_slot);
 
@@ -383,8 +415,11 @@ impl Compiler {
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         inst!(self, core_wasm::bool_const, true);
-        let returned_key = self.str_const("__vybe_gen_returned");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, returned_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_gen_returned"),
+            class_slots::ValueSource::Stack,
+        );
         self.chunk().emit_end(line);
 
         self.chunk().emit_end(line);
@@ -501,8 +536,11 @@ impl Compiler {
         }
         self.emit_u16(Op::LOCAL_GET, row_slot);
         self.emit_const(Value::Bool(true));
-        let marker_key = self.str_const(&marker);
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal(&marker),
+            class_slots::ValueSource::Stack,
+        );
     }
 
     /// Return `Some((N, [ident...]))` when `targets`/`value` match the
@@ -921,10 +959,10 @@ impl Compiler {
         let obj_line = self.line;
         self.chunk().emit_if(obj_line);
 
-        let kind_key = self.str_const("__ref_kind");
+        let kind_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__ref_kind"));
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("cell");
         let cell_line = self.line;
         self.chunk().emit_if(cell_line);
@@ -933,17 +971,17 @@ impl Compiler {
         self.chunk().emit_else(cell_line);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("carray");
         let carray_line = self.line;
         self.chunk().emit_if(carray_line);
 
-        let base_key = self.str_const("__base");
-        let idx_key = self.str_const("__idx");
+        let base_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__base"));
+        let idx_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__idx"));
         let base_slot = self.define_local("__ref_carray_base");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &base_key);
         self.emit_u16(Op::LOCAL_SET, base_slot);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
@@ -952,7 +990,7 @@ impl Compiler {
         self.chunk().emit_if(base_obj_line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("cell");
         let base_cell_line = self.line;
         self.chunk().emit_if(base_cell_line);
@@ -961,14 +999,14 @@ impl Compiler {
         self.chunk().emit_else(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
         common::collections::emit_get(&mut self.chunks, self.current, self.line);
         self.chunk().emit_end(base_cell_line);
 
         self.chunk().emit_else(base_obj_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
         common::collections::emit_get(&mut self.chunks, self.current, self.line);
         self.chunk().emit_end(base_obj_line);
 
@@ -977,13 +1015,11 @@ impl Compiler {
         // atomic one — an ordinary read of an atomically-updated binding must
         // see the other thread's write.
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
         let shared_line = self.line;
         self.chunk().emit_if(shared_line);
-        let addr_key = self.str_const(crate::primitives::pointers::SHARED_ADDR_KEY);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, addr_key);
+        self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY));
         {
             let line = self.line;
             crate::primitives::threading::emit_atomic_load(self.chunk(), line);
@@ -1016,10 +1052,10 @@ impl Compiler {
         // ToBoolean ladder here was a no-op. See `operators::emit_to_primitive`.
         self.chunk().emit_if(line);
 
-        let kind_key = self.str_const("__ref_kind");
+        let kind_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__ref_kind"));
 
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_const(Value::String(Arc::from("cell")));
         {
             let line = self.line;
@@ -1042,7 +1078,7 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_const(Value::String(Arc::from("carray")));
         {
             let line = self.line;
@@ -1052,17 +1088,17 @@ impl Compiler {
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
-        let base_key = self.str_const("__base");
-        let idx_key = self.str_const("__idx");
+        let base_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__base"));
+        let idx_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__idx"));
         let base_slot = self.define_local("__ref_store_carray_base");
         let idx_slot = self.define_local("__ref_store_carray_idx");
 
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &base_key);
         self.emit_u16(Op::LOCAL_SET, base_slot);
 
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
         self.emit_u16(Op::LOCAL_SET, idx_slot);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
@@ -1073,7 +1109,7 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_const(Value::String(Arc::from("cell")));
         {
             let line = self.line;
@@ -1116,13 +1152,11 @@ impl Compiler {
         // plain assignment to a name bound to shared storage IS an atomic
         // store; anything weaker would tear against a concurrent RMW.
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
         let shared_line = self.line;
         self.chunk().emit_if(shared_line);
-        let addr_key = self.str_const(crate::primitives::pointers::SHARED_ADDR_KEY);
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, addr_key);
+        self.class_get(class_slots::ObjSource::Local(ptr_slot), &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY));
         self.emit_u16(Op::LOCAL_GET, value_slot);
         {
             let line = self.line;
@@ -1300,19 +1334,83 @@ impl Compiler {
         self.define_local_typed(name, type_hint)
     }
 
-    pub(crate) fn define_local(&mut self, name: &str) -> u16 {
-        {
-            let scope = self.scopes.last_mut().unwrap();
-            let chunk_locals = self.chunks[self.current].local_count;
-            if scope.next_slot < chunk_locals {
-                scope.next_slot = chunk_locals;
-            }
-            if let Some(dup_slot) = self.chunks[self.current].dup_slot {
-                if scope.next_slot <= dup_slot {
-                    scope.next_slot = dup_slot + 1;
-                }
+    /// Reconcile the SCOPE's slot allocator with the CHUNK's.
+    ///
+    /// ⛔ There are two allocators over ONE index space: `Scope::next_slot`
+    /// (named locals) and `Chunk::alloc_scratch` (compiler temporaries), and
+    /// nothing reconciles them except this. `alloc_scratch` has no rewind, so
+    /// a scope that allocates without catching up first hands out a slot the
+    /// chunk already gave to a temporary — and the two writes silently share
+    /// storage.
+    ///
+    /// **This is why it is a method rather than a block copied into each
+    /// caller.** It used to be inline in `define_local` only, so the JS `var`
+    /// path — which calls `Scope::define_at_function_scope` directly — skipped
+    /// it: `function h() { try { throw 1 } catch (e) { var c = 3; } return c; }`
+    /// returned the try/catch's own `caught` flag (`true`) instead of `3`,
+    /// because `c` and the flag were the same slot. Same shape as the
+    /// `case_sensitive` bug in `directives.md` §1: a precondition every call
+    /// site had to remember, and one did not.
+    pub(crate) fn sync_scope_allocator(&mut self) {
+        let scope = self.scopes.last_mut().unwrap();
+        let chunk_locals = self.chunks[self.current].local_count;
+        if scope.next_slot < chunk_locals {
+            scope.next_slot = chunk_locals;
+        }
+        if let Some(dup_slot) = self.chunks[self.current].dup_slot {
+            if scope.next_slot <= dup_slot {
+                scope.next_slot = dup_slot + 1;
             }
         }
+    }
+
+    /// The OTHER half: tell the chunk which slots the scope has taken.
+    ///
+    /// ⛔ `finalize_local_count` takes the `max` of the two allocators, but it
+    /// runs at the END of the chunk — it SIZES the frame and does nothing to
+    /// stop them overlapping while compiling. `Chunk::alloc_scratch` hands out
+    /// `local_count` and bumps it, so without this a temporary is issued the
+    /// slot a named local already owns.
+    ///
+    /// Measured: `function h() { try { throw 1 } catch (e) { var c = 3; } return c; }`
+    /// answered `true` — the `dyn_to_bool` temporary in the catch epilogue and
+    /// the hoisted `c` were the same slot. Only the FIRST `var` in the arm was
+    /// affected, which is the signature of exactly one contested index.
+    fn publish_scope_allocator(&mut self) {
+        let next = self.scopes.last().unwrap().next_slot;
+        let chunk = &mut self.chunks[self.current];
+        if chunk.local_count < next {
+            chunk.local_count = next;
+            if chunk.local_count > chunk.scratch_high_water {
+                chunk.scratch_high_water = chunk.local_count;
+            }
+        }
+    }
+
+    /// Define a name in the enclosing FUNCTION's scope rather than the current
+    /// block — ECMA-262's VariableEnvironment (§9.1.1.3), which is where a
+    /// `VariableStatement` binding lives and why it outlives its block.
+    ///
+    /// ⛔ Always use this rather than `Scope::define_at_function_scope`: the
+    /// allocator reconciliation above is not optional, and the raw method
+    /// cannot do it because a `Scope` cannot see the chunk.
+    pub(crate) fn define_var_scoped(
+        &mut self,
+        name: &str,
+        type_hint: Option<vybe_ast::TypeHint>,
+    ) -> u16 {
+        self.sync_scope_allocator();
+        let slot = self
+            .scopes
+            .last_mut()
+            .unwrap()
+            .define_at_function_scope(name, type_hint);
+        self.publish_scope_allocator();
+        slot
+    }
+
+    pub(crate) fn define_local(&mut self, name: &str) -> u16 {
+        self.sync_scope_allocator();
         // Two independent questions, deliberately asked separately: does this
         // language scope variables to the function rather than the block, and
         // is this name a variable at all (rather than a compiler temporary)?
@@ -1665,7 +1763,7 @@ impl Compiler {
         // rejections: a generator completes/throws through `resume`, and
         // the §27.6.1.2 promise surface lives in the attached
         // `__vybe_async_generator_next` driver instead.
-        self.profile.async_wraps_body_in_try
+        self.async_wraps_body_in_try()
             && self.chunks[self.current].is_async
             && !self.chunks[self.current].is_generator
     }
@@ -1804,12 +1902,12 @@ impl Compiler {
             return;
         }
         let line = self.line;
-        let return_key = self.str_const("return");
+        let return_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("return"));
         let _function_str = self.str_const("function");
         let return_fn_slot = self.define_local("__iterator_close_return");
 
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, return_key);
+        self.class_get_resolved(class_slots::ObjSource::Stack, &return_key);
         self.emit_u16(Op::LOCAL_SET, return_fn_slot);
 
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);

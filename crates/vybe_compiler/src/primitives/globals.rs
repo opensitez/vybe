@@ -10,11 +10,26 @@
 //! | PHP | `$GLOBALS` | identifier |
 //! | Python | `globals()` | zero-argument call |
 //!
-//! All four name the module's OBJECT environment record — the same storage a
-//! bare `x` reads. `vm.globals` is already a live `HashMap<String, Value>`
-//! (`vm.rs:552`), and `GLOBAL_GET` is nothing but "resolve a constant index to
-//! a string, look it up in that map". So a namespace object is a *view* over
-//! storage that already exists; nothing new has to be stored.
+//! All four name the module's OBJECT environment record (ECMA-262 §9.1.1.4:
+//! a Global Environment Record is an object record plus a declarative one —
+//! `var` and function declarations land in the object half, `let`/`const` in
+//! the declarative half, which is why `globalThis.x` sees the first and not
+//! the second). It is the same storage a bare `x` reads, so a namespace object
+//! is a *view* over storage that already exists; nothing new has to be stored.
+//!
+//! ⛔ **This paragraph used to describe a model that no longer exists**, and
+//! said so as fact: *"`vm.globals` is already a live `HashMap<String, Value>`
+//! … `GLOBAL_GET` is nothing but resolve a constant index to a string, look it
+//! up in that map."* That was true before the globalidx migration and is not
+//! now — `vm.globals` is a `Vec<Value>`, `GLOBAL_GET` reads a real globalidx
+//! over `global_imports ++ defined` and its own comment says *"No name is
+//! consulted here"*, and `global_index: HashMap<String, u32>` survives only to
+//! bind host imports AT INSTANTIATION.
+//!
+//! Left as a marker because `directives.md` §1 names this exact cost: a
+//! document that describes a retired mechanism as live gets cited by the next
+//! reader, who then repeats a claim the tree has already disproved. When a
+//! mechanism is replaced, the comment naming it is part of the replacement.
 //!
 //! Before this module each language had built its own compile-time workaround
 //! and none could share: JS rewrote `globalThis.X` in `expressions.rs`, Lua
@@ -67,17 +82,6 @@ impl Options {
 
 /// True when `name` is this profile's spelling of the global namespace, in
 /// IDENTIFIER form (`_G`, `globalThis`, `$GLOBALS`).
-pub fn names_global_namespace(profile: &LanguageProfile, name: &str) -> bool {
-    !profile.global_namespace.is_empty()
-        && !profile.global_namespace_is_call
-        && profile.global_namespace == name
-}
-
-/// True when `name` is this profile's spelling in CALL form — Python's
-/// `globals()`. The caller has already checked the argument list is empty.
-pub fn names_global_namespace_call(profile: &LanguageProfile, name: &str) -> bool {
-    profile.global_namespace_is_call && profile.global_namespace == name
-}
 
 impl Compiler {
     /// Every module-level name this namespace object exposes, in a stable
@@ -209,17 +213,24 @@ impl Compiler {
     /// Python `globals()` and PHP `$GLOBALS` have no such object: `_G` on its
     /// own evaluates to nil today, which is why they need the chain.
     pub(super) fn expr_is_global_namespace(&self, expr: &Expression) -> bool {
+        // ⛔ THE SPELLING IS GONE FROM SHARED CODE. This used to match the
+        // source text against `profile.global_namespace` (`_G` / `$GLOBALS` /
+        // `globalThis` / `globals`) plus `global_namespace_is_call` for
+        // Python's call form — a per-language spelling table consulted by the
+        // shared compiler. The walkers normalize all four into
+        // `ExprKind::GlobalNamespace`; nothing here knows how any language
+        // spells it.
+        //
+        // ⚠ The `has_ecma_globals` early-return is the REMAINING asymmetry and
+        // it is not a language difference: js has a real ECMA global object to
+        // resolve against, and lua/python/php were never given one, so they
+        // fall back to the member chain below. Now that the spelling is
+        // normalized, that gap is stated in exactly ONE place instead of being
+        // spread across four profile rows.
         if self.profile.has_ecma_globals {
             return false;
         }
-        match &expr.kind {
-            ExprKind::Ident(n) => names_global_namespace(&self.profile, n),
-            ExprKind::Call { callee, args, .. } if args.is_empty() => {
-                matches!(&callee.kind, ExprKind::Ident(n)
-                    if names_global_namespace_call(&self.profile, n))
-            }
-            _ => false,
-        }
+        matches!(expr.kind, ExprKind::GlobalNamespace)
     }
 }
 

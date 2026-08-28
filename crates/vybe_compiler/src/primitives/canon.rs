@@ -401,6 +401,7 @@ pub fn install_type_space(
 /// `(class, method)` pair it *does* know and this resolves it.
 ///
 /// The lookup is the type table's vtable, which is already exactly this map:
+/// `TypeEntry { name, methods: Vec<(String, usize)> /// `TypeEntry { name, methods: Vec<(String, usize)>     ..Default::default()
 /// `TypeEntry { name, methods: Vec<(String, usize)> }`. Nothing new is built,
 /// and in particular nothing resolves a method by BARE NAME — two classes may
 /// each have a `run`, and the debugger's chunk list shows several same-named

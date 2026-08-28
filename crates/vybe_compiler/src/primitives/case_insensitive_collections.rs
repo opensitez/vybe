@@ -4,6 +4,7 @@
 //! Enum handling → `primitives/enums.rs`; reflection → `primitives/reflection.rs`;
 //! TryParse/TryGetValue are walker desugars.
 
+use crate::primitives::class_slots;
 use super::*;
 use crate::primitives::calls::resolve_receiver_type_hint;
 
@@ -44,9 +45,9 @@ impl Compiler {
                     self.emit_host_call(idx, 3);
                     self.emit(Op::DROP);
 
-                    let keys_key = self.str_const("__keys");
+                    let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
 
                     self.emit_u16(Op::LOCAL_GET, keys_slot);
@@ -58,7 +59,11 @@ impl Compiler {
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, keys_key);
+                    self.class_set_resolved(
+                        class_slots::ObjSource::Stack,
+                        &keys_key,
+                        class_slots::ValueSource::Stack,
+                    );
 
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, keys_slot);

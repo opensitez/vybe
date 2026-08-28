@@ -2,6 +2,7 @@
 //! Parameter reflection, custom attributes, and Invoke. Compile-time
 //! resolution against class/attribute metadata. Moved out of the former dotnet_calls.rs.
 
+use crate::primitives::class_slots;
 use super::*;
 use crate::primitives::calls::{strip_generic_suffix, terminal_type_name};
 
@@ -1908,8 +1909,11 @@ impl Compiler {
                         self.compile_expr(&args[0].value)?;
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
-                        let field_idx = self.str_const(&self.canon(&field_name));
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&self.canon(&field_name)),
+                            class_slots::ValueSource::Stack,
+                        );
                         self.emit_var_set(name);
                         self.emit_null();
                         Ok(true)
@@ -1961,7 +1965,6 @@ use vybe_runtime::{Chunk, Value};
 
 pub const FIELD_TYPE: &str = "__type";
 pub const FIELD_TYPES: &str = "__types";
-pub const FIELD_TYPE_ID: &str = "__type_id";
 pub const FIELD_TYPE_NAME: &str = "__typename";
 pub const FIELD_FIELDS: &str = "__fields";
 pub const FIELD_FIELDS_PUBLIC: &str = "__fields_public";
@@ -2345,9 +2348,6 @@ impl ReflectOp {
     }
 }
 
-fn sconst(chunk: &mut Chunk, s: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(s)))
-}
 
 /// Stack: `[value] -> [ecma_type_string]`.
 pub fn emit_typeof(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2513,12 +2513,30 @@ pub fn emit_is_instance_of(
     type_name: &str,
     line: u32,
 ) {
+    // rtt FIRST, `__types` chain as the fallback.
+    //
+    // ⚠ The fallback is a KNOWN FORGERY SURFACE — it reads `__type`/`__types`,
+    // which are ordinary writable properties, so an object carrying the right
+    // string is believed. Deleting it was tried and is NOT yet possible: the
+    // VM's own name path (`ref_test_or_declared_name`) does not answer for the
+    // untyped values this chain currently carries, so removing it broke real
+    // identity (`c instanceof C` → false) and lost the dart typed-catch set.
+    //
+    // It comes out when nothing is allocated untyped — platform exceptions (27
+    // sites) and dynamic literals — and not before. Recorded rather than
+    // papered over.
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let ht = crate::primitives::classes::heaptype_for_name(chunks, type_name);
     chunks[current].emit_ref_type_op(Op::REF_TEST, ht, line);
-    // `ref.test` already yields an i32; `Op::IF` takes it.
     chunks[current].emit_if_value(line);
+    // ⛔ BOTH BRANCHES MUST YIELD THE SAME TYPE. `ref.test` gives an i32 and the
+    // fallback gives a Bool, so a raw `i32.const 1` here made the answer's TYPE
+    // depend on which branch ran — `c instanceof C` printed `1` where js prints
+    // `true`. Push the boolean directly rather than converting: the conversion
+    // helper allocates a scratch local, and `alloc_scratch` aliases named
+    // locals — including the operand slot this function just spilled.
     chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_string_const(type_name, line);
@@ -2552,8 +2570,17 @@ pub fn emit_set_slot_string_field(
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_string_const(value, line);
-    let key = sconst(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Stack: unchanged. Writes `object[field] = local_value`.
@@ -2566,8 +2593,17 @@ pub fn emit_set_slot_field_from_local(
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let key = sconst(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Stack: unchanged. Writes `object[field] = ref_func(function_chunk)`.
@@ -2581,8 +2617,17 @@ pub fn emit_bind_method(
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, function_chunk as u16, line);
     chunk.emit(0, line);
-    let key = sconst(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Create a reflection-shaped object, stamp its type, copy local-backed fields,
@@ -2597,7 +2642,7 @@ pub fn emit_new_reflection_object(
     methods: &[(&str, usize)],
     line: u32,
 ) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
     emit_stamp_type(chunk, object_slot, type_name, line);
     for (field, value_slot) in fields {
@@ -2859,7 +2904,8 @@ pub fn emit_reflect_map_index(chunks: &mut Vec<Chunk>, current: usize, line: u32
 
 /// Stack: `[value_descriptor] -> [true]`.
 pub fn emit_reflect_is_valid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 /// Stack: `[value_descriptor] -> [value_descriptor.__value == null]`.
@@ -2945,16 +2991,34 @@ pub fn emit_reflect_set_primitive(chunks: &mut Vec<Chunk>, current: usize, line:
 
 /// Stack: `[object, value] -> []`. Writes `object[field] = value`.
 pub fn emit_set_field_from_stack(chunk: &mut Chunk, field: &str, line: u32) {
-    let key = sconst(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Stack: unchanged. Writes `object[field] = value_slot`.
 pub fn emit_stamp_kind_from_slot(chunk: &mut Chunk, object_slot: u16, kind_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
-    let key = sconst(chunk, FIELD_KIND);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(FIELD_KIND),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_import_call(
@@ -3092,7 +3156,11 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     let i64_str = c.add_constant(Value::String(std::sync::Arc::from("i64")));
     let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
     let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
-    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let type_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::TypeIdentity,
+        &class_slots::PlainNames,
+    );
     let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
     let v12 = c.add_constant(Value::I32(12));
     let v0 = c.add_constant(Value::I32(0));
@@ -3199,7 +3267,13 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
 
     // It's an object; check __type
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &type_key,
+        class_slots::Dest::Stack,
+        0,
+    );
     crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
     crate::primitives::strings::emit_str_equals(&mut c, 0);
     let _is_dt = c.emit_block(0);
@@ -3233,7 +3307,11 @@ pub fn build_isdate(imports: &mut Chunk) -> Chunk {
     let parse_idx = c.add_import("ecma:date", "parse");
     let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
     let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
-    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let type_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::TypeIdentity,
+        &class_slots::PlainNames,
+    );
     let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
 
     let done = c.emit_block(0);
@@ -3268,7 +3346,13 @@ pub fn build_isdate(imports: &mut Chunk) -> Chunk {
 
     // result = (v.__type == "DateTime")
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &type_key,
+        class_slots::Dest::Stack,
+        0,
+    );
     crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
     crate::primitives::strings::emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);

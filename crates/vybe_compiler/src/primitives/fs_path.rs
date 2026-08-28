@@ -38,6 +38,7 @@
 //! shape before it uses the result. [`emit_ok_test`] is that test, and it is not
 //! optional anywhere.
 
+use crate::primitives::class_slots;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::HT_EXTERN;
@@ -419,7 +420,7 @@ pub fn emit_stat(chunk: &mut Chunk, line: u32) {
         // the wrong one is silent: `st_size` read back as `Undefined` and only
         // surfaced two frames later as
         // `wasm:js-number.toF64 — not a number`.
-        chunk.emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out, line);
 
         for (key, emit) in [
@@ -433,8 +434,17 @@ pub fn emit_stat(chunk: &mut Chunk, line: u32) {
                 StatField::Field(name) => emit_field(chunk, line, st, name),
                 StatField::TypeIs(want) => emit_type_is(chunk, line, st, want),
             }
-            let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+            let k = class_slots::resolve(
+                &class_slots::ClassSlot::internal(key),
+                &class_slots::PlainNames,
+            );
+            class_slots::emit_class_set(
+                chunk,
+                class_slots::ObjSource::Stack,
+                &k,
+                class_slots::ValueSource::Stack,
+                line,
+            );
         }
         chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     }

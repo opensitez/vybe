@@ -462,6 +462,67 @@ impl VM {
     /// a declaration — never from the instruction, which carries only an index.
     /// Deleting this is its own step and needs the platforms to gain a typed
     /// allocation path first.
+    /// `ref.test`/`ref.cast` against an EXACT heap type — `(ref (exact $t))`.
+    ///
+    /// The difference from the inexact form is one word: the reference's own
+    /// type must BE `$t`, not merely be a subtype of it. `exact-casts.wast`
+    /// pins both directions — casting a `$super` to `(exact $super)` returns
+    /// it, casting a `$sub` to `(exact $super)` traps — and the subtype walk
+    /// answers `true` to both.
+    ///
+    /// Abstract heap types are not handled specially because the binary format
+    /// cannot spell one: `heaptype ::= 0x62 x:u32` takes a plain u32, which the
+    /// proposal notes "intentionally makes it impossible to encode an exact
+    /// abstract heap type". An abstract immediate here can only come from a
+    /// malformed input, so it falls back to the ordinary test rather than
+    /// inventing an answer.
+    pub(crate) fn ref_test_exact(
+        &self,
+        val: &Value,
+        ht: crate::opcode::heaptype::HeapType,
+    ) -> bool {
+        let crate::opcode::heaptype::HeapType::Concrete(index) = ht else {
+            return self.ref_test(val, ht);
+        };
+        // A concrete FUNCTION type stays structural, for the same reason the
+        // inexact path gives: a `__type` match must not override a signature.
+        // Structural equality is already exact, so this delegates unchanged.
+        if self.declared_func_sig(index).is_some() {
+            return self.ref_test(val, ht);
+        }
+        // ⚠ RESOLVE THE RTT THE WAY `test_concrete` DOES — `resolve_gc_rtt`,
+        // which is module-relative — NOT by looking the declared NAME up in the
+        // registry. The name route disagrees for array types (`(array i8)`
+        // reached the registry under a different key), so every exact cast in
+        // `exact-casts.wast`'s array module failed a cast that should succeed.
+        // One resolution path for both tests is the point.
+        let target = self.resolve_gc_rtt(index as usize);
+        if target == 0 {
+            return false;
+        }
+        match val {
+            // The ONLY difference from `test_concrete`: `==` rather than
+            // `is_subtype`. That is what "exact" means.
+            Value::Object(o) => {
+                let type_id = o.lock().unwrap().type_id;
+                type_id > 0 && type_id == target
+            }
+            _ => false,
+        }
+    }
+
+    /// Does this value carry a real rtt — i.e. was it allocated as a declared
+    /// type rather than as a dynamic object?
+    ///
+    /// `type_id == 0` is the untyped form (`struct.new 0`), which is what
+    /// platform exceptions and object literals still get.
+    pub(crate) fn value_has_rtt(&self, val: &Value) -> bool {
+        match val {
+            Value::Object(o) => o.lock().unwrap().type_id > 0,
+            _ => false,
+        }
+    }
+
     pub(crate) fn ref_test_or_declared_name(
         &self,
         val: &Value,
@@ -480,6 +541,39 @@ impl VM {
             // which have nothing to say about a WASM function signature.
             crate::opcode::heaptype::HeapType::Concrete(index)
                 if self.declared_func_sig(index).is_some() =>
+            {
+                false
+            }
+            // ⛔⛔ THE NAME PATH IS FOR OBJECTS WITH NO rtt — NEVER AS AN
+            // OVERRIDE OF ONE.
+            //
+            // `test_type` answers from `properties["__type"]` / `["__types"]`,
+            // which are ORDINARY WRITABLE PROPERTIES. Consulting them for an
+            // object that already carries an rtt made identity FORGEABLE:
+            //
+            //     const u = new User();
+            //     u.__type = "Admin";
+            //     u instanceof Admin   →  true      ⛔
+            //
+            // A real instance re-labelled itself into another class by
+            // assignment, and every consumer that believes it is asking the rtt
+            // — typed `catch`, `instanceof`, `is`, `isinstance`, the seam-3
+            // receiver guard, the private-field brand check — was really asking
+            // "does this object carry the right string".
+            //
+            // The rtt is stamped at allocation and there is no instruction that
+            // can change it, so for a typed object `ref_test` is already the
+            // complete and unforgeable answer. The name path exists only for
+            // values that never got an rtt — platform exceptions and dynamic
+            // object literals, both of which are still allocated untyped — and
+            // it is scoped to exactly those here rather than trusted globally.
+            //
+            // ⚠ This does NOT make identity unforgeable for an untyped object;
+            // nothing can until every allocation carries an rtt. It removes the
+            // case where a GENUINE instance can be relabelled, which is the one
+            // that reads as privilege escalation.
+            crate::opcode::heaptype::HeapType::Concrete(index)
+                if self.value_has_rtt(val) =>
             {
                 false
             }

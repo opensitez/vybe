@@ -3,6 +3,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -1175,7 +1176,7 @@ impl Compiler {
         );
 
         for member_name in fields.iter().chain(instance_member_names.iter()) {
-            let member_key = self.str_const(member_name);
+            let member_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(member_name));
             // Resolved in the declaration pass, keyed by the same storage name
             // this loop iterates. Nothing is derived from a spelling here — a
             // method member simply has no entry.
@@ -1184,7 +1185,7 @@ impl Compiler {
                 .and_then(|field_type| field_type.value_type.clone());
 
             self.emit_u16(Op::LOCAL_GET, source_slot);
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, member_key);
+            self.class_get_resolved(class_slots::ObjSource::Stack, &member_key);
             if let Some(nested_type) = nested {
                 self.emit_user_value_type_clone_inner(&nested_type, in_progress);
             }
@@ -1196,7 +1197,11 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, field_slot);
             self.emit_u16(Op::LOCAL_GET, clone_slot);
             self.emit_u16(Op::LOCAL_GET, field_slot);
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, member_key);
+            self.class_set_resolved(
+                class_slots::ObjSource::Stack,
+                &member_key,
+                class_slots::ValueSource::Stack,
+            );
         }
 
         self.emit_u16(Op::LOCAL_GET, clone_slot);

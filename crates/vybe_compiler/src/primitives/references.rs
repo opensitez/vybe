@@ -1,3 +1,4 @@
+use crate::primitives::class_slots;
 use std::sync::Arc;
 
 use crate::primitives::pointers::{
@@ -8,17 +9,37 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 pub fn emit_cell_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
 
     chunks[current].emit_dup(line);
-    let kind_key = chunks[current].add_constant(Value::String(Arc::from(REF_KIND_KEY)));
+    let kind_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(REF_KIND_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_string_const(CELL_KIND, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &kind_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_dup(line);
-    let value_key = chunks[current].add_constant(Value::String(Arc::from(REF_VALUE_KEY)));
+    let value_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(REF_VALUE_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &value_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_cell_new_from_local(chunks: &mut [Chunk], current: usize, local_slot: u16, line: u32) {
@@ -45,15 +66,35 @@ pub fn emit_shared_word_new(chunks: &mut [Chunk], current: usize, value_slot: u1
     // contract `emit_wasi_spawn` already relies on for the record words.
     crate::primitives::threading::emit_atomic_store(&mut chunks[current], line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
-    let kind_key = chunks[current].add_constant(Value::String(Arc::from(REF_KIND_KEY)));
+    let kind_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(REF_KIND_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_string_const(SHARED_KIND, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &kind_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_dup(line);
-    let addr_key = chunks[current].add_constant(Value::String(Arc::from(SHARED_ADDR_KEY)));
+    let addr_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(SHARED_ADDR_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, addr_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, addr_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &addr_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// A reference to a slot INSIDE a container: `{__ref_kind:"carray", __base, __idx}`.
@@ -75,31 +116,80 @@ pub fn emit_carray_new(
     key_slot: u16,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
 
     chunks[current].emit_dup(line);
-    let kind_key = chunks[current].add_constant(Value::String(Arc::from(REF_KIND_KEY)));
+    let kind_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(REF_KIND_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_string_const(CARRAY_KIND, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &kind_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_dup(line);
-    let base_key = chunks[current].add_constant(Value::String(Arc::from(CARRAY_BASE_KEY)));
+    let base_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(CARRAY_BASE_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, base_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, base_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &base_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_dup(line);
-    let idx_key = chunks[current].add_constant(Value::String(Arc::from(CARRAY_IDX_KEY)));
+    let idx_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(CARRAY_IDX_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, idx_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &idx_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_cell_load(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value_key = chunks[current].add_constant(Value::String(Arc::from(REF_VALUE_KEY)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
+    let value_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(REF_VALUE_KEY),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &value_key,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_cell_store(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
-    let value_key = chunks[current].add_constant(Value::String(Arc::from(REF_VALUE_KEY)));
+    let value_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(REF_VALUE_KEY),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &value_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }

@@ -8,6 +8,7 @@
 //!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -73,9 +74,19 @@ fn emit_object_field_to_slot(
     field: &str,
     line: u32,
 ) {
-    let field_key = chunk.add_constant(Value::String(Arc::from(field)));
+    let field_key = class_slots::resolve_interned(
+        chunk,
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
     load(chunk, src_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &field_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     save(chunk, dst_slot, line);
 }
 
@@ -853,12 +864,31 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     emit_dyn_add_known(chunk, line, false, false);
 }
 
+/// `+` where the executing language states how a Boolean spells itself.
+///
+/// Separate entry point rather than a new parameter on `emit_dyn_add`: that
+/// one has 140-odd callers, almost all of them internal emits adding numbers,
+/// and none of them wants to answer a question about Booleans.
+pub fn emit_dyn_add_with_bool_text(
+    chunk: &mut Chunk,
+    bool_text: Option<vybe_ast::BoolText>,
+    line: u32,
+) {
+    emit_dyn_add_inner(chunk, line, false, false, bool_text);
+}
+
 /// Push operand `slot` coerced to a string, for the concat arm of `+`.
 ///
 /// `known_num` says this emitter wrote the value itself as an f64 constant, so
 /// "is it already a string?" has a compile-time answer — no — and the whole
 /// test/cast branch collapses to the numeric side.
-fn emit_add_operand_as_string(chunk: &mut Chunk, slot: u16, known_num: bool, line: u32) {
+fn emit_add_operand_as_string(
+    chunk: &mut Chunk,
+    slot: u16,
+    known_num: bool,
+    bool_text: Option<vybe_ast::BoolText>,
+    line: u32,
+) {
     let str_from_f64 = chunk.add_import("wasm:js-string", "fromF64");
     if known_num {
         load(chunk, slot, line);
@@ -876,9 +906,35 @@ fn emit_add_operand_as_string(chunk: &mut Chunk, slot: u16, known_num: bool, lin
     load(chunk, slot, line);
     call1(chunk, str_cast, line);
     chunk.emit_else(line);
-    emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
-    call1(chunk, str_from_f64, line);
+    // ⛔ A BOOLEAN IS NOT A NUMBER HERE. Without this arm the ToNumber ladder
+    // below turns `true` into `1.0` and the concat reads `1` — which is what
+    // every C# `bool` in a string printed. `Directives::bool_text` says how the
+    // executing language spells it; `None` keeps the ECMA ladder exactly as it
+    // was, so no language that did not ask for this changes a byte.
+    if let Some((true_text, false_text)) = bool_text.map(vybe_ast::BoolText::texts) {
+        load(chunk, slot, line);
+        call1(chunk, test_bool, line);
+        chunk.emit_if_value(line);
+        load(chunk, slot, line);
+        call1(chunk, cast_bool, line);
+        chunk.emit_if_value(line);
+        emit_string_const(chunk, true_text, line);
+        chunk.emit_else(line);
+        emit_string_const(chunk, false_text, line);
+        chunk.emit_end(line);
+        chunk.emit_else(line);
+        emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
+        call1(chunk, str_from_f64, line);
+        chunk.emit_end(line);
+    } else {
+        emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
+        call1(chunk, str_from_f64, line);
+    }
     chunk.emit_end(line);
+}
+
+fn emit_string_const(chunk: &mut Chunk, text: &str, line: u32) {
+    chunk.emit_string_const(text, line);
 }
 
 /// Push operand `slot` as a raw f64, for the numeric arm of `+`.
@@ -925,6 +981,16 @@ fn emit_add_operand_as_f64(chunk: &mut Chunk, slot: u16, known_num: bool, line: 
 /// by no caller and covered by no test — whoever wires `compile_binop_operands`
 /// through here is their first user and should verify them.
 pub fn emit_dyn_add_known(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
+    emit_dyn_add_inner(chunk, line, a_known_num, b_known_num, None);
+}
+
+fn emit_dyn_add_inner(
+    chunk: &mut Chunk,
+    line: u32,
+    a_known_num: bool,
+    b_known_num: bool,
+    bool_text: Option<vybe_ast::BoolText>,
+) {
     let slots = alloc_locals(chunk, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
@@ -971,8 +1037,8 @@ pub fn emit_dyn_add_known(chunk: &mut Chunk, line: u32, a_known_num: bool, b_kno
         chunk.emit_op(Op::I32_OR, line); // i32: 1 if either is string
     }
     chunk.emit_if(line);
-    emit_add_operand_as_string(chunk, a_slot, a_known_num, line);
-    emit_add_operand_as_string(chunk, b_slot, b_known_num, line);
+    emit_add_operand_as_string(chunk, a_slot, a_known_num, bool_text, line);
+    emit_add_operand_as_string(chunk, b_slot, b_known_num, bool_text, line);
     call2(chunk, str_concat, line);
 
     chunk.emit_else(line);

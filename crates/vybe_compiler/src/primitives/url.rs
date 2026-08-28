@@ -24,6 +24,7 @@
 //!
 //! **No coercion here.** Every function takes STRINGS on the stack.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -402,8 +403,17 @@ fn lset_at(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 }
 
 fn struct_get(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal(key),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// RFC 3986 §B — the reference regex for splitting a URI, extended with the
@@ -455,7 +465,7 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
     call_import(chunks, current, "ecma:regexp", "exec", 2, line);
     lset_at(chunks, current, m, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     lset_at(chunks, current, out, line);
 
     for (group, prop, prefix, suffix) in SYNTACTIC_FIELDS {
@@ -490,12 +500,22 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
         chunks[current].emit_end(line);
 
         // out[prop] = value
-        let k = chunks[current].add_constant(Value::String(Arc::from(*prop)));
+        let k = class_slots::resolve_interned(
+            &mut chunks[current],
+            &class_slots::ClassSlot::internal(*prop),
+            &class_slots::PlainNames,
+        );
         let v = chunks[current].alloc_scratch(1);
         lset_at(chunks, current, v, line);
         lget_at(chunks, current, out, line);
         lget_at(chunks, current, v, line);
-        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 
     // `host` is `hostname[:port]` — WHATWG exposes it, and `Netloc` builds on it.
@@ -525,8 +545,17 @@ fn emit_host_composite(chunks: &mut [Chunk], current: usize, out: u16, line: u32
     chunks[current].emit_string_const("", line);
     chunks[current].emit_end(line);
     call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-    let k = chunks[current].add_constant(Value::String(Arc::from("host")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("host"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Read one canonical component from a parsed URL **on the stack**.

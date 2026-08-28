@@ -63,6 +63,15 @@ impl Op {
     pub const REF_CAST_DESC_EQ_NULL: Op = Op::new(0xFB, 0x24); // ref.cast_desc_eq (ref null ht)
     pub const BR_ON_CAST_DESC_EQ: Op = Op::new(0xFB, 0x25); // br_on_cast_desc_eq $l ht ht
     pub const BR_ON_CAST_DESC_EQ_FAIL: Op = Op::new(0xFB, 0x26); // br_on_cast_desc_eq_fail $l ht ht
+    // Exact tests / casts — `(ref null? (exact $t))`. VM-INTERNAL: the spec
+    // carries exactness inside the heaptype (`0x62 x:u32`), not in the opcode,
+    // and our heaptype immediate is a single signed LEB with no room for a
+    // third case. See the table entries below for the full reasoning; the
+    // writer maps these back onto the spec's own 0x14..0x17.
+    pub const REF_TEST_EXACT: Op = Op::new(0xFB, 0x27);
+    pub const REF_TEST_EXACT_NULL: Op = Op::new(0xFB, 0x28);
+    pub const REF_CAST_EXACT: Op = Op::new(0xFB, 0x29);
+    pub const REF_CAST_EXACT_NULL: Op = Op::new(0xFB, 0x2A);
 
     // Stringref proposal (0x80..=0xB7). Byte values per proposals/stringref
     // Overview.md. Strings map onto `Value::String`. Ops carrying a `$mem`
@@ -172,7 +181,7 @@ opcode_category! {
     [0x1D] i31_get_s          => None,   "i31.get_s";
     [0x1E] i31_get_u          => None,   "i31.get_u";
     // Custom Descriptors (post-MVP extension)
-    [0x20] struct_new_desc         => U16, "struct.new_desc";
+    [0x20] struct_new_desc         => U16_U16, "struct.new_desc";
     [0x21] struct_new_default_desc => U16, "struct.new_default_desc";
     [0x22] ref_get_desc            => U16, "ref.get_desc";
     // The descriptor-comparing casts carry the same operand shapes as their
@@ -182,6 +191,30 @@ opcode_category! {
     [0x24] ref_cast_desc_eq_null   => U16,    "ref.cast_desc_eq_null";
     [0x25] br_on_cast_desc_eq      => U16_U8, "br_on_cast_desc_eq";
     [0x26] br_on_cast_desc_eq_fail => U16_U8, "br_on_cast_desc_eq_fail";
+    // Exact reference tests / casts — `(ref null? (exact $t))`.
+    //
+    // ⚠ THESE ARE VM-INTERNAL OPCODES WITH NO SPEC COUNTERPART, and that is
+    // deliberate. In the binary format exactness lives INSIDE the heaptype
+    // (`heaptype ::= … | 0x62 x:u32 => exact x`), so the spec spells an exact
+    // test as an ordinary `ref.test` whose immediate happens to be exact. Our
+    // heaptype immediate is a single signed LEB — `SlI32`, negative for
+    // abstract and non-negative for a type index — which has no room for a
+    // third case, and widening it would change the operand of four opcodes
+    // every language already emits.
+    //
+    // Encoding the distinction in the OPCODE instead is not a new pattern
+    // here: nullability is already an opcode choice (`ref.test` vs
+    // `ref.test_null`) rather than an operand bit. The writer maps these back
+    // to the spec's own `0xFB 0x14…0x17` with a `0x62`-prefixed heaptype, so
+    // nothing VM-internal reaches the binary.
+    //
+    // The immediate is deliberately IDENTICAL to the inexact forms, so the
+    // three-way operand contract (table / dispatch read / codec write) reads
+    // the same bytes either way and only the comparison differs.
+    [0x27] ref_test_exact          => SlI32,  "ref.test_exact";
+    [0x28] ref_test_exact_null     => SlI32,  "ref.test_exact_null";
+    [0x29] ref_cast_exact          => SlI32,  "ref.cast_exact";
+    [0x2A] ref_cast_exact_null     => SlI32,  "ref.cast_exact_null";
 
     // ── Stringref proposal (0x80..=0xB7) ──────────────────────────────────
     // operand_format is None for ALL of these: the ops that take a `$mem`

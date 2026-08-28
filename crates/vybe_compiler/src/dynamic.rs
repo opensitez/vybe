@@ -1155,8 +1155,11 @@ impl JsDynamicRuntime {
         let mut var_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         if !is_strict {
             for s in &module.body {
+                // §19.2.1.3: a non-strict direct eval hoists its VAR bindings
+                // into the caller's VariableEnvironment. `let`/`const` stay in
+                // eval's own lexical environment.
                 if let crate::ast::StmtKind::VarDecl {
-                    kind: crate::ast::VarDeclKind::Var,
+                    kind: crate::ast::VarDeclKind::FunctionScoped,
                     declarations,
                 } = &s.kind
                 {
@@ -1272,7 +1275,7 @@ impl JsDynamicRuntime {
                 .iter()
                 .filter_map(|s| match &s.kind {
                     crate::ast::StmtKind::VarDecl { kind, declarations }
-                        if !matches!(kind, crate::ast::VarDeclKind::Var) =>
+                        if !matches!(kind, crate::ast::VarDeclKind::FunctionScoped) =>
                     {
                         let mut names = std::collections::HashSet::new();
                         for d in declarations {

@@ -30,6 +30,7 @@ fn declare_type(chunk: &mut Chunk, name: &str) {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     });
 }
 

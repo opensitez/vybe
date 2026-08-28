@@ -4,6 +4,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — same pattern as
 //! `builtins.rs`/`operators.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -254,28 +255,7 @@ impl Compiler {
                     {
                         return self.compile_vb_err_raise_stmt(args);
                     }
-                    ExprKind::Ident(name)
-                        if self.is_php_profile()
-                            && (name.eq_ignore_ascii_case("exit")
-                                || name.eq_ignore_ascii_case("die")) =>
-                    {
-                        // Bare `exit;` / `die;` — status 0, but it must end the
-                        // RUN. A plain return only left the enclosing function,
-                        // so a `die;` guard inside a function silently fell
-                        // through to the caller's remaining statements.
-                        // Open buffers flush first: ending the run here skips
-                        // the module epilogue that would otherwise do it.
-                        let line = self.line;
-                        let current = self.current;
-                        common::io::emit_ob_flush_all(&mut self.chunks, current, line);
-                        let exit_idx = self.import("wasi:cli/exit", "exit-with-code");
-                        self.emit_const(Value::F64(0.0));
-                        self.emit_host_call(exit_idx, 1);
-                        self.emit_null();
-                        self.emit_return_through_finally(1)?;
-                        return Ok(());
-                    }
-                    // Bare identifier that's a known function → call with 0 args
+// Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
                         let saved_js_this = self.save_js_this("__js_stmt_prev_this");
                         if self.ambient_this() {
@@ -924,7 +904,7 @@ impl Compiler {
                     // (§7.4.2 GetIterator ASYNC) — an async-generator method
                     // returns a generator continuation, which the runtime-
                     // generator gate below then drives lazily.
-                    if *is_async && *of && key.is_none() && self.profile.async_wraps_body_in_try {
+                    if *is_async && *of && key.is_none() && self.async_wraps_body_in_try() {
                         common::generators::emit_resolve_async_iterator(
                             &mut self.chunks,
                             self.current,
@@ -986,8 +966,7 @@ impl Compiler {
                         self.label_depth += 1;
 
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
-                        let iterator_key = self.str_const("iterator");
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, iterator_key);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("iterator"));
                         // IsCallable(iter.iterator) via the shared reflection
                         // substrate — replaces the retired VM-internal
                         // REF_IS_FUNC opcode.
@@ -2271,8 +2250,11 @@ impl Compiler {
                             if self.defined_globals.contains(&class_canon) {
                                 self.emit_global_read(&class_canon);
                                 self.emit_u16(Op::LOCAL_GET, val_slot);
-                                let field_idx = self.str_const(cname);
-                                self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                                self.class_set(
+                                    class_slots::ObjSource::Stack,
+                                    &class_slots::ClassSlot::internal(cname),
+                                    class_slots::ValueSource::Stack,
+                                );
                             }
                         }
                         ClassMember::NestedType(stmt) => {
@@ -2333,12 +2315,15 @@ impl Compiler {
                 }
 
                 // Second pass: build namespace struct { member1: global, member2: global, ... }
-                self.emit_struct_new(0, 0);
+                self.class_alloc();
                 for (mn, global_name) in &member_names {
                     inst!(self, core_wasm::dup);
                     self.emit_global_read(global_name);
-                    let key = self.str_const(mn);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(mn),
+                        class_slots::ValueSource::Stack,
+                    );
                     // Register bare member → module name for qualified resolution
                     self.enum_members.insert(mn.clone(), module_name.clone());
                     // A member is CONTRIBUTED to the enclosing scope exactly
@@ -2480,13 +2465,16 @@ impl Compiler {
                 if self.defined_globals.contains(&ns_name) {
                     self.emit_global_read(&ns_name);
                 } else {
-                    self.emit_struct_new(0, 0);
+                    self.class_alloc();
                 }
                 for (member_name, qualified_name, _) in &member_names {
                     inst!(self, core_wasm::dup);
                     self.emit_global_read(qualified_name);
-                    let key = self.str_const(member_name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(member_name),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
                 self.emit_global_write(&ns_name);
                 self.defined_globals.insert(ns_name.clone());
@@ -2505,12 +2493,15 @@ impl Compiler {
                         if self.defined_globals.contains(&parent_name) {
                             self.emit_global_read(&parent_name);
                         } else {
-                            self.emit_struct_new(0, 0);
+                            self.class_alloc();
                         }
                         inst!(self, core_wasm::dup);
                         self.emit_global_read(&child_name);
-                        let key_idx = self.str_const(&child_key);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&child_key),
+                            class_slots::ValueSource::Stack,
+                        );
                         self.emit_global_write(&parent_name);
                         self.defined_globals.insert(parent_name);
                     }
@@ -3570,8 +3561,11 @@ impl Compiler {
                             self.compile_expr(object)?;
                             self.emit_null();
                             let field_name = self.canon(field);
-                            let idx = self.str_const(&field_name);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal(&field_name),
+                                class_slots::ValueSource::Stack,
+                            );
                         }
                         ExprKind::Index { object, index, .. } => {
                             let line = self.line;
@@ -3712,7 +3706,7 @@ impl Compiler {
                 // Raise a CANONICAL AssertionError (same construction as
                 // `raise AssertionError(msg)`), not a bare string — typed
                 // `except AssertionError:` matches through the shared shape.
-                self.emit_struct_new(0, 0);
+                self.class_alloc();
                 inst!(self, core_wasm::dup);
                 if let Some(m) = msg {
                     self.compile_expr(m)?;
@@ -4737,7 +4731,7 @@ impl Compiler {
                 // scoped (a local), only script-level `var` is global.
                 let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
                 let is_hoisted =
-                    *kind == VarDeclKind::Var && self.profile.hoist_var && self.scopes.len() == 1;
+                    *kind == VarDeclKind::FunctionScoped && self.scopes.len() == 1;
                 if is_toplevel
                     && self.profile.ecma_lexical_declarations
                     && matches!(kind, VarDeclKind::Let | VarDeclKind::Const)
@@ -4785,9 +4779,8 @@ impl Compiler {
                             ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
                         );
                         if recursive_lambda_init {
-                            let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                                self.scope_mut()
-                                    .define_at_function_scope(name, inferred_type_hint.clone())
+                            let slot = if *kind == VarDeclKind::FunctionScoped {
+                                self.define_var_scoped(name, inferred_type_hint.clone())
                             } else {
                                 self.define_source_local_typed(name, inferred_type_hint.clone())
                             };
@@ -4869,14 +4862,21 @@ impl Compiler {
                         self.mark_promoted_global_cell(name);
                     }
                     self.emit_global_write(&cn);
+                    // §9.1.1.4: a SCRIPT-level `var` binding becomes a property
+                    // of the global object; `let`/`const` do not. That is the
+                    // function-scoped kind, which is what js now states.
                     if self.profile.ecma_lexical_declarations
-                        && *kind == VarDeclKind::Var
+                        && *kind == VarDeclKind::FunctionScoped
                         && is_toplevel
                     {
-                        let field_key = self.str_const(&cn);
+                        let field_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&cn));
                         self.emit_global_read("globalThis");
                         self.emit_global_read(&cn);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, field_key);
+                        self.class_set_resolved(
+                            class_slots::ObjSource::Stack,
+                            &field_key,
+                            class_slots::ValueSource::Stack,
+                        );
                     }
                     if let Some(declared) = inferred_type_hint.as_ref() {
                         // `set_spelling` normalizes and KEEPS the binding —
@@ -4907,9 +4907,8 @@ impl Compiler {
                     // depth based on the kind.
                     let slot = if let Some(slot) = predeclared_local_slot {
                         slot
-                    } else if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                        self.scope_mut()
-                            .define_at_function_scope(name, inferred_type_hint.clone())
+                    } else if *kind == VarDeclKind::FunctionScoped {
+                        self.define_var_scoped(name, inferred_type_hint.clone())
                     } else {
                         self.define_source_local_typed(name, inferred_type_hint.clone())
                     };
@@ -5037,7 +5036,7 @@ impl Compiler {
                     // CALL_IMPORT triggers the JSPI auto-check: if the own value happens
                     // to be a pending Promise (e.g. Promise.withResolvers destructuring),
                     // the fiber would be suspended before the await expression even runs.
-                    if self.profile.async_wraps_body_in_try {
+                    if self.async_wraps_body_in_try() {
                         let value_slot = self.define_local("__destruct_prop_value");
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -5307,8 +5306,7 @@ impl Compiler {
                         self.chunk().emit_if(line);
 
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
-                        let setter_key = self.str_const(&setter_name);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&setter_name));
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
                         self.emit_direct_callable_invoke(2);
@@ -5318,14 +5316,21 @@ impl Compiler {
                         self.emit_js_private_brand_check(class_tmp, &field_name)?;
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
-                        let idx = self.str_const(&field_name);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                        let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                        self.class_set_resolved(
+                            class_slots::ObjSource::Stack,
+                            &idx,
+                            class_slots::ValueSource::Stack,
+                        );
                         self.chunk().emit_end(line);
                     } else {
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
-                        let idx = self.str_const(&field_name);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&field_name),
+                            class_slots::ValueSource::Stack,
+                        );
                     }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, class_tmp);
@@ -5392,8 +5397,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, receiver_tmp);
 
                     self.emit_js_super_home_base();
-                    let setter_key = self.str_const(&format!("__set_{}", field));
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&format!("__set_{}", field)));
                     let setter_tmp = self.define_local("__js_super_setter");
                     self.emit_u16(Op::LOCAL_SET, setter_tmp);
 
@@ -5403,8 +5407,11 @@ impl Compiler {
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, receiver_tmp);
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
-                    let field_idx = self.str_const(field);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(field),
+                        class_slots::ValueSource::Stack,
+                    );
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit_u16(Op::LOCAL_GET, receiver_tmp);
@@ -5548,10 +5555,11 @@ impl Compiler {
                         let field_name = self
                             .field_storage_name_for_receiver(object, field)
                             .unwrap_or_else(|| self.js_member_storage_name(field));
-                        let idx = self.str_const(&field_name);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_u16(Op::LOCAL_GET, value_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                        self.class_set(
+                            class_slots::ObjSource::Local(obj_tmp),
+                            &class_slots::ClassSlot::internal(&field_name),
+                            class_slots::ValueSource::Local(value_tmp),
+                        );
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_var_set(obj_name);
@@ -5595,7 +5603,7 @@ impl Compiler {
                         let coll_tmp = self.define_local("__fortran_index_member_coll");
                         let key_tmp = self.define_local("__fortran_index_member_key");
                         let elem_tmp = self.define_local("__fortran_index_member_elem");
-                        let field_idx = self.str_const(&field_name);
+                        let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
 
                         self.compile_expr(collection_owner)?;
                         self.emit_u16(Op::LOCAL_SET, coll_tmp);
@@ -5610,7 +5618,11 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, elem_tmp);
                         self.emit_u16(Op::LOCAL_GET, tmp);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                        self.class_set_resolved(
+                            class_slots::ObjSource::Stack,
+                            &field_idx,
+                            class_slots::ValueSource::Stack,
+                        );
 
                         self.emit_u16(Op::LOCAL_GET, coll_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -5642,8 +5654,7 @@ impl Compiler {
                     self.chunk().emit_if(line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let setter_key = self.str_const(&setter_name);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&setter_name));
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit_direct_callable_invoke(2);
@@ -5672,8 +5683,11 @@ impl Compiler {
                     self.emit_js_private_brand_check(obj_tmp, &field_name)?;
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    let idx = self.str_const(&field_name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&field_name),
+                        class_slots::ValueSource::Stack,
+                    );
 
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
@@ -5740,17 +5754,18 @@ impl Compiler {
                     self.restore_js_this(saved_this);
                 } else {
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    let idx = self.str_const(&field_name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&field_name),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
                 // Writing a member of the global namespace object also sets
                 // the module global, so a bare `X` resolves — ECMA-262 §19.3
                 // for `globalThis`, and the same rule for Lua `_G`, PHP
                 // `$GLOBALS` and Python `globals()`. The spelling comes from
                 // the profile (`primitives/globals.rs`).
-                if matches!(&object.kind, ExprKind::Ident(n)
-                    if crate::primitives::globals::names_global_namespace(&self.profile, n))
-                {
+                if matches!(&object.kind, ExprKind::GlobalNamespace) {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit_global_write(&field_name);
                 }
@@ -6084,8 +6099,8 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, recv_tmp);
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
-                            let field_idx = self.str_const(&field_name);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
+                            let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                            self.class_get_resolved(class_slots::ObjSource::Stack, &field_idx);
                             self.emit_u16(Op::LOCAL_SET, coll_tmp);
 
                             if is_append {
@@ -6118,12 +6133,20 @@ impl Compiler {
 
                                 self.emit_u16(Op::LOCAL_GET, recv_tmp);
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
-                                self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                                self.class_set_resolved(
+                                    class_slots::ObjSource::Stack,
+                                    &field_idx,
+                                    class_slots::ValueSource::Stack,
+                                );
                             }
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.emit_u16(Op::LOCAL_GET, coll_tmp);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                            self.class_set_resolved(
+                                class_slots::ObjSource::Stack,
+                                &field_idx,
+                                class_slots::ValueSource::Stack,
+                            );
                             return Ok(());
                         }
                     }
@@ -6140,13 +6163,13 @@ impl Compiler {
                             let coll_tmp = self.define_local("__fortran_index_member_coll");
                             let key_tmp = self.define_local("__fortran_index_member_key");
                             let field_name = self.canon(field);
-                            let field_idx = self.str_const(&field_name);
+                            let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
 
                             self.compile_expr(recv)?;
                             self.emit_u16(Op::LOCAL_SET, recv_tmp);
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
+                            self.class_get_resolved(class_slots::ObjSource::Stack, &field_idx);
                             self.emit_u16(Op::LOCAL_SET, coll_tmp);
 
                             self.compile_array_index_operand_for_owner(object, index)?;
@@ -6160,7 +6183,11 @@ impl Compiler {
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.emit_u16(Op::LOCAL_GET, coll_tmp);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                            self.class_set_resolved(
+                                class_slots::ObjSource::Stack,
+                                &field_idx,
+                                class_slots::ValueSource::Stack,
+                            );
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.compile_assign_target(recv)?;
@@ -6275,8 +6302,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let setter_key = self.str_const("__set___index__");
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__set___index__"));
                     let setter_tmp = self.define_local("__index_setter");
                     self.emit_u16(Op::LOCAL_SET, setter_tmp);
 
@@ -6342,9 +6368,7 @@ impl Compiler {
                         // `ref.test` already yields an i32; `Op::IF` takes it.
                         self.chunk().emit_if(line);
 
-                        let kind_key = self.str_const("__ref_kind");
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+                        self.class_get(class_slots::ObjSource::Local(obj_tmp), &class_slots::ClassSlot::internal("__ref_kind"));
                         self.emit_const(Value::String(Arc::from("cell")));
                         {
                             let line = self.line;
@@ -6437,8 +6461,8 @@ impl Compiler {
                         self.chunk().emit_if(line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        let keys_key = self.str_const("__keys");
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                        let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                         let keys_tmp = self.define_local("__py_idx_keys");
                         self.emit_u16(Op::LOCAL_SET, keys_tmp);
                         self.emit_u16(Op::LOCAL_GET, keys_tmp);
@@ -6456,7 +6480,7 @@ impl Compiler {
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                        self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
                         common::collections::emit_push(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
@@ -6490,8 +6514,8 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                let keys_key = self.str_const("__keys");
-                                self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                                let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
+                                self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                                 let keys_tmp = self.define_local("__go_idx_keys");
                                 self.emit_u16(Op::LOCAL_SET, keys_tmp);
                                 self.emit_u16(Op::LOCAL_GET, keys_tmp);
@@ -6513,7 +6537,7 @@ impl Compiler {
                                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                                 self.chunk().emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
+                                self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
                                 common::collections::emit_push(
                                     &mut self.chunks,
@@ -6683,8 +6707,7 @@ impl Compiler {
                     } else if let crate::ast::ObjectProperty::KeyValue { key, value } = prop {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         if let ExprKind::Lit(crate::ast::Literal::Str(ref s)) = key.kind {
-                            let k = self.str_const(s);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, k);
+                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(s));
                         } else {
                             self.compile_expr(key)?;
                             let l = self.line;

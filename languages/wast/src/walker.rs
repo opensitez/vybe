@@ -82,6 +82,20 @@ struct WastWalker {
     memory_name_index: HashMap<String, usize>,
     table_index_base: usize,
     memory_index_base: usize,
+    /// Data segments share ONE list across the whole script (the compiler
+    /// pushes every `DataSegment`, active and passive alike, onto
+    /// `chunks[0].data_segments`), but a written dataidx is MODULE-relative —
+    /// exactly the split `memory_index_base` exists for. Without the shift, the
+    /// second module's `memory.init 0` copied the FIRST module's segment, which
+    /// is `bulk-memory/bulk.wast` and `memory64/bulk64.wast`.
+    data_index_base: usize,
+    data_name_index: HashMap<String, usize>,
+    /// Element segments have the same script-wide-store / module-relative-index
+    /// split as data segments: `__wast_register_passive_elem` keys one map for
+    /// the whole program, so the second module's `table.init 0` looked up a
+    /// segment the first module owned — reported as "missing element segment".
+    elem_index_base: usize,
+    elem_name_index: HashMap<String, usize>,
     module_seq: usize,
     current_module_seq: usize,
     func_index_name: Vec<String>,
@@ -1275,6 +1289,12 @@ fn folded_needs_stmt_lowering(pair: &Pair<Rule>) -> bool {
             // over. `gc/br_on_cast.wast` is written entirely in folded form.
             | "br_on_cast"
             | "br_on_cast_fail"
+            // Same story for the Custom Descriptors branching casts: they
+            // BRANCH, so they must be claimed statement-wise in both the flat
+            // and the folded spelling. The proposal's own suite writes them
+            // folded throughout.
+            | "br_on_cast_desc_eq"
+            | "br_on_cast_desc_eq_fail"
             // `throw`/`throw_ref` DIVERGE and carry a tag immediate. The
             // expression walk has neither: it resolved the head off the VM
             // opcode table and emitted `Op::THROW` with a ZERO tag operand, so
@@ -1459,7 +1479,223 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
     stack.push(Expression::ident(&tmp));
 }
 
-fn emit_folded_stmtwise(__w: &mut WastWalker, 
+/// Is this `br_on_cast*` target reftype immediate NULLABLE?
+///
+/// `walk_instr_arg_pair` hands `(ref null $a)` over as a call to `ref` whose
+/// first argument is the marker ident `null`, `(ref $a)` as the same call
+/// without it, and a bare `anyref`/`structref` spelling as a string. The bare
+/// spellings are the nullable shorthand, so only the explicit `(ref ht)` form
+/// is non-nullable.
+fn reftype_is_nullable(arg: Option<&Expression>) -> bool {
+    match arg.map(|a| &a.kind) {
+        Some(ExprKind::Call { callee, args, .. })
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") =>
+        {
+            args.iter()
+                .any(|a| matches!(&a.value.kind, ExprKind::Ident(n) if n == "null"))
+        }
+        // `anyref`, `structref`, … — the abstract shorthand, always nullable.
+        _ => true,
+    }
+}
+
+/// The heap type NAME out of a `br_on_cast*` reftype immediate: `$a` out of
+/// `(ref null $a)`, and the bare spelling out of `anyref`.
+fn reftype_heap_name(arg: Option<&Expression>) -> String {
+    match arg.map(|a| &a.kind) {
+        Some(ExprKind::Call { callee, args, .. })
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") =>
+        {
+            args.iter()
+                .rev()
+                .find_map(|a| match &a.value.kind {
+                    ExprKind::Ident(n) if n != "null" => Some(n.clone()),
+                    ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        }
+        Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// `br_on_cast_desc_eq $l rt1 rt2` / `br_on_cast_desc_eq_fail` — the Custom
+/// Descriptors branching casts.
+///
+/// Stack operands are the reference and, ON TOP OF IT, the descriptor to
+/// compare against: the proposal puts the descriptor last, the same as
+/// `struct.new_desc`. `args` are the immediates in source order — label,
+/// source reftype, target reftype.
+///
+/// The semantics are pinned by the proposal's own suite,
+/// `test/core/custom-descriptors/br_on_cast_desc_eq.wast`:
+///
+///   * A NULL DESCRIPTOR TRAPS, and it traps FIRST — `self-nullable-null-null`
+///     passes a null reference AND a null descriptor and is asserted to trap,
+///     not to branch. So the descriptor is checked before the reference is
+///     looked at at all.
+///   * A null reference matches iff the TARGET reftype is nullable:
+///     `…-nullable-null-desc` → 1 for `(ref null $a)`, `…-nonnullable-null-desc`
+///     → 0 for `(ref $a)`. This is why the nullability of the immediate has to
+///     survive lowering rather than being folded away to a heap type.
+///   * Otherwise the test is descriptor IDENTITY, not structural equality:
+///     `…-val-other` holds a second descriptor of the same type with equal
+///     contents and is asserted 0. `ref_eq` is the right comparison; a value
+///     compare would answer 1.
+///
+/// `ref.get_desc` traps on a null reference (its result type is non-nullable),
+/// so the null-reference answer is taken from the immediate and never reaches
+/// it — reordering these two branches would turn a legal `…-null-desc` case
+/// into a trap.
+fn emit_br_on_cast_desc_eq_stmt(
+    __w: &mut WastWalker,
+    args: &[Expression],
+    is_fail: bool,
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    let target = br_target_of(args.first());
+    let to_rt = args.get(2);
+    let target_nullable = reftype_is_nullable(to_rt);
+    let to_name = reftype_heap_name(to_rt);
+
+    // The descriptor is the TOPMOST operand, so it pops first.
+    let desc_val = stack.pop().unwrap_or_else(Expression::null);
+    let ref_val = stack.pop().unwrap_or_else(Expression::null);
+    let dtmp = fresh_result_temp(__w);
+    let rtmp = fresh_result_temp(__w);
+    for (name, init) in [(&dtmp, desc_val), (&rtmp, ref_val)] {
+        statements.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: None,
+                init: Some(init),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+    }
+
+    // 1. Null descriptor → trap, whatever the reference is.
+    statements.push(Statement::with_span(
+        StmtKind::If {
+            cond: make_call("ref_is_null", vec![Expression::ident(&dtmp)], span),
+            then_body: vec![Statement::with_span(StmtKind::Expr(trap_expr()), span)],
+            else_body: None,
+            elifs: Vec::new(),
+        },
+        span,
+    ));
+
+    // 2. `matched` starts at the answer for a NULL reference, which the target
+    //    reftype's nullability decides on its own.
+    let mtmp = fresh_result_temp(__w);
+    statements.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(mtmp.clone()),
+            type_hint: None,
+            init: Some(Expression::int(i64::from(target_nullable))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+
+    // 3. Non-null reference → compare descriptor IDENTITY. Guarded, so
+    //    `ref.get_desc` never sees the null that would trap it.
+    let is_non_null = Expression::new(ExprKind::Binary {
+        op: BinOp::StrictEq,
+        left: Box::new(make_call(
+            "ref_is_null",
+            vec![Expression::ident(&rtmp)],
+            span,
+        )),
+        right: Box::new(Expression::int(0)),
+    });
+    let got_desc = make_call(
+        "__wast_ref_get_desc",
+        vec![Expression::ident(&rtmp), Expression::string(&to_name)],
+        span,
+    );
+    statements.push(Statement::with_span(
+        StmtKind::If {
+            cond: is_non_null,
+            then_body: vec![Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Assign {
+                    target: Box::new(Expression::ident(&mtmp)),
+                    value: Box::new(make_call(
+                        "ref_eq",
+                        vec![got_desc, Expression::ident(&dtmp)],
+                        span,
+                    )),
+                },
+            )))],
+            else_body: None,
+            elifs: Vec::new(),
+        },
+        span,
+    ));
+
+    let cond = if is_fail {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::ident(&mtmp)),
+            right: Box::new(Expression::int(0)),
+        })
+    } else {
+        Expression::ident(&mtmp)
+    };
+    let mut then_body: Vec<Statement> = Vec::new();
+    match labels.resolve(&target) {
+        Some(entry) => {
+            // ⚠ THE BRANCH CARRIES EVERY RESULT, NOT JUST THE REFERENCE.
+            //
+            // The typing rule is `t* rt_1 (ref null (exact y)) -> t* (rt_1 \ rt_2)`
+            // — that leading `t*` is real. The proposal's "Sent values" section
+            // exercises it directly:
+            //
+            //   (block (result i32 i32 eqref)
+            //     (i32.const 1) (i32.const 2) (ref.null none)
+            //     (br_on_cast_desc_eq 0 eqref (ref null $a) (global.get $b1)))
+            //
+            // Assigning only the topmost result left the two i32s unwritten, so
+            // `cast-succeeds-null` read garbage and trapped in its own
+            // assert helper. The reference is the TOP result on both forms
+            // (`_fail` branches with `rt_1 \ rt_2`, still the reference); the
+            // values below it come off the stack, untouched and NOT consumed —
+            // the fall-through path still needs them.
+            let temps = &entry.result_temps;
+            if let Some((ref_temp, below)) = temps.split_last() {
+                carry_stack_into_temps(below, stack, false, &mut then_body);
+                then_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Assign {
+                        target: Box::new(Expression::ident(ref_temp)),
+                        value: Box::new(Expression::ident(&rtmp)),
+                    },
+                ))));
+            }
+            then_body.push(br_stmt_for(&entry, span));
+        }
+        None => then_body.push(make_br_stmt_opt(None, labels, span)),
+    }
+    statements.push(Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            else_body: None,
+            elifs: Vec::new(),
+        },
+        span,
+    ));
+    // Fall-through: the reference stays for the continuation.
+    stack.push(Expression::ident(&rtmp));
+}
+
+fn emit_folded_stmtwise(__w: &mut WastWalker,
     inner: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -1488,7 +1724,7 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
                     Some(op) => {
                         push_folded_operand(__w, op, labels, statements, stack)?;
                     }
-                    None => immediate_args.push(walk_instr_arg_pair(__w, child, labels)?),
+                    None => immediate_args.push(walk_instr_arg_for(__w, child, labels, &head)?),
                 }
             }
             Rule::instr => {
@@ -1596,9 +1832,20 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             emit_br_table_stmt(__w, &immediate_args, span, labels, statements, stack);
         }
         "br_on_cast" | "br_on_cast_fail" => {
-            emit_br_on_cast_stmt(__w, 
+            emit_br_on_cast_stmt(__w,
                 &immediate_args,
                 head == "br_on_cast_fail",
+                span,
+                labels,
+                statements,
+                stack,
+            );
+        }
+        "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail" => {
+            emit_br_on_cast_desc_eq_stmt(
+                __w,
+                &immediate_args,
+                head == "br_on_cast_desc_eq_fail",
                 span,
                 labels,
                 statements,
@@ -1657,15 +1904,7 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
         // operands (spec order: call args, then the table index on top) from
         // the stack the nested operands just evaluated onto.
         "call_indirect" | "return_call_indirect" => {
-            let sig = peek_typeuse_index(&inner);
-            let argc = sig
-                .as_ref()
-                .and_then(|n| __w.type_func_params.get(n).copied())
-                .unwrap_or(0) as usize;
-            let expected_results = sig
-                .as_ref()
-                .and_then(|n| __w.type_func_results.get(n).copied())
-                .unwrap_or(0) as usize;
+            let (argc, expected_results) = peek_typeuse_shape(__w, &inner);
             let tableidx = peek_call_indirect_table(&inner)
                 .map(|t| resolve_table_index(__w, &t) as usize)
                 .unwrap_or_else(|| __w.table_index_base);
@@ -1681,7 +1920,23 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
                 let call = make_call("return_call_indirect", call_args, span);
                 statements.push(Statement::with_span(StmtKind::Expr(call), span));
             } else {
-                stack.push(make_call("call_indirect", call_args, span));
+                // A multi-result callee lands the same way a direct `call` to
+                // one does — destructured into fresh temps that go on the stack
+                // individually (`land_instr_value`). Pushing the packed tuple as
+                // ONE stack entry left `(func (result i32 i32) (call_indirect
+                // (type $tr) …))` with a single tail statement, so
+                // `apply_multi_value_return` (which wants N contiguous
+                // value-statements) declined and the function returned nothing.
+                let call = make_call("call_indirect", call_args, span);
+                land_instr_value(
+                    __w,
+                    call,
+                    expected_results.max(1),
+                    true,
+                    span,
+                    statements,
+                    stack,
+                );
             }
         }
         _ => {
@@ -2066,10 +2321,30 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
             body.extend(parse(&text)?.body);
             Ok(())
         }
-        // `(module binary "…")` embeds a module as raw bytes. Decoding the binary
-        // section stream is a separate facility; accept and skip it here so the
-        // surrounding script still parses (it carries no source-level module).
-        Rule::module_binary_cmd => Ok(()),
+        // `(module binary "…")` embeds a module as raw BYTES.
+        //
+        // This used to be `Ok(())` — accepted and skipped. A top-level binary
+        // module in a spec fixture is an assertion in its own right: it is
+        // stated to be WELL-FORMED, and the file is testing that an
+        // implementation accepts it. Skipping it means the one thing the
+        // fixture asserts goes unchecked, and it also hides the opposite
+        // failure — an over-strict decoder rejecting a module the spec says is
+        // fine, which is exactly the risk a new validation pass introduces.
+        //
+        // So: decode it, and report a failure to decode. Not yet
+        // INSTANTIATED — its exports are not reachable by a later `invoke`,
+        // which needs the decoded chunks spliced into the script and is a
+        // separate piece of work. Decoding is the half that can be checked
+        // honestly today, and it is strictly more than nothing.
+        Rule::module_binary_cmd => {
+            let bytes = binary_module_bytes(&pair);
+            match vybe_platform_wasm::read_wasm(&bytes) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!(
+                    "(module binary …) failed to decode, but the fixture declares it well-formed: {e}"
+                )),
+            }
+        }
         Rule::assert_return => {
             body.push(walk_assert_return(__w, pair)?);
             Ok(())
@@ -4434,6 +4709,40 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                         field_ids = struct_field_names(&inner2);
                                         field_count = field_types.len();
                                     }
+                                    // ⚠ A FUNC TYPE CAN BE `sub`-WRAPPED TOO.
+                                    //
+                                    // This branch handled `array` and `struct`
+                                    // inside `(sub … composite)` but not `func`,
+                                    // so `(type $t (sub (func (result funcref))))`
+                                    // recorded NO signature — only the bare
+                                    // `(type $t (func …))` spelling did. The
+                                    // consequence was silent: `func_field_signature`
+                                    // falls back to `type_func_sigs` for a
+                                    // `(func $f (type $t) …)` declaration, found
+                                    // nothing, and registered an EMPTY signature,
+                                    // so `ref.test (ref null $t) (ref.func $f)`
+                                    // compared `[]→[]` against `[]→[funcref]` and
+                                    // answered 0 for a function of exactly that
+                                    // type.
+                                    if inner2.as_rule() == Rule::func_type {
+                                        func_sig = Some(func_type_signature(&inner2));
+                                        let mut ps = 0usize;
+                                        let mut rs = 0usize;
+                                        for p in inner2.into_inner() {
+                                            let n = p
+                                                .clone()
+                                                .into_inner()
+                                                .filter(|v| v.as_rule() == Rule::any_val_type)
+                                                .count();
+                                            match p.as_rule() {
+                                                Rule::param => ps += n,
+                                                Rule::result => rs += n,
+                                                _ => {}
+                                            }
+                                        }
+                                        func_params = Some(ps);
+                                        func_results = Some(rs);
+                                    }
                                 }
                             }
                             Rule::composite_type => {
@@ -4500,9 +4809,22 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     }
                     // A type declared without an id is referenced only by index;
                     // give it a stable synthetic name so index→name still works.
-                    let name = type_name
-                        .clone()
-                        .unwrap_or_else(|| format!("__wast_type_{}", type_order.len()));
+                    //
+                    // ⚠ QUALIFIED BY MODULE. Each wast module has its OWN type
+                    // index space, but the compiler keeps ONE script-wide type
+                    // table keyed by name — so `$t` declared in two modules was
+                    // one row, and the second declaration MUTATED the first.
+                    // Measured: `(type $t (sub (struct)))` in module 1 and
+                    // `(type $t (sub (func …)))` in module 3 left module 1's
+                    // struct row with `kind = Func`, and its casts then trapped.
+                    // A wast module cannot name another module's type, so
+                    // qualifying is exactly the semantics.
+                    let name = qualify_type_name(
+                        __w,
+                        &type_name
+                            .clone()
+                            .unwrap_or_else(|| format!("__wast_type_{}", type_order.len())),
+                    );
                     type_order.push(name.clone());
                     if is_struct {
                         struct_counts.insert(name.clone(), field_count);
@@ -4645,7 +4967,31 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         })
         .collect();
     __w.array_elem_type = array_elem_types;
+    // Per-MODULE counter; `elem_index_base` carries the script-wide offset it
+    // is added to, so the two together number segments the way the compiler
+    // stores them.
     __w.elem_seg_counter = 0;
+    // Pre-scan element segments, so `(elem $e …)` resolves and a numeric
+    // elemidx shifts by the base. Declarative and active segments occupy a slot
+    // too — the index space counts every `(elem …)` in declaration order.
+    {
+        let mut elem_names: HashMap<String, usize> = HashMap::new();
+        let mut elem_idx = 0usize;
+        let elem_base = __w.elem_index_base;
+        for child in pair.clone().into_inner() {
+            if child.as_rule() == Rule::module_field {
+                if let Some(inner) = child.into_inner().next() {
+                    if inner.as_rule() == Rule::elem_field {
+                        if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
+                            elem_names.insert(id.as_str()[1..].to_string(), elem_base + elem_idx);
+                        }
+                        elem_idx += 1;
+                    }
+                }
+            }
+        }
+        __w.elem_name_index = elem_names;
+    }
 
     // 3a. Pre-scan tables so named tables (`$t1`) resolve to their declaration
     //     index for `elem` population and `call_indirect $t` dispatch.
@@ -4691,16 +5037,53 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // walked (deferred to the end of this function); record the count here.
     let module_memory_count = memory_idx;
 
+    // 3a'''. Pre-scan data segments, for the same reason and in the same index
+    //        space discipline as memories: `memory.init`/`data.drop` name a
+    //        segment module-relatively, the compiler stores them all in one
+    //        script-wide list. ACTIVE segments count too — WASM gives active and
+    //        passive segments a single index space, and so does the compiler.
+    let mut data_names: HashMap<String, usize> = HashMap::new();
+    let mut data_idx = 0usize;
+    let data_base = __w.data_index_base;
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::data_field {
+                    if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
+                        data_names.insert(id.as_str()[1..].to_string(), data_base + data_idx);
+                    }
+                    data_idx += 1;
+                }
+            }
+        }
+    }
+    __w.data_name_index = data_names;
+    let module_data_count = data_idx;
+
     // 3a''. Pre-scan globals so a `global.get N` / `global.set N` by numeric
     //       index resolves to the right binding (each global's `$id`, or a
     //       synthetic `__wasm_global_<i>` when unnamed).
     let mut global_names: Vec<String> = Vec::new();
     let mut global_export_map: HashMap<String, String> = HashMap::new();
+    // ⚠ TWO COUNTERS, ON PURPOSE.
+    //
+    // `global_names.len()` is the INDEX SPACE — imports included, because the
+    // spec numbers them first and `global.get <n>` has to agree.
+    // `defined_ordinal` counts only DEFINED globals, and is what names an
+    // anonymous one, because `walk_global_field` numbers its own fallback the
+    // same way and never sees the imports.
+    //
+    // Collapsing them silently breaks the export map: once a standalone global
+    // import occupied a slot, an anonymous `(global (export "h") …)` was NAMED
+    // `__wasm_global_m_1` here but DECLARED `__wasm_global_m_0` there, so the
+    // export resolved to a binding that was never declared and read undefined.
+    let mut defined_ordinal: usize = 0;
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::global_field {
-                    let idx = global_names.len();
+                    let idx = defined_ordinal;
+                    defined_ordinal += 1;
                     let binding = global_binding_name(__w, &inner, idx);
                     // Inline exports: `(global $a (export "a") i32 …)`.
                     for e in inner
@@ -4739,6 +5122,53 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                             __w.global_import_alias
                                 .insert(binding.clone(), exporter_binding.clone());
                             // The index form must reach the same cell.
+                            global_names.push(exporter_binding);
+                        }
+                        None => global_names.push(binding),
+                    }
+                } else if inner.as_rule() == Rule::import_field {
+                    // ⚠ THE STANDALONE SPELLING COUNTS TOO.
+                    //
+                    // `(import "m" "e" (global $g …))` is the same entity as
+                    // `(global $g (import "m" "e") …)` above, but it parses as
+                    // an `import_field`, so this loop skipped it entirely: no
+                    // alias — every read got a fresh binding instead of the
+                    // exporter's cell — and no slot, so every LATER global's
+                    // numeric index was off by one.
+                    //
+                    // Identity is what makes it observable. The proposal's
+                    // `ref_get_desc.wast` imports a descriptor global and
+                    // compares it with `ref.eq` against the descriptor read
+                    // back off an object the exporting module allocated; with
+                    // a copy the two are different references and the
+                    // assertion reads 0 for 1. Nothing about that is specific
+                    // to descriptors — a plain `(ref null $s)` global behaves
+                    // the same, which is how this was isolated.
+                    let Some(desc) = inner
+                        .clone()
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::import_desc)
+                        .filter(|d| d.as_str().trim_start().starts_with("(global"))
+                    else {
+                        continue;
+                    };
+                    // An IMPORT is not a defined global, so it does not consume
+                    // a `defined_ordinal` — but it does take an index-space
+                    // slot, which is why it still pushes to `global_names`.
+                    // The fallback name is only reached by an anonymous import,
+                    // which cannot be referred to by name anyway.
+                    let binding = global_binding_name(__w, &desc, global_names.len());
+                    let imported = scan_import_names(&inner).and_then(|(m, e)| {
+                        __w.registered_module_class.get(&m).cloned().and_then(|cls| {
+                            __w.module_global_exports
+                                .get(&cls)
+                                .and_then(|ex| ex.get(&e).cloned())
+                        })
+                    });
+                    match imported {
+                        Some(exporter_binding) => {
+                            __w.global_import_alias
+                                .insert(binding.clone(), exporter_binding.clone());
                             global_names.push(exporter_binding);
                         }
                         None => global_names.push(binding),
@@ -5318,6 +5748,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     if !is_definition {
         __w.memory_index_base += module_memory_count;
         __w.table_index_base += module_table_count;
+        __w.data_index_base += module_data_count;
+        // The elem counter was reset for this module and advanced once per
+        // segment while walking it, so it now HOLDS this module's count.
+        __w.elem_index_base += __w.elem_seg_counter;
     }
     Ok(result)
 }
@@ -5732,7 +6166,7 @@ fn walk_plain_instr_as_expr(__w: &mut WastWalker,
     let name = peel_mem_selector(__w, &name, &mut raw_args, labels)?;
     let mut args: Vec<Expression> = Vec::new();
     for raw in raw_args {
-        args.push(walk_instr_arg_pair(__w, raw, labels)?);
+        args.push(walk_instr_arg_for(__w, raw, labels, &name)?);
     }
     map_instr_to_ast(__w, name, args, span)
 }
@@ -5968,7 +6402,12 @@ fn walk_folded_core(__w: &mut WastWalker,
     let (name, children) = if mem_op_immediate_count(&name) > 0 {
         let mut children = children;
         let mut selectors: Vec<Pair<Rule>> = Vec::new();
-        while selectors.len() < mem_op_immediate_count(&name)
+        // Collect the memidx immediates AND any bare index immediate that
+        // follows them (`memory.init`'s dataidx), because deciding whether a
+        // leading index IS a memidx needs to see how many there are in total.
+        // `peel_mem_selector` consumes only the ones it claims.
+        let want = mem_op_immediate_count(&name) + mem_op_trailing_index_count(&name);
+        while selectors.len() < want
             && children
                 .first()
                 .map(|c| c.as_rule() == Rule::instr_arg && is_bare_index_arg(c))
@@ -6028,7 +6467,7 @@ fn walk_folded_core(__w: &mut WastWalker,
             Rule::instr_name => {} // already consumed
             Rule::id => {}         // label — ignore in expression context
             Rule::block_type => {} // result type annotation
-            Rule::instr_arg => args.push(walk_instr_arg_pair(__w, child, labels)?),
+            Rule::instr_arg => args.push(walk_instr_arg_for(__w, child, labels, &name)?),
             Rule::instr => args.push(walk_instr_as_expr(__w, child, labels)?),
             Rule::then_block => {
                 has_then = true;
@@ -6150,9 +6589,17 @@ fn wat_float_format(x: Expression) -> Expression {
 // ── map_instr_to_ast — WAT instruction name → common AST expression ───────────
 
 /// Strip `offset=`/`align=` memarg string-args from a load/store's operand list
-/// and fold a non-zero `offset=N` into the address (the first stack operand):
-/// `i32.load offset=5` over base `a` becomes a load of `a + 5`.
-fn fold_memarg_offset(args: Vec<Expression>, span: Span) -> Vec<Expression> {
+/// and fold a non-zero `offset=N` into the address: `i32.load offset=5` over
+/// base `a` becomes a load of `a + 5`.
+///
+/// ⚠ The address is NOT always the first remaining operand. A `v128.loadN_lane`
+/// / `v128.storeN_lane` carries a LANE INDEX immediate ahead of it, and the
+/// walker keeps immediates first, so its operand list is `[lane, addr, vec]`.
+/// Folding into slot 0 added the offset to the LANE — `offset=1 1` wrote byte 0
+/// into lane 2 instead of byte 1 into lane 1 — which is why all eight lane files
+/// failed on their `_offset_` exports while their plain exports passed.
+/// `addr_index` names the slot; every other load/store still uses 0.
+fn fold_memarg_offset(args: Vec<Expression>, addr_index: usize, span: Span) -> Vec<Expression> {
     let mut offset: i64 = 0;
     let mut rest: Vec<Expression> = Vec::new();
     for a in args {
@@ -6168,8 +6615,8 @@ fn fold_memarg_offset(args: Vec<Expression>, span: Span) -> Vec<Expression> {
         rest.push(a);
     }
     if offset != 0 {
-        if let Some(addr) = rest.first().cloned() {
-            rest[0] = Expression::with_span(
+        if let Some(addr) = rest.get(addr_index).cloned() {
+            rest[addr_index] = Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(addr),
@@ -6215,13 +6662,85 @@ fn resolve_wat_memidx(__w: &mut WastWalker, e: &Expression) -> usize {
 fn mem_op_immediate_count(name: &str) -> usize {
     match name {
         "memory.copy" => 2,
-        "memory.fill" | "memory.size" | "memory.grow" | "i32.load" | "i64.load" | "f32.load"
+        "memory.init"
+        | "memory.fill" | "memory.size" | "memory.grow" | "i32.load" | "i64.load" | "f32.load"
         | "f64.load" | "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u"
         | "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s"
         | "i64.load32_u" | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8"
         | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 1,
         _ => 0,
     }
+}
+
+/// Which argument slot of an op holds a DATA SEGMENT index, if any. The
+/// `@@mem` suffix is already on the name by the time this is asked, so match on
+/// the head rather than the whole string.
+fn dataidx_arg_position(name: &str) -> Option<usize> {
+    let base = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+    match base {
+        "memory.init" | "data.drop" => Some(0),
+        // `array.new_data $T $d` / `array.init_data $T $d` — typeidx first.
+        "array.new_data" | "array.init_data" => Some(1),
+        _ => None,
+    }
+}
+
+/// Resolve a written elemidx — `$e` (named) or `2` (numeric) — into the
+/// SCRIPT's element-segment index space, exactly as `resolve_wat_dataidx` does
+/// for data segments. Before this, a named segment reached the emitter as an
+/// `Ident` and encoded as 0, and a numeric one was never shifted.
+fn resolve_wat_elemidx(__w: &mut WastWalker, e: &Expression) -> i64 {
+    let base = __w.elem_index_base as i64;
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(n)) => base + *n,
+        ExprKind::Ident(nm) => __w
+            .elem_name_index
+            .get(nm)
+            .copied()
+            .map(|i| i as i64)
+            .unwrap_or(base),
+        _ => base,
+    }
+}
+
+/// Which argument slot of an op holds an ELEMENT SEGMENT index, if any.
+/// `table.init` is not here: its elemidx position depends on whether a tableidx
+/// was written, so it is resolved in its own arm below.
+fn elemidx_arg_position(name: &str) -> Option<usize> {
+    match name {
+        "elem.drop" => Some(0),
+        // `array.new_elem $T $e` / `array.init_elem $T $e` — typeidx first.
+        "array.new_elem" | "array.init_elem" => Some(1),
+        _ => None,
+    }
+}
+
+/// Resolve a written dataidx — `$d` (named) or `2` (numeric) — into the
+/// SCRIPT's data-segment index space. A numeric index is module-relative and
+/// shifts by `DATA_INDEX_BASE`; a named segment was registered pre-shifted.
+fn resolve_wat_dataidx(__w: &mut WastWalker, e: &Expression) -> i64 {
+    let base = __w.data_index_base as i64;
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(n)) => base + *n,
+        ExprKind::Ident(nm) => __w
+            .data_name_index
+            .get(nm)
+            .copied()
+            .map(|i| i as i64)
+            .unwrap_or(base),
+        _ => base,
+    }
+}
+
+/// Bare index immediates that FOLLOW the memidx. Only `memory.init` has one:
+/// its dataidx. It is what makes the memidx AMBIGUOUS — `memory.init $d` names
+/// a data segment on the default memory, `memory.init $m $d` names both — and
+/// the only thing that tells them apart is HOW MANY bare indices are written.
+/// Peeling unconditionally read `$d` as a memory and left the op with no data
+/// segment; not peeling at all sent every `memory.init $mem2 $d` to memory 0,
+/// which is `multi-memory/memory-multi.wast`.
+fn mem_op_trailing_index_count(name: &str) -> usize {
+    if name == "memory.init" { 1 } else { 0 }
 }
 
 /// True when a raw `instr_arg` is a BARE index immediate (`integer`/`id`) — i.e.
@@ -6248,6 +6767,20 @@ fn peel_mem_selector(__w: &mut WastWalker,
     let n = mem_op_immediate_count(name);
     if n == 0 {
         return Ok(name.to_string());
+    }
+    // An op whose memidx is followed by another bare index (`memory.init`'s
+    // dataidx) only HAS a memidx when both are written. Decline without
+    // consuming anything, so the caller's put-back leaves the dataidx where the
+    // emitter expects it — as the first arg.
+    let trailing = mem_op_trailing_index_count(name);
+    if trailing > 0 {
+        let bare = raw_args
+            .iter()
+            .take_while(|r| is_bare_index_arg(r))
+            .count();
+        if bare < n + trailing {
+            return Ok(name.to_string());
+        }
     }
     let mut indices = Vec::new();
     while indices.len() < n && raw_args.first().map(is_bare_index_arg).unwrap_or(false) {
@@ -6368,10 +6901,50 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
     // stream can't unambiguously carry a memarg — its optional-memarg peek
     // can't tell offset bytes from the next opcode — and a static offset needs
     // no runtime immediate. `align=` memargs are pure hints and are dropped.
+    //
+    // The lane ops (`v128.load8_lane`, `v128.store64_lane`, …) put their LANE
+    // immediate ahead of the address, so the address they fold into is slot 1.
+    // None of the other v128 memory ops (`load8x8_s`, `load32_splat`,
+    // `load64_zero`, plain `v128.load`/`v128.store`) name a lane, so the
+    // `_lane` suffix is the whole discriminator — and it survives the `@@mem`
+    // mangling above, which only ever appends.
     let args = if name.contains(".load") || name.contains(".store") {
-        fold_memarg_offset(args, span)
+        let addr_index = usize::from(name.contains("_lane"));
+        fold_memarg_offset(args, addr_index, span)
     } else {
         args
+    };
+    // A DATAIDX immediate is module-relative over a script-wide segment list,
+    // the same split the memidx/tableidx bases exist for. `memory.init` and
+    // `data.drop` name it first; the GC array-from-data ops name a typeidx
+    // first and the dataidx second. A written `$d` resolves through the
+    // pre-scan, a written number shifts by the base.
+    let args = match dataidx_arg_position(&name) {
+        Some(at) => {
+            let mut args = args;
+            if let Some(written) = args.get(at).cloned() {
+                args[at] = Expression::with_span(
+                    ExprKind::Lit(Literal::Int(resolve_wat_dataidx(__w, &written))),
+                    span,
+                );
+            }
+            args
+        }
+        None => args,
+    };
+    // …and the same for an ELEMIDX immediate.
+    let args = match elemidx_arg_position(&name) {
+        Some(at) => {
+            let mut args = args;
+            if let Some(written) = args.get(at).cloned() {
+                args[at] = Expression::with_span(
+                    ExprKind::Lit(Literal::Int(resolve_wat_elemidx(__w, &written))),
+                    span,
+                );
+            }
+            args
+        }
+        None => args,
     };
     // NOTE: multi-memory selectors (`i32.store 1`, `memory.copy 1 0`, …) are
     // peeled off at the plain-instruction parse site (`peel_mem_selector`), where
@@ -6419,12 +6992,21 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             // an explicit tableidx resolves through the same script-wide space.
             let base = Expression::int(__w.table_index_base as i64);
             let (elem, table) = match n_idx {
-                0 => (Expression::int(0), base),
-                1 => (a.remove(0), base),
+                0 => (Expression::int(__w.elem_index_base as i64), base),
+                1 => {
+                    let written = a.remove(0);
+                    (
+                        Expression::int(resolve_wat_elemidx(__w, &written)),
+                        base,
+                    )
+                }
                 _ => {
                     let table = a.remove(0); // text order: tableidx first
-                    let elem = a.remove(0); // then elemidx
-                    (elem, Expression::int(resolve_wat_tableidx(__w, &table)))
+                    let written = a.remove(0); // then elemidx
+                    (
+                        Expression::int(resolve_wat_elemidx(__w, &written)),
+                        Expression::int(resolve_wat_tableidx(__w, &table)),
+                    )
                 }
             };
             let mut new_args = vec![elem, table];
@@ -6922,6 +7504,73 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let obj = Expression::with_span(ExprKind::Object(props), span);
             Ok(wast_stamp_type(obj, &type_name, span))
         }
+        // ── Custom Descriptors allocation ─────────────────────────────────
+        // struct.new_desc $T v0 .. vN-1 desc → the same positional object
+        // `struct.new` builds, plus the descriptor. args:
+        // [typeidx, field_val_0 .. field_val_N-1, descriptor] — the descriptor
+        // is LAST (Overview.md §"Allocation With Descriptors").
+        "struct.new_desc" => {
+            let type_name = resolve_wast_type_name(__w, args.first());
+            let rest = args.get(1..).unwrap_or(&[]);
+            let (vals, desc): (Vec<Expression>, Expression) = match rest.split_last() {
+                Some((d, v)) => (v.to_vec(), d.clone()),
+                None => (vec![], Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+            };
+            let props: Vec<ObjectProperty> = vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| ObjectProperty::KeyValue {
+                    key: Expression::string(&i.to_string()),
+                    value: v,
+                })
+                .collect();
+            let obj = Expression::with_span(ExprKind::Object(props), span);
+            Ok(wast_stamp_desc_type(obj, &type_name, desc, span))
+        }
+        // struct.new_default_desc $T desc → every field at its default, plus
+        // the descriptor. args: [typeidx, descriptor].
+        "struct.new_default_desc" => {
+            let type_name = resolve_wast_type_name(__w, args.first());
+            let desc = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Null), span));
+            let field_types = __w
+                .struct_field_types
+                .get(&type_name)
+                .cloned()
+                .unwrap_or_default();
+            let props: Vec<ObjectProperty> = field_types
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| ObjectProperty::KeyValue {
+                    key: Expression::string(&i.to_string()),
+                    value: default_value_for_storage_type(ty),
+                })
+                .collect();
+            let obj = Expression::with_span(ExprKind::Object(props), span);
+            Ok(wast_stamp_desc_type(obj, &type_name, desc, span))
+        }
+        // ref.get_desc $T → the descriptor attached at allocation.
+        // args: [typeidx, ref].
+        "ref.get_desc" => {
+            let type_name = resolve_wast_type_name(__w, args.first());
+            let target = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Null), span));
+            Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__wast_ref_get_desc")),
+                    args: vec![
+                        Argument::positional(target),
+                        Argument::positional(Expression::string(&type_name)),
+                    ],
+                    optional: false,
+                },
+                span,
+            ))
+        }
         // array.new_default $T → a length-N array filled with the element type's
         // default. For numeric elements that's 0/0.0, so lower to `array.new $T
         // <default> <length>` (which fills the value); ref elements keep the VM's
@@ -7069,10 +7718,48 @@ fn walk_instr_arg_pair(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut Labe
             {
                 args.push(Argument::positional(Expression::ident("null")));
             }
-            if let Some(ht) = inner.into_inner().find(|c| c.as_rule() == Rule::heap_type) {
+            // ⚠ `(exact $x)` IS A HEAP TYPE, and it does not parse as one.
+            //
+            // The grammar spells `(ref null? (exact_heap_type | heap_type))`,
+            // so with `(ref null (exact $super))` the child is
+            // `exact_heap_type` and a `find(heap_type)` matches NOTHING. The
+            // name was then simply absent from the lowered call, and every
+            // cast against an exact type compared against the EMPTY string —
+            // `trap: ref.cast_null failed: value is not ` with nothing after
+            // "is not" is that empty name surfacing.
+            //
+            // `exact_heap_type` wraps an `index`, so unwrap one level and the
+            // rest of the resolver is unchanged.
+            let exact = inner
+                .clone()
+                .into_inner()
+                .any(|c| c.as_rule() == Rule::exact_heap_type);
+            if exact {
+                // A marker argument, the same shape as `null` above — the
+                // resolver reads markers by name, so exactness reaches the
+                // compiler without a new argument position to keep in sync.
+                args.push(Argument::positional(Expression::ident("exact")));
+            }
+            let ht = inner
+                .clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::heap_type)
+                .or_else(|| {
+                    inner
+                        .clone()
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::exact_heap_type)
+                        .and_then(|e| e.into_inner().next())
+                });
+            if let Some(ht) = ht {
                 let s = ht.as_str();
                 args.push(Argument::positional(match s.strip_prefix('$') {
-                    Some(name) => Expression::ident(name),
+                    // A `$id` names a MODULE-LOCAL type, so it carries the same
+                    // module qualifier the declaration site applies — otherwise
+                    // `ref.test (ref $t)` resolves against whichever module
+                    // declared `$t` last. Spec spellings (`any`, `struct`, …)
+                    // are abstract and stay bare.
+                    Some(name) => Expression::ident(&qualify_type_name(__w, name)),
                     None => Expression::string(s),
                 }));
             }
@@ -7084,6 +7771,38 @@ fn walk_instr_arg_pair(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut Labe
         }
         _ => Ok(instr_arg_inner_to_expr(inner)),
     }
+}
+
+/// True when an instruction's FLOAT immediate is stored at SINGLE precision.
+///
+/// It matters at PARSE time and nowhere afterwards. `f32.const` lowers to
+/// `f32_demote_f64` over an f64 literal, so a significand longer than 24 bits
+/// is rounded TWICE — once on the way into the f64, again on the demote — and
+/// the spec's rounding section is made of exactly the literals where those two
+/// answers differ. `+0x1.00000100000000001p-50` sits just ABOVE the f32 tie and
+/// must round up; rounding to f64 first lands it exactly ON the tie, where
+/// ties-to-even sends it back down to `0x1.000000p-50`. Reading it straight to
+/// f32 sees the bit that decides it; widening the result back to f64 is exact,
+/// so the demote that follows is a no-op.
+fn instr_float_is_f32(name: &str) -> bool {
+    name == "f32.const"
+}
+
+/// Convert one raw `instr_arg`, reading a float immediate at the width its
+/// instruction actually stores it at.
+fn walk_instr_arg_for(
+    __w: &mut WastWalker,
+    raw: Pair<Rule>,
+    labels: &mut LabelStack,
+    name: &str,
+) -> Result<Expression, String> {
+    if instr_float_is_f32(name)
+        && let Some(inner) = raw.clone().into_inner().next()
+        && inner.as_rule() == Rule::float
+    {
+        return Ok(parse_float_at(inner.as_str(), true));
+    }
+    walk_instr_arg_pair(__w, raw, labels)
 }
 
 fn instr_arg_inner_to_expr(inner: Pair<Rule>) -> Expression {
@@ -7734,11 +8453,36 @@ fn find_first_integer(pair: &Pair<Rule>) -> Option<i64> {
 /// `struct.get_s 0 0` names type 0. Left as the literal `"0"`, every per-type
 /// lookup missed — including the packed field's storage type, so `get_s` did no
 /// sign extension and answered 254 where the spec says -2.
+/// A wast type name, qualified by the module that declares it.
+///
+/// Each module has its own type index space; the compiler's type table is one
+/// script-wide, name-keyed store. Without a qualifier the two disagree and the
+/// LAST declaration of a name silently redefines every earlier one.
+///
+/// Abstract heap types (`any`, `struct`, `func`, `eq`, …) and the already
+/// qualified/synthetic names are left alone — only a module-local `$id` gets a
+/// prefix. Empty stays empty so "no type" keeps meaning no type.
+fn qualify_type_name(__w: &WastWalker, name: &str) -> String {
+    if name.is_empty() || name.starts_with("m#") {
+        return name.to_string();
+    }
+    if vybe_runtime::opcode::heaptype::HeapType::from_spec_name(name).is_some() {
+        return name.to_string();
+    }
+    format!("m#{}#{}", __w.current_module_seq, name)
+}
+
 fn resolve_wast_type_name(__w: &WastWalker, expr: Option<&Expression>) -> String {
     let raw = expr.map(wasm_type_ref_name).unwrap_or_default();
     match raw.parse::<usize>() {
-        Ok(i) => __w.type_index_name.get(i).cloned().unwrap_or(raw),
-        Err(_) => raw,
+        // `type_index_name` already holds QUALIFIED names — it is built from
+        // the declaration site — so a numeric reference needs no further work.
+        Ok(i) => __w
+            .type_index_name
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| qualify_type_name(__w, &raw)),
+        Err(_) => qualify_type_name(__w, &raw),
     }
 }
 
@@ -7755,6 +8499,29 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
 /// `GLOBAL_GET __tid_T` + `SET_TYPE_ID`, so the instance carries the real
 /// `type_id` the VM's `ref.test`/`ref.cast`/`is_subtype` read — no `__type`
 /// string. This is the struct analogue of `array.new`'s rtt stamp.
+/// `struct.new_desc` / `struct.new_default_desc` — as [`wast_stamp_type`], with
+/// the descriptor carried as a third argument so the compiler can push it on
+/// top of the field values.
+fn wast_stamp_desc_type(
+    obj: Expression,
+    type_name: &str,
+    descriptor: Expression,
+    span: Span,
+) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__wast_stamp_desc_type")),
+            args: vec![
+                Argument::positional(obj),
+                Argument::positional(Expression::string(type_name)),
+                Argument::positional(descriptor),
+            ],
+            optional: false,
+        },
+        span,
+    )
+}
+
 fn wast_stamp_type(obj: Expression, type_name: &str, span: Span) -> Expression {
     Expression::with_span(
         ExprKind::Call {
@@ -7877,7 +8644,7 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
     let seg_index = {
         let i = __w.elem_seg_counter;
         __w.elem_seg_counter = i + 1;
-        i
+        __w.elem_index_base + i
     };
     if !is_active {
         if is_declare {
@@ -9359,6 +10126,116 @@ fn wat_number_token_ok(tok: &str) -> bool {
 /// KNOWN one, which is exactly the glued-token shape. Reporting more would make
 /// an `assert_malformed` pass for the wrong reason, and a wrongly-passing
 /// malformed assertion hides real leniency.
+/// `block … end $l` — the id after `end` (or after `else`) must be the id the
+/// block was OPENED with; the spec calls a disagreement "mismatching label" and
+/// classifies it as MALFORMED, not invalid. An unnamed block mismatches every
+/// id, which is `(func block end $l)` in `block.wast`, `loop.wast` and
+/// `if.wast`.
+///
+/// This is a property of how the two tokens PAIR UP, so it is checked on the
+/// token stream rather than on the parse tree: the grammar sees `end` and a
+/// following id as an instruction and its argument and has nowhere to put the
+/// relation. Only the PLAIN form can be wrong — a folded `(block $l …)` is
+/// closed by its paren and never writes an id — so an opener preceded by `(`
+/// is skipped.
+fn quoted_text_has_label_mismatch(src: &str) -> bool {
+    #[derive(PartialEq)]
+    enum Tok {
+        Open,
+        Close,
+        Word(String),
+    }
+    // Reuse the same idchar notion as the token scanner; strings and comments
+    // are skipped whole so a `;; end $x` cannot open or close anything.
+    const IDCHAR_EXTRA: &str = "!#$%&'*+-./:<=>?@\\^_`|~";
+    let is_idchar = |c: char| c.is_ascii_alphanumeric() || IDCHAR_EXTRA.contains(c);
+    let chars: Vec<char> = src.chars().collect();
+    let mut toks: Vec<Tok> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if c == ';' && chars.get(i + 1) == Some(&';') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '(' && chars.get(i + 1) == Some(&';') {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == ';' && chars[i + 1] == ')') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if c == '(' {
+            toks.push(Tok::Open);
+            i += 1;
+            continue;
+        }
+        if c == ')' {
+            toks.push(Tok::Close);
+            i += 1;
+            continue;
+        }
+        if !is_idchar(c) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_idchar(chars[i]) {
+            i += 1;
+        }
+        toks.push(Tok::Word(chars[start..i].iter().collect()));
+    }
+    // Each entry is the label a still-open PLAIN block was written with.
+    let mut open: Vec<Option<String>> = Vec::new();
+    for (n, t) in toks.iter().enumerate() {
+        let Tok::Word(w) = t else { continue };
+        let prev_is_open = n > 0 && toks[n - 1] == Tok::Open;
+        let next_id = match toks.get(n + 1) {
+            Some(Tok::Word(x)) if x.starts_with('$') => Some(x.clone()),
+            _ => None,
+        };
+        match w.as_str() {
+            "block" | "loop" | "if" | "try_table" if !prev_is_open => open.push(next_id),
+            // `else` names the SAME label as its `if`; the block stays open.
+            "else" if !prev_is_open => {
+                if let Some(id) = next_id {
+                    if open.last().cloned().flatten() != Some(id) {
+                        return true;
+                    }
+                }
+            }
+            "end" => {
+                if let Some(id) = next_id {
+                    if open.last().cloned().flatten() != Some(id) {
+                        return true;
+                    }
+                }
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn quoted_text_has_bad_token(src: &str) -> bool {
     const IDCHAR_EXTRA: &str = "!#$%&'*+-./:<=>?@\\^_`|~";
     let is_idchar = |c: char| c.is_ascii_alphanumeric() || IDCHAR_EXTRA.contains(c);
@@ -9471,7 +10348,7 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
 fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut quoted: Option<String> = None;
-    let mut is_binary = false;
+    let mut binary_bytes: Option<Vec<u8>> = None;
     for child in pair.into_inner() {
         if child.as_rule() != Rule::module_or_binary {
             continue;
@@ -9479,10 +10356,11 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
         let text = child.as_str();
         // `(module $id? binary "…")` vs `(module $id? quote "…")` — the
         // keyword sits after an optional id, so match it as a token rather
-        // than by a prefix test.
-        let head: Vec<&str> = text.split_whitespace().take(3).collect();
+        // than by a prefix test. `take(4)` because `definition` may sit
+        // between `module` and the keyword: `(module definition binary "…")`.
+        let head: Vec<&str> = text.split_whitespace().take(4).collect();
         if head.iter().any(|t| *t == "binary") {
-            is_binary = true;
+            binary_bytes = Some(binary_module_bytes(&child));
             break;
         }
         if !head.iter().any(|t| *t == "quote") {
@@ -9499,8 +10377,33 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
         quoted = Some(source);
         break;
     }
-    if is_binary {
-        return Ok(Statement::with_span(StmtKind::Empty, span));
+    if let Some(bytes) = binary_bytes {
+        // ⛔ THIS USED TO BE `Empty` — an assertion that examined NOTHING.
+        //
+        // `assert_malformed` on a `(module binary …)` asserts that those BYTES
+        // do not decode. Discharging it without decoding them reports PASS for
+        // a fixture that was never looked at, which is the same disease as a
+        // checker that cannot parse its input reporting `0 problems`.
+        //
+        // The bytes are the concatenation of the string literals, and
+        // `read_wasm` is the decoder the runtime already uses for a real
+        // `.wasm`. Decoding is a STATIC property of the fixture, so it is
+        // settled here at walk time exactly as the `quote` path settles
+        // parsing below.
+        return Ok(match vybe_platform_wasm::read_wasm(&bytes) {
+            // Rejected, as the spec requires: discharged.
+            Err(_) => Statement::with_span(StmtKind::Empty, span),
+            // It decoded. That is the assertion failing, and it must say so.
+            Ok(_) => Statement::with_span(
+                StmtKind::Throw {
+                    expr: Some(Expression::string(
+                        "assert_malformed failed: the binary module decoded",
+                    )),
+                    cause: None,
+                },
+                span,
+            ),
+        });
     }
     let Some(source) = quoted else {
         return Ok(Statement::with_span(StmtKind::Empty, span));
@@ -9516,7 +10419,7 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
     // The LEXICAL layer first: token separation and number-literal shape are
     // properties of the text that the grammar, matching names from a list and
     // treating `_` as a digit, cannot express.
-    if quoted_text_has_bad_token(&source) {
+    if quoted_text_has_bad_token(&source) || quoted_text_has_label_mismatch(&source) {
         return Ok(Statement::with_span(StmtKind::Empty, span));
     }
     let parsed = match WastParser::parse(Rule::program, &source) {
@@ -9641,14 +10544,9 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
     // throws a marker after the action, and the catch re-raises exactly
     // that marker (a genuine trap lands in the catch and passes).
     //
-    // The expected message IS compared, as a substring. It used to be
-    // dropped on the grounds that our wording is not the spec interpreter's
-    // — but that turns every one of these into "something went wrong", which
-    // cannot tell a trap for the right reason from a trap for any reason. It
-    // is what let `call_indirect` on a null table slot report "null is not
-    // callable" and still pass a fixture asserting "uninitialized element".
-    // Where our wording genuinely differs from the spec's, the wording is the
-    // defect and belongs in the trap, not in a skipped assertion.
+    // ⚠ The expected MESSAGE is not compared — see the note on the catch arm
+    // below for why, and for the two routes that would close it. An earlier
+    // comment here claimed the opposite; the code never did it.
     let marker = "assert_trap failed: expected a trap";
     let body = vec![
         Statement::with_span(StmtKind::Expr(action), span),
@@ -10112,6 +11010,14 @@ fn f32_const_expr(v: Expression, span: Span) -> Expression {
 }
 
 fn parse_float(s: &str) -> Expression {
+    parse_float_at(s, false)
+}
+
+/// Parse a WAT float literal at the target width. `is_f32` rounds ONCE, to
+/// single precision, and returns that value widened back to f64 — which is
+/// exact, so the `f32_demote_f64` the lowering wraps it in changes nothing.
+/// See `instr_float_is_f32` for why the width has to be known this early.
+fn parse_float_at(s: &str, is_f32: bool) -> Expression {
     let s = s.trim();
     match s {
         "inf" | "+inf" => Expression::float(f64::INFINITY),
@@ -10122,19 +11028,30 @@ fn parse_float(s: &str) -> Expression {
         _ => {
             let cleaned = s.replace('_', "");
             if cleaned.contains("0x") || cleaned.contains("0X") {
-                if let Some(v) = parse_hex_float(&cleaned) {
+                if let Some(v) = parse_hex_float_at(&cleaned, is_f32) {
                     return Expression::float(v);
                 }
             }
-            Expression::float(cleaned.parse::<f64>().unwrap_or(0.0))
+            // Rust's own decimal parse is correctly rounded at each width, so
+            // going through `f32` here is the decimal half of the same fix.
+            Expression::float(if is_f32 {
+                cleaned.parse::<f32>().unwrap_or(0.0) as f64
+            } else {
+                cleaned.parse::<f64>().unwrap_or(0.0)
+            })
         }
     }
 }
 
 /// Parse a WAT hex float like `0x1.8p1` (= 1.5 × 2¹ = 3.0). Rust's `f64::parse`
-/// rejects hex floats, so evaluate the mantissa (hex int + hex fraction) and
-/// scale by the binary `p` exponent.
+/// rejects hex floats, so the significand (hex integer part + hex fraction) is
+/// read here and scaled by the binary `p` exponent — but read EXACTLY, and
+/// rounded once, for the reason spelled out inside.
 fn parse_hex_float(s: &str) -> Option<f64> {
+    parse_hex_float_at(s, false)
+}
+
+fn parse_hex_float_at(s: &str, is_f32: bool) -> Option<f64> {
     let (neg, rest) = match s.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
@@ -10150,34 +11067,217 @@ fn parse_hex_float(s: &str) -> Option<f64> {
         Some(i) => (&mantissa[..i], &mantissa[i + 1..]),
         None => (mantissa, ""),
     };
-    let mut value = 0.0f64;
+    // The significand is read EXACTLY, into a 128-bit integer plus a sticky
+    // flag, and rounded ONCE at the end.
+    //
+    // It used to be accumulated straight into an f64 — `value = value * 16 + d`
+    // per digit — which rounds at every step. The spec has a whole "Rounding
+    // behaviour" section precisely about literals whose significand is longer
+    // than the format, and per-digit accumulation cannot answer it: by the time
+    // the last digits arrive the result has already been rounded several times,
+    // and the information that decided the answer is gone. `const.wast`'s
+    // `+0x1.000000000000080000000000p-600`, which must round DOWN to
+    // `0x1.0000000000000p-600`, and `+0x1.00000000000008000000000000000001p-600`,
+    // which must round UP, differ only in bits the accumulation had already
+    // discarded.
+    //
+    // 124 kept bits is far more than the 53 the format needs, so the single
+    // rounding below sees everything that can affect it; anything past that
+    // only has to be recorded as "nonzero", which is what `sticky` is.
+    let mut mant: u128 = 0;
+    let mut lsb_exp: i32 = 0; // the value is mant × 2^lsb_exp
+    let mut sticky = false;
+    let mut any_digit = false;
+    // Digits arrive most-significant first, so once there is no room to shift,
+    // every further digit is BELOW what we keep: it moves the kept bits' weight
+    // up (integer part) or is simply dropped (fraction), and either way its
+    // being nonzero is all that matters.
     for c in int_part.chars() {
-        value = value * 16.0 + c.to_digit(16)? as f64;
+        let d = c.to_digit(16)? as u128;
+        any_digit = true;
+        if mant <= (u128::MAX >> 4) {
+            mant = (mant << 4) | d;
+        } else {
+            sticky |= d != 0;
+            lsb_exp += 4;
+        }
     }
-    let mut scale = 1.0 / 16.0;
     for c in frac_part.chars() {
-        value += c.to_digit(16)? as f64 * scale;
-        scale /= 16.0;
+        let d = c.to_digit(16)? as u128;
+        any_digit = true;
+        if mant <= (u128::MAX >> 4) {
+            mant = (mant << 4) | d;
+            lsb_exp -= 4;
+        } else {
+            sticky |= d != 0;
+        }
     }
-    // Apply the binary exponent IN STEPS. `2f64.powi(-1074)` is evaluated as
-    // `1.0 / 2f64.powi(1074)`, and 2^1074 overflows to infinity, so the scale
-    // came back as 0.0 and every hex float below 2^-1022 — the whole subnormal
-    // range, including `0x1p-1074`, the smallest f64 — parsed as zero. Stepping
-    // by 1000 keeps each factor inside the normal range (2^-1000 and 2^1000 are
-    // both representable). Only the LAST step can land subnormal, and scaling
-    // by a power of two is exact until it does, so there is no double rounding.
-    let mut e = exp;
+    if !any_digit {
+        return None;
+    }
+    Some(round_binary(neg, mant, lsb_exp + exp, sticky, is_f32))
+}
+
+/// Round an EXACT binary value — `mant × 2^exp`, with `sticky` recording that
+/// nonzero bits were dropped below `mant`'s last bit — to the nearest value of
+/// the target format, ties to even. One rounding, at the end, which is what the
+/// spec's rounding rules are stated in terms of. The f32 result comes back
+/// WIDENED to f64, which is exact.
+fn round_binary(neg: bool, mant: u128, exp: i32, sticky: bool, is_f32: bool) -> f64 {
+    let signed_zero = if neg { -0.0f64 } else { 0.0f64 };
+    if mant == 0 {
+        return signed_zero;
+    }
+    // Significand bits (hidden bit included), the exponent of the smallest
+    // subnormal, and the largest leading-bit exponent, per format.
+    let (p, min_lsb, max_lead): (i32, i32, i32) = if is_f32 {
+        (24, -149, 127)
+    } else {
+        (53, -1074, 1023)
+    };
+    let msb = 127 - mant.leading_zeros() as i32;
+    // Below HALF the smallest subnormal nothing can round up to a nonzero
+    // value. Returning here also keeps the shift below 129, so the masks are
+    // always well defined.
+    if exp + msb < min_lsb - 1 {
+        return signed_zero;
+    }
+    // Keep `p` significand bits — but never place the last bit below the
+    // subnormal grid, which is what makes gradual underflow come out right.
+    let mut shift = msb + 1 - p;
+    if exp + shift < min_lsb {
+        shift = min_lsb - exp;
+    }
+    let (mut kept, mut kexp) = if shift <= 0 {
+        // More bits available than we need: shifting LEFT is exact, and sticky
+        // cannot be set here (it is only ever set once `mant` has filled up,
+        // which forces a large positive shift).
+        (mant << (-shift) as u32, exp + shift)
+    } else {
+        let s = shift as u32;
+        let (dropped, keep, half) = if s >= 128 {
+            // `half` = 2^(s-1) ≥ 2^127 and `mant` < 2^128, so only s == 128 can
+            // even reach it; that is exactly a tie, which goes to the even
+            // zero. Anything strictly above rounds up to the smallest value.
+            (mant, 0u128, None)
+        } else {
+            (
+                mant & ((1u128 << s) - 1),
+                mant >> s,
+                Some(1u128 << (s - 1)),
+            )
+        };
+        let up = match half {
+            Some(h) => dropped > h || (dropped == h && (sticky || (keep & 1) == 1)),
+            None => s == 128 && mant > (1u128 << 127),
+        };
+        (keep + u128::from(up), exp + shift)
+    };
+    if kept == 0 {
+        return signed_zero;
+    }
+    // Rounding up can carry out of the top bit (`0x1.fff…f` → `0x2.0`).
+    if kept >> p != 0 {
+        kept >>= 1;
+        kexp += 1;
+    }
+    let lead = kexp + (127 - kept.leading_zeros() as i32);
+    if lead > max_lead {
+        return if neg {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    // `kept` is at most 53 bits, so it converts to f64 exactly, and scaling by
+    // a power of two is exact because the last bit is on the representable
+    // grid — for the f32 case too, whose whole range sits inside f64's normals.
+    // Step the exponent so no intermediate factor overflows: `2^1074` is
+    // infinity, which is what used to make every subnormal literal —
+    // `0x1p-1074`, the smallest f64 among them — parse as zero.
+    let mut v = kept as f64;
+    let mut e = kexp;
     while e > 0 {
         let step = e.min(1000);
-        value *= 2f64.powi(step);
+        v *= 2f64.powi(step);
         e -= step;
     }
     while e < 0 {
         let step = e.max(-1000);
-        value *= 2f64.powi(step);
+        v *= 2f64.powi(step);
         e -= step;
     }
-    Some(if neg { -value } else { value })
+    if neg { -v } else { v }
+}
+
+/// The BYTES a `(module binary "…" "…")` fixture spells.
+///
+/// ⚠ NOT `unquote`. That decodes a wast string as TEXT and knows only
+/// `\n \t \r \\ \"`; a binary module is written almost entirely in HEX escapes
+/// — `"\00asm" "\01\00\00\00"` — which `unquote` would pass through as the
+/// four literal characters `\`, `0`, `0`, `a`. Feeding that to a decoder tests
+/// nothing about the fixture.
+///
+/// The spec's string escapes for byte strings are `\XX` (two hex digits) plus
+/// the same character escapes; anything else stands for its own UTF-8 bytes.
+/// The pieces concatenate, because the spec splits long fixtures across several
+/// literals.
+fn binary_module_bytes(pair: &Pair<Rule>) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for s in pair.clone().into_inner() {
+        if s.as_rule() != Rule::string {
+            continue;
+        }
+        let raw = s.as_str().trim();
+        let inner = raw
+            .strip_prefix('"')
+            .and_then(|r| r.strip_suffix('"'))
+            .unwrap_or(raw);
+        let bytes = inner.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] != b'\\' {
+                out.push(bytes[i]);
+                i += 1;
+                continue;
+            }
+            let Some(&next) = bytes.get(i + 1) else {
+                out.push(b'\\');
+                break;
+            };
+            match next {
+                b'n' => (out.push(b'\n'), i += 2).1,
+                b't' => (out.push(b'\t'), i += 2).1,
+                b'r' => (out.push(b'\r'), i += 2).1,
+                b'\\' => (out.push(b'\\'), i += 2).1,
+                b'"' => (out.push(b'"'), i += 2).1,
+                b'\'' => (out.push(b'\''), i += 2).1,
+                _ => {
+                    let hex = |b: u8| -> Option<u8> {
+                        match b {
+                            b'0'..=b'9' => Some(b - b'0'),
+                            b'a'..=b'f' => Some(b - b'a' + 10),
+                            b'A'..=b'F' => Some(b - b'A' + 10),
+                            _ => None,
+                        }
+                    };
+                    match (hex(next), bytes.get(i + 2).copied().and_then(hex)) {
+                        (Some(hi), Some(lo)) => {
+                            out.push((hi << 4) | lo);
+                            i += 3;
+                        }
+                        // Not a valid escape — keep it verbatim rather than
+                        // silently dropping a byte the fixture meant to include.
+                        _ => {
+                            out.push(b'\\');
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn unquote(s: &str) -> String {
@@ -10320,6 +11420,70 @@ fn peek_instr_tag_ref(__w: &mut WastWalker, pair: &Pair<Rule>) -> Option<String>
 /// The `(type $sig)` type name from a `call_indirect`/`return_call_indirect`
 /// opener — its `block_type` immediate wraps a `(type index)` typeuse. Returns
 /// the type index text (`$`-stripped) so its param count gives the call arity.
+/// The `(argc, result count)` of a `call_indirect` / `return_call_indirect`
+/// type use.
+///
+/// A type use is EITHER `(type $sig)` naming a declared function type OR the
+/// inline `(param …)* (result …)*` spelling of the same shape — and the inline
+/// form needs no `(type …)` at all. Only the named form was read, so
+/// `call_indirect (result i32)` came out as 0→0 and the VM rejected a perfectly
+/// good 0→1 callee with "indirect call type mismatch (callee 0→1, expected
+/// 0→0)". When both are written the spec requires them to agree, so the named
+/// one wins and the inline half is redundant.
+fn peek_typeuse_shape(__w: &WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
+    let inner = match pair.as_rule() {
+        Rule::instr => match pair.clone().into_inner().next() {
+            Some(i) => i,
+            None => return (0, 0),
+        },
+        _ => pair.clone(),
+    };
+    if !matches!(inner.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+        return (0, 0);
+    }
+    let mut params = 0usize;
+    let mut results = 0usize;
+    let mut named: Option<String> = None;
+    for c in inner.into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
+        }
+        let Some(bt) = c.into_inner().next() else {
+            continue;
+        };
+        if bt.as_rule() != Rule::block_type {
+            continue;
+        }
+        // `block_type` inlines the keyword rather than nesting `param`/`result`
+        // rules, so the discriminator is the head token of its own text.
+        let head = bt.as_str().trim_start_matches('(').trim_start();
+        let count = || {
+            bt.clone()
+                .into_inner()
+                .filter(|x| matches!(x.as_rule(), Rule::val_type | Rule::any_val_type))
+                .count()
+        };
+        if head.starts_with("type") {
+            for x in bt.clone().into_inner() {
+                if x.as_rule() == Rule::index {
+                    named = Some(x.as_str().trim_start_matches('$').to_string());
+                }
+            }
+        } else if head.starts_with("param") {
+            params += count();
+        } else if head.starts_with("result") {
+            results += count();
+        }
+    }
+    if let Some(n) = named {
+        return (
+            __w.type_func_params.get(&n).copied().unwrap_or(0) as usize,
+            __w.type_func_results.get(&n).copied().unwrap_or(0) as usize,
+        );
+    }
+    (params, results)
+}
+
 fn peek_typeuse_index(pair: &Pair<Rule>) -> Option<String> {
     let inner = if pair.as_rule() == Rule::instr {
         pair.clone().into_inner().next()?
@@ -10696,17 +11860,11 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                 // `(type $sig)` — dropped by the generic arg walk — is read.
                 "call_indirect" | "return_call_indirect" => {
                     let span = to_span(&pairs[i]);
-                    let sig = peek_typeuse_index(&pairs[i]);
-                    let argc = sig
-                        .as_ref()
-                        .and_then(|n| __w.type_func_params.get(n).copied())
-                        .unwrap_or(0) as usize;
-                    // Expected result count — the other half of the type shape
-                    // the VM checks the funcref against (traps on mismatch).
-                    let expected_results = sig
-                        .as_ref()
-                        .and_then(|n| __w.type_func_results.get(n).copied())
-                        .unwrap_or(0) as usize;
+                    // argc and the expected result count — the two halves of
+                    // the type shape the VM checks the funcref against (traps
+                    // on mismatch) — from `(type $sig)` or the inline
+                    // `(param …)(result …)` spelling.
+                    let (argc, expected_results) = peek_typeuse_shape(__w, &pairs[i]);
                     // Optional table reference `call_indirect $t (type $sig)`
                     // dispatches through a NAMED table (default table 0).
                     let tableidx = peek_call_indirect_table(&pairs[i])
@@ -10728,7 +11886,20 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         let call = make_call("return_call_indirect", call_args, span);
                         statements.push(Statement::with_span(StmtKind::Expr(call), span));
                     } else {
-                        stack.push(make_call("call_indirect", call_args, span));
+                        // Same landing as the folded arm: a multi-result callee
+                        // destructures into temps so the N values are N stack
+                        // entries, which is what the multi-value return and
+                        // every other consumer expect.
+                        let call = make_call("call_indirect", call_args, span);
+                        land_instr_value(
+                            __w,
+                            call,
+                            expected_results.max(1),
+                            true,
+                            span,
+                            &mut statements,
+                            &mut stack,
+                        );
                     }
                     i += 1;
                     continue;
@@ -11064,7 +12235,7 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                 // Parse inline arguments
                 let mut args = Vec::new();
                 for raw in immediates {
-                    args.push(walk_instr_arg_pair(__w, raw, labels)?);
+                    args.push(walk_instr_arg_for(__w, raw, labels, &name)?);
                 }
 
                 // Determine stack arity
@@ -11182,9 +12353,20 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                     // when it is NOT. The ref stays on the stack for the
                     // fall-through path (like `br_if`'s peeked block result).
                     "br_on_cast" | "br_on_cast_fail" => {
-                        emit_br_on_cast_stmt(__w, 
+                        emit_br_on_cast_stmt(__w,
                             &args,
                             name == "br_on_cast_fail",
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        );
+                    }
+                    "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail" => {
+                        emit_br_on_cast_desc_eq_stmt(
+                            __w,
+                            &args,
+                            name == "br_on_cast_desc_eq_fail",
                             span,
                             labels,
                             &mut statements,
@@ -11355,6 +12537,12 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
         // [ref] → [i32] (test) / [ref] → [ref] (cast). The heap-type operand is
         // an immediate, not a stack value; one ref is popped.
         "ref.test" | "ref.test_null" | "ref.cast" | "ref.cast_null" => 1,
+        // The descriptor-comparing casts pop TWO: the reference and the
+        // descriptor to compare it against. The reftype stays an immediate.
+        "ref.cast_desc_eq" => 2,
+        // Same two stack operands as `ref.cast_desc_eq` — the reference and
+        // the descriptor. The label and BOTH reftypes are immediates.
+        "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail" => 2,
 
         // ── Stringref proposal (stack-operand counts; $mem is an immediate) ──
         "string.new_utf8" | "string.new_wtf8" | "string.new_lossy_utf8" | "string.new_wtf16" => 2, // ptr, len (wtf16: ptr, codeunits)
@@ -11482,6 +12670,24 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
             }
         }
         "struct.new_default" => 0, // no stack operands; typeidx is immediate
+        // Custom Descriptors: the descriptor is a STACK operand, pushed on top
+        // of the field values, so these are `struct.new`'s arity plus one.
+        // Without an entry here the fold logic reordered the operands around
+        // the instruction and the type immediate was never resolved.
+        "struct.new_desc" => {
+            if let Some(first) = args.first() {
+                let type_name = match &first.kind {
+                    ExprKind::Ident(n) => n.clone(),
+                    ExprKind::Lit(Literal::Int(i)) => i.to_string(),
+                    _ => String::new(),
+                };
+                *__w.struct_field_counts.get(&type_name).unwrap_or(&0) + 1
+            } else {
+                1
+            }
+        }
+        "struct.new_default_desc" => 1, // descriptor only
+        "ref.get_desc" => 1,            // [ref] → [descriptor]
         "struct.get" | "struct.get_s" | "struct.get_u" => 1, // pops 1 ref
         "struct.set" => 2,         // pops ref + val
 

@@ -5,6 +5,7 @@
 //! helpers, etc.) into profile builtins that route here when the semantics are
 //! genuinely shared.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 
 use vybe_runtime::opcode::Op;
@@ -36,8 +37,17 @@ pub fn emit_non_null(chunk: &mut Chunk, line: u32) {
 /// Stack: [object] -> [null]
 pub fn emit_monitor_notify(chunk: &mut Chunk, line: u32) {
     chunk.emit_bool_const(true, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__j_notified")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__j_notified"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -238,8 +248,17 @@ pub fn emit_bind_method(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
-    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(method_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_bind_bound_method(
@@ -270,20 +289,48 @@ pub fn emit_bind_bound_method(
     }
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     if let Some(fixed_count) = rest_fixed_count {
         emit_stamp_rest_metadata(chunk, fixed_count, line);
     }
-    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(method_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_f64_const(fixed_count as f64, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__vybe_rest_fixed_arity")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve_interned(
+        chunk,
+        &class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Bind a method under its own name AND under the numeric key of the PROTOCOL
@@ -312,8 +359,17 @@ pub fn emit_bind_method_with_slot(
         emit_bind_method(chunk, this_slot, name, method_chunk_idx, line);
         if let Some(fixed_count) = rest_fixed_count {
             chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-            let key = chunk.add_constant(Value::String(Arc::from(name)));
-            chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+            let key = class_slots::resolve(
+                &class_slots::ClassSlot::internal(name),
+                &class_slots::PlainNames,
+            );
+            class_slots::emit_class_get(
+                chunk,
+                class_slots::ObjSource::Stack,
+                &key,
+                class_slots::Dest::Stack,
+                line,
+            );
             emit_stamp_rest_metadata(chunk, fixed_count, line);
             chunk.emit_op(Op::DROP, line);
         }
@@ -422,8 +478,17 @@ pub fn stamp_local_dynamic_field(
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 pub fn stamp_local_string_field(chunk: &mut Chunk, slot: u16, field: &str, value: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -431,8 +496,17 @@ pub fn stamp_local_string_field(chunk: &mut Chunk, slot: u16, field: &str, value
 }
 pub fn set_string_field(chunk: &mut Chunk, field: &str, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
-    let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 

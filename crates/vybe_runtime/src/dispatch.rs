@@ -335,19 +335,35 @@ fn wasm_bool(value: bool) -> Value {
     Value::I32(if value { 1 } else { 0 })
 }
 
+/// Where a custom descriptor lives on an instance.
+///
+/// A reserved property key, not a user-reachable name: the descriptor is an
+/// engine-managed RTT reference in the proposal, so nothing in source may
+/// read or overwrite it. Kept as a single constant with one writer
+/// (`set_descriptor`) and one reader (`descriptor_of`) so the allocation and
+/// cast paths can never disagree about the location.
+///
+/// ⚠ This is a string-keyed property, which is the name-keyed representation
+/// `flexclassplan` §0-bis is driving to zero. It stays for now because moving
+/// it to a dedicated `Object` field changes a shared `vybe_runtime` struct.
+const DESCRIPTOR_SLOT: &str = "__descriptor";
+
+/// Attach a custom descriptor to a freshly allocated instance.
+fn set_descriptor(obj: &mut Object, descriptor: Value) {
+    obj.properties.insert(DESCRIPTOR_SLOT.into(), descriptor);
+}
+
 /// The custom descriptor attached to a reference, or `Null` when it has none.
 ///
-/// Custom Descriptors stores the descriptor in the object's `__descriptor`
-/// property slot at construction (`struct.new_desc`); this is the single
-/// reader used by `ref.get_desc` and by the descriptor-comparing casts, so
-/// they can never disagree about where a descriptor lives.
+/// This is the single reader used by `ref.get_desc` and by the
+/// descriptor-comparing casts.
 fn descriptor_of(value: &Value) -> Value {
     match value {
         Value::Object(o) => o
             .lock()
             .unwrap()
             .properties
-            .get("__descriptor")
+            .get(DESCRIPTOR_SLOT)
             .cloned()
             .unwrap_or(Value::Null),
         _ => Value::Null,
@@ -4234,10 +4250,35 @@ impl VM {
                         match &obj {
                             Value::Object(o) => {
                                 let mut o = o.lock().unwrap();
-                                let slot = o.fields.get_mut(idx as usize).ok_or_else(|| {
-                                    VMError::new("trap: struct.set field index out of range")
-                                })?;
-                                *slot = val;
+                                // ⚠ TRANSITIONAL TOLERANCE — grow, do not trap.
+                                //
+                                // In real WASM a struct's arity is fixed at
+                                // allocation and the type system makes a
+                                // short-vec write unrepresentable. Here the
+                                // class model is mid-conversion: a class can
+                                // have a registered type (so its FIELD ACCESS
+                                // is indexed) while some of its instances are
+                                // still allocated dynamically by a language
+                                // emitter's own path (so their storage is
+                                // empty). python's `@dataclass` and
+                                // `__slots__` classes are exactly that shape.
+                                //
+                                // The READ side already tolerates this —
+                                // `calls.rs::resolve_property` step 1b falls
+                                // through to the property bag rather than
+                                // failing — so trapping on the write was an
+                                // ASYMMETRY, not a spec guarantee.
+                                //
+                                // ⛔ REMOVE THIS once every allocation of a
+                                // registered type goes through
+                                // `struct.new_default <typeidx>`; at that point
+                                // a short vec is a real bug and should trap
+                                // again.
+                                let i = idx as usize;
+                                if i >= o.fields.len() {
+                                    o.fields.resize(i + 1, Value::Null);
+                                }
+                                o.fields[i] = val;
                             }
                             _ => return Err(VMError::new("trap: struct.set on a non-struct")),
                         }
@@ -5970,38 +6011,82 @@ impl VM {
                 //                                → [default-initialised ref with descriptor]
                 // `ref.get_desc $t`      — [ref] → [descriptor]
                 //
-                // Vybe's VM doesn't use descriptors for method dispatch at
-                // runtime (we go through TypeRegistry / __type properties),
-                // but we honour the opcodes so emitted .wasm that leans on
-                // descriptor semantics stays correct on engines that do.
-                // Descriptors are stashed in the object's `__descriptor`
-                // property slot — reading them back via REF_GET_DESC just
-                // returns whatever was stamped at construction.
+                // These are `struct.new` / `struct.new_default` with a
+                // descriptor operand — NOT a lightweight side form. A type
+                // carrying a `(descriptor $d)` clause can ONLY be allocated
+                // with these (Overview.md §"Allocation With Descriptors":
+                // *"`struct.new` and `struct.new_default` cannot be used to
+                // allocate types with descriptors"*), so they must do
+                // everything the plain forms do — size the field vector from
+                // the declared type and stamp the rtt — and then attach the
+                // descriptor.
+                //
+                // The descriptor is the LAST operand, so it is on top of the
+                // stack, above the field values. Per the typing rule
+                //   struct.new_desc x : t* (ref null (exact y)) -> (ref (exact x))
+                // the field count comes from `C.types[x]`, exactly as it does
+                // for `struct.new` — hence the same `field_defs.len()` source
+                // rather than the bytecode's count immediate, which is only a
+                // fallback for a type the registry does not know.
                 Op::STRUCT_NEW_DESC => {
-                    let _typeidx = self.read_u16();
+                    let typeidx = self.read_u16() as usize;
+                    let count = self.read_u16() as usize;
                     let descriptor = self.pop();
-                    // Pop N field values — spec takes exactly the type's
-                    // declared field count, but our VM treats all fields
-                    // as an untyped blob, so we snapshot whatever's on the
-                    // stack that came in with STRUCT_NEW-style pairing is
-                    // not used here (descriptor variant is lightweight).
-                    // Users driving this opcode directly push a single
-                    // descriptor + zero fields; languages that need fields
-                    // prefer STRUCT_NEW.
+                    if descriptor.is_null_ref() {
+                        return Err(VMError::new("trap: null descriptor reference"));
+                    }
+                    let type_id = if typeidx != 0 {
+                        self.resolve_gc_rtt(typeidx)
+                    } else {
+                        0
+                    };
+                    let arity = if type_id != 0 {
+                        self.type_registry
+                            .get(type_id)
+                            .map_or(count, |td| td.field_defs.len())
+                    } else {
+                        count
+                    }
+                    .min(self.stack.len());
+                    let start = self.stack.len() - arity;
+                    let fields: Vec<Value> = self.stack[start..].to_vec();
+                    self.stack.truncate(start);
                     let mut obj = Object::new();
-                    obj.properties.insert("__descriptor".into(), descriptor);
+                    obj.fields = fields;
+                    obj.type_id = type_id;
+                    set_descriptor(&mut obj, descriptor);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 Op::STRUCT_NEW_DEFAULT_DESC => {
-                    let _typeidx = self.read_u16();
+                    let typeidx = self.read_u16() as usize;
                     let descriptor = self.pop();
+                    if descriptor.is_null_ref() {
+                        return Err(VMError::new("trap: null descriptor reference"));
+                    }
                     let mut obj = Object::new();
-                    obj.properties.insert("__descriptor".into(), descriptor);
+                    if typeidx != 0 {
+                        let type_id = self.resolve_gc_rtt(typeidx);
+                        let arity = self
+                            .type_registry
+                            .get(type_id)
+                            .map_or(0, |td| td.field_defs.len());
+                        obj.fields = vec![Value::Null; arity];
+                        obj.type_id = type_id;
+                    }
+                    set_descriptor(&mut obj, descriptor);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
+                // `ref.get_desc x : (ref null (exact_1 x)) -> (ref (exact_1 y))`
+                //
+                // The RESULT is non-nullable, so a null input cannot be passed
+                // through — it traps. `test/core/custom-descriptors/
+                // ref_get_desc.wast:400-406` asserts exactly that, six ways.
                 Op::REF_GET_DESC => {
                     let _typeidx = self.read_u16();
                     let val = self.pop();
+                    if val.is_null_ref() {
+                        return Err(VMError::new("trap: null reference"));
+                    }
                     let desc = descriptor_of(&val);
                     self.push(desc)?;
                 }
@@ -6019,18 +6104,28 @@ impl VM {
                     let _typeidx = self.read_u16();
                     let expected = self.pop();
                     if expected.is_null_ref() {
-                        return Err(VMError::new("trap: ref.cast_desc_eq on null descriptor"));
+                        return Err(VMError::new("trap: null descriptor reference"));
                     }
                     let val = self.peek(0).clone();
                     if val.is_null_ref() {
                         // The `(ref ht)` form does not admit null; the
                         // `(ref null ht)` form passes it through untouched.
+                        //
+                        // ⚠ The message is "descriptor cast failure", NOT
+                        // "null reference". A null reference here is an
+                        // ordinary failed cast, and the proposal's suite
+                        // distinguishes the two:
+                        //   (assert_trap (invoke "self-nonnullable-null-desc")
+                        //                "descriptor cast failure")
+                        // while `ref.get_desc`, whose null check is about its
+                        // own non-nullable RESULT rather than a cast, keeps
+                        // "null reference" (ref_get_desc.wast:400).
                         if op == Op::REF_CAST_DESC_EQ {
-                            return Err(VMError::new("trap: ref.cast_desc_eq on null reference"));
+                            return Err(VMError::new("trap: descriptor cast failure"));
                         }
                     } else if !ref_eq(&descriptor_of(&val), &expected) {
                         return Err(VMError::new(
-                            "trap: ref.cast_desc_eq failed: descriptor mismatch",
+                            "trap: descriptor cast failure",
                         ));
                     }
                 }
@@ -6044,7 +6139,7 @@ impl VM {
                     let depth = self.read_byte() as usize;
                     let expected = self.pop();
                     if expected.is_null_ref() {
-                        return Err(VMError::new("trap: br_on_cast_desc_eq on null descriptor"));
+                        return Err(VMError::new("trap: null descriptor reference"));
                     }
                     let val = self.peek(0).clone();
                     let matched = !val.is_null_ref() && ref_eq(&descriptor_of(&val), &expected);
@@ -6186,6 +6281,35 @@ impl VM {
                     let val = self.pop();
                     let result = self.ref_test_or_declared_name(&val, ht);
                     self.push(wasm_bool(result))?;
+                }
+                // The EXACT forms — `(ref null? (exact $t))`. Identical operand
+                // to the inexact opcodes; only the comparison narrows, from
+                // "is a subtype of" to "is". Null is admitted by the `_null`
+                // spelling exactly as it is for `ref.test`/`ref.cast`.
+                Op::REF_TEST_EXACT | Op::REF_TEST_EXACT_NULL => {
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
+                    let val = self.pop();
+                    let result = if val.is_null_ref() {
+                        op == Op::REF_TEST_EXACT_NULL
+                    } else {
+                        self.ref_test_exact(&val, ht)
+                    };
+                    self.push(wasm_bool(result))?;
+                }
+                Op::REF_CAST_EXACT | Op::REF_CAST_EXACT_NULL => {
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
+                    let val = self.peek(0).clone();
+                    let ok = if val.is_null_ref() {
+                        op == Op::REF_CAST_EXACT_NULL
+                    } else {
+                        self.ref_test_exact(&val, ht)
+                    };
+                    if !ok {
+                        // `trap: ` prefixes every trap — `VMError::is_trap`
+                        // classifies on it alone. "cast failure" is the
+                        // proposal's own wording (`exact-casts.wast`).
+                        return Err(VMError::new("trap: cast failure"));
+                    }
                 }
                 Op::REF_CAST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());

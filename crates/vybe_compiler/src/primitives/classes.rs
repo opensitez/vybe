@@ -6,6 +6,7 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
+use crate::primitives::class_slots;
 use crate::primitives::ArrayBindingMetadata;
 use crate::primitives::class_normalize::{Access, BaseCall, NormalConstructor, NormalMethod};
 
@@ -179,7 +180,7 @@ impl Compiler {
             self.emit_direct_callable_invoke(0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
-        } else if self.profile.has_undefined_value {
+        } else if self.has_undefined_value() {
             // JS spec: declared fields with no initializer default to undefined (not null).
             inst!(self, core_wasm::undefined);
         } else {
@@ -187,9 +188,21 @@ impl Compiler {
         }
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
-        crate::primitives::classes::emit_init_field_start(self.chunk(), owner_slot, line);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        crate::primitives::classes::emit_init_field_end(self.chunk(), field_name, line);
+        // ▶▶ SEAM 3. Naming the DECLARING class is what lets the owner resolve
+        // this to a field INDEX on a registered type — `struct.set <typeidx>
+        // <fieldidx>` into the instance's real storage — instead of a string
+        // key into its property bag. A class with no registered type, or a
+        // field the type does not declare, falls back to the string key
+        // automatically.
+        let slot = match self.current_class.clone() {
+            Some(class) => class_slots::ClassSlot::instance_of(class, field_name),
+            None => class_slots::ClassSlot::instance(field_name),
+        };
+        self.class_set(
+            class_slots::ObjSource::Local(owner_slot),
+            &slot,
+            class_slots::ValueSource::Local(value_slot),
+        );
         Ok(())
     }
 
@@ -234,8 +247,11 @@ impl Compiler {
     fn emit_store_super_ref(&mut self, this_slot: u16, parent_name: &str) {
         self.emit_u16(Op::LOCAL_GET, this_slot);
         self.emit_var_get(parent_name);
-        let super_key = self.str_const("__super");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, super_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__super"),
+            class_slots::ValueSource::Stack,
+        );
     }
 
     /// Push the ECMA [[HomeObject]].[[Prototype]] base used by `super`.
@@ -244,6 +260,182 @@ impl Compiler {
     /// static methods resolve through `CurrentClass.__proto__`. Looking this
     /// up at runtime keeps `Object.setPrototypeOf(C.prototype, ...)` visible
     /// to already-compiled `super.foo()` calls.
+    /// The nearest ancestor of `class` that actually DECLARES `member`,
+    /// starting at its parent.
+    ///
+    /// ⛔ `super.m()` resolves through `[[HomeObject]].[[Prototype]]`, and the
+    /// lookup on that object is an ordinary `[[Get]]` — which WALKS. Ours does
+    /// not: `resolve_property` consults own properties, then the type registry
+    /// when `type_id > 0`. A class prototype is a plain object with `type_id`
+    /// 0, so a data property one level further up was invisible:
+    ///
+    /// ```js
+    /// class A5 { v() { return 1; } }
+    /// class B5 extends A5 { }          // declares NOTHING
+    /// class C5 extends B5 { v() { return super.v() + 2; } }
+    /// ```
+    ///
+    /// `super.v()` looked at B5's prototype, found no own `v`, and stopped —
+    /// js threw, python threw, kotlin threw. Ordinary dispatch was always
+    /// fine (`new C5().v()` walks the TYPE chain), which is why this survived:
+    /// the two lookups answer through different mechanisms, and only one of
+    /// them walks.
+    ///
+    /// Answered from the declared class graph, so it is a fact about the
+    /// program rather than about any language.
+    /// The nearest ancestor's IMPLEMENTATION of `member` — its chunk index and
+    /// rest-arity — for `class`, starting at its parent.
+    ///
+    /// `super.m()` needs the inherited implementation, and the ancestor that
+    /// declares it is known at COMPILE time. Reading it off the instance
+    /// instead (`this.m`, in `emit_save_base_method`) only works if something
+    /// already bound it there, which is an ordering dependency that does not
+    /// hold: on the level-keyed path the ancestor bodies are inlined into the
+    /// most-derived constructor, so a binding emitted into the parent's own
+    /// chunk never executes, and the save read an unbound slot.
+    /// Fill `__base_<owner>$<method>` — the slot `super.m()` reads on the
+    /// level-keyed path — with the nearest ANCESTOR's implementation.
+    ///
+    /// ⛔ ONE FILLER. This decision was copy-pasted at both constructor
+    /// emission sites, which is how the two paths drifted in the first place:
+    /// one bound ancestors before the saves and one after, and the bug only
+    /// reproduced on whichever path a given language happened to take.
+    ///
+    /// Binding the ancestor's implementation directly, rather than reading
+    /// `this.<m>`, removes an ordering dependency that cannot hold here: the
+    /// ancestor bodies are inlined into the most-derived constructor, so a
+    /// binding emitted into the parent's own chunk never executes.
+    fn emit_base_method_slot(
+        &mut self,
+        this_slot: u16,
+        owner: &str,
+        method_name: &str,
+        line: u32,
+    ) {
+        match self.ancestor_method_impl(&self.current_class.clone().unwrap_or_default(), method_name)
+        {
+            Some((chunk_idx, rest_fixed)) => {
+                let bind_on_access = self.methods_bind_on_access();
+                let base_key = format!("__base_{}${}", owner, method_name);
+                crate::primitives::object::emit_bind_bound_method(
+                    self.chunk(),
+                    this_slot,
+                    &base_key,
+                    chunk_idx,
+                    rest_fixed,
+                    bind_on_access,
+                    line,
+                );
+            }
+            None => {
+                emit_save_base_method(self.chunk(), this_slot, owner, method_name, line);
+            }
+        }
+    }
+
+    fn ancestor_method_impl(&self, class: &str, member: &str) -> Option<(usize, Option<u8>)> {
+        let ancestor = self.nearest_declaring_ancestor(class, member)?;
+        let pc = self.pending_classes.get(ancestor.as_str())?;
+        let want = self.canon(member);
+        let (_, overloads) = pc
+            .instance_method_overloads
+            .iter()
+            .find(|(mname, _)| self.canon(mname) == want)?;
+        let ov = overloads.first()?;
+        let rest_fixed = ov
+            .signature
+            .has_rest
+            .then(|| ov.signature.param_names.len().saturating_sub(1) as u8);
+        Some((ov.chunk_idx, rest_fixed))
+    }
+
+    /// **THE** ancestor order for `class` — self first, then ancestors in this
+    /// language's member-resolution order.
+    ///
+    /// ⛔ ONE ANSWER TO ONE QUESTION. "Which ancestor declares this member" was
+    /// asked in three places — the vtable merge in `finalize_type_prefixes`,
+    /// `nearest_declaring_ancestor`, and `resolve_instance_method_overload` in
+    /// `calls.rs` — and each walked `parent` on its own. `parent` is
+    /// `bases.first()`, so all three answered a DIAMOND by taking the first
+    /// base's chain and never seeing the others, and all three had to be
+    /// taught C3 separately after the same test caught them one at a time:
+    ///
+    ///     class A:       who -> 'A'
+    ///     class B(A):    pass
+    ///     class C(A):    who -> 'C'
+    ///     class D(B, C): pass        # C3 MRO = [D, B, C, A] ⇒ 'C'
+    ///
+    /// A linearization is not a chain. `ancestry_of` is the correct shared walk
+    /// for a single-parent chain and stays that; a class with several bases has
+    /// to ask `c3_linearize` instead. Deciding that here, once, is what stops a
+    /// fourth caller getting it wrong.
+    pub(super) fn resolution_chain(&self, class: &str) -> Vec<String> {
+        if self
+            .pending_classes
+            .get(class)
+            .is_some_and(|pc| pc.bases.len() > 1)
+        {
+            self.c3_linearize(class)
+        } else {
+            vybe_runtime::namespaces::ancestry_of(class, |c| {
+                self.pending_classes.get(c).and_then(|pc| pc.parent.clone())
+            })
+        }
+    }
+
+    pub(super) fn nearest_declaring_ancestor(&self, class: &str, member: &str) -> Option<String> {
+        let want = self.canon(member);
+        // ⛔ USE THE SHARED WALK. `ancestry_of` is self-first, nearest-first,
+        // and already refuses to spin on a cyclic parent — and its own doc says
+        // it exists because this walk "was written out once per derivation
+        // instead: four times in the dotnet registrar alone". I hand-rolled a
+        // FIFTH copy here, complete with a private `0..1024` guard, which is
+        // exactly the duplication it was extracted to end.
+        //
+        // `skip(1)` drops the class itself: `super.m()` asks what an ANCESTOR
+        // declares, never what the caller does.
+        // ⛔⛔ C3 WHEN THERE ARE SEVERAL BASES. `parent` is `bases.first()`, so a
+        // single-parent walk answers for a diamond by taking the FIRST base's
+        // chain and never seeing the others:
+        //
+        //     class A:       who -> 'A'
+        //     class B(A):    pass
+        //     class C(A):    who -> 'C'
+        //     class D(B, C): pass       # C3 MRO = [D, B, C, A] ⇒ 'C'
+        //
+        // Walking `parent` gives D → B → A and binds `A::who`, so `D().who()`
+        // answered `'A'`. Same root cause as the vtable merge in
+        // `finalize_type_prefixes`: a single-parent walk where the language's
+        // resolution order is the LINEARIZATION.
+        //
+        // `ancestry_of` is still the right walk for a single chain — it is the
+        // shared, cycle-safe one — but a linearization is not a chain, so a
+        // multi-base class has to ask `c3_linearize` instead.
+        for name in self.resolution_chain(class).into_iter().skip(1) {
+            let Some(pc) = self.pending_classes.get(name.as_str()) else {
+                continue;
+            };
+            // Ask BOTH tables. `instance_member_names` is not populated with
+            // method names by every frontend — kotlin and java carry their
+            // methods only in `instance_method_overloads`, so a member check
+            // against the first table alone answered "not declared here" for a
+            // class that plainly declares it, and the walk ran off the top of
+            // the chain.
+            let declares = pc
+                .instance_member_names
+                .iter()
+                .any(|m| self.canon(m) == want)
+                || pc
+                    .instance_method_overloads
+                    .iter()
+                    .any(|(m, _)| self.canon(m) == want);
+            if declares {
+                return Some(name);
+            }
+        }
+        None
+    }
+
     pub(super) fn emit_js_super_home_base(&mut self) {
         let Some(class_name) = self.current_class.clone() else {
             self.emit_null();
@@ -252,11 +444,9 @@ impl Compiler {
 
         self.emit_var_get(&class_name);
         if !self.current_member_is_static {
-            let prototype_key = self.str_const("prototype");
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, prototype_key);
+            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::Prototype);
         }
-        let proto_link_key = self.str_const("__proto__");
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_link_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::ProtoLink);
     }
 
     /// Instance identity + member stamps a derived constructor applies to
@@ -279,7 +469,7 @@ impl Compiler {
     }
 
     fn parent_ctor_needs_ecma_construct_dispatch(&mut self, parent_name: &str) -> bool {
-        if !self.profile.ecma_new_dispatch
+        if !self.ecma_new_dispatch()
             || self.defined_classes.contains(&self.canon(parent_name))
         {
             return false;
@@ -344,7 +534,7 @@ impl Compiler {
             || self.defined_globals.contains(&pname)
             || self.defined_classes.contains(&pname);
         if !bound
-            && self.profile.ecma_error_object_shape
+            && self.ecma_error_object_shape()
             && common::errors::is_exception_type(parent_name)
             && !self.shadows_builtin_type(parent_name)
         {
@@ -552,10 +742,11 @@ impl Compiler {
         auto_init_methods: &[String],
         line: u32,
     ) -> Result<(), String> {
-        self.emit_u16(Op::LOCAL_GET, this_slot);
-        self.emit_const(Value::String(Arc::from(name)));
-        let type_key = self.str_const("__type");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
+        self.class_set(
+            class_slots::ObjSource::Local(this_slot),
+            &class_slots::ClassSlot::TypeIdentity,
+            class_slots::ValueSource::ConstStr(name.to_string()),
+        );
         // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
         // constructor allocated and handed the object up, so the derived class
         // inherited its parent's type and had to overwrite it — something WASM
@@ -588,13 +779,7 @@ impl Compiler {
             let pname = self.canon(parent_name);
             let owner = self.canon(name);
             for method_name in instance_method_names {
-                crate::primitives::classes::emit_save_base_method(
-                    self.chunk(),
-                    this_slot,
-                    &owner,
-                    method_name,
-                    line,
-                );
+                self.emit_base_method_slot(this_slot, &owner, method_name, line);
             }
             self.emit_store_super_ref(this_slot, &pname);
         }
@@ -609,11 +794,17 @@ impl Compiler {
                 line,
             )?;
         }
-        // Multiple inheritance (opt-in): attach every MRO ancestor's methods in
-        // reverse-C3 order (lowest priority first) BEFORE binding self's own
-        // methods below, so self stays highest and the diamond's shared base is
-        // overridden by the nearer base. No-op for single-inheritance classes
-        // and for languages that don't set `class_multiple_inheritance`.
+        // ⛔ AFTER the parent-constructor chain, BEFORE self's own methods.
+        //
+        // Moved earlier during the kotlin `super` hunt on the theory that the
+        // base-method saves needed the ancestors already bound. That theory was
+        // wrong — the kotlin defect was in the `SuperCall` emitter — and the
+        // move broke a python DIAMOND: `class D(B, C)` bound its reverse-C3
+        // ancestors and then the super chain ran B's constructor, which rebound
+        // `A::who` on top, so `D().who()` answered `'A'` where C3 says `'C'`.
+        //
+        // Reverse-C3 order only wins if nothing rebinds afterwards, and the
+        // parent constructor chain does exactly that. So this belongs after it.
         self.emit_mi_ancestor_methods(name, this_slot, line);
         for (mname, mci, _, _) in instance_methods {
             if mname.starts_with("__get_") {
@@ -699,7 +890,12 @@ impl Compiler {
     /// a base method that closes over an enclosing scope is a known gap (rare —
     /// module-level classes capture nothing).
     fn emit_mi_ancestor_methods(&mut self, name: &str, this_slot: u16, line: u32) {
-        if !self.profile.class_multiple_inheritance {
+        // ⛔ PROTOTYPE DISPATCH ALREADY HAS THIS. Stamping ancestor methods onto
+        // the INSTANCE there would create own properties that shadow the
+        // prototype — breaking prototype rebinding and putting inherited
+        // methods into `Object.keys`. The proto chain is the mechanism; leave
+        // it alone.
+        if self.class_prototype_dispatch() {
             return;
         }
         let canon = self.canon(name);
@@ -707,7 +903,36 @@ impl Compiler {
             .pending_classes
             .get(&canon)
             .is_some_and(|pc| pc.bases.len() > 1);
-        if !is_multi {
+        // Languages whose `super()` is COOPERATIVE keep diamond-only binding;
+        // everything else walks its chain. See `super_is_cooperative`.
+        let is_multi_language_default = self.super_is_cooperative();
+        // ⛔⛔ THE SAME GATE, A THIRD TIME. `__mro__` was truncated because C3
+        // ran only for `bases.len() > 1`; ancestor METHOD binding was gated the
+        // same way, so under the LEVEL-KEYED model a constructor materialised
+        // only its immediate parent's members and stopped.
+        //
+        // That is what breaks `super.m()` through a class that does not declare
+        // `m`: `emit_save_base_method` captures `this.m` — which was never
+        // bound — so `__base_<C>$m` holds undefined and the call throws
+        // `undefined is not callable`. Measured in kotlin and java; the same
+        // shape dart's `apply_inherited_concrete_members` was papering over,
+        // and python's truncated MRO was a third presentation of.
+        //
+        // ⚠ It is NOT about an empty intermediate class: `class B5 : A5() { val
+        // q = 8 }` fails identically. The trigger is "the immediate parent does
+        // not declare the method". FIELDS were always fine — they materialise
+        // along the whole chain by a different path — which is exactly what
+        // made this look like a constructor-chaining bug when it is not.
+        //
+        // Multiple-inheritance languages keep their existing behaviour (bind
+        // ancestors only for a real diamond); everything else under the
+        // level-keyed model now walks its chain. Selected by DISPATCH MODEL,
+        // never by language name.
+        // ⛔ The real question here is "is this a DIAMOND" — bind the extra
+        // ancestors only when there is more than one base — and `is_multi`
+        // already answers it from `class.bases`. The flag was a third question
+        // wearing the same field: §5's "reusing a field as a marker".
+        if is_multi_language_default && !is_multi {
             return;
         }
         let mut ancestors = self.c3_linearize(name); // [self, B, C, A, …]
@@ -739,7 +964,7 @@ impl Compiler {
             binds.extend(per_class);
         }
 
-        let bind_on_access = self.profile.methods_bind_on_access;
+        let bind_on_access = self.methods_bind_on_access();
         for (mname, chunk_idx, rest_fixed) in binds {
             if let Some(prop) = mname.strip_prefix("__get_") {
                 crate::primitives::object::emit_bind_getter(
@@ -847,7 +1072,7 @@ impl Compiler {
     /// outermost `new` already set it; this default covers constructors
     /// invoked without an outer `new` frame.
     fn emit_default_js_new_target(&mut self, name: &str) {
-        if !self.profile.ecma_new_dispatch {
+        if !self.ecma_new_dispatch() {
             return;
         }
         let nt_slot = self.define_local("__js_default_new_target_probe");
@@ -879,8 +1104,7 @@ impl Compiler {
         self.emit(Op::DROP);
         self.emit_global_read(class_name);
         self.chunks[self.current].emit_end(line);
-        let prototype_key = self.str_const("prototype");
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, prototype_key);
+        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::Prototype);
     }
 
     fn emit_bind_instance_method_with_aliases(
@@ -892,8 +1116,8 @@ impl Compiler {
         rest_fixed_count: Option<u8>,
         bind_receiver: bool,
     ) -> Result<(), String> {
-        let receiver_key = self.str_const("__vybe_method_receiver");
-        let rest_key = self.str_const("__vybe_rest_fixed_arity");
+        let receiver_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_method_receiver"));
+        let rest_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"));
 
         // Prototype-dispatch profiles: the prototype is the source of truth,
         // so reassignment (`C.prototype.m = wrap(C.prototype.m)`) reaches
@@ -920,17 +1144,15 @@ impl Compiler {
         // funcrefs "no-intern" so the VM mints a fresh object per binding (the
         // receiver stamped below then stays per-instance). Only when the method
         // carries a receiver.
-        let no_intern = self.profile.methods_bind_on_access && bind_receiver;
+        let no_intern = self.methods_bind_on_access() && bind_receiver;
 
         for bind_name in bind_names {
             self.emit_u16(Op::LOCAL_GET, this_slot);
             if let Some(class_name) = &proto_class {
                 let cname = self.canon(class_name);
                 self.emit_global_read(&cname);
-                let proto_key = self.str_const("prototype");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key);
-                let mkey = self.str_const(method_name);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, mkey);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::Prototype);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(method_name));
                 inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -944,17 +1166,24 @@ impl Compiler {
             if bind_receiver {
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &receiver_key,
+                    class_slots::ValueSource::Stack,
+                );
             }
-            if self.profile.supports_private_fields && bind_name.starts_with("__js_private_") {
+            if self.supports_private_fields() && bind_name.starts_with("__js_private_") {
                 inst!(self, core_wasm::dup);
                 let display_name = bind_name
                     .rsplit_once('.')
                     .map(|(_, tail)| format!("#{tail}"))
                     .unwrap_or_else(|| method_name.to_string());
                 self.emit_const(Value::String(Arc::from(display_name.as_str())));
-                let name_key = self.str_const("name");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("name"),
+                    class_slots::ValueSource::Stack,
+                );
                 // The stamp helper CONSUMES its operand — duplicate the fn,
                 // the attach below still needs it.
                 inst!(self, core_wasm::dup);
@@ -964,10 +1193,17 @@ impl Compiler {
             if let Some(fixed_count) = rest_fixed_count {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::F64(fixed_count as f64));
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &rest_key,
+                    class_slots::ValueSource::Stack,
+                );
             }
-            let method_key = self.str_const(&bind_name);
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, method_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal(&bind_name),
+                class_slots::ValueSource::Stack,
+            );
         }
         Ok(())
     }
@@ -1091,7 +1327,7 @@ impl Compiler {
         }
         let name = &cname;
 
-        let uses_js_arguments = self.profile.has_arguments_object
+        let uses_js_arguments = self.has_arguments_object()
             && !is_generator
             && (params
                 .iter()
@@ -1210,16 +1446,20 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, slot);
             self.emit_u16(Op::LOCAL_GET, slot);
             self.emit_var_get(name);
-            let callee_key = self.str_const("callee");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, callee_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("callee"),
+                class_slots::ValueSource::Stack,
+            );
             // §10.4.4.6: arguments objects report "[object Arguments]" —
             // stamp the tag the host's object_to_string_tag reads.
             // §10.4.4.6: arguments objects report "[object Arguments]" —
             // stamp the tag the host's object_to_string_tag reads.
-            self.emit_u16(Op::LOCAL_GET, slot);
-            self.chunk().emit_string_const("Arguments", 0);
-            let type_key = self.str_const("__type");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
+            self.class_set(
+                class_slots::ObjSource::Local(slot),
+                &class_slots::ClassSlot::TypeIdentity,
+                class_slots::ValueSource::ConstStr("Arguments".to_string()),
+            );
             Some(slot)
         } else {
             None
@@ -1316,14 +1556,14 @@ impl Compiler {
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
-                if self.profile.missing_arg_is_undefined {
+                if self.missing_arg_is_undefined() {
                     fn_call!(self, "wasm:js-undefined", "test", 1);
                 } else {
                     self.emit(Op::REF_IS_NULL);
                 }
                 let branch_line = self.line;
                 self.chunks[self.current].emit_if(branch_line);
-                if self.profile.default_args_evaluated_once {
+                if self.default_args_evaluated_once() {
                     // Evaluate-once (Python/Ruby): the default is computed on the
                     // first call that omits the arg and cached in a per-parameter
                     // module global, so every later call reuses the SAME object
@@ -1426,7 +1666,7 @@ impl Compiler {
         // uncaught exceptions short-circuit to the Promise.reject
         // path. The `await` opcode handles per-await suspension via
         // JSPI; this wrap just covers terminal throw / return.
-        let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
+        let async_try = if is_async && !is_generator && self.async_wraps_body_in_try() {
             let line = self.line;
             { common::functions::emit_async_body_start(&mut self.chunks[self.current], line); Some(()) }
         } else {
@@ -1664,8 +1904,11 @@ impl Compiler {
 
             self.emit_var_get(name);
             self.emit_const(Value::String(Arc::from(name.as_str())));
-            let name_key = self.str_const("name");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("name"),
+                class_slots::ValueSource::Stack,
+            );
 
             // ECMA-262 §10.2.4 `length`: number of params before the
             // first one with a default value or rest. Skip rest entirely.
@@ -1678,8 +1921,11 @@ impl Compiler {
                 .count();
             self.emit_var_get(name);
             self.emit_const(Value::F64(length as f64));
-            let length_key = self.str_const("length");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("length"),
+                class_slots::ValueSource::Stack,
+            );
 
             // The JS walker's wrap_generator lowers `function*` /
             // `async function*` to a PLAIN outer function holding
@@ -1718,8 +1964,11 @@ impl Compiler {
             if eff_async || eff_generator {
                 self.emit_var_get(name);
                 self.emit_const(Value::Bool(true));
-                let non_ctor_key = self.str_const("__vybe_non_ctor");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__vybe_non_ctor"),
+                    class_slots::ValueSource::Stack,
+                );
             }
 
             // §27.7 / §27.3 (node-verified): async (non-generator)
@@ -1730,14 +1979,20 @@ impl Compiler {
                 if !eff_generator {
                     self.emit_u16(Op::LOCAL_GET, proto_slot);
                     self.emit_var_get(name);
-                    let ctor_key = self.str_const("constructor");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("constructor"),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
 
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_GET, proto_slot);
-                let proto_key = self.str_const("prototype");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::Prototype,
+                    class_slots::ValueSource::Stack,
+                );
             }
         }
 
@@ -1939,7 +2194,7 @@ impl Compiler {
         // some languages, a property whose name collides with a method needs
         // a distinct slot (see `separate_property_method_namespace`).
         let colliding_method_names: std::collections::HashSet<String> =
-            if self.profile.separate_property_method_namespace {
+            if self.separate_property_method_namespace() {
                 class
                     .instance_methods
                     .iter()
@@ -1954,7 +2209,7 @@ impl Compiler {
                                        method_names: &std::collections::HashSet<String>|
          -> String {
             let canon = compiler.canon(field_name);
-            if compiler.profile.separate_property_method_namespace && method_names.contains(&canon)
+            if compiler.separate_property_method_namespace() && method_names.contains(&canon)
             {
                 format!("__prop${}", canon)
             } else {
@@ -2026,7 +2281,10 @@ impl Compiler {
             ));
         }
         for f in &class.static_fields {
-            let fname = self.js_member_storage_name_for_class(&class.name, &f.name);
+            // The DECLARATION side of the same distinction — both ends must
+            // agree on the key or the static slot is written under one name and
+            // read under another.
+            let fname = self.js_member_storage_name_for_static(&class.name, &f.name);
             static_field_inits.push((
                 fname,
                 f.type_hint.clone(),
@@ -2106,6 +2364,65 @@ impl Compiler {
                     fields.push(fname.clone());
                     field_inits.push((fname, None, None, None));
                 }
+            }
+        }
+
+        // ▶▶ SEAM 3 PREREQUISITE — publish the field list to the RESERVED type
+        // slot as soon as it is complete.
+        //
+        // `reserve_type_slot` (above) hands out the typeidx that
+        // `struct.new_default` allocates with, but pushes an entry whose
+        // `fields` is EMPTY; `register_type` fills it thousands of lines later,
+        // AFTER constructor and method bodies have been emitted. So every field
+        // access compiled in between looked the field up, found an empty list,
+        // and fell back to a string key — correct, but permanently inert.
+        //
+        // Publishing here makes the declared order visible to everything
+        // downstream. `register_type` still runs and still owns the rest of the
+        // entry; this only fills in what is already known.
+        if type_slot != 0 {
+            let idx = type_slot as usize - 1;
+            let published = match self.chunks[0].types.get_mut(idx) {
+                Some(entry) if entry.fields.is_empty() => {
+                    entry.fields = fields.clone();
+                    true
+                }
+                Some(entry) => entry.fields == fields,
+                None => false,
+            };
+            // ⛔ TWO conditions, and the second is the one that bites.
+            //
+            // 1. THIS compiler authored the field order (`published`).
+            // 2. The class has NO PARENT.
+            //
+            // (2) is not about fields at all — it is about ALLOCATION. Under
+            // the base-constructor model the most-derived constructor does not
+            // allocate: it delegates to the base, which allocates with the
+            // BASE's typeidx. So a derived class's instance carries the base's
+            // arity while its own constructor indexes against the derived
+            // type's field list. `Dog(name)` allocates as `Animal`
+            // (`struct.new_default 23`) and then writes `struct.set type=24
+            // field=0` — a slot the object does not have.
+            //
+            // Measured by Rook: 23 regressions across VB and C#, every one
+            // inheritance-shaped, zero exceptions. dart and js — the corpora
+            // this was gated on — exercise far less class inheritance, so the
+            // gate was blind to the axis rather than wrong.
+            //
+            // ⚠ Since the indexed write now GROWS rather than traps, this would
+            // be a SILENT wrong-slot write rather than a failure. Withholding
+            // the licence is not a conservatism, it is the difference between a
+            // caught bug and a corrupt object.
+            //
+            // ▶▶ Destination is the invariant `indexed_field`'s docstring
+            // already states: grant the licence on a fact about the
+            // ALLOCATION — "the class's own typeidx is what
+            // `struct.new_default` actually used". M5 moves allocation to the
+            // most-derived constructor, at which point a parent stops
+            // disqualifying anything and this becomes one condition again.
+            let has_parent = class.parent.is_some();
+            if published && !has_parent {
+                self.seam3_indexable.insert(cname.clone());
             }
         }
 
@@ -2460,7 +2777,7 @@ impl Compiler {
             // (`__js_this`) rather than passed as an explicit first positional
             // parameter. Capability-driven — not gated on the language name.
             let ambient_this = cc.ambient_this();
-            let uses_js_arguments = cc.profile.has_arguments_object
+            let uses_js_arguments = cc.has_arguments_object()
                 && ambient_this
                 && !m.is_generator
                 && (user_params
@@ -2686,7 +3003,7 @@ impl Compiler {
                 if let Some(ref default) = p.default {
                     let slot = cc.scope().resolve(&p.name).unwrap();
                     cc.emit_u16(Op::LOCAL_GET, slot);
-                    if cc.profile.missing_arg_is_undefined {
+                    if cc.missing_arg_is_undefined() {
                         fn_call!(cc, "wasm:js-undefined", "test", 1);
                     } else {
                         cc.emit(Op::REF_IS_NULL);
@@ -2754,7 +3071,7 @@ impl Compiler {
                 }
             }
 
-            let async_try = if m.is_async && !m.is_generator && cc.profile.async_wraps_body_in_try {
+            let async_try = if m.is_async && !m.is_generator && cc.async_wraps_body_in_try() {
                 let line = cc.line;
                 { common::functions::emit_async_body_start(&mut cc.chunks[ci], line); Some(()) }
             } else {
@@ -2767,7 +3084,7 @@ impl Compiler {
             if is_ctor {
                 // §15.7.14: class constructors require `new` (JS only —
                 // other languages construct through their own paths).
-                if cc.profile.ecma_new_dispatch {
+                if cc.ecma_new_dispatch() {
                     let line = cc.line;
                     crate::primitives::classes::emit_class_requires_new_guard(
                         cc.chunk(),
@@ -2871,6 +3188,9 @@ impl Compiler {
             cc.static_local_bindings.pop();
             cc.current = saved;
             method_capture_name_map.insert(ci, capture_names);
+            // Read the dispatch policy BEFORE taking the mutable borrow below:
+            // it is a property of the UNIT, constant across this loop.
+            let virtual_by_default = cc.methods_virtual_by_default();
             if let Some(pending) = cc.pending_classes.get_mut(name) {
                 let overloads = if is_static {
                     &mut pending.static_method_overloads
@@ -2886,7 +3206,7 @@ impl Compiler {
                 let is_virtual = m.is_virtual
                     || m.is_override
                     || m.is_abstract
-                    || (cc.profile.methods_virtual_by_default
+                    || (virtual_by_default
                         && !is_static
                         && !m.raw_modifiers.is_not_overridable);
                 overloads
@@ -3079,8 +3399,7 @@ impl Compiler {
                     // Auto-property getter: return backing field
                     if let Some(slot) = self.scope().resolve(&self_kw) {
                         self.emit_u16(Op::LOCAL_GET, slot);
-                        let backing = self.str_const(&format!("__{}", pname_canon));
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, backing);
+                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&format!("__{}", pname_canon)));
                         self.emit(Op::RETURN);
                     }
                 } else {
@@ -3142,8 +3461,11 @@ impl Compiler {
                         if let Some(val_slot) = self.scope().resolve(&value_param_name) {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                         }
-                        let backing = self.str_const(&format!("__{}", pname_canon));
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, backing);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&format!("__{}", pname_canon)),
+                            class_slots::ValueSource::Stack,
+                        );
                     }
                 } else {
                     for s in &setter.body {
@@ -3364,7 +3686,7 @@ impl Compiler {
             // Emitted AFTER param slots are claimed — emitter scratch
             // allocation before define_local shifts param slots (the
             // documented alloc_scratch/define_local collision).
-            if self.profile.ecma_new_dispatch {
+            if self.ecma_new_dispatch() {
                 let line = self.line;
                 crate::primitives::classes::emit_class_requires_new_guard(self.chunk(), name, line);
             }
@@ -3372,7 +3694,7 @@ impl Compiler {
                 if let Some(Some(default)) = ctor_param_defaults.get(i) {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
-                    if self.profile.missing_arg_is_undefined {
+                    if self.missing_arg_is_undefined() {
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                     } else {
                         self.emit(Op::REF_IS_NULL);
@@ -3405,7 +3727,7 @@ impl Compiler {
             // super() initializes it). Saved/restored so nested classes
             // compiled mid-body don't leak the context.
             let saved_derived_ctx = self.js_derived_ctor_ctx.take();
-            if self.profile.ecma_new_dispatch && parent.is_some() && ctor_body.is_some() {
+            if self.ecma_new_dispatch() && parent.is_some() && ctor_body.is_some() {
                 self.js_derived_ctor_ctx = Some((self.current, this_slot));
             }
 
@@ -3709,7 +4031,7 @@ impl Compiler {
                                 self.emit_direct_callable_invoke(user_arity + 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
-                        } else if self.profile.ecma_error_object_shape
+                        } else if self.ecma_error_object_shape()
                             && common::errors::is_exception_type(parent_name)
                             && !self.shadows_builtin_type(parent_name)
                         {
@@ -3743,9 +4065,15 @@ impl Compiler {
                             self.chunks[self.current].emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, this_slot);
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
-                            let msg_key = self.str_const("message");
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, msg_key);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, msg_key);
+                            self.class_get(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal("message"),
+                            );
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal("message"),
+                                class_slots::ValueSource::Stack,
+                            );
                             self.chunks[self.current].emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -3767,7 +4095,7 @@ impl Compiler {
                             base_args.is_none() && !body_has_super_call(body)
                         }) && !has_explicit_base
                             && !auto_base_needed
-                            && !self.profile.ecma_new_dispatch;
+                            && !self.ecma_new_dispatch();
                     if no_base_derived_body {
                         let canon_name = self.canon(name);
                         crate::primitives::classes::emit_new_typed_object(
@@ -3784,10 +4112,11 @@ impl Compiler {
                         || ctor_body.is_none()
                         || no_base_derived_body
                     {
-                        self.emit_u16(Op::LOCAL_GET, this_slot);
-                        self.emit_const(Value::String(Arc::from(name)));
-                        let type_key = self.str_const("__type");
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
+                        self.class_set(
+                            class_slots::ObjSource::Local(this_slot),
+                            &class_slots::ClassSlot::TypeIdentity,
+                            class_slots::ValueSource::ConstStr(name.to_string()),
+                        );
                         if class.is_value_type {
                             crate::primitives::classes::emit_value_equality_stamp(
                                 self.chunk(),
@@ -3797,7 +4126,6 @@ impl Compiler {
                         }
 
                         if self.class_prototype_dispatch() {
-                            let proto_link_key = self.str_const("__proto__");
                             let proto_local =
                                 self.define_local(&format!("__{}_link_proto", helper_name));
                             self.emit_load_instance_proto(name);
@@ -3808,7 +4136,11 @@ impl Compiler {
                             self.chunks[self.current].emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, this_slot);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::ProtoLink,
+                                class_slots::ValueSource::Stack,
+                            );
                             self.chunks[self.current].emit_end(line);
                         }
 
@@ -3828,13 +4160,7 @@ impl Compiler {
                             let pname = self.canon(parent_name);
                             let owner = self.canon(&class.name);
                             for method_name in &instance_method_names {
-                                crate::primitives::classes::emit_save_base_method(
-                                    self.chunk(),
-                                    this_slot,
-                                    &owner,
-                                    method_name,
-                                    line,
-                                );
+                                self.emit_base_method_slot(this_slot, &owner, method_name, line);
                             }
                             self.emit_store_super_ref(this_slot, &pname);
                         }
@@ -3947,7 +4273,7 @@ impl Compiler {
                         // `this != null` (§9.1.1.3.4: this_slot stays null
                         // when super() never ran; the constructor-return
                         // TDZ guard throws the ReferenceError then).
-                        let stamps_deferred = super_idx.is_none() && self.profile.ecma_new_dispatch;
+                        let stamps_deferred = super_idx.is_none() && self.ecma_new_dispatch();
                         if !stamps_deferred {
                             self.emit_derived_ctor_stamps(
                                 name,
@@ -4063,7 +4389,6 @@ impl Compiler {
                         }
                     }
                     if self.class_prototype_dispatch() {
-                        let proto_link_key = self.str_const("__proto__");
                         let proto_local =
                             self.define_local(&format!("__{}_link_proto_base", helper_name));
                         self.emit_load_instance_proto(name);
@@ -4074,7 +4399,11 @@ impl Compiler {
                         self.chunks[self.current].emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::ProtoLink,
+                            class_slots::ValueSource::Stack,
+                        );
                         self.chunks[self.current].emit_end(line);
                     }
                     let ctor_stmts: &[Statement] = ctor_body
@@ -4118,10 +4447,13 @@ impl Compiler {
                     //    path gets this via the prototype chain instead.
                     //  - `__type` + WASM GC type_id, so instanceof
                     //    (REF_TEST fast path) sees the runtime class.
-                    let ctor_key = self.str_const("constructor");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_global_read(name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("constructor"),
+                        class_slots::ValueSource::Stack,
+                    );
                     let canon_name = self.canon(name);
                     crate::primitives::classes::emit_retype_object(
                         self.chunk(),
@@ -4131,16 +4463,19 @@ impl Compiler {
                     );
                 }
 
-                if self.profile.class_introspection_metadata {
+                if self.class_introspection_metadata() {
                     // Link each instance to its class object via `__class__`
                     // so `type(obj)` returns the class (and `type(obj) is Cls`
                     // / `type(obj).__name__` work). Re-stamped derived-last,
                     // like the PHP `constructor` block above, so `type(child)`
                     // is the child class even after a parent ctor ran.
-                    let class_key = self.str_const("__class__");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_global_read(name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, class_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("__class__"),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
 
                 crate::primitives::reflection::emit_instanceof_chain(
@@ -4150,7 +4485,11 @@ impl Compiler {
                     name,
                     line,
                 );
-                if self.profile.class_multiple_inheritance && class.bases.len() > 1 {
+                // ⛔ The flag was REDUNDANT here. "Does this class have more
+                // than one base" is `class.bases` — a fact the program already
+                // carries. Asking a language-wide flag as well could only ever
+                // disagree with the AST, never inform it.
+                if class.bases.len() > 1 {
                     // The primary parent-ctor chain already stamped its own
                     // lineage into `__types`; add the EXTRA MRO ancestors (the
                     // non-primary bases and their exclusive ancestors) so
@@ -4194,7 +4533,6 @@ impl Compiler {
                 // Set __proto__ link for prototype-dispatch classes.
                 // Done just before return so this_slot is guaranteed valid.
                 if self.class_prototype_dispatch() {
-                    let proto_key = self.str_const("__proto__");
                     self.emit_load_instance_proto(name);
                     let tmp = self.define_local("__final_proto");
                     self.emit_u16(Op::LOCAL_SET, tmp);
@@ -4204,7 +4542,11 @@ impl Compiler {
                     self.chunks[self.current].emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::ProtoLink,
+                        class_slots::ValueSource::Stack,
+                    );
                     self.chunks[self.current].emit_end(line);
                 }
                 // §9.1.1.3.4 (JS): returning from a derived constructor
@@ -4283,7 +4625,7 @@ impl Compiler {
             self.abstract_classes.insert(self.canon(name));
         }
 
-        let js_ctor_relaxes_min_arity = self.profile.relaxed_call_arity;
+        let js_ctor_relaxes_min_arity = self.relaxed_call_arity();
         // A NAMED constructor is not reachable by arity. It is reached through
         // the class object, which the loop at the end of this function stamps
         // it onto by name for exactly that purpose — so letting it also answer
@@ -4332,7 +4674,7 @@ impl Compiler {
             // so `new C(null)` must still dispatch to the 1-arg constructor
             // (`null` is a value, not an absent argument). Languages without a
             // distinct `undefined` fall back to the null test.
-            if self.profile.missing_arg_is_undefined {
+            if self.missing_arg_is_undefined() {
                 fn_call!(self, "wasm:js-undefined", "test", 1);
             } else {
                 self.emit(Op::REF_IS_NULL);
@@ -4371,7 +4713,7 @@ impl Compiler {
             .iter()
             .map(|uv| (uv.is_local, uv.index))
             .collect();
-        let case_sensitive = self.profile.ecma_new_dispatch;
+        let case_sensitive = self.ecma_new_dispatch();
         crate::primitives::classes::emit_store_constructor_with_upvalues(
             self.chunk(),
             name,
@@ -4388,8 +4730,11 @@ impl Compiler {
             // languages that skip that block stamp here instead.
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
-            let name_key = self.str_const("name");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("name"),
+                class_slots::ValueSource::Stack,
+            );
         }
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
@@ -4404,8 +4749,11 @@ impl Compiler {
             if let Some(named) = named {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 emit_helper_ref(self, *helper_idx, helper_captures)?;
-                let key = self.str_const(named);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(named),
+                    class_slots::ValueSource::Stack,
+                );
             }
         }
 
@@ -4424,8 +4772,7 @@ impl Compiler {
                 .filter(|p| !self.is_framework_control_parent(p));
             if let Some(parent_name) = proto_parent {
                 self.emit_parent_class_value(parent_name);
-                let parent_proto_key = self.str_const("prototype");
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, parent_proto_key);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::Prototype);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
                 self.emit_u16(Op::LOCAL_SET, parent_proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
@@ -4434,23 +4781,32 @@ impl Compiler {
                 self.chunks[self.current].emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
-                let proto_link_key = self.str_const("__proto__");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::ProtoLink,
+                    class_slots::ValueSource::Stack,
+                );
                 self.chunks[self.current].emit_end(line);
             }
 
             self.emit_u16(Op::LOCAL_GET, proto_local);
             self.emit_u16(Op::LOCAL_GET, ctor_local);
-            let ctor_key = self.str_const("constructor");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("constructor"),
+                class_slots::ValueSource::Stack,
+            );
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from("prototype")));
             common::dict::emit_new(&mut self.chunks, self.current, self.line);
             inst!(self, core_wasm::dup);
             self.emit_u16(Op::LOCAL_GET, proto_local);
-            let value_key = self.str_const("value");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("value"),
+                class_slots::ValueSource::Stack,
+            );
             for (flag, value) in [
                 ("writable", false),
                 ("enumerable", false),
@@ -4458,8 +4814,11 @@ impl Compiler {
             ] {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(value));
-                let flag_key = self.str_const(flag);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(flag),
+                    class_slots::ValueSource::Stack,
+                );
             }
             let define_prop_idx = self.import("ecma:object", "defineProperty");
             self.emit_host_call(define_prop_idx, 3);
@@ -4467,13 +4826,19 @@ impl Compiler {
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
-            let name_key = self.str_const("name");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("name"),
+                class_slots::ValueSource::Stack,
+            );
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::F64(0.0));
-            let length_key = self.str_const("length");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("length"),
+                class_slots::ValueSource::Stack,
+            );
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
@@ -4489,24 +4854,34 @@ impl Compiler {
                 if let Some(parent_name) = proto_parent {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
                     self.emit_parent_class_value(parent_name);
-                    let proto_link_key = self.str_const("__proto__");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::ProtoLink,
+                        class_slots::ValueSource::Stack,
+                    );
                     if self.profile.has_ecma_globals
                         && Self::is_ecma_typed_array_ctor_name(parent_name)
                     {
                         self.emit_u16(Op::LOCAL_GET, ctor_local);
                         self.emit_const(Value::Bool(true));
-                        let marker_key = self.str_const("__vybe_typed_array_ctor");
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("__vybe_typed_array_ctor"),
+                            class_slots::ValueSource::Stack,
+                        );
                         for static_name in ["from", "of"] {
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
                             self.emit_parent_class_value(parent_name);
-                            let static_key = self.str_const(static_name);
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, static_key);
+                            let static_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(static_name));
+                            self.class_get_resolved(class_slots::ObjSource::Stack, &static_key);
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
                             let bind_idx = self.import("ecma:function", "bind");
                             self.emit_host_call(bind_idx, 2);
-                            self.emit_struct_field_op(Op::STRUCT_SET, 0, static_key);
+                            self.class_set_resolved(
+                                class_slots::ObjSource::Stack,
+                                &static_key,
+                                class_slots::ValueSource::Stack,
+                            );
                         }
                     }
                 } else {
@@ -4563,8 +4938,11 @@ impl Compiler {
                 // property key (non-enumerable, like all fn metadata).
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::String(Arc::from(mname.as_str())));
-                let name_key = self.str_const("name");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("name"),
+                    class_slots::ValueSource::Stack,
+                );
                 // The stamp helper CONSUMES its operand — duplicate the
                 // method fn, the attach below still needs it.
                 inst!(self, core_wasm::dup);
@@ -4593,10 +4971,12 @@ impl Compiler {
                 if let Some(slot_key) = self.current_class_slot_keys.get(mname.as_str()).cloned() {
                     self.emit_u16(Op::LOCAL_GET, proto_local);
                     self.emit_u16(Op::LOCAL_GET, proto_local);
-                    let method_key = self.str_const(mname);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_key);
-                    let slot_const = self.str_const(&slot_key);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, slot_const);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(mname));
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&slot_key),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
             }
         }
@@ -4642,7 +5022,7 @@ impl Compiler {
                 self.emit(Op::DROP);
                 continue;
             }
-            if self.profile.static_fields_are_own_properties && !fname.starts_with("__js_private_")
+            if self.static_fields_are_own_properties() && !fname.starts_with("__js_private_")
             {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 if let Some(init_expr) = init {
@@ -4675,8 +5055,11 @@ impl Compiler {
                 common::dict::emit_new(&mut self.chunks, self.current, self.line);
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let value_key = self.str_const("value");
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("value"),
+                    class_slots::ValueSource::Stack,
+                );
                 for (flag, value) in [
                     ("writable", true),
                     ("enumerable", true),
@@ -4684,8 +5067,11 @@ impl Compiler {
                 ] {
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::Bool(value));
-                    let flag_key = self.str_const(flag);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(flag),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
                 let define_prop_idx = self.import("ecma:object", "defineProperty");
                 self.emit_host_call(define_prop_idx, 3);
@@ -4714,8 +5100,12 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             let global_name = self.canon(&format!("{}.{}", name, const_name));
             self.emit_global_read(&global_name);
-            let field_idx = self.str_const(const_name);
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+            let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(const_name));
+            self.class_set_resolved(
+                class_slots::ObjSource::Stack,
+                &field_idx,
+                class_slots::ValueSource::Stack,
+            );
         }
 
         let own_static_member_names: Vec<String> = static_field_inits
@@ -4740,7 +5130,7 @@ impl Compiler {
                     .get(pname.as_str())
                     .and_then(|pc| pc.parent.clone());
                 for field_name in &parent_static_fields {
-                    if self.profile.supports_private_fields
+                    if self.supports_private_fields()
                         && field_name.starts_with("__js_private_")
                     {
                         continue;
@@ -4753,9 +5143,13 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
                     self.emit_global_read(pname);
-                    let field_idx = self.str_const(field_name);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+                    let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(field_name));
+                    self.class_get_resolved(class_slots::ObjSource::Stack, &field_idx);
+                    self.class_set_resolved(
+                        class_slots::ObjSource::Stack,
+                        &field_idx,
+                        class_slots::ValueSource::Stack,
+                    );
                 }
                 current_parent = next_parent;
             }
@@ -4777,8 +5171,11 @@ impl Compiler {
             ] {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 self.emit_global_read(&nested_canon);
-                let key = self.str_const(&key_name);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(&key_name),
+                    class_slots::ValueSource::Stack,
+                );
             }
         }
 
@@ -4793,7 +5190,7 @@ impl Compiler {
             None
         };
         for (mname, mci, _, _) in &static_methods {
-            if self.profile.supports_private_fields && mname.starts_with("__js_private_") {
+            if self.supports_private_fields() && mname.starts_with("__js_private_") {
                 continue;
             }
             let (m_async, m_gen) = self
@@ -4815,7 +5212,7 @@ impl Compiler {
             all_statics.push((mname.clone(), *mci));
         }
 
-        if self.profile.supports_private_fields {
+        if self.supports_private_fields() {
             for method in &class.static_methods {
                 if !self.class_declares_private_member(&class.name, &method.source_name) {
                     continue;
@@ -4833,19 +5230,28 @@ impl Compiler {
                     if let Some(receiver_slot) = php_static_receiver {
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        let receiver_key = self.str_const("__vybe_method_receiver");
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+                            class_slots::ValueSource::Stack,
+                        );
                     }
                     if let Some(fixed_count) = method_rest_fixed_count(*chunk_idx) {
                         inst!(self, core_wasm::dup);
                         self.emit_const(Value::F64(fixed_count as f64));
-                        let rest_key = self.str_const("__vybe_rest_fixed_arity");
-                        self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"),
+                            class_slots::ValueSource::Stack,
+                        );
                     }
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::String(Arc::from(method.source_name.as_str())));
-                    let name_key = self.str_const("name");
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("name"),
+                        class_slots::ValueSource::Stack,
+                    );
                     // The stamp helper CONSUMES its operand — duplicate the
                     // method fn, the attach below still needs it.
                     inst!(self, core_wasm::dup);
@@ -4853,8 +5259,11 @@ impl Compiler {
                         self.chunk(),
                         line,
                     );
-                    let storage_key = self.str_const(&bound_name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, storage_key);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&bound_name),
+                        class_slots::ValueSource::Stack,
+                    );
                 }
             }
         }
@@ -4967,7 +5376,7 @@ impl Compiler {
 
         // The class's own member list, for languages whose reflection surface
         // reads it at runtime rather than deriving it at compile time.
-        if self.profile.class_member_metadata {
+        if self.class_member_metadata() {
             let fields: Vec<(String, Option<String>, i64)> = class
                 .instance_fields
                 .iter()
@@ -5005,7 +5414,7 @@ impl Compiler {
         // Class-introspection metadata on the class object: `__name__` (own
         // name) and `__mro__` (self → bases → `object`). Universal — every
         // class gets it, keyed on class construction, no language check.
-        if self.profile.class_introspection_metadata {
+        if self.class_introspection_metadata() {
             crate::primitives::classes::emit_stamp_class_name(
                 self.chunk(),
                 ctor_local,
@@ -5013,19 +5422,39 @@ impl Compiler {
                 declared_kind,
                 line,
             );
-            // Under multiple inheritance, `__mro__` follows the full C3
-            // linearization and `__bases__` lists every declared base; single
-            // inheritance keeps the one-parent chain unchanged.
-            let mi = self.profile.class_multiple_inheritance && class.bases.len() > 1;
-            let (mro_globals, bases_globals): (Vec<String>, Vec<String>) = if mi {
-                let mut mro = self.c3_linearize(name); // [self, …ancestors…]
+            // ⛔⛔ C3 IS THE LINEARIZATION, NOT A MULTIPLE-INHERITANCE FEATURE.
+            //
+            // This ran `c3_linearize` only when a class had MORE THAN ONE base;
+            // single inheritance took a branch that listed the DIRECT parent
+            // and nothing else. But a one-parent chain is still a chain, so
+            // every grandparent was dropped:
+            //
+            //     class A5: def v(self)      B5.__mro__ = [B5, A5, object]  ✓
+            //     class B5(A5): pass         C5.__mro__ = [C5, B5, object]  ⛔ A5 gone
+            //     class C5(B5): ...
+            //
+            // `__mro__` IS the method resolution order, so truncating it broke
+            // python's cooperative `super()` for **any** three-level chain —
+            // `super().v()` walked [C5, B5, object], never saw A5, and threw
+            // `null is not callable`. It looked like an empty-intermediate-class
+            // bug because that is where it is easiest to notice; it is not, the
+            // grandparent is lost whether or not B5 declares anything.
+            //
+            // `c3_linearize` is already recursive and already correct for a
+            // single base (`seqs = [c3(parent)] + [[parent]]` merges to the
+            // full chain), so the special case was not just wrong, it was
+            // unnecessary. `__bases__` stays the DECLARED bases — that one
+            // really is one level deep.
+            let mut mro = self.c3_linearize(name); // [self, …ancestors…]
+            if !mro.is_empty() {
                 mro.remove(0); // helper re-adds self + the `object` tail
-                let bases = class.bases.iter().map(|b| self.canon(b)).collect();
-                (mro, bases)
+            }
+            let bases_globals: Vec<String> = if class.bases.is_empty() {
+                parent.as_ref().map(|p| vec![p.clone()]).unwrap_or_default()
             } else {
-                let bg: Vec<String> = parent.as_ref().map(|p| vec![p.clone()]).unwrap_or_default();
-                (bg.clone(), bg)
+                class.bases.iter().map(|b| self.canon(b)).collect()
             };
+            let mro_globals = mro;
             crate::primitives::classes::emit_stamp_class_mro(
                 &mut self.chunks,
                 self.current,
@@ -5295,11 +5724,45 @@ pub fn emit_new_typed_object(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
+    // ⛔ TRUTHY IS NOT ENOUGH — the receiver must be an INSTANCE OF THIS TYPE.
+    //
+    // Two very different things arrive in `this_slot`: a derived construction
+    // hands down the already-allocated instance (must be initialised, never
+    // replaced — it carries the rtt, and WASM GC cannot retype afterwards),
+    // and a dart NAMED CONSTRUCTOR arrives as a MEMBER CALL riding the ambient
+    // `__js_this`, which is a generic untyped object that was never allocated
+    // as this class at all.
+    //
+    // Truthiness cannot tell them apart, so the named-ctor case initialised the
+    // ambient object: every call returned the SAME object (`identical(a, b)`
+    // was `true`), and because the object had no rtt its indexed field writes
+    // landed in `fields[]` while reads of an untyped object bridge BY NAME and
+    // found nothing — `Db._().ready` read `null` for `bool ready = true`.
+    // Measured: with the seam-3 licence withheld the same program prints
+    // `true 7`; licensed, `null null`.
+    //
+    // `ref.test` is exactly the question being asked, and it answers both cases
+    // correctly by construction: a derived instance IS a subtype of the base,
+    // so base-constructor chaining still reuses it; a generic ambient object is
+    // not, so it gets a properly typed allocation instead.
+    if typeidx != 0 {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_ref_type_op(
+            Op::REF_TEST,
+            vybe_runtime::opcode::heaptype::HeapType::Concrete(typeidx as u32),
+            line,
+        );
+        chunk.emit_if(line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, typeidx, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        chunk.emit_end(line);
+    }
     chunk.emit_else(line);
     if typeidx != 0 {
         chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, typeidx, line);
     } else {
-        chunk.emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(chunk, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     chunk.emit_end(line);
@@ -5361,8 +5824,17 @@ pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, l
 pub fn emit_value_equality_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(true, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__value_eq")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__value_eq"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// The STORAGE half of the same idea: mark an instance whose declaration said
@@ -5379,8 +5851,17 @@ pub fn emit_value_equality_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
 pub fn emit_value_storage_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(true, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__value_copy")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__value_copy"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// `isinstance(obj, "Class")` / `obj.is_a?(Class)` — the READ side of the type
@@ -5569,8 +6050,17 @@ pub fn emit_stamp_class_mro(
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     // ctor.__mro__ = arr
-    let key = chunks[current].add_constant(Value::String(Arc::from("__mro__")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__mro__"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [ctor]
 }
 
 /// Stamp `__bases__` on the class object: an array of the DIRECT parent class
@@ -5599,8 +6089,17 @@ pub fn emit_stamp_class_bases(
             chunks[current].emit_op(Op::DROP, line);
         }
     }
-    let key = chunks[current].add_constant(Value::String(Arc::from("__bases__")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__bases__"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [ctor]
 }
 
 const SUPER_LOOKUP_CHUNK: &str = "__mi_super_lookup";
@@ -5754,7 +6253,7 @@ fn push_array_value_local(chunks: &mut [Chunk], current: usize, slot: u16, line:
 /// Push a minimal `object` class stand-in carrying `__name__ = "object"`, for the
 /// tail of every class's `__mro__`. Stack: `[] -> [obj]`.
 fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     crate::primitives::object::set_string_field(chunk, "__name__", "object", line);
     chunk.emit_dup(line);
@@ -5782,28 +6281,6 @@ fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
 
 // ── Super call (cross-language) ────────────────────────────────────────
 
-/// After calling the parent constructor (result on TOS), store it as `this` and
-/// save any parent methods that the child will override.
-///
-/// The compiler handles the actual call: global_get(parent) → push args → call_ref(argc).
-/// This helper stores the result and prepares for child method override.
-///
-/// Stack before: [parent_return_value]  Stack after: []
-pub fn emit_super_call_store_result(
-    chunk: &mut Chunk,
-    this_slot: u16,
-    child_class_canon: &str,
-    child_method_names: &[&str],
-    line: u32,
-) {
-    // Store parent-created object as this
-    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-
-    // Save parent's methods that child will override (for super.method() calls)
-    for method_name in child_method_names {
-        emit_save_base_method(chunk, this_slot, child_class_canon, method_name, line);
-    }
-}
 
 // ── Name drop ───────────────────────────────────────────────────────────
 
@@ -5827,9 +6304,10 @@ impl Compiler {
     ///
     /// Stack: unchanged.
     pub(crate) fn emit_name_drop_finalise(&mut self, target: &Expression) -> Result<(), String> {
-        if self.directives().name_drop != Some(vybe_ast::NameDrop::Finalise) {
-            return Ok(());
-        }
+        let timing = match self.directives().name_drop {
+            Some(timing @ (vybe_ast::NameDrop::Finalise | vybe_ast::NameDrop::Defer)) => timing,
+            _ => return Ok(()),
+        };
         // Only a bare NAME drops the object. `del obj.attr` / `del obj[k]`
         // remove a member and leave the object referenced, so nothing is
         // finalised — the target's own shape decides, no language check.
@@ -5870,21 +6348,181 @@ impl Compiler {
         self.emit(Op::REF_IS_NULL);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
-        self.emit_u16(Op::LOCAL_GET, dtor);
-        self.emit_u16(Op::LOCAL_GET, obj);
-        {
-            let line = self.line;
-            crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        if timing == vybe_ast::NameDrop::Defer {
+            // ▶▶ .NET: the drop makes the value ELIGIBLE, it does not finalise
+            // it. The object joins the finalisation queue and waits for a
+            // collection point — which is the only thing that distinguishes
+            // `Finalize` from `Dispose`, and the whole of the .NET convention.
+            //
+            // The queue is a module global so the collection point can drain it
+            // without knowing who enqueued.
+            self.emit_u16(Op::LOCAL_GET, obj);
+            crate::primitives::classes::emit_finalize_queue_push(
+                &mut self.chunks,
+                self.current,
+                line,
+            );
+        } else {
+            self.emit_u16(Op::LOCAL_GET, dtor);
+            self.emit_u16(Op::LOCAL_GET, obj);
+            {
+                let line = self.line;
+                crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+            }
+            // A finaliser is called for its effect; every call pushes exactly
+            // one value, so the result is dropped rather than left to unbalance
+            // the enclosing statement.
+            self.emit(Op::DROP);
         }
-        // A finaliser is called for its effect; every call pushes exactly one
-        // value, so the result is dropped rather than left to unbalance the
-        // enclosing statement.
-        self.emit(Op::DROP);
         self.chunk().emit_end(line);
 
         self.chunk().emit_end(line);
         Ok(())
     }
+}
+
+// ── Finalisation ────────────────────────────────────────────────────────
+//
+// ⛔ THE WHOLE LIFECYCLE LIVES HERE, not half here and half in a platform.
+// A destructor is a `ProtocolSlot`, and reading that slot to call it is class
+// machinery whichever language asked for it — `platforms/dotnet` briefly owned
+// the drain, which meant a .NET file read `ProtocolSlot::Destructor` and
+// invented a spelling for the suppression bit. What a platform legitimately
+// owns is WHEN a collection point happens and what its API throws; that is all
+// it owns now.
+//
+// The two facts stay in their own homes, as [`Directives::name_drop`] records:
+// the language says WHETHER and WHEN a dropped name finalises (a directive),
+// the class says WHICH method runs (a slot). Nothing below names a language.
+
+/// The module global holding objects awaiting finalisation.
+///
+/// A NAME, not a slot, because [`globals::emit_read`] is the one encoding of a
+/// global access and both ends of this queue are emit layers.
+pub const FINALIZE_QUEUE: &str = "__vybe_finalize_queue";
+
+/// The per-object bit that says "already cleaned up; do not finalise".
+///
+/// Travels WITH the value rather than in a side table, because that is what it
+/// is about — .NET spells asking for it `GC.SuppressFinalize`, python spells it
+/// by simply not having a `__del__`, and a language with neither concept never
+/// sets it.
+pub const FINALIZE_SUPPRESSED: &str = "__vybe_finalize_suppressed";
+
+/// Push the object on the stack onto the finalisation queue, creating the queue
+/// on first use. Stack: `[obj]` → `[]`.
+pub fn emit_finalize_queue_push(chunks: &mut [Chunk], current: usize, line: u32) {
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    // The queue is created lazily: a program that never drops a finalisable
+    // name never allocates one.
+    crate::primitives::globals::emit_read(&mut chunks[current], FINALIZE_QUEUE, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(0, line);
+    crate::primitives::collections::emit_new_with_length(chunks, current, line);
+    crate::primitives::globals::emit_write(&mut chunks[current], FINALIZE_QUEUE, line);
+    chunks[current].emit_end(line);
+
+    crate::primitives::globals::emit_read(&mut chunks[current], FINALIZE_QUEUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    crate::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// Mark (or unmark) the object on the stack as not needing finalisation.
+/// Stack: `[obj]` → `[]`. The caller has already rejected a null receiver if
+/// its own API says to.
+pub fn emit_set_finalize_suppressed(
+    chunks: &mut [Chunk],
+    current: usize,
+    suppressed: bool,
+    line: u32,
+) {
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+    crate::primitives::class_slots::emit_class_set(
+        &mut chunks[current],
+        crate::primitives::class_slots::ObjSource::Local(obj),
+        &crate::primitives::class_slots::resolve(
+            &crate::primitives::class_slots::ClassSlot::internal(FINALIZE_SUPPRESSED),
+            &crate::primitives::class_slots::PlainNames,
+        ),
+        crate::primitives::class_slots::ValueSource::ConstBool(suppressed),
+        line,
+    );
+}
+
+/// Run every queued object's [`ProtocolSlot::Destructor`], skipping the ones a
+/// caller suppressed, and empty the queue. Stack: unchanged.
+///
+/// This is what a COLLECTION POINT does. A language reaches it by whatever it
+/// spells one — .NET's `GC.Collect` / `GC.WaitForPendingFinalizers` today —
+/// and the queue is filled by `emit_name_drop_finalise` under
+/// [`NameDrop::Defer`]. A language whose directive is [`NameDrop::Finalise`]
+/// never fills the queue and a drain over it does nothing, which is correct
+/// rather than a special case.
+pub fn emit_finalize_queue_drain(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(3);
+    let obj = queue + 1;
+    let dtor = queue + 2;
+
+    crate::primitives::globals::emit_read(&mut chunks[current], FINALIZE_QUEUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, queue, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    // while queue.length > 0 { queue.pop().<Destructor>() }
+    chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queue, line);
+    crate::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queue, line);
+    crate::primitives::collections::emit_pop(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    // A suppressed object leaves the queue without running.
+    crate::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        crate::primitives::class_slots::ObjSource::Local(obj),
+        &crate::primitives::class_slots::resolve(
+            &crate::primitives::class_slots::ClassSlot::internal(FINALIZE_SUPPRESSED),
+            &crate::primitives::class_slots::PlainNames,
+        ),
+        crate::primitives::class_slots::Dest::Stack,
+        line,
+    );
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    // The SLOT, not a name: a `Finalize`, a `~Foo` and a `__del__` are one
+    // binding here, which is the whole reason this is not per-language code.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    let key = chunks[current].intern_string_constant(&vybe_ast::protocol_slot_key(
+        vybe_ast::ProtocolSlot::Destructor,
+    ));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, dtor, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dtor, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_br(1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 // ── Inheritance ─────────────────────────────────────────────────────────
@@ -5908,10 +6546,28 @@ pub fn emit_save_base_method(
     let base_name = format!("__base_{}${}", owner_canon, method_name);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_set
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_get
-    let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop_idx, line); // val = this.method (parent version)
-    let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, base_idx, line); // this.__base_method = val
+    let prop_idx = class_slots::resolve(
+        &class_slots::ClassSlot::internal(method_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &prop_idx,
+        class_slots::Dest::Stack,
+        line,
+    ); // val = this.method (parent version)
+    let base_idx = class_slots::resolve(
+        &class_slots::ClassSlot::internal(base_name.as_str()),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &base_idx,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // this.__base_method = val
 }
 
 /// Store parent constructor ref as __super on the instance.
@@ -5919,8 +6575,17 @@ pub fn emit_save_base_method(
 pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     crate::primitives::globals::emit_read(chunk, parent_name, line);
-    let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, super_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__super"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Inherit static methods from parent constructor via Object.assign.
@@ -6048,8 +6713,17 @@ pub fn emit_attach_static_method_kinded(
     if let Some(receiver_slot) = receiver_slot {
         chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-        let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key, line);
+        let slot = class_slots::resolve(
+            &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &slot,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
     if let Some(fixed_count) = rest_fixed_count {
         crate::primitives::object::emit_stamp_rest_metadata(chunk, fixed_count, line);
@@ -6058,14 +6732,32 @@ pub fn emit_attach_static_method_kinded(
     // key (non-enumerable, like all function metadata).
     chunk.emit_dup(line);
     chunk.emit_string_const(method_name, line);
-    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("name"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     // The stamp helper CONSUMES its operand — duplicate the fn, the attach
     // below still needs it.
     chunk.emit_dup(line);
     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(chunk, line);
-    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(method_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 // ── Property accessors ──────────────────────────────────────────────────
@@ -6147,10 +6839,17 @@ pub fn emit_store_constructor_with_upvalues(
 /// Set a field on the object to null (pre-declaration / auto-property init).
 /// Stack: unchanged
 pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::instance(field_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Local(this_slot),
+        &slot,
+        class_slots::ValueSource::Null,
+        line,
+    );
 }
 
 /// Push `this` onto the stack to start a field initialization.
@@ -6163,15 +6862,36 @@ pub fn emit_init_field_start(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// Finish a field initialization started with `emit_init_field_start`.
 /// Stack before: [this, value]. Stack after: [].
 pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    // The object was pushed by `emit_init_field_start` and the value sits above
+    // it, so the key goes on last — the one shape `emit_class_set` cannot take,
+    // because it owns the ordering. Kept as a direct emission until
+    // start/end collapses into a single `emit_class_set` call at its callers.
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(field_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Get a field value from `this`. Stack before: []. Stack after: [value].
 pub fn emit_get_field(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::instance(field_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Local(this_slot),
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// Set a field value on `this` from a value already on the stack.
@@ -6230,7 +6950,43 @@ pub fn register_type(
         .filter(|iface| !iface.is_empty())
         .map(|iface| reserve_type_slot(chunks, iface))
         .collect();
-    let entry = vybe_runtime::chunk::TypeEntry {
+    // ⛔⛔ WASM GC REQUIRES A SUBTYPE'S FIELDS TO EXTEND ITS SUPERTYPE'S AS A
+    // PREFIX. Declaring `sub $base` while carrying an unrelated field list is
+    // not merely a wrong index — **the module fails validation on a spec
+    // engine.**
+    //
+    // We emitted exactly that. `class Base { a }` / `class Derived extends Base
+    // { b }` produced:
+    //     type 0 base    -> 0:a          supertypes=[]
+    //     type 2 derived -> 0:b          supertypes=[0]     ← `a` dropped
+    // and php produced `0:b, 1:a` — both fields present, wrong order. Either
+    // way index 0 means `a` in the base and `b` in the derived, so an access
+    // through one type lands in the other's slot. Our VM does not validate
+    // subtyping, so it ran and silently aliased: dart printed `2 null` for
+    // `1 2`.
+    //
+    // Prefixing with the parent's fields fixes the layout AND is what makes
+    // base-constructor allocation sound: if the prefix holds, an instance
+    // allocated with the BASE's typeidx already has the derived type's leading
+    // fields at the right indices, by construction.
+    let fields = if parent_index != 0 {
+        let parent_fields = chunks[0]
+            .types
+            .get(parent_index as usize - 1)
+            .map(|p| p.fields.clone())
+            .unwrap_or_default();
+        let mut out = parent_fields;
+        for f in fields {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+        out
+    } else {
+        fields
+    };
+
+    let mut entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent_index,
@@ -6240,6 +6996,7 @@ pub fn register_type(
         implements,
         constructor_chunk,
         field_descriptors,
+            ..Default::default()
     };
     // Fill a slot RESERVED by `reserve_type_slot` if there is one, so the type
     // keeps the table position its constructor already baked into its
@@ -6248,7 +7005,51 @@ pub fn register_type(
     // `load_type_table` registers the FIRST occurrence of a name — the
     // instance would allocate against a type with no fields.
     match chunks[0].types.iter_mut().find(|t| t.name == name) {
-        Some(slot) => *slot = entry,
+        Some(slot) => {
+            // ⛔ A FIELD INDEX ALREADY EMITTED CANNOT MOVE.
+            //
+            // The reserved slot's field list is published as soon as it is
+            // known (see "SEAM 3 PREREQUISITE"), and constructor and method
+            // bodies compile against it — `struct.set <typeidx> <fieldidx>`
+            // bakes the position into the bytecode. Replacing the list here
+            // wholesale RE-NUMBERS every one of those immediates: a write to
+            // `x` at index 0 lands on whatever ends up at 0, or traps with
+            // "field index out of range" when the new list is shorter.
+            //
+            // Not hypothetical — it broke every python `@dataclass` and
+            // `__slots__` class, because python's registration supplies
+            // `__class__` / `__dataclass_fields__` / `__match_args__` where the
+            // emitter had already indexed `x` / `y` / `label`.
+            //
+            // So the published prefix is AUTHORITATIVE and anything new is
+            // APPENDED: indices only gain entries, never move, and the arity
+            // only grows — which is also what keeps a longer list safe for an
+            // instance allocated against a shorter one.
+            // ⚠ The two prefix rules can conflict, and the PARENT wins.
+            //
+            // Preserving the published order protects indices already baked
+            // into emitted bytecode. But a derived class must lead with its
+            // base's fields or the module fails GC validation, and those two
+            // orders are different: publishing gave `[b]`, the parent rule
+            // wants `[a, b]`, and merging published-first produced `[b, a]` —
+            // both fields present, still not a prefix.
+            //
+            // Derived classes are not in `seam3_indexable` (their instances are
+            // allocated with the BASE's typeidx), so no derived index is baked
+            // in and there is nothing to protect. The published-prefix rule
+            // therefore applies only to ROOT classes, which are exactly the
+            // ones that get indexed.
+            if entry.parent_index == 0 && !slot.fields.is_empty() {
+                let mut merged = slot.fields.clone();
+                for f in &entry.fields {
+                    if !merged.contains(f) {
+                        merged.push(f.clone());
+                    }
+                }
+                entry.fields = merged;
+            }
+            *slot = entry;
+        }
         None => chunks[0].types.push(entry),
     }
 }
@@ -6354,6 +7155,7 @@ pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     });
     chunks[0].types.len() as u16
 }
@@ -6391,6 +7193,7 @@ pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str)
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     });
     type_index
 }
@@ -6414,7 +7217,7 @@ pub fn register_interface(
         .filter(|iface| !iface.is_empty())
         .map(|iface| reserve_type_slot(chunks, iface))
         .collect();
-    let entry = vybe_runtime::chunk::TypeEntry {
+    let mut entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent_index: 0,
@@ -6424,11 +7227,56 @@ pub fn register_interface(
         implements,
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     };
     // Fill a reserved slot when one exists — a class that named this
     // interface before it was compiled already declared it.
     match chunks[0].types.iter_mut().find(|t| t.name == name) {
-        Some(slot) => *slot = entry,
+        Some(slot) => {
+            // ⛔ A FIELD INDEX ALREADY EMITTED CANNOT MOVE.
+            //
+            // The reserved slot's field list is published as soon as it is
+            // known (see "SEAM 3 PREREQUISITE"), and constructor and method
+            // bodies compile against it — `struct.set <typeidx> <fieldidx>`
+            // bakes the position into the bytecode. Replacing the list here
+            // wholesale RE-NUMBERS every one of those immediates: a write to
+            // `x` at index 0 lands on whatever ends up at 0, or traps with
+            // "field index out of range" when the new list is shorter.
+            //
+            // Not hypothetical — it broke every python `@dataclass` and
+            // `__slots__` class, because python's registration supplies
+            // `__class__` / `__dataclass_fields__` / `__match_args__` where the
+            // emitter had already indexed `x` / `y` / `label`.
+            //
+            // So the published prefix is AUTHORITATIVE and anything new is
+            // APPENDED: indices only gain entries, never move, and the arity
+            // only grows — which is also what keeps a longer list safe for an
+            // instance allocated against a shorter one.
+            // ⚠ The two prefix rules can conflict, and the PARENT wins.
+            //
+            // Preserving the published order protects indices already baked
+            // into emitted bytecode. But a derived class must lead with its
+            // base's fields or the module fails GC validation, and those two
+            // orders are different: publishing gave `[b]`, the parent rule
+            // wants `[a, b]`, and merging published-first produced `[b, a]` —
+            // both fields present, still not a prefix.
+            //
+            // Derived classes are not in `seam3_indexable` (their instances are
+            // allocated with the BASE's typeidx), so no derived index is baked
+            // in and there is nothing to protect. The published-prefix rule
+            // therefore applies only to ROOT classes, which are exactly the
+            // ones that get indexed.
+            if entry.parent_index == 0 && !slot.fields.is_empty() {
+                let mut merged = slot.fields.clone();
+                for f in &entry.fields {
+                    if !merged.contains(f) {
+                        merged.push(f.clone());
+                    }
+                }
+                entry.fields = merged;
+            }
+            *slot = entry;
+        }
         None => chunks[0].types.push(entry),
     }
 }
@@ -6484,8 +7332,17 @@ pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// lowercased for the struct_get lookup (all method keys are stored lowercase).
 pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
-    let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_idx, line); // [method_ref]
+    let name_idx = class_slots::resolve(
+        &class_slots::ClassSlot::internal(method_name.to_lowercase()),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &name_idx,
+        class_slots::Dest::Stack,
+        line,
+    ); // [method_ref]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line); // call(1) → [result]
     chunk.emit_op(Op::DROP, line); // []
@@ -6493,3 +7350,242 @@ pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str,
 
 // NOTE: needs_auto_init_component() has moved to type_registry.rs where it
 // uses the proper CompileTimeTypes hierarchy instead of string matching.
+
+impl Compiler {
+    /// Re-establish the WASM GC **subtype field-prefix rule** across the whole
+    /// type table, once every type is registered.
+    ///
+    /// `register_type` already prefixes a child with its parent's fields — but
+    /// only with the fields the parent has **at that moment**. A parent that
+    /// has not been registered yet exists only as the empty entry
+    /// `reserve_type_slot` pushed to hold its index, so the child copies
+    /// nothing and the prefix is violated exactly as before:
+    ///
+    /// ```text
+    /// class Third extends Derived { c }   // registers first — parent empty
+    /// class Derived extends Base  { b }
+    /// class Base                  { a }
+    /// ```
+    ///
+    /// Declaration order is not a language's promise to us: dart and php both
+    /// accept a derived class above its base, and a chain reserves *two* empty
+    /// parents. A forward pass cannot fix this, because the fact it needs
+    /// arrives later — so the repair belongs at the end, where the table is
+    /// complete.
+    ///
+    /// Ordering by DEPTH is what makes one pass sufficient: a parent is always
+    /// rewritten before its children, so each child prefixes against a list
+    /// that is already final. The tail is `retain`ed rather than rebuilt, which
+    /// makes the pass idempotent — running it over an already-correct table is
+    /// a no-op.
+    /// Append one DESCRIPTOR type row per class, after every class row.
+    ///
+    /// The descriptor is a first-class handle to the class's rtt
+    /// (custom-descriptors §JS Prototypes). It has to exist as a real row —
+    /// not just as a writer-synthesised index — the moment its contents come
+    /// from the COMPILER: `struct.new` carrying a runtime prototype is not a
+    /// constant expression, so the descriptor is built in code, and code needs
+    /// a typeidx.
+    ///
+    /// ⛔ **APPENDED AFTER EVERY CLASS ROW.** Class typeidxs are baked into
+    /// emitted `struct.get` / `struct.set` / `struct.new_default` immediates;
+    /// inserting anywhere else silently repoints all of them. This is the same
+    /// failure as `register_type` replacing a reserved entry.
+    ///
+    /// ⛔ **NAME CONTAINS A SPACE, DELIBERATELY.** The registry folds case, so
+    /// the name has to be one no source can produce. `#desc:<class>` was NOT
+    /// safe: `#` and `:` are both wast idchars, so `(type $#desc:foo …)` is a
+    /// legal declaration that reaches this table through the walker and would
+    /// collide with the descriptor for a class named `foo`. A space is not an
+    /// idchar in wast and is not legal in any source identifier, which turns
+    /// "no source can produce this" from a story into an invariant. (Fathom
+    /// caught the original; the premise, not the conclusion, was the bug.)
+    ///
+    /// Run AFTER `finalize_type_prefixes` so the method list is already merged
+    /// — the descriptor's funcref slots mirror it, and a descriptor built from
+    /// an unmerged list would go short exactly where the prefix rule bites.
+    pub(crate) fn append_descriptor_type_rows(&mut self) {
+        let class_count = self.chunks[0].types.len();
+        for i in 0..class_count {
+            if self.chunks[0].types[i].describes_index != 0 {
+                continue;
+            }
+            let canon_name = self.canon(&self.chunks[0].types[i].name);
+            // Field 0 = JS prototype (immutable externref) — `[[GetPrototypeOf]]`
+            // reads exactly this. Field 1 = property metadata for enumeration,
+            // placed BEFORE the funcrefs so it has a fixed index in every class
+            // whatever the method count, and therefore survives the by-name
+            // vtable merge. Methods follow, in table order.
+            let mut fields = vec!["__desc_proto".to_string(), "__desc_props".to_string()];
+            fields.extend(self.chunks[0].types[i].methods.iter().map(|(m, _)| m.clone()));
+            self.chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
+                name: format!("#desc {canon_name}"),
+                kind: vybe_runtime::chunk::CompositeKind::Struct,
+                describes_index: (i + 1) as u16,
+                fields,
+                ..Default::default()
+            });
+        }
+    }
+
+    pub(crate) fn finalize_type_prefixes(&mut self) {
+        let n = self.chunks[0].types.len();
+        if n == 0 {
+            return;
+        }
+        // Depth of each type in its parent chain, via the SHARED walk.
+        //
+        // ⛔ This was a second hand-rolled parent chase with its own cycle cap,
+        // written in this file within an hour of the first one. `ancestry_of`
+        // is self-first and already refuses to spin on a cyclic parent, and its
+        // own doc says it exists because this walk had been written out once
+        // per derivation — four times in the dotnet registrar alone. Two more
+        // copies here would have made six.
+        //
+        // The chain is by NAME, so `parent_of` translates the table's 1-based
+        // `parent_index` (0 = no parent) into the parent's name; depth is the
+        // chain length minus the class itself.
+        let names: Vec<String> = self.chunks[0].types.iter().map(|t| t.name.clone()).collect();
+        let parent_of = |cls: &str| -> Option<String> {
+            let idx = names.iter().position(|n| n == cls)?;
+            let p = self.chunks[0].types[idx].parent_index as usize;
+            (p != 0 && p <= names.len()).then(|| names[p - 1].clone())
+        };
+        let depth: Vec<usize> = names
+            .iter()
+            .map(|n| vybe_runtime::namespaces::ancestry_of(n, &parent_of).len() - 1)
+            .collect();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|i| depth[*i]);
+
+        for i in order {
+            let parent = self.chunks[0].types[i].parent_index as usize;
+            if parent == 0 || parent > n || parent - 1 == i {
+                continue;
+            }
+            // ⛔ A licensed type's field indices are already baked into emitted
+            // `struct.get`/`struct.set` immediates — reordering here would
+            // silently repoint every one of them. The licence is granted only
+            // to classes with no parent, so this branch is unreachable unless a
+            // root later acquires one; skipping is the conservative answer
+            // either way.
+            let canon_name = self.canon(&self.chunks[0].types[i].name);
+            if self.seam3_indexable.contains(&canon_name) {
+                continue;
+            }
+            let parent_fields = self.chunks[0].types[parent - 1].fields.clone();
+            let parent_methods = self.chunks[0].types[parent - 1].methods.clone();
+
+            if !parent_fields.is_empty() {
+                let entry = &mut self.chunks[0].types[i];
+                if !entry.fields.starts_with(&parent_fields) {
+                    let mut merged = parent_fields;
+                    let mut tail = std::mem::take(&mut entry.fields);
+                    tail.retain(|f| !merged.contains(f));
+                    merged.append(&mut tail);
+                    entry.fields = merged;
+                }
+            }
+
+            // ⛔⛔ THE DESCRIPTOR STRUCT IS WHERE THE PREFIX RULE IS GENUINELY
+            // VIOLATED — the instance struct mostly is not.
+            //
+            // `writer/types.rs` emits each class as a PAIR: the described
+            // struct, and a descriptor struct of `1 + methods.len()` fields —
+            // one externref plus one **funcref per method** — whose supertype
+            // is the PARENT's descriptor. The method list registered for a
+            // class is its OWN declared methods, so a derived class that
+            // declares fewer methods than its base emits a descriptor
+            // SHORTER than the type it extends. Measured (Cairn): a base with
+            // three methods and a derived overriding one gave descriptor
+            // field counts 7 and 3 — `3 < 7` is a **short count on funcref
+            // fields, which a spec engine rejects at validation.**
+            //
+            // Unlike the instance struct — every field of which encodes as
+            // `(mut externref)`, so an equal count is a valid prefix whatever
+            // the names — this cannot be waved through: the counts differ.
+            // And "a derived class declares fewer methods than its base" is
+            // not a corner case, it is what inheritance normally looks like.
+            //
+            // The vtable rule fixes it BY CONSTRUCTION rather than by check:
+            // inherit the parent's list, an override REPLACES its entry in
+            // place (keeping the parent's slot — which is exactly what a
+            // vtable does), anything new appends. The count is then monotonic
+            // along every chain, so the prefix can never go short.
+            //
+            // Keyed BY NAME, not by declared count: the list carries more than
+            // the declared methods (a class declaring three produced six), and
+            // whatever those extras are they must inherit under the same rule
+            // or the count can still go short.
+            // ⛔⛔ MERGE ALONG THE LINEARIZATION, NOT ALONG `parent_index`.
+            //
+            // `parent_index` is ONE base — `bases.first()`. For a diamond that
+            // silently ignores every other base:
+            //
+            //     class A:      who -> 'A'
+            //     class B(A):   pass
+            //     class C(A):   who -> 'C'
+            //     class D(B, C): pass          # C3 MRO = [D, B, C, A] ⇒ 'C'
+            //
+            // Merging D through `parent_index` walks B → A and never sees C, so
+            // D's vtable gained `A::who` and `resolve_method` answered from it
+            // directly — short-circuiting the MRO walk that would have found
+            // `C::who`. Measured: `want [C] got [A]`
+            // (`python/oop_inheritance_extended/mro_method_resolution`, found by
+            // Cairn, who ablated his own changes out of it first).
+            //
+            // With several bases the sources are the full C3 chain in REVERSE —
+            // farthest ancestor first — so a nearer declaration overwrites a
+            // farther one and self, applied last, still wins. That is the same
+            // ordering `emit_mi_ancestor_methods` already uses for the instance
+            // bindings; the type table has to agree with it, or the two answer
+            // differently for the same call.
+            let sources: Vec<Vec<(String, usize)>> = {
+                let canon_name = self.canon(&self.chunks[0].types[i].name);
+                let multi = self
+                    .pending_classes
+                    .get(canon_name.as_str())
+                    .is_some_and(|pc| pc.bases.len() > 1);
+                if multi {
+                    let mut chain = self.c3_linearize(&canon_name);
+                    if !chain.is_empty() {
+                        chain.remove(0); // drop self — applied last, below
+                    }
+                    chain.reverse(); // farthest first ⇒ nearer overrides
+                    chain
+                        .iter()
+                        .filter_map(|cls| {
+                            self.chunks[0]
+                                .types
+                                .iter()
+                                .position(|t| self.canon(&t.name) == *cls)
+                                .map(|p| self.chunks[0].types[p].methods.clone())
+                        })
+                        .collect()
+                } else {
+                    vec![parent_methods]
+                }
+            };
+            if sources.iter().any(|m| !m.is_empty()) {
+                let mut merged: Vec<(String, usize)> = Vec::new();
+                for src in sources {
+                    for (name, chunk_idx) in src {
+                        match merged.iter().position(|(n, _)| *n == name) {
+                            Some(slot) => merged[slot] = (name, chunk_idx),
+                            None => merged.push((name, chunk_idx)),
+                        }
+                    }
+                }
+                let entry = &mut self.chunks[0].types[i];
+                let own = std::mem::take(&mut entry.methods);
+                for (name, chunk_idx) in own {
+                    match merged.iter().position(|(n, _)| *n == name) {
+                        Some(slot) => merged[slot] = (name, chunk_idx),
+                        None => merged.push((name, chunk_idx)),
+                    }
+                }
+                entry.methods = merged;
+            }
+        }
+    }
+}

@@ -21,6 +21,7 @@
 //! the array backing, while `.Field` / `.x` read the by-name key. See
 //! [`emit_named_tuple`].
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_ast::{ExprKind, Expression};
 use vybe_runtime::opcode::Op;
@@ -47,8 +48,17 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     let c = &mut chunks[current];
     c.emit_dup(line); // [arr, arr]
     core_wasm::bool_const(c, line, true); // [arr, arr, true]
-    let k = c.add_constant(Value::String(Arc::from(TUPLE_TAG)));
-    c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, true]
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal(TUPLE_TAG),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [arr, true]
 }
 
 /// Build a tuple from the top `n` stack values: pack them into a growable
@@ -67,8 +77,17 @@ pub fn emit_tuple(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
 /// Stack: `[value] -> [i32]`. A plain list (no tag) reads null → falsy.
 pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
     let c = &mut chunks[current];
-    let k = c.add_constant(Value::String(Arc::from(TUPLE_TAG)));
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let k = class_slots::resolve(
+        &class_slots::ClassSlot::internal(TUPLE_TAG),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::Dest::Stack,
+        line,
+    );
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_op(Op::I32_EQZ, line); // 1 when tag present (non-null)
 }
@@ -256,7 +275,15 @@ pub fn positional_read(object: Expression, index: usize) -> Expression {
 /// Hidden ordered field-name list stamped on a named tuple's array.
 pub const FIELDS_TAG: &str = "__fields";
 /// Hidden type name stamped on a named tuple's array (Python `namedtuple`).
-pub const TYPENAME_TAG: &str = "__typename";
+// ⛔ ONE OWNER. `"__typename"` had two constants in two modules. Unlike the
+// `"__type"` triple these are behaviourally identical TODAY and diverge only
+// when someone edits one — nothing to test, nothing to grep, so a single
+// owner is the only defence.
+//
+// ⚠ `__typename` is a DIFFERENT KEY from `__type`. A sweep that matches on
+// the `FIELD_TYPE` prefix will collapse them; that would be a silent
+// behaviour change no test in the tree asserts.
+pub use crate::primitives::reflection::FIELD_TYPE_NAME as TYPENAME_TAG;
 
 /// Stamp named-tuple metadata onto the array on TOS — already the packed
 /// positional values (as for a plain tuple). Adds the `__tuple` tag, a by-name
@@ -290,8 +317,18 @@ pub fn emit_named_tuple(
         c.emit_dup(line); // [arr, arr, arr]
         core_wasm::i32_const(c, line, i as i32); // [arr, arr, arr, i]
         c.emit_op(Op::ARRAY_GET, line); // [arr, arr, arr[i]]
-        let k = c.add_constant(Value::String(Arc::from(name.as_str())));
-        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, arr[i]]
+        let k = class_slots::resolve_interned(
+            c,
+            &class_slots::ClassSlot::internal(name.as_str()),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            c,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        ); // [arr, arr[i]]
 
         // The folded alias, when the region says field names fold. Skipped
         // when it would be the same key — an already-lowercase name needs no
@@ -307,8 +344,18 @@ pub fn emit_named_tuple(
                 c.emit_dup(line);
                 core_wasm::i32_const(c, line, i as i32);
                 c.emit_op(Op::ARRAY_GET, line);
-                let k = c.add_constant(Value::String(Arc::from(folded.as_str())));
-                c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+                let k = class_slots::resolve_interned(
+                    c,
+                    &class_slots::ClassSlot::internal(folded.as_str()),
+                    &class_slots::PlainNames,
+                );
+                class_slots::emit_class_set(
+                    c,
+                    class_slots::ObjSource::Stack,
+                    &k,
+                    class_slots::ValueSource::Stack,
+                    line,
+                );
             }
         }
     }
@@ -321,8 +368,18 @@ pub fn emit_named_tuple(
             core_wasm::string_const(c, line, name.as_deref().unwrap_or(""));
         }
         c.emit_array_new_fixed(0, field_names.len() as u16, line); // [arr, fields]
-        let k = c.add_constant(Value::String(Arc::from(FIELDS_TAG)));
-        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, fields]
+        let k = class_slots::resolve_interned(
+            c,
+            &class_slots::ClassSlot::internal(FIELDS_TAG),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            c,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        ); // [arr, fields]
     }
 
     // 4. Type name (Python `namedtuple`) → drives the `Name(f=v)` repr.
@@ -330,7 +387,16 @@ pub fn emit_named_tuple(
         let c = &mut chunks[current];
         c.emit_dup(line);
         core_wasm::string_const(c, line, tn);
-        let k = c.add_constant(Value::String(Arc::from(TYPENAME_TAG)));
-        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        let k = class_slots::resolve(
+            &class_slots::ClassSlot::internal(TYPENAME_TAG),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            c,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 }

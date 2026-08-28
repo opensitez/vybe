@@ -122,13 +122,27 @@ index = { integer | id }
 // ── Type use ──────────────────────────────────────────────────────────────────
 
 // typeuse covers: (type $T) with optional param/result override, or just param*/result*
+//
+// Custom Descriptors adds an `(exact …)` wrapper, so a func import can demand
+// its type EXACTLY rather than up to subtyping:
+//   (import "" "" (func $1 (exact (type 0))))
+//   (import "" "" (func $4 (exact (param i32) (result i64))))
+// `"exact"` and the parens are literals and produce no pest children, so the
+// inner pairs a walker sees are still `index` / `param` / `result` — the
+// wrapper costs nothing downstream. Exactness constrains LINKING, which we do
+// not subtype-check on func imports, so accepting it is the whole change.
+// ⚠ The exact alternatives must come FIRST: `param* ~ result*` matches empty,
+// so a leading bare alternative would succeed having consumed nothing and
+// strand `(exact …)` as the next token.
 typeuse = {
-    "(" ~ "type" ~ index ~ ")" ~ param* ~ result*
+    "(" ~ "exact" ~ "(" ~ "type" ~ index ~ ")" ~ param* ~ result* ~ ")"
+  | "(" ~ "exact" ~ param* ~ result* ~ ")"
+  | "(" ~ "type" ~ index ~ ")" ~ param* ~ result*
   | param* ~ result*
 }
 
 // Extends val_type with GC reference types: (ref null? heaptype)
-any_val_type = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | val_type }
+any_val_type = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" | val_type }
 
 // The type list may be EMPTY — `(func (param))` and `(func (result))` are the
 // spec's explicit spellings of "no params" / "no results" (func_ptrs, type).
@@ -180,6 +194,11 @@ plain_instr = { instr_name ~ instr_arg* }
 instr_name = @{
     // ── Control ──────────────────────────────────────────────────────────
     "block" | "loop" | "if" | "else" | "end"
+    // ⚠ LONGEST FIRST. `instr_name` is an ordered choice in an atomic rule, so
+    // a shorter alternative that is a PREFIX of a longer one wins and strands
+    // the rest as an instruction argument: with `br_on_cast` listed first,
+    // `br_on_cast_desc_eq` parsed as `br_on_cast` + a `_desc_eq` operand.
+  | "br_on_cast_desc_eq_fail" | "br_on_cast_desc_eq"
   | "br_on_cast_fail" | "br_on_cast" | "br_on_non_null" | "br_on_null"
   | "br_table" | "br_if" | "br"
   | "return_call_indirect" | "return_call_ref" | "return_call"
@@ -262,6 +281,9 @@ instr_name = @{
     // ── wasm:js-string builtins (merged proposal) ─────────────────────────
   | "string.const"
     // ── GC / WasmGC struct ops ────────────────────────────────────────────
+    // Longest-first: `struct.new` would otherwise match the prefix of
+    // `struct.new_desc` and strand `_desc` as an instruction argument.
+  | "struct.new_default_desc" | "struct.new_desc"
   | "struct.new_default" | "struct.new"
   | "struct.get_s" | "struct.get_u" | "struct.get"
   | "struct.set"
@@ -293,7 +315,7 @@ instr_name = @{
 // tidiness: a plain instruction must be able to hand back a folded operand it
 // absorbed (the spec allows no folded operands on a plain instr), and doing
 // that blindly would hand back this immediate too.
-ref_type_arg = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" }
+ref_type_arg = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" }
 
 instr_arg = {
     mem_arg
@@ -531,9 +553,22 @@ data_mode = {
 
 // ── Type definition ───────────────────────────────────────────────────────────
 
-type_field     = { "(" ~ "type" ~ id? ~ (sub_type | composite_type) ~ ")" }
+type_field     = { "(" ~ "type" ~ id? ~ (sub_type | desc_clauses ~ composite_type) ~ ")" }
 // Standard subtyping: `(sub $Base? (struct …))` / `(sub final $Base? …)`.
-sub_type       = { "(" ~ "sub" ~ "final"? ~ index* ~ composite_type ~ ")" }
+sub_type       = { "(" ~ "sub" ~ "final"? ~ index* ~ desc_clauses ~ composite_type ~ ")" }
+// ── Custom Descriptors proposal ───────────────────────────────────────────
+// `(describes $x)` and `(descriptor $y)` sit between the supertype vector and
+// the composite type, in that order — the binary format nests them the same
+// way (`describingcomptype` wraps `describedcomptype` wraps `comptype`,
+// Overview.md §"Describes and Desciptor Clauses", 0x4C then 0x4D).
+//
+// A type may carry BOTH, which is what makes meta-descriptor chains
+// (`$foo` → `$foo.desc` → `$foo.meta-desc`) expressible.
+// Silent (`_`) so `composite_type` stays a DIRECT child of `type_field` and
+// `sub_type` — every existing walker arm matches on it positionally.
+desc_clauses      = _{ describes_clause? ~ descriptor_clause? }
+describes_clause  = { "(" ~ "describes" ~ index ~ ")" }
+descriptor_clause = { "(" ~ "descriptor" ~ index ~ ")" }
 composite_type = { struct_type | array_type | func_type | struct_subtype | array_subtype | cont_type }
 struct_type    = { "(" ~ "struct" ~ field_def* ~ ")" }
 array_type     = { "(" ~ "array" ~ (field_def | storage_type) ~ ")" }
@@ -550,7 +585,13 @@ cont_type      = { "(" ~ "cont" ~ index ~ ")" }
 field_def      = { "(" ~ "field" ~ (id ~ storage_type | storage_type*) ~ ")" }
 storage_type   = { "(" ~ "mut" ~ (val_type | packed_type | ref_val_type) ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
-ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
+ref_val_type   = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" | ref_type }
+// `(exact $T)` — Custom Descriptors §"Exact Types". An exact reference is a
+// subtype of its base heap type but NOT a supertype of that type's declared
+// subtypes, which is what makes `struct.new_desc`'s descriptor operand sound.
+// Only DEFINED types have exact versions: the binary format encodes the index
+// as a plain `u32` precisely so an exact ABSTRACT heap type cannot be spelled.
+exact_heap_type = { "(" ~ "exact" ~ index ~ ")" }
 // A heap type is an abstract name, a `$id`, or a NUMERIC type index — `(ref 0)`
 // and `(param (ref 1))` address the type section positionally (ref, type-rec).
 heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id | integer }
@@ -684,9 +725,14 @@ expr = {
 // consume the `binary`/`quote` keyword and would fail mid-way. `id?` because
 // the spec allows `(module $M binary "…")`.
 
+// ⚠ `definition` COMBINES WITH `binary`/`quote`. It used to appear only on the
+// plain `module` rule, so `(module definition binary "…")` matched nothing:
+// the plain rule accepted `definition` but then wanted module FIELDS, and the
+// binary alternative had no `definition?`. Custom Descriptors'
+// `exact-func-import.wast` opens with exactly that spelling.
 module_or_binary = {
-    "(" ~ "module" ~ id? ~ "binary" ~ string+ ~ ")"
-  | "(" ~ "module" ~ id? ~ "quote"  ~ string+ ~ ")"
+    "(" ~ "module" ~ module_definition_kw? ~ id? ~ "binary" ~ string+ ~ ")"
+  | "(" ~ "module" ~ module_definition_kw? ~ id? ~ "quote"  ~ string+ ~ ")"
   | module
 }
 
@@ -695,8 +741,8 @@ module_or_binary = {
 // Top-level embedded modules: `(module binary "…")` (raw bytes) and
 // `(module quote "…")` (deferred text). Must precede `module` since the plain
 // module rule can't consume the `binary`/`quote` keyword.
-module_binary_cmd = { "(" ~ "module" ~ id? ~ "binary" ~ string+ ~ ")" }
-module_quote_cmd  = { "(" ~ "module" ~ id? ~ "quote"  ~ string+ ~ ")" }
+module_binary_cmd = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ "binary" ~ string+ ~ ")" }
+module_quote_cmd  = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ "quote"  ~ string+ ~ ")" }
 
 script_cmd = {
     module_binary_cmd

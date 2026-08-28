@@ -3,6 +3,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 /// The enclosing frame's closure bookkeeping, held across a nested
@@ -178,8 +179,7 @@ impl Compiler {
                         self.visible_instance_field_storage_name_for_class(class_name, name)
                     })
                     .unwrap_or_else(|| self.canon(name));
-                let idx = self.str_const(&cname);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&cname));
                 return;
             }
         }
@@ -190,16 +190,14 @@ impl Compiler {
         // struct, not the module's global namespace.
         if let Some(class_name) = self.is_class_static_field(name) {
             self.emit_global_read(&class_name);
-            let field_idx = self.str_const(&self.canon(name));
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
+            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(name)));
             return;
         }
         // Bare static method in class scope — `Double(x)` inside
         // `class Converter` resolves to `Converter.Double`.
         if let Some(class_name) = self.is_class_static_method(name) {
             self.emit_global_read(&class_name);
-            let method_idx = self.str_const(&self.canon(name));
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(name)));
             return;
         }
         let cname = self.canon(name);
@@ -392,7 +390,7 @@ impl Compiler {
             )
         {
             let line = self.line;
-            self.emit_struct_new(0, 0);
+            self.class_alloc();
             inst!(self, core_wasm::dup);
             // Exception type and message text come from the profile — JS
             // `ReferenceError: x is not defined`, Python
@@ -611,7 +609,7 @@ impl Compiler {
                     || self.const_globals.contains(&self.canon(name)));
             if is_const_local || is_const_global {
                 let line = self.line;
-                self.emit_struct_new(0, 0);
+                self.class_alloc();
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::String(Arc::from("Assignment to constant variable.")));
                 crate::primitives::errors::emit_exception_new_finalize(
@@ -687,8 +685,11 @@ impl Compiler {
                         self.visible_instance_field_storage_name_for_class(class_name, name)
                     })
                     .unwrap_or_else(|| self.canon(name));
-                let idx = self.str_const(&cname);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(&cname),
+                    class_slots::ValueSource::Stack,
+                );
                 return;
             }
             self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -702,8 +703,11 @@ impl Compiler {
             self.emit_global_read(&class_name);
             self.emit_u16(Op::LOCAL_GET, value_slot);
             let bare_name = self.canon(name);
-            let field_idx = self.str_const(&bare_name);
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal(&bare_name),
+                class_slots::ValueSource::Stack,
+            );
             if self.defined_globals.contains(&bare_name) {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit_global_write(&bare_name);
@@ -734,7 +738,7 @@ impl Compiler {
             )
         {
             let line = self.line;
-            self.emit_struct_new(0, 0);
+            self.class_alloc();
             inst!(self, core_wasm::dup);
             self.emit_const(Value::String(Arc::from(
                 format!("{name} is not defined").as_str(),

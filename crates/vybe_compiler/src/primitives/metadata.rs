@@ -1097,7 +1097,7 @@ impl Compiler {
     /// outside one an early error, and php/java/C# reject an outside access
     /// too, so there is no other class this could legally concern.
     pub(super) fn member_access_is_private(&self, field: &str) -> bool {
-        if !self.profile.supports_private_fields {
+        if !self.supports_private_fields() {
             return false;
         }
         if self
@@ -1134,7 +1134,7 @@ impl Compiler {
         // identifier per ECMA-262's PrivateIdentifier production) but nothing
         // here tests for it — a php/java/C# private member reaches this by
         // declaring `Access::Private`, exactly like a JS `#x`.
-        if !self.profile.supports_private_fields
+        if !self.supports_private_fields()
             || !self.class_declares_private_member(owner_class, field)
         {
             return None;
@@ -1144,6 +1144,50 @@ impl Compiler {
             self.canon(owner_class),
             field.trim_start_matches('#')
         ))
+    }
+
+    /// Does `class_name` declare `member` as a private member on BOTH the
+    /// instance and the class? ECMA-262 allows it — `#v` and `static #v` are
+    /// two independent private slots that merely share a name.
+    fn declares_private_both_ways(&self, class_name: &str, member: &str) -> bool {
+        use crate::primitives::class_normalize::Access;
+        let Some(nc) = self.normalized_classes.get(&self.canon(class_name)) else {
+            return false;
+        };
+        let want = self.canon(member);
+        let inst = nc
+            .instance_fields
+            .iter()
+            .any(|f| f.access == Access::Private && self.canon(&f.name) == want);
+        let stat = nc
+            .static_fields
+            .iter()
+            .any(|f| f.access == Access::Private && self.canon(&f.name) == want);
+        inst && stat
+    }
+
+    /// Storage name for a member reached through the CLASS OBJECT.
+    ///
+    /// ⛔ Identical to the instance name EXCEPT when the class declares the
+    /// same private name both ways, which ECMA-262 permits. Sharing one key
+    /// then makes two distinct slots collide, and under seam 3 it also made a
+    /// STATIC read resolve to the INSTANCE's indexed field — emitting
+    /// `struct.get` against the class object, which is not an instance of its
+    /// own class.
+    ///
+    /// Deliberately diverges ONLY on a real collision: a class with just one of
+    /// the two keeps the name it already had, so nothing else moves.
+    pub(super) fn js_member_storage_name_for_static(
+        &self,
+        owner_class: &str,
+        field: &str,
+    ) -> String {
+        if self.declares_private_both_ways(owner_class, field) {
+            if let Some(name) = self.js_private_member_storage_name_for_class(owner_class, field) {
+                return name.replace("__js_private_", "__js_private_static_");
+            }
+        }
+        self.js_member_storage_name_for_class(owner_class, field)
     }
 
     pub(super) fn js_member_storage_name_for_class(
@@ -1171,7 +1215,7 @@ impl Compiler {
         // DECLARED visibility and degrades to the plain canonical name for a
         // member no class declares private, so a non-private member takes the
         // same answer it always did.
-        if !self.profile.supports_private_fields {
+        if !self.supports_private_fields() {
             return self.js_member_storage_name(field);
         }
 
@@ -1187,7 +1231,8 @@ impl Compiler {
             if self.defined_classes.contains(&full_canon)
                 || self.pending_classes.contains_key(&full_canon)
             {
-                return self.js_member_storage_name_for_class(&full_canon, field);
+                // Receiver IS a class ⇒ this is the STATIC slot.
+                return self.js_member_storage_name_for_static(&full_canon, field);
             }
 
             if let Some(short_name) = parts.last() {
@@ -1195,7 +1240,7 @@ impl Compiler {
                 if self.defined_classes.contains(&short_canon)
                     || self.pending_classes.contains_key(&short_canon)
                 {
-                    return self.js_member_storage_name_for_class(&short_canon, field);
+                    return self.js_member_storage_name_for_static(&short_canon, field);
                 }
             }
         }
@@ -1321,7 +1366,7 @@ impl Compiler {
         // private name is only in scope inside its declaring class body —
         // ECMA-262 makes `#x` outside one an early error, so there is no other
         // class this could legally be asking about.
-        if self.profile.supports_private_fields
+        if self.supports_private_fields()
             && self
                 .current_class
                 .as_deref()
@@ -1378,7 +1423,7 @@ impl Compiler {
         // still knows. Every other private site now asks the declaration
         // (`member_access_is_private`); replacing this one measured 5 js
         // failures, all `*_outside_*_throws`.
-        self.profile.supports_private_fields
+        self.supports_private_fields()
             && field.starts_with('#')
             && self.current_class.is_none()
     }
@@ -1397,6 +1442,69 @@ impl Compiler {
         object_slot: u16,
         storage_name: &str,
     ) -> Result<(), String> {
+        // ⛔⛔ A GUARD MUST RESOLVE THE WAY ITS LOOKUP RESOLVES.
+        //
+        // Under seam 3 the private field lives in an INDEXED struct slot, and
+        // indexed storage never populates the string-keyed property map. So
+        // this probe answered `false` for a field that was demonstrably
+        // there — the read below it worked, and the guard in front of it threw
+        // `Cannot read private member from an object whose class did not
+        // declare it`. Measured: 78 of 110 js regressions, and ablating the
+        // licence (giving the class a parent) made the identical source print
+        // `42`.
+        //
+        // For an indexed field the presence question is not about properties
+        // at all — it is **"was this object constructed by this class"**, which
+        // is precisely `ref.test`. That is what a JS private brand IS, so the
+        // type test is not a workaround for the probe, it is the more faithful
+        // implementation: it also answers `false` for
+        // `Object.create(Parent.prototype)`, which the property probe gets
+        // wrong today by walking the prototype chain.
+        //
+        // Keyed off the resolved SLOT, never off a language: the question asked
+        // is whether some class this compiler authored holds this storage name
+        // as an indexed field.
+        if let Some(class) = self.indexed_owner_of_storage(storage_name) {
+            let line = self.line;
+            // ⛔ rtt FIRST, PROBE AS FALLBACK — never rtt alone.
+            //
+            // A private name has TWO independent brands in ECMA-262: the
+            // instance slot (`#v` on the instance) and the static slot
+            // (`static #v` on the constructor). A class may declare both, and
+            // they are different slots that happen to share a name.
+            //
+            // `ref.test` answers only the first. `Hybrid.#v` reads the STATIC
+            // brand off the CLASS OBJECT, which is not an instance of the
+            // class, so a bare `ref.test` answered `false` for a brand that was
+            // plainly present — and only when BOTH were declared, because with
+            // just one there is no indexed instance field to find and the probe
+            // path was taken.
+            //
+            // The union is the correct question: an instance passes the type
+            // test, a constructor carrying the static slot passes the property
+            // probe. Same rtt-then-fallback shape as
+            // `reflection::emit_is_instance_of`.
+            self.emit_u16(Op::LOCAL_GET, object_slot);
+            self.emit_ref_type_test(Op::REF_TEST, &class, line);
+            self.chunk().emit_if_value(line);
+            self.chunk().emit_i32_const(1, line);
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, object_slot);
+            self.emit_const(Value::String(Arc::from(storage_name)));
+            let has_idx = self.import("ecma:object", "has");
+            self.emit_host_call(has_idx, 2);
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_end(line);
+            self.chunk().emit_if(line);
+            self.chunk().emit_else(line);
+            self.emit_const(Value::String(Arc::from(
+                "Cannot read private member from an object whose class did not declare it",
+            )));
+            self.emit_js_exception_ctor_from_message_value("TypeError")?;
+            common::errors::emit_throw(self.chunk(), line);
+            self.chunk().emit_end(line);
+            return Ok(());
+        }
         self.emit_u16(Op::LOCAL_GET, object_slot);
         self.emit_const(Value::String(Arc::from(storage_name)));
         // Probe with `ecma:object.has` (own + prototype-chain walk, raw key

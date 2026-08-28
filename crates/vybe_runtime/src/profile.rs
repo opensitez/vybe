@@ -142,7 +142,6 @@ pub struct LanguageProfile {
     pub gated_namespace_roots: Vec<String>,
 
     /// JS: `var` declarations are hoisted to function scope.
-    pub hoist_var: bool,
 
     /// JS: `+` operator uses dynamic add (string concat if either operand is string).
     pub dynamic_add: bool,
@@ -1470,10 +1469,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let hoist_var = compiler
-        .get("hoist_var")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let dynamic_add = compiler
         .get("dynamic_add")
         .and_then(|v| v.as_bool())
@@ -2537,7 +2532,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         concat_stringifies_operands,
         entry_point,
         gated_namespace_roots,
-        hoist_var,
         dynamic_add,
         function_references,
         commonjs_require,

@@ -3,6 +3,7 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
+use crate::primitives::class_slots;
 use super::*;
 
 impl Compiler {
@@ -25,6 +26,26 @@ impl Compiler {
     /// section. The instruction never carries the name; only the type section
     /// does.
     pub(crate) fn emit_ref_type_test(&mut self, op: Op, name: &str, line: u32) {
+        // ⚠ AN ARRAY TYPE LIVES UNDER A DIFFERENT ROW THAN ITS OWN NAME.
+        //
+        // `array.new`/`array.new_fixed $t` stamp the rtt from the row
+        // `__wast_array::$t` (`resolve_gc_array_type_id`), while
+        // `heaptype_for_name` below reserves a row named `$t` — two entries,
+        // two ids, for one declared type. So `ref.test $t` on an array
+        // allocated as `$t` compared a type against itself and answered FALSE:
+        //
+        //   (type $s (sub (array i8)))
+        //   (ref.test (ref null $s) (array.new_fixed $s 0))   ;; was 0, must be 1
+        //
+        // Preferring the array row when one exists makes both spellings name
+        // the same type. It cannot capture a struct: the key is only ever
+        // created by the array registration path.
+        let array_key = format!("__wast_array::{name}");
+        if let Some(idx) = self.chunks[0].types.iter().position(|t| t.name == array_key) {
+            let ht = vybe_runtime::opcode::heaptype::HeapType::Concrete(idx as u32 + 1);
+            self.chunks[self.current].emit_ref_type_op(op, ht, line);
+            return;
+        }
         let ht = crate::primitives::classes::heaptype_for_name(&mut self.chunks, name);
         self.chunks[self.current].emit_ref_type_op(op, ht, line);
     }
@@ -320,10 +341,11 @@ impl Compiler {
         let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&type_hint) else {
             return false;
         };
-        let mut current = Some(class_name);
-        while let Some(name) = current {
-            let Some(pending) = self.pending_classes.get(&name) else {
-                return false;
+        // ⛔ ONE ANSWER: `Compiler::resolution_chain` — a hand-rolled `parent`
+        // climb is blind to every base but the first.
+        for name in self.resolution_chain(&class_name) {
+            let Some(pending) = self.pending_classes.get(name.as_str()) else {
+                continue;
             };
             let key = self.js_member_storage_name_for_class(&name, field);
             // ⛔ A PROPERTY is declared under NEITHER name. `Public Property
@@ -334,7 +356,28 @@ impl Compiler {
             // `members: __set_count`, and no `count` anywhere.
             let setter = format!("__set_{key}");
             let getter = format!("__get_{key}");
+            // ⛔ STATIC MEMBERS COUNT AS DECLARED TOO. This asked
+            // `instance_field_types` and `instance_member_names` and nothing
+            // else, so a `Shared`/`static` member was invisible here — and the
+            // two spellings this guard exists to protect are `Count` and
+            // `Length`:
+            //
+            //     Class F
+            //         Public Shared Count As Integer = 5
+            //     End Class          ' F.Count read as a COLLECTION LENGTH
+            //
+            // An INSTANCE field named `Count` was protected and answered 5; the
+            // `Shared` one fell through to the generic length and answered
+            // nothing at all. Renaming it to `Total` fixed it, which is the
+            // signature of a name table beating a declaration.
+            //
+            // Worse than a plain miss: excluding a type receiver from
+            // `is_size_property_read` pushes it into `size_member_may_be_
+            // callable` instead of out of both, so the miss lands in the
+            // read-then-call-if-callable path rather than on the ordinary
+            // field read.
             if pending.instance_field_types.contains_key(&key)
+                || pending.static_fields.iter().any(|n| n == &key)
                 || pending
                     .instance_member_names
                     .iter()
@@ -342,7 +385,6 @@ impl Compiler {
             {
                 return true;
             }
-            current = pending.parent.clone();
         }
         false
     }
@@ -1036,15 +1078,22 @@ impl Compiler {
         if let Some(number) = args.first() {
             inst!(self, core_wasm::dup);
             self.compile_expr(&number.value)?;
-            let key = self.str_const("number");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+            let key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("number"));
+            self.class_set_resolved(
+                class_slots::ObjSource::Stack,
+                &key,
+                class_slots::ValueSource::Stack,
+            );
         }
 
         if let Some(source) = args.get(1) {
             inst!(self, core_wasm::dup);
             self.compile_expr(&source.value)?;
-            let key = self.str_const("source");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("source"),
+                class_slots::ValueSource::Stack,
+            );
         }
 
         let line = self.line;

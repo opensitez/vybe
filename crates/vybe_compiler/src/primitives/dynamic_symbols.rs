@@ -7,6 +7,7 @@
 //! resolver, try again"; each language still owns its callback storage and
 //! source spelling.
 
+use crate::primitives::class_slots;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
 
@@ -429,7 +430,7 @@ pub fn emit_throw_if_unresolved(chunk: &mut Chunk, exception_name: &str, message
     chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
     emit_undefined_test(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     push_str(chunk, message, line);
     crate::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
@@ -671,8 +672,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, slot);
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        let receiver_key = self.str_const("__vybe_method_receiver");
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+            class_slots::ValueSource::Stack,
+        );
 
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);

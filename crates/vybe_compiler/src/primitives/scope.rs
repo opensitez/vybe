@@ -419,12 +419,18 @@ impl Scope {
     }
 
     pub fn end_scope(&mut self) {
-        while let Some(l) = self.locals.last() {
-            if l.depth < self.depth {
-                break;
-            }
-            self.locals.pop();
-        }
+        // ⛔ This used to pop from the TAIL and stop at the first local whose
+        // depth was below the block's. A VAR-scoped binding sits at depth 0
+        // (ECMA-262's VariableEnvironment — it outlives its block), so a `var`
+        // declared anywhere in the block halted the pop and every block-local
+        // declared BEFORE it survived the block exit.
+        //
+        // Retaining by depth is the honest statement of the rule: a block exit
+        // drops exactly the bindings that belong to it, wherever they sit in
+        // the list, and leaves the var-scoped ones alone. Order is preserved,
+        // so shadowing still resolves to the latest declaration.
+        let depth = self.depth;
+        self.locals.retain(|l| l.depth < depth);
         self.depth -= 1;
     }
 

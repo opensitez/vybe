@@ -115,6 +115,7 @@ mod case_insensitive_collections;
 pub mod channels;
 mod class_augmentation;
 mod class_context;
+pub mod class_slots;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
 pub mod classes;
 pub mod closures;
@@ -722,6 +723,17 @@ pub struct Compiler {
     current_result_slot: Option<u16>,
     current_ref_out_params: Option<Vec<u16>>,
     pending_classes: HashMap<String, PendingClass>,
+    /// Canonical names of classes whose declared field ORDER this compiler
+    /// published to the reserved type slot, so seam 3 may index them.
+    ///
+    /// ⛔ A type registered by any other path — a language emitter, a platform
+    /// catalogue — has a field list this compiler did not author and cannot
+    /// index against: python's classes arrive carrying
+    /// `__class__`/`__dataclass_fields__`/`__match_args__` where the emitter
+    /// would have indexed `x`/`y`/`label`. Indexing those wrote past the arity
+    /// and trapped. Membership here is the ONLY licence to emit an indexed
+    /// access.
+    pub(crate) seam3_indexable: std::collections::HashSet<String>,
     /// Every class NORMALIZED ONCE, during the declaration pass, keyed by
     /// canonical name. This is the single class model: computed before any
     /// body compiles, so a class's member set is knowable regardless of
@@ -2908,6 +2920,7 @@ impl Compiler {
             current_result_slot: None,
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
+            seam3_indexable: std::collections::HashSet::new(),
             normalized_classes: HashMap::new(),
             current_class_slot_keys: HashMap::new(),
             current_class: None,
@@ -3375,8 +3388,7 @@ impl Compiler {
                     .map(|(name, _)| name.clone());
                 if let Some(class_name) = host_class {
                     self.emit_var_get(&class_name);
-                    let key = self.str_const(&ep_canon);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&ep_canon));
                     self.emit_direct_callable_invoke(0);
                     self.emit(Op::DROP);
                 }
@@ -3466,6 +3478,21 @@ impl Compiler {
         // writes through to it, so reading the base frame answers for the whole
         // unit however it was stated.
         let app_shell = self.directives.first().and_then(|d| d.app_shell);
+        // ⛔⛔ WASM GC VALIDITY, NOT AN OPTIMISATION. A `sub` declaration whose
+        // fields are not its supertype's prefix makes the module INVALID — a
+        // spec engine rejects it at validation; ours does not validate
+        // subtyping, so it loads and silently aliases one class's field onto
+        // another's index. `register_type` prefixes on the way past, but only
+        // with what the parent has THEN, and a class may be declared above its
+        // base. The table is only complete here, so the repair is here.
+        //
+        // Runs after every registration and after all emission, so it can never
+        // move an index a `struct.get` already baked (see the licence check
+        // inside).
+        self.finalize_type_prefixes();
+        // Descriptor rows come AFTER the prefix merge, so each descriptor's
+        // funcref slots mirror an already-merged method list.
+        self.append_descriptor_type_rows();
         if dump_classes_enabled() {
             self.dump_pending_classes();
         }

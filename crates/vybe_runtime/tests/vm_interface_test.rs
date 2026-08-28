@@ -176,6 +176,7 @@ fn load_type_table_interface() {
             implements: Vec::new(),
             constructor_chunk: None,
             field_descriptors: std::collections::HashMap::new(),
+                    ..Default::default()
         },
         TypeEntry {
             name: "dog".into(),
@@ -188,6 +189,7 @@ fn load_type_table_interface() {
             implements: vec![1],
             constructor_chunk: Some(3),
             field_descriptors: std::collections::HashMap::new(),
+                    ..Default::default()
         },
     ];
 
@@ -219,6 +221,7 @@ fn load_type_table_cross_language_inheritance() {
         implements: Vec::new(),
         constructor_chunk: Some(1),
         field_descriptors: std::collections::HashMap::new(),
+            ..Default::default()
     }];
 
     // The C# module inherits from a type ANOTHER module defined, so it
@@ -237,6 +240,7 @@ fn load_type_table_cross_language_inheritance() {
             implements: Vec::new(),
             constructor_chunk: None,
             field_descriptors: std::collections::HashMap::new(),
+                    ..Default::default()
         },
         TypeEntry {
             name: "dog".into(),
@@ -248,6 +252,7 @@ fn load_type_table_cross_language_inheritance() {
             implements: Vec::new(),
             constructor_chunk: Some(7),
             field_descriptors: std::collections::HashMap::new(),
+                    ..Default::default()
         },
     ];
 

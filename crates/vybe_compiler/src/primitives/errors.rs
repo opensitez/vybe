@@ -4,6 +4,7 @@
 //! - try_table (real WASM EH Phase 4) → body → try_end → handler
 //! - try_end pops the handler on normal (non-throwing) exit
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -97,7 +98,7 @@ pub fn emit_exception_constructor(
     line: u32,
 ) {
     // Create object
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // Shared type/reflection stamps. `__exception_type` remains for older
@@ -114,23 +115,50 @@ pub fn emit_exception_constructor(
     ] {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_string_const(val, line);
-        let k = chunk.add_constant(Value::String(Arc::from(key)));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        let k = class_slots::resolve(
+            &class_slots::ClassSlot::internal(key),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 
     // name = exc_name (JS Error convention)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_string_const(exc_name, line);
-    let n_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("name"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 
     // message = msg_slot
 
     // message = msg_slot
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, msg_slot, line);
-    let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("message"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// §20.5: finish a JS error instance minted by an `ecma:error.*`
@@ -144,10 +172,28 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     // err.__proto__ = <kind ctor>.prototype
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
     crate::primitives::globals::emit_read(chunk, format!("__ctor_{kind}").as_str(), line); // [err, err, ctor]
-    let proto_key = chunk.add_constant(Value::String(Arc::from("prototype")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [err, err, proto]
-    let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, link_key, line); // [err, err]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::Prototype,
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    ); // [err, err, proto]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::ProtoLink,
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [err, err]
     // delete err.name — own stamp off, prototype `name` takes over
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
     chunk.emit_string_const("name", line); // [err, err, "name"]
@@ -376,31 +422,61 @@ pub fn is_exception_type(name: &str) -> bool {
         | "standarderror" | "argumenterror" | "nameerror" | "nomethoderror"
     )
 }
+/// Build an exception object complete — allocation included.
+///
+/// ⚠ THE ALLOCATION BELONGS TO THE OWNER, NOT TO 89 CALL SITES.
+/// `emit_exception_new_finalize` takes the object already allocated AND
+/// duplicated on the stack, so every caller hand-rolls the same prologue:
+///
+/// ```ignore
+/// chunk.emit_struct_new(0, 0, line);          // the caller's bare struct.new
+/// core_wasm::dup(chunk, line);
+/// chunk.emit_string_const(msg, line);
+/// emit_exception_new_finalize(chunk, "FormatException", line);
+/// ```
+///
+/// That prologue repeats at **89 sites tree-wide** (crates 10 ·
+/// platforms/dotnet 20 · jvm 5 · ecma 2 · python 5 · dart 3 · php 3 ·
+/// kotlin 1 · pascal 1 · ruby 1). An exception IS a class instance, so its
+/// allocation is class-model machinery: leaving it at the callers is why 25 of
+/// dotnet's remaining raw `struct.new` sites cannot be retired without reaching
+/// into `crates/`.
+///
+/// ▶▶ It is also the M6 seam for exceptions. This body allocates through
+/// `class_slots::emit_class_alloc` — one call — so when exception types are
+/// registered it becomes `struct.new_default <typeidx>` here and at no caller.
+///
+/// `emit_exception_new_finalize` stays for callers whose message is already
+/// mid-stack, so this is purely additive.
+///
+/// Stack before: `[]` (or `[msg]` with `ValueSource::Stack`).
+/// Stack after: `[exception]`.
+pub fn emit_exception_new(
+    chunk: &mut Chunk,
+    exc_name: &str,
+    msg: class_slots::ValueSource,
+    line: u32,
+) {
+    match msg {
+        // The caller already pushed the message, so the object must go
+        // UNDERNEATH it — `finalize` wants `[obj, obj, msg]`.
+        class_slots::ValueSource::Stack => {
+            let tmp = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, tmp, line);
+            class_slots::emit_class_alloc(chunk, line);
+            chunk.emit_dup(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
+        }
+        // The message is produced on demand, so it lands on top naturally.
+        other => {
+            class_slots::emit_class_alloc(chunk, line);
+            chunk.emit_dup(line);
+            class_slots::push_value_public(chunk, &other, line);
+        }
+    }
+    emit_exception_new_finalize(chunk, exc_name, line);
+}
 
-/// Stack-based exception constructor. Use this in two phases:
-///
-/// 1. Caller emits `Op::STRUCT_NEW` and `emit_dup` to push `[obj, obj]`,
-///    then emits the message expression to push `[obj, obj, msg]`.
-/// 2. Caller invokes `emit_exception_new_finalize(chunk, exc_name, line)`
-///    which consumes the inner `[obj, msg]` pair into `obj.message=msg`,
-///    then stamps `__type`, `__exception_type` onto the outer obj.
-///
-/// Per ECMA-262 §20.5, name and constructor are inherited from Error.prototype,
-/// not own properties, so they are not set here. JavaScript callers should ensure
-/// proper prototype chain setup if needed.
-///
-/// Stack before: `[obj, obj, msg]`   Stack after: `[obj]`
-///
-/// Splitting the helper this way avoids the closure-vs-`&mut self`
-/// borrow problem in language compilers (the compiler needs `&mut self`
-/// to emit the message expression, which can't co-exist with a `&mut
-/// chunk` borrow held by a closure-taking helper).
-///
-/// This is the **single source of truth** for `new SomeError(msg)` across
-/// every language compiler. The name is normalized via
-/// `canonical_exception_name` so PHP `RuntimeException`, Python
-/// `RuntimeError`, JS `Error`, etc. all produce identical bytecode and
-/// can therefore catch each other across language boundaries.
 pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32) {
     let canon = canonical_exception_name(exc_name);
     let original = exc_name.trim();
@@ -409,8 +485,17 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     let str_idx = chunk.add_import("ecma:string", "String");
     chunk.emit_call(str_idx, 1, line);
     // [obj, obj, msg_string] → [obj, msg_string] via struct_set "message"
-    let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("message"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     // [obj, msg_val] → [obj]
 
     // Shared type/reflection stamps use the canonical name for cross-language
@@ -430,16 +515,34 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     ] {
         chunk.emit_dup(line);
         chunk.emit_string_const(val, line);
-        let k = chunk.add_constant(Value::String(Arc::from(key)));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+        let k = class_slots::resolve(
+            &class_slots::ClassSlot::internal(key),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &k,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 
     // Set name as a dynamic (non-indexed) property with the original language-specific name.
     // It will be added to __nonenum at the type level, making it non-enumerable.
     chunk.emit_dup(line);
     chunk.emit_string_const(original, line);
-    let n_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("name"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Canonical exception ancestor chains — the Python-shaped tree used by
@@ -629,8 +732,17 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
         chunk.emit_string_const(name, line);
     }
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
-    let key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::internal(reflection::FIELD_TYPES),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Emit the disposal half of a resource-management block (C# `using`,
@@ -647,11 +759,21 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
 /// `dispose_method`: the canonical method name (`"Dispose"` for .NET,
 /// `"__exit__"` for Python, `"close"` for Java AutoCloseable, etc.).
 pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str, line: u32) {
-    let dispose_key = chunk.add_constant(Value::String(Arc::from(dispose_method)));
+    let dispose_key = class_slots::resolve_interned(
+        chunk,
+        &class_slots::ClassSlot::internal(dispose_method),
+        &class_slots::PlainNames,
+    );
     let dispose_block = chunk.emit_block(line);
     // method = resource[<dispose_method>]
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, dispose_key, line);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &dispose_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     // if method is null/undefined, skip the call.
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);

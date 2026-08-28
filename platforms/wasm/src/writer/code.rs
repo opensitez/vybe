@@ -168,11 +168,49 @@ fn emit_stack_switch_handlers(body: &mut Vec<u8>, chunk: &Chunk, op_start: usize
 }
 
 fn wasm_struct_type_for_chunk_type(chunk: &Chunk, type_ctx: &WasmTypeContext, typeidx: u16) -> u32 {
-    chunk
-        .types
-        .get(typeidx as usize)
-        .and_then(|ty| type_ctx.struct_type(&ty.name))
+    // ⚠ THE INDEX MAP FIRST, and it is not an optimisation.
+    //
+    // The name path below can only work while encoding chunk 0: the type
+    // table is written to `chunks[0].types` exclusively, and
+    // `encode_code_section` walks every chunk. In a constructor — a non-zero
+    // chunk — `chunk.types` is empty, the lookup misses, and the
+    // `unwrap_or` hands back the CHUNK type index as if it were a WASM type
+    // index. Two different spaces, no diagnostic.
+    //
+    // `struct_type_by_module_index` answers the same question without a name
+    // and without a chunk, which is why it exists.
+    type_ctx
+        .struct_type_by_index(typeidx as u32)
+        .or_else(|| {
+            chunk
+                .types
+                .get(typeidx as usize)
+                .and_then(|ty| type_ctx.struct_type(&ty.name))
+        })
         .unwrap_or(typeidx as u32)
+}
+
+/// The descriptor singleton global for the class a chunk typeidx names, or
+/// `None` when the typeidx is the dynamic form (0) or names nothing.
+///
+/// A `None` here means "allocate with the plain instruction", which is only
+/// correct for a type with no `(descriptor …)` clause.
+fn descriptor_global_for_chunk_type(
+    chunk: &Chunk,
+    type_ctx: &WasmTypeContext,
+    typeidx: u16,
+) -> Option<u32> {
+    if typeidx == 0 {
+        return None;
+    }
+    // ⚠ BY INDEX, NOT BY NAME. The type table lives on `chunks[0]` alone, and
+    // `encode_code_section` walks every chunk — so `chunk.types` is EMPTY in
+    // every chunk but the first, which is exactly where constructors live. A
+    // name lookup here resolved for nothing and the descriptor was never
+    // found. The module type index space is chunk-independent, so this asks
+    // the question that has an answer in every chunk.
+    let _ = chunk;
+    type_ctx.desc_global_by_index(typeidx as u32)
 }
 
 fn wasm_struct_type_matching_field_count(
@@ -1250,9 +1288,33 @@ fn emit_gc_op(
             } else {
                 wasm_struct_type_matching_field_count(chunk, type_ctx, prop_count)
             };
-            body.push(0xFB);
-            write_leb128_u32(body, 0x00); // struct.new
-            write_leb128_u32(body, typeidx);
+            // Same prohibition as `struct.new_default`: a type carrying a
+            // `(descriptor …)` clause cannot be allocated by `struct.new`.
+            //
+            // ⚠ The DYNAMIC form reaches it too. `wasm_struct_type_matching_field_count`
+            // guesses a type from the field count, and that guess can land on a
+            // class — which is descriptor-carrying like every other class — so
+            // resolving the descriptor from the RESULT rather than from
+            // `chunk_typeidx` is what keeps both paths valid. (The guess itself
+            // is a separate defect; this only stops it emitting an invalid
+            // module on top of a wrong one.)
+            //
+            // The descriptor is the LAST operand, so it is pushed after the
+            // field values the stack already holds.
+            match type_ctx.desc_global_for_described(typeidx) {
+                Some(global_idx) => {
+                    body.push(0x23); // global.get
+                    write_leb128_u32(body, global_idx);
+                    body.push(0xFB);
+                    write_leb128_u32(body, 0x20); // struct.new_desc
+                    write_leb128_u32(body, typeidx);
+                }
+                None => {
+                    body.push(0xFB);
+                    write_leb128_u32(body, 0x00); // struct.new
+                    write_leb128_u32(body, typeidx);
+                }
+            }
             emit_externalize(body); // (ref $struct) → externref
         }
         _ if op == Op::STRUCT_GET => {
@@ -1378,12 +1440,30 @@ fn emit_gc_op(
         }
         _ if op == Op::STRUCT_NEW_DEFAULT => {
             let typeidx = read_u16(&chunk.code, ip);
-            body.push(0xFB);
-            write_leb128_u32(body, 0x01);
-            write_leb128_u32(
-                body,
-                wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
-            );
+            let wasm_typeidx = wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx);
+            // ⛔ `struct.new_default` CANNOT allocate a type that carries a
+            // `(descriptor …)` clause, and `types.rs` stamps one on every
+            // class — so this arm emitting 0xFB 0x01 against a class type is
+            // an invalid module, not a missing feature. Every class-bearing
+            // module we emitted was rejected on exactly this.
+            //
+            // The descriptor is the LAST operand, and `struct.new_default`
+            // takes none, so pushing the singleton immediately before the
+            // allocation is the whole sequence.
+            match descriptor_global_for_chunk_type(chunk, type_ctx, typeidx) {
+                Some(global_idx) => {
+                    body.push(0x23); // global.get
+                    write_leb128_u32(body, global_idx);
+                    body.push(0xFB);
+                    write_leb128_u32(body, 0x21); // struct.new_default_desc
+                    write_leb128_u32(body, wasm_typeidx);
+                }
+                None => {
+                    body.push(0xFB);
+                    write_leb128_u32(body, 0x01); // struct.new_default
+                    write_leb128_u32(body, wasm_typeidx);
+                }
+            }
             emit_externalize(body);
         }
         // ── Custom Descriptors proposal emission ─────────────────────────
@@ -1405,6 +1485,10 @@ fn emit_gc_op(
         // type section).
         _ if op == Op::STRUCT_NEW_DESC => {
             let typeidx = read_u16(&chunk.code, ip);
+            // Our bytecode carries a field COUNT alongside the typeidx, the
+            // same as `struct.new`. The binary format does not — the count is
+            // implied by the declared type — so it is consumed and dropped.
+            let _count = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x20);
             write_leb128_u32(

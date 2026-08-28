@@ -14,6 +14,13 @@ vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+# `(module binary "…")` embeds a module as raw BYTES, so the wast front end
+# needs the binary decoder to say whether those bytes are a module at all —
+# which is the whole content of `assert_malformed` / `assert_invalid` on that
+# form. wast IS the text format of wasm, so this is the text half reaching the
+# binary half, not a language reaching into an unrelated platform. No cycle:
+# `vybe_platform_wasm` depends on `vybe_runtime` alone and on no language crate.
+vybe_platform_wasm = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }

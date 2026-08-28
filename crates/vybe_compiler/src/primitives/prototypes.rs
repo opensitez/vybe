@@ -12,6 +12,7 @@
 //! lambdas in primitives/calls.rs, methods) must route through these
 //! helpers rather than inlining raw opcodes.
 
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -51,14 +52,41 @@ pub fn emit_stamp_function_kind_proto(
         };
         crate::primitives::instructions::core_wasm::dup(chunk, line); // [fn, fn]
         chunk.emit_string_const(kind, line); // [fn, fn, kind]
-        let kind_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__fn_kind")));
-        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line); // [fn, fn]
+        let slot = class_slots::resolve(
+            &class_slots::ClassSlot::internal("__fn_kind"),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &slot,
+            class_slots::ValueSource::Stack,
+            line,
+        ); // [fn, fn]
     }
     crate::primitives::globals::emit_read(chunk, intrinsic, line); // [fn, ctor]
-    let proto_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("prototype")));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [fn, proto]
-    let proto_link_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__proto__")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key, line); // [fn]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::Prototype,
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    ); // [fn, proto]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::ProtoLink,
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [fn]
 }
 
 /// §10.2.9 SetFunctionName / §10.2.10 SetFunctionLength: `name` and
@@ -73,6 +101,15 @@ pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
     // §10.2.5: `prototype` on ordinary functions is non-enumerable too.
     chunk.emit_string_const("prototype", line);
     chunk.emit_array_new_fixed(0, 3, line); // [fn, [3 keys]]
-    let key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__nonenum")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [fn]
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__nonenum"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // [fn]
 }

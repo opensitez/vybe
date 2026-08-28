@@ -11,6 +11,7 @@
 //!
 //! All languages (Python, Dart, JS, VB, C#) use this same structure.
 
+use crate::primitives::class_slots;
 use crate::primitives::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
@@ -22,12 +23,22 @@ use vybe_runtime::{Chunk, Value};
 /// Stack: [] → [dict_object]
 pub fn emit_new(chunks: &mut [Chunk], current: usize, line: u32) {
     // Create empty Object
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     // Create empty __keys array and attach it
     chunks[current].emit_dup(line);
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 // ── Setting keys ────────────────────────────────────────────────────────
@@ -40,12 +51,30 @@ pub fn emit_set_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
     // Set the property: dict.key = value (value must be pushed by caller before this)
     // Actually — caller pushes value AFTER calling this? No.
     // Convention: caller has [dict, value] on stack. We do struct_set.
-    let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    let key_idx = class_slots::resolve(
+        &class_slots::ClassSlot::internal(key),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &key_idx,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     // Append key to __keys: dict.__keys.push(key)
     chunks[current].emit_dup(line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const(key, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -139,8 +168,18 @@ pub fn emit_method_set_tracked(
 
     // Push key to __keys
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -163,13 +202,23 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     let has_slot = key_slot + 1;
     let keys_slot = has_slot + 1;
     chunks[current].alloc_scratch(4);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
@@ -214,13 +263,23 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     let key_slot = dict_slot + 1;
     let idx_slot = dict_slot + 2;
     chunks[current].alloc_scratch(3);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_index_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
@@ -231,7 +290,13 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_remove_at(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -257,8 +322,18 @@ pub fn emit_method_clear(chunks: &mut [Chunk], current: usize, dict_slot: u16, l
     // Replace __keys with empty array
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Stack-based variant of `emit_method_clear`. Takes the dict from TOS,
@@ -268,17 +343,37 @@ pub fn emit_method_clear(chunks: &mut [Chunk], current: usize, dict_slot: u16, l
 pub fn emit_method_clear_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     // [dict] → set __keys = []
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
     // struct_set pops [obj, val], pushes [val]
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// map.size / len(dict) / dict.Count — number of entries.
 /// Stack before: [dict]  Stack after: [i32]
 pub fn emit_method_size(chunks: &mut [Chunk], current: usize, line: u32) {
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     crate::primitives::collections::emit_len(chunks, current, line);
 }
 
@@ -297,8 +392,17 @@ pub fn emit_set_add(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Emit bytecode to get a value from a dict by string key.
 /// Stack before: [dict]  Stack after: [value_or_null]
 pub fn emit_get_const_key(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+    let key_idx = class_slots::resolve(
+        &class_slots::ClassSlot::internal(key),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &key_idx,
+        class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// Emit bytecode to get a value from a dict by dynamic key (on stack).
@@ -312,8 +416,18 @@ pub fn emit_get_dynamic(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Emit bytecode to get all keys as an array.
 /// Stack before: [dict]  Stack after: [array_of_keys]
 pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &keys_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     // If __keys doesn't exist (legacy dict without tracking), fall back to host
     chunks[current].emit_dup(line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -344,8 +458,17 @@ pub fn emit_values_from_local(
 ) {
     // Get __keys array
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
 
     // result = []
@@ -396,8 +519,17 @@ pub fn emit_items_from_local(
 ) {
     // Get __keys array
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__keys"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &slot,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
 
     // result = []

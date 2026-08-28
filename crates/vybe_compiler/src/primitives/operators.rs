@@ -4,6 +4,7 @@
 //! `builtins.rs`/`calls.rs`. Methods are `pub(super)` so the core compile
 //! paths in `mod.rs` and sibling files can reach them.
 
+use crate::primitives::class_slots;
 use super::*;
 
 // Primitive fallbacks for `emit_rich_binop`, which takes the fallback as a
@@ -623,7 +624,11 @@ impl Compiler {
     /// `Sub`/`Mul`/`Div` reach it too — this used to be wired for `Add` alone,
     /// so a C# `operator -` compiled to a bare `F64_SUB` that never asked the
     /// class, which is what `uses_rich_operators` promised in its own doc.
-    fn emit_rich_binop(&mut self, slot: vybe_ast::ProtocolSlot, fallback: fn(&mut Chunk, u32)) {
+    fn emit_rich_binop(
+        &mut self,
+        slot: vybe_ast::ProtocolSlot,
+        fallback: impl Fn(&mut Chunk, u32),
+    ) {
         let line = self.line;
         let rhs_slot = self.define_local("__rich_op_rhs");
         let lhs_slot = self.define_local("__rich_op_lhs");
@@ -884,15 +889,33 @@ impl Compiler {
                     // and never consult it. Falls through to the same
                     // dynamic add for every non-object operand.
                     if self.uses_rich_operators() {
-                        self.emit_rich_binop(
-                            vybe_ast::ProtocolSlot::Add,
-                            crate::primitives::ops::emit_dyn_add,
-                        );
+                        // ⛔ THE FALLBACK IS WHERE `+` ACTUALLY LANDS for a
+                        // language with rich operators, which is every .NET
+                        // one. Handing it the plain `emit_dyn_add` sent a
+                        // non-string operand down the ToNumber ladder, so a C#
+                        // `bool` in a string printed `1`/`0`.
+                        let bool_text = self.directives().bool_text;
+                        self.emit_rich_binop(vybe_ast::ProtocolSlot::Add, move |chunk, line| {
+                            crate::primitives::ops::emit_dyn_add_with_bool_text(
+                                chunk, bool_text, line,
+                            );
+                        });
                         return;
                     }
                     {
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+                        // ⛔ THE LANGUAGE SAYS HOW A BOOLEAN SPELLS ITSELF. The
+                        // plain `emit_dyn_add` sends a non-string operand down
+                        // the ToNumber ladder, so a C# `bool` in a string
+                        // printed `1`/`0` for every `true`/`false`.
+                        // `Directives::bool_text` is `None` everywhere that
+                        // wants ECMA's ladder, so nothing else moves.
+                        let bool_text = self.directives().bool_text;
+                        crate::primitives::ops::emit_dyn_add_with_bool_text(
+                            self.chunk(),
+                            bool_text,
+                            line,
+                        );
                     };
                 } else if let Some(target) = self
                     .profile
@@ -1695,9 +1718,7 @@ impl Compiler {
                     // `ctx.invoke` can't do that, so we emit the
                     // method-call inline instead of going through the
                     // host fn for this case.
-                    let has_inst_key = self.str_const("hasinstance");
-                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, has_inst_key);
+                    self.class_get(class_slots::ObjSource::Local(rhs_slot), &class_slots::ClassSlot::internal("hasinstance"));
                     let method_slot = self.define_local("__has_inst_method");
                     self.emit_u16(Op::LOCAL_SET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, method_slot);

@@ -48,8 +48,23 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     let globals = sections::collect_globals(chunks, &string_constants, &host_globals);
 
     // Type section: GC struct types + array type + function types
-    let (type_section_data, type_ctx) =
+    let (type_section_data, mut type_ctx) =
         types::build_type_context(chunks, total_imports, &rt_imports);
+
+    // Per-class descriptor singletons live at the END of the global index
+    // space, after the imported globals and every module-defined one, so
+    // nothing the compiler already numbered moves. See
+    // `encode_global_section_with_descriptors`.
+    if type_ctx.descriptor_global_count() > 0 {
+        let imported_globals = vybe_runtime::chunk::global_index_space(
+            &string_constants,
+            &host_globals,
+            &[],
+        )
+        .len() as u32;
+        type_ctx.desc_global_base = Some(imported_globals + globals.len() as u32);
+    }
+    let type_ctx = type_ctx;
     write_section(&mut out, SECTION_TYPE, &type_section_data);
 
     // Import section
@@ -130,12 +145,13 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         );
     }
 
-    // Global section — indexed externref globals
-    if !globals.is_empty() {
+    // Global section — indexed externref globals, then one immutable
+    // descriptor singleton per class.
+    if !globals.is_empty() || type_ctx.desc_global_base.is_some() {
         write_section(
             &mut out,
             SECTION_GLOBAL,
-            &sections::encode_global_section(&globals),
+            &sections::encode_global_section_with_descriptors(&globals, Some(&type_ctx)),
         );
     }
 

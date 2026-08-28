@@ -1306,6 +1306,25 @@ pub enum ExprKind {
     Ident(String),
     This,
     Super,
+    /// The module's GLOBAL NAMESPACE OBJECT — ECMA-262 §9.1.1.4's global
+    /// environment record, the object half.
+    ///
+    /// Four languages spell it and mean the same thing: JS `globalThis`, Lua
+    /// `_G`, PHP `$GLOBALS`, Python `globals()`. It sits beside `This` and
+    /// `Super` because it is the same kind of fact — a language-neutral
+    /// reference to a well-known object, not a name that happens to resolve.
+    ///
+    /// ⛔ It is a NODE rather than an `Ident` because a name is SPELLING.
+    /// `profile.global_namespace` used to carry the four spellings and shared
+    /// code compared the source text against it (`names_global_namespace`),
+    /// with `global_namespace_is_call` for Python's call form — a per-language
+    /// spelling table consulted by the shared compiler, which is
+    /// `directives.md` §10.3's under-normalization exactly: "the walker passes
+    /// its own syntax through and shared code grows a branch to cope. That
+    /// branch is a language check."
+    ///
+    /// Walkers own the spelling; this is the vocabulary they normalize into.
+    GlobalNamespace,
 
     // ── Operators (compiler_common::expressions) ─────────────────────────
     Binary {
@@ -1654,7 +1673,25 @@ pub enum VarDeclKind {
     Dim,
     Let,
     Const,
+    /// An ordinary declaration, bound in the scope that encloses it — the
+    /// block, if there is one. java/kotlin/dart/c `var`, and the default.
     Var,
+    /// A declaration bound in the enclosing FUNCTION rather than the block it
+    /// is written in — ECMA-262's VariableEnvironment (§9.1: the record that
+    /// holds `VariableStatement` bindings, which a block does NOT push).
+    ///
+    /// ⛔ This exists because `Var` MEANT TWO THINGS. Ten languages emit it,
+    /// and for nine of them it is block-scoped; only JS's `var` outlives its
+    /// block. The difference was carried by a profile flag, `hoist_var`, read
+    /// as `kind == Var && profile.hoist_var` — a language check with a nicer
+    /// name (`directives.md` §1), and §5's "reusing a field as a marker": one
+    /// variant answering two questions, so a change to either broke the other.
+    ///
+    /// The scoping of a declaration is something the AUTHOR DECLARED, so it
+    /// belongs on the declaration. Any language with function-scoped
+    /// declarations states it and gets the behaviour; nothing asks whose
+    /// language it is.
+    FunctionScoped,
     Static,
 }
 
@@ -2411,6 +2448,26 @@ pub enum ContinueTarget {
     Kind(ContinueKind),
     /// PHP: `continue 2;` — skip N levels
     Level(u32),
+}
+
+/// Whether a spread argument may bind by NAME. See [`Directives::spread_arguments`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpreadArguments {
+    /// `f(...xs)` unpacks POSITIONALLY only. Every language but php.
+    Positional,
+    /// A string-keyed array binds by PARAMETER NAME; anything else is
+    /// positional. php.
+    PositionalOrNamed,
+}
+
+/// What the argument to a terminate builtin means. See [`Directives::exit_argument`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitArgument {
+    /// The argument is the exit STATUS. Every language but php.
+    Status,
+    /// A string argument is a farewell MESSAGE (printed, status 0); anything
+    /// else is the STATUS. php `exit` / `die`.
+    MessageOrStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -4359,6 +4416,22 @@ impl Default for SetSemantics {
 // concatenated across languages (`DynamicRuntime::run_program_unit`). Pascal
 // never sees PHP's directives because it never shares PHP's compile.
 
+/// How a method call obtains its receiver — see [`Directives::method_receiver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodReceiver {
+    /// The call site passes the receiver as an explicit leading argument,
+    /// because the callable is the raw function off the class struct and
+    /// carries no receiver of its own. php.
+    CallSite,
+    /// The callable rides an ambient receiver plus a bound-receiver marker.
+    /// JS, Dart. Currently still declared as
+    /// `class_method_dispatch = "prototype"`.
+    Prototype,
+    /// Reading the method produces a fresh callable with the receiver already
+    /// bound. Python. Currently still declared as `methods_bind_on_access`.
+    BindOnAccess,
+}
+
 /// A statement of policy. Every field is an `Option`: `None` means "not stated
 /// here", so the same type serves as a module's declared defaults and as an
 /// in-source delta that changes one thing and leaves the rest alone.
@@ -4391,6 +4464,85 @@ pub struct Directives {
     /// Only [`PassBy::Alias`] is meaningful; `None` and everything else are the
     /// STORE behaviour, which is what every language but php wants.
     pub reference_binding: Option<PassBy>,
+
+    /// What does the argument to the language's TERMINATE builtin mean?
+    ///
+    /// Every language binds its own spelling to `common:control_flow.exit` on
+    /// its OWN profile row — `os.Exit` (go), `halt` (pascal), `sys.exit`
+    /// (python), `process.exit` (js), `os.exit` (lua), `__process_exit` (java).
+    /// For all of them the argument IS the status, which is the `None` default.
+    ///
+    /// php is the one language where the same syntax carries two things:
+    /// `die("bye")` prints a farewell MESSAGE and exits 0, while `exit(3)`
+    /// exits with STATUS 3 and prints nothing. Which one it is can only be
+    /// decided at runtime, so it cannot be a lowering — the emitter has to
+    /// branch on the value's type.
+    ///
+    /// It is stated here rather than as a profile flag because it is a
+    /// SEMANTIC property of the language, and it replaced two
+    /// `profile.name == "php"` checks in shared code (`calls.rs`,
+    /// `statements.rs`) that recognised the SPELLINGS `exit`/`die` directly.
+    pub exit_argument: Option<ExitArgument>,
+
+    /// Can a SPREAD argument carry NAMES as well as positions?
+    ///
+    /// Every language's `f(...xs)` unpacks positionally, which is the `None`
+    /// default. php also accepts a STRING-KEYED array — `f(...['b' => 2])`
+    /// binds by PARAMETER NAME, and which one a given call means depends on
+    /// the array's keys at RUNTIME, so it cannot be decided by a lowering.
+    ///
+    /// Stated here because it is a property of the language's call semantics,
+    /// replacing a `profile.name == "php"` check in `calls.rs` that guarded
+    /// the named-unpack probe.
+    pub spread_arguments: Option<SpreadArguments>,
+
+    /// How a method CALL obtains its receiver.
+    ///
+    /// Three models exist and shared code has to pick one per unit:
+    /// - **prototype dispatch** (JS/Dart) — the callable rides `__js_this` and
+    ///   a bound-receiver marker;
+    /// - **bind-on-access** (Python) — reading the method burns the receiver
+    ///   into a fresh bound method;
+    /// - [`MethodReceiver::CallSite`] — the callable is the raw function off
+    ///   the class struct and carries no receiver, so the CALL supplies one.
+    ///
+    /// `None` means "not the call-site model", which is every language but php
+    /// today, and is the safe answer for a language that has not stated one.
+    ///
+    /// ⛔ This replaces a `profile.name == "php"` in shared code — a language
+    /// NAME standing in for a property of the language's dispatch model, which
+    /// is the arrangement the tree is removing. A directive is stated by the
+    /// walker on `Module.directives`, so it travels with the UNIT that declared
+    /// it and a multi-language bundle gets the right answer per unit; a profile
+    /// is installed once per compilation and cannot.
+    ///
+    /// The other two models are still profile-declared
+    /// (`class_method_dispatch = "prototype"`, `methods_bind_on_access`) and
+    /// belong in this enum too — they are named here so that migration does not
+    /// have to change its shape.
+    pub method_receiver: Option<MethodReceiver>,
+
+
+    /// Is a parameter with no supplied argument bound to `undefined`, rather
+    /// than being an error or a language-specific sentinel? ECMA-262 §10.2.1.1.
+    pub missing_arg_is_undefined: Option<bool>,
+
+    /// Are a class's STATIC fields own properties of the class object —
+    /// enumerable through the ordinary object surface — or a separate storage
+    /// that reflection does not see?
+    pub static_fields_are_own_properties: Option<bool>,
+
+
+
+
+
+
+
+
+
+
+
+
 
     /// How LOCAL and PARAMETER names compare in this region.
     ///
@@ -4557,6 +4709,24 @@ pub struct Directives {
     /// language but python wants and what the compiler already emitted.
     pub name_drop: Option<NameDrop>,
 
+    /// The TEXT of a Boolean when a string needs it.
+    ///
+    /// Question 1 of `directives.md` §3 — it governs a region of code, and the
+    /// answers genuinely differ: ECMA writes `true`/`false`, .NET and python
+    /// write `True`/`False`. No property of the VALUE distinguishes them, and
+    /// the same `true` reached from two languages must read the way whichever
+    /// one is executing spells it.
+    ///
+    /// ⛔ IT WAS A WALKER PASS. VB carried ~120 lines of
+    /// `normalize_vb_concat_bool_text` walking every statement to rewrite a
+    /// concatenated Boolean into a literal, C# carried nothing at all and
+    /// printed `1`/`0` for every `bool` in a string, and python got it right
+    /// only inside `str()`. One fact, three homes, two of them wrong.
+    ///
+    /// `None` inherits ECMA's `true`/`false`, which is what the compiler
+    /// already emitted and what JS, java, kotlin, ruby and lua all want.
+    pub bool_text: Option<BoolText>,
+
     /// When a field declaration repeats a name an ancestor already declared,
     /// does it get its OWN storage or write the ancestor's?
     ///
@@ -4611,6 +4781,40 @@ pub enum NameDrop {
     /// finaliser early. Getting that exact needs refcounting in the VM. The
     /// same trade was already made for PHP's `unset`.
     Finalise,
+    /// The value becomes ELIGIBLE for finalisation; the finaliser runs at the
+    /// next collection point, not at the drop.
+    ///
+    /// This is .NET's answer, and it is a third answer rather than a shade of
+    /// [`Finalise`]: a C# or VB finaliser is emphatically NOT run when the name
+    /// goes away — it runs when the collector gets to it, which a program
+    /// forces with `GC.Collect()` / `GC.WaitForPendingFinalizers()`. Running it
+    /// at the drop would make `Dispose` and `Finalize` indistinguishable, and
+    /// the whole .NET convention is that they are not.
+    ///
+    /// Same stated imprecision as [`Finalise`] about WHICH values become
+    /// eligible — a dropped NAME, not a dropped last REFERENCE — but the timing
+    /// it expresses is exact.
+    Defer,
+}
+
+/// How a Boolean spells itself — see [`Directives::bool_text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoolText {
+    /// `true` / `false` — ECMA, java, kotlin, ruby, lua, go.
+    #[default]
+    Lowercase,
+    /// `True` / `False` — .NET (`Boolean.ToString`) and python (`str`).
+    TitleCase,
+}
+
+impl BoolText {
+    /// The two spellings, true first.
+    pub fn texts(self) -> (&'static str, &'static str) {
+        match self {
+            BoolText::Lowercase => ("true", "false"),
+            BoolText::TitleCase => ("True", "False"),
+        }
+    }
 }
 
 /// Whether a program presents a user interface — see [`Directives::app_shell`].
@@ -4780,8 +4984,22 @@ impl Directives {
         if other.name_drop.is_some() {
             self.name_drop = other.name_drop;
         }
+        if other.bool_text.is_some() {
+            self.bool_text = other.bool_text;
+        }
         if other.field_shadowing.is_some() {
             self.field_shadowing = other.field_shadowing;
+        }
+        // ⛔ §7 step 4: every field needs a rule here, or `Block` scope cannot
+        // inherit it and the field is a live bug rather than an omission. This
+        // one was added without one.
+        //
+        // "May a spread argument bind by NAME here" governs the code doing the
+        // CALLING — §3 question 1, the same shape as php's historical
+        // `allow_call_time_pass_reference` — so a nested region may state it
+        // and a `Some` wins over the enclosing frame like every other field.
+        if other.spread_arguments.is_some() {
+            self.spread_arguments = other.spread_arguments;
         }
     }
 }
