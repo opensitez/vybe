@@ -14,6 +14,9 @@
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -200,9 +203,9 @@ fn emit_lua_gsub_manual_replace(
     lset(&mut chunks[current], match_slot, line);
 
     {
-        let index_key = chunks[current].add_constant(Value::String(Arc::from("index")));
+        let index_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("index"), &PlainNames);
         lget(&mut chunks[current], item_slot, line);
-        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
+        class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &index_key, Dest::Stack, line);
         lset(&mut chunks[current], start_slot, line);
     }
 
@@ -1445,9 +1448,9 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     chunks[current].emit_if(line);
     {
         let c = &mut chunks[current];
-        let index_k = c.add_constant(Value::String(Arc::from("index")));
+        let index_k = class_slots::resolve_interned(c, &ClassSlot::internal("index"), &PlainNames);
         lget(c, result_slot, line);
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
+        class_slots::emit_class_get(c, ObjSource::Stack, &index_k, Dest::Stack, line);
         lget(c, result_slot, line);
         c.emit_i32_const(0, line);
         c.emit_op(Op::ARRAY_GET, line);
@@ -1617,9 +1620,9 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         let end_slot = alloc_local(c);
         let cap_len_slot = alloc_local(c);
         // start = result.index + 1  (Lua 1-based)
-        let index_k = c.add_constant(Value::String(Arc::from("index")));
+        let index_k = class_slots::resolve_interned(c, &ClassSlot::internal("index"), &PlainNames);
         lget(c, result_slot, line);
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
+        class_slots::emit_class_get(c, ObjSource::Stack, &index_k, Dest::Stack, line);
         lget(c, start0_slot, line);
         c.emit_op(Op::F64_ADD, line);
         c.emit_f64_const(1.0, line);
@@ -1627,8 +1630,8 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         lset(c, start_slot, line);
         // end = start - 1 + len(result[0])  = result.index + len(result[0])
         lget(c, result_slot, line);
-        let idx_k = c.add_constant(Value::String(Arc::from("index")));
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, idx_k, line);
+        let idx_k = class_slots::resolve_interned(c, &ClassSlot::internal("index"), &PlainNames);
+        class_slots::emit_class_get(c, ObjSource::Stack, &idx_k, Dest::Stack, line);
         lget(c, start0_slot, line);
         c.emit_op(Op::F64_ADD, line);
         lget(c, result_slot, line);

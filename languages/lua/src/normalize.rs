@@ -973,7 +973,12 @@ fn lua_call_name(expr: &Expression) -> Option<&str> {
 }
 
 fn is_lua_global_env(expr: &Expression) -> bool {
-    matches!(&expr.kind, ExprKind::Ident(name) if name == "_G")
+    // `_G` is Lua's SPELLING of the global namespace object; the vocabulary is
+    // `ExprKind::GlobalNamespace`. Both are accepted here because this pass
+    // runs before and after `normalize_expr` installs the node, and a member
+    // read like `_G.x` is rewritten to a plain ident before ever reaching it.
+    matches!(&expr.kind, ExprKind::GlobalNamespace)
+        || matches!(&expr.kind, ExprKind::Ident(name) if name == "_G")
 }
 
 fn lua_static_key(expr: &Expression) -> Option<String> {
@@ -2108,6 +2113,14 @@ fn lua_multi_index_expr(source: Expression, index: Expression) -> Expression {
 fn normalize_expr(__w: &mut LuaWalker, expr: &mut Expression) {
     if let Some(alias) = lua_global_alias_read(expr) {
         expr.kind = alias.kind;
+        return;
+    }
+    // SPELLING → VOCABULARY. `_G` surviving as a VALUE (`pairs(_G)`, passing it
+    // to a function) is the global namespace object; the member and index forms
+    // were already rewritten to plain globals above. Shared code no longer
+    // knows any language's spelling — see `ExprKind::GlobalNamespace`.
+    if matches!(&expr.kind, ExprKind::Ident(name) if name == "_G") {
+        expr.kind = ExprKind::GlobalNamespace;
         return;
     }
     normalize_os_exit_status(expr);
