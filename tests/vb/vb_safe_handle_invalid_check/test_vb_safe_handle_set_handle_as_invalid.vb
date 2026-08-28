@@ -73,6 +73,11 @@ Module Program
         Dim h As New ResettableSafeHandle()
         h.Invalidate()
         __P(CStr(h.IsClosed & "|" & h.IsInvalid))
-        __Check("True|True")
+        ' `SetHandleAsInvalid` sets the CLOSED bit and leaves `handle` alone —
+        ' it does not zero it. This class defines `IsInvalid` as
+        ' `handle = IntPtr.Zero` and the constructor set `handle` to 100, so
+        ' `IsInvalid` stays False. The test asserted `True|True`, which would
+        ' require `SetHandleAsInvalid` to overwrite the handle.
+        __Check("True|False")
     End Sub
 End Module

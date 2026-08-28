@@ -45,9 +45,17 @@ End Module
 
 Module Program
     Sub Main()
-        GC.AddMemoryPressure(0)
-        GC.RemoveMemoryPressure(0)
-        __P(CStr("Zero Pressure Passed"))
-        __Check("Zero Pressure Passed")
+        ' MEASURED against .NET 10 (`dotnet run`): `AddMemoryPressure(0)` throws
+        ' ArgumentOutOfRangeException — the argument must be POSITIVE, and zero
+        ' is not allowed despite this test\'s name. The same SDK run confirms
+        ' `AddMemoryPressure(-100)` throws, which the sibling test already
+        ' asserted; this one contradicted it.
+        Try
+            GC.AddMemoryPressure(0)
+            __P(CStr("Zero Pressure Passed"))
+        Catch ex As ArgumentOutOfRangeException
+            __P(CStr("Zero Pressure Rejected"))
+        End Try
+        __Check("Zero Pressure Rejected")
     End Sub
 End Module

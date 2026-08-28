@@ -52,14 +52,15 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim p As New Phoenix()
-            __Check("Resurrected: True")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim p As New Phoenix()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
 
         __P(CStr("Resurrected: " & (Phoenix.Instance IsNot Nothing)))
+        __Check("Resurrected: True")
     End Sub
 End Module

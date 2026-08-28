@@ -67,15 +67,17 @@ End Class
 
 Module Program
     Sub Main()
-    Sub Main()
-        Sub()
-            Dim h As New GcFinalizedSafeHandle()
-            __Check("Finalized Release Count: 1")
-        End Sub()
+        ' The handle is dropped so a collection can finalize it. `Sub() … End Sub()`
+        ' is not VB and this file carried `Sub Main()` twice, with `__Check` run
+        ' before the value it checks was ever printed — the test could not pass
+        ' as written in any implementation.
+        Dim h As New GcFinalizedSafeHandle()
+        h = Nothing
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
 
         __P(CStr("Finalized Release Count: " & GcFinalizedSafeHandle.FinalizedReleaseCount))
+        __Check("Finalized Release Count: 1")
     End Sub
 End Module

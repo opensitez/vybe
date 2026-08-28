@@ -57,14 +57,15 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim holder As New UnmanagedHandleHolder()
-            __Check("Handle Released: True")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim holder As New UnmanagedHandleHolder()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
 
         __P(CStr("Handle Released: " & UnmanagedHandleHolder.HandleReleased))
+        __Check("Handle Released: True")
     End Sub
 End Module

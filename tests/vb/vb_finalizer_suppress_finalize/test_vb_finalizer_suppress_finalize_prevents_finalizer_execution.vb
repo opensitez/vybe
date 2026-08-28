@@ -57,16 +57,17 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim obj As New SuppressedFinalizerObject()
-            obj.Cleanup()
-            __Check("False")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim obj As New SuppressedFinalizerObject()
+        obj.Cleanup()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
         GC.Collect()
 
         __P(CStr(SuppressedFinalizerObject.FinalizerRan))
+        __Check("False")
     End Sub
 End Module

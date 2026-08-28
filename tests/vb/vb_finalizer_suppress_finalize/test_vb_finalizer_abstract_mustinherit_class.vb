@@ -56,14 +56,15 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim c As New ConcreteDerived()
-            __Check("True")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim c As New ConcreteDerived()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
 
         __P(CStr(AbstractWithFinalizer.AbstractFinalizerRan))
+        __Check("True")
     End Sub
 End Module

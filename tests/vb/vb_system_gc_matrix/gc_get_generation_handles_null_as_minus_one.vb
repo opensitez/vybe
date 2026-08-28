@@ -45,8 +45,16 @@ End Module
 
 Module M
     Sub Main()
-        Dim value As Integer = GC.GetGeneration(Nothing)
-        __P(CStr(value = -1))
+        ' MEASURED against .NET 10 (`dotnet run`): `GC.GetGeneration(Nothing)`
+        ' throws ArgumentNullException. It does not answer −1 — the .NET GC API
+        ' has no such sentinel, and two tests in this category asserted one
+        ' while `vb_gc_add_memory_pressure` asserted the throw.
+        Try
+            Dim value As Integer = GC.GetGeneration(Nothing)
+            __P(CStr("no throw"))
+        Catch ex As ArgumentNullException
+            __P(CStr("True"))
+        End Try
         __Check("True")
     End Sub
 End Module

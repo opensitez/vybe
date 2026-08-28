@@ -55,14 +55,15 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim a As New ObjA()
-            Dim b As New ObjB()
-            __Check("Multiple Finalizers Executed Safely")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim a As New ObjA()
+        Dim b As New ObjB()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
         __P(CStr("Multiple Finalizers Executed Safely"))
+        __Check("Multiple Finalizers Executed Safely")
     End Sub
 End Module

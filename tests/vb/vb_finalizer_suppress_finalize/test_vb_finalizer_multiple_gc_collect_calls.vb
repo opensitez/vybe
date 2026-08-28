@@ -52,10 +52,10 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim m As New MultiCollectObject()
-            __Check("1")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim m As New MultiCollectObject()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
@@ -63,5 +63,6 @@ Module Program
         GC.WaitForPendingFinalizers()
 
         __P(CStr(MultiCollectObject.Count))
+        __Check("1")
     End Sub
 End Module

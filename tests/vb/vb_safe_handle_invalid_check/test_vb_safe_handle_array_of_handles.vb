@@ -64,8 +64,8 @@ End Class
 
 Module Program
     Sub Main()
-        Dim handles As ArrayItemHandle() = {New ArrayItemHandle(1), New ArrayItemHandle(2)}
-        For Each h In handles
+        Dim [handles] As ArrayItemHandle() = {New ArrayItemHandle(1), New ArrayItemHandle(2)}
+        For Each h In [handles]
             h.Dispose()
         Next
         __P(CStr("All Array Handles Disposed"))

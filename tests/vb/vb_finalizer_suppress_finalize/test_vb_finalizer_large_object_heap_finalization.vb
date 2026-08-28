@@ -54,14 +54,15 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Dim l As New LargeFinalizableObject()
-            __Check("True")
-        End Sub()
+        ' The generator emitted this body inside a bare `Sub() … End Sub()`,
+        ' which is not VB, and ran __Check BEFORE the value it checks was
+        ' printed. Hoisted; the assertion now runs last.
+        Dim l As New LargeFinalizableObject()
 
         GC.Collect(2, GCCollectionMode.Forced)
         GC.WaitForPendingFinalizers()
 
         __P(CStr(LargeFinalizableObject.Finalized))
+        __Check("True")
     End Sub
 End Module
