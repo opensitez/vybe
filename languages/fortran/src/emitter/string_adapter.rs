@@ -8,6 +8,9 @@
 //!   (stub: trimStart for now; full adjustl needs declared length).
 //! - `adjustr(s)` — symmetric.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -61,20 +64,21 @@ pub fn emit_fortran_io_str(chunks: &mut [Chunk], current: usize, line: u32) {
     // for it. Same shape and same question as Python's `repr`, different
     // spelling, which is why the spelling lives here and not in the primitive.
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    emit_struct_get(chunk, "__type", line);
+    let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_id, Dest::Stack, line);
     chunk.emit_string_const("complex", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
 
     chunk.emit_string_const("(", line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    emit_struct_get(chunk, "real", line);
+    emit_struct_get(chunk, &ClassSlot::internal("real"), line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);
     emit_concat(chunk, line);
     chunk.emit_string_const(",", line);
     emit_concat(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    emit_struct_get(chunk, "imag", line);
+    emit_struct_get(chunk, &ClassSlot::internal("imag"), line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);
     emit_concat(chunk, line);
     chunk.emit_string_const(")", line);
@@ -87,9 +91,9 @@ pub fn emit_fortran_io_str(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 }
 
-fn emit_struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+fn emit_struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let cs = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs, Dest::Stack, line);
 }
 
 fn emit_concat(chunk: &mut Chunk, line: u32) {
