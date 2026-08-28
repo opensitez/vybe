@@ -1,6 +1,9 @@
 //! Kotlin collection adapters that need Kotlin-specific return contracts.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{
     collections as common_collections, dict, instructions::host, loops, ops, sets as common_sets,
 };
@@ -275,9 +278,9 @@ pub fn emit_to_mutable_list(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     let out = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], out, line);
     get(&mut chunks[current], out, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(MUTABLE_LIST_MARKER)));
+    let marker = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(MUTABLE_LIST_MARKER), &PlainNames);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker, line);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &marker, ValueSource::Stack, line);
     get(&mut chunks[current], out, line);
 }
 
@@ -289,8 +292,8 @@ pub fn emit_is_mutable_list(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(MUTABLE_LIST_MARKER)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, marker, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MUTABLE_LIST_MARKER).to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_bool_const(false, line);
@@ -479,8 +482,8 @@ pub fn emit_is_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
     chunks[current].emit_else(line);
     // StringBuilder: empty when its `__buffer` is.
     get(&mut chunks[current], value, line);
-    let buf_key = chunks[current].add_constant(Value::String(Arc::from("__buffer")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buffer").to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
     let buf = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], buf, line);
     get(&mut chunks[current], buf, line);
@@ -528,8 +531,8 @@ pub fn emit_make_entry(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     for (prop, slot) in [("key", k), ("value", v)] {
         chunks[current].emit_dup(line);
         get(&mut chunks[current], slot, line);
-        let key_idx = chunks[current].add_constant(Value::String(Arc::from(prop)));
-        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal((prop).to_string()), &PlainNames);
+        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
 }
 
@@ -572,10 +575,12 @@ pub fn emit_dict_as_list(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     common_sets::emit_values_array(chunks, current, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], v, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(
-        crate::emitter::tostring::SET_MARKER,
-    )));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, marker, line);
+    let marker = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(crate::emitter::tostring::SET_MARKER),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &marker, Dest::Stack, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);

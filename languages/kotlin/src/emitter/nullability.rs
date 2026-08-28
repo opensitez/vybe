@@ -1,5 +1,8 @@
 //! Kotlin nullability operators.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{callable, collections};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -101,14 +104,15 @@ fn emit_stamp_jvm_chain(chunk: &mut Chunk, exc_name: &str, line: u32) {
         chunk.emit_string_const(name, line);
     }
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        vybe_compiler::primitives::reflection::FIELD_TYPES,
-    )));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(
+        &ClassSlot::Repr(vybe_compiler::primitives::reflection::FIELD_TYPES.to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn emit_exception_throw(chunk: &mut Chunk, exc_name: &str, message_slot: Option<u16>, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     if let Some(slot) = message_slot {
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -139,7 +143,7 @@ pub fn emit_exception(
         chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
     }
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -244,23 +248,33 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     }
 
     let type_name = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    let type_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        vybe_compiler::primitives::reflection::FIELD_TYPE_NAME,
-    )));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, type_name, line);
+    let type_slot = class_slots::resolve(
+        &ClassSlot::Repr(vybe_compiler::primitives::reflection::FIELD_TYPE_NAME.to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Local(value),
+        &type_slot,
+        Dest::Local(type_name),
+        line,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_name, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    let types_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        vybe_compiler::primitives::reflection::FIELD_TYPES,
-    )));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, types_key, line);
     let types = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, types, line);
+    let types_slot = class_slots::resolve(
+        &ClassSlot::Repr(vybe_compiler::primitives::reflection::FIELD_TYPES.to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Local(value),
+        &types_slot,
+        Dest::Local(types),
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, types, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
@@ -295,7 +309,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     chunks[current].emit_end(line);
 
     let klass = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, klass, line);
     set_field_from_slot(&mut chunks[current], klass, "simpleName", type_name, line);
     set_field_from_slot(
@@ -307,7 +321,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     );
 
     let java = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, java, line);
     set_field_from_slot(&mut chunks[current], java, "name", type_name, line);
     set_field_from_slot(&mut chunks[current], java, "canonicalName", type_name, line);
@@ -328,10 +342,14 @@ fn set_field_from_slot(
     value_slot: u16,
     line: u32,
 ) {
-    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(field)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let slot = class_slots::resolve(&ClassSlot::Internal(field.to_string()), &PlainNames);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(object_slot),
+        &slot,
+        ValueSource::Local(value_slot),
+        line,
+    );
 }
 
 /// `x ?: throw e` — the throw is an EXPRESSION here; the helper throws the

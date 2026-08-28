@@ -10,6 +10,9 @@
 //! `ecma:array.isArray`, because one Kotlin spelling covers both.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{
     callable, collections as common_collections, dict, loops, ops, sets,
@@ -39,8 +42,8 @@ pub fn emit_dict_set_tracked(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     get(chunks, current, d, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
     get(chunks, current, k, line);
     common_collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -285,8 +288,8 @@ pub fn emit_get_value(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
     dict::emit_get_dynamic(chunks, current, line);
     chunks[current].emit_else(line);
     get(chunks, current, m, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(DEFAULT_MARKER)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, marker, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((DEFAULT_MARKER).to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
     set(chunks, current, def, line);
     get(chunks, current, def, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -313,8 +316,8 @@ pub fn emit_with_default(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     set(chunks, current, m, line);
     get(chunks, current, m, line);
     get(chunks, current, f, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(DEFAULT_MARKER)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((DEFAULT_MARKER).to_string()), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     get(chunks, current, m, line);
 }
 
@@ -887,10 +890,8 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     emit_dict_delete_full(chunks, current, 2, line);
     chunks[current].emit_op(Op::DROP, line);
     get(chunks, current, recv, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(
-        crate::emitter::tostring::SET_MARKER,
-    )));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, marker, line);
+    let marker = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(crate::emitter::tostring::SET_MARKER), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &marker, Dest::Stack, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);

@@ -1,6 +1,7 @@
 //! Kotlin `ClassDecl` → `NormalClass` normalization pass.
 
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
+use vybe_compiler::primitives::class_slots;
 use vybe_ast::{
     Argument, BinOp, ClassKind, ClassMember, ClassModifiers, ConstructorInitializerTarget,
     ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind,
@@ -397,8 +398,8 @@ pub fn normalize_class(
                     synthetic_backing_getter
                         .then(|| ret(this_field(&format!("__kt_field_{}", pname))))
                 });
-                let getter_name = format!("__get_{pname}");
-                let setter_name = format!("__set_{pname}");
+                let getter_name = class_slots::getter_name(pname);
+                let setter_name = class_slots::setter_name(pname);
                 let getter_method = getter_body.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),

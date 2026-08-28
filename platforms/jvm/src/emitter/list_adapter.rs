@@ -577,22 +577,11 @@ pub fn emit_size(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Java renders a double the way dart and kotlin do; the mechanic is shared.
+/// This was a private copy that handled NEITHER NaN/Infinity nor signed zero —
+/// `println(-0.0)` printed `0.0` where Java prints `-0.0`.
 pub fn emit_double_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], value, line);
-    get(&mut chunks[current], value, line);
-    get(&mut chunks[current], value, line);
-    host::emit(&mut chunks[current], "ecma:math", "floor", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], value, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    host::emit(&mut chunks[current], "ecma:number", "toFixed", 2, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], value, line);
-    host::emit(&mut chunks[current], "ecma:number", "toString", 1, line);
-    chunks[current].emit_end(line);
+    vybe_compiler::primitives::convert::emit_float_to_string(chunks, current, line);
 }
 
 pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {

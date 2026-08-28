@@ -84,47 +84,11 @@ pub fn emit_sign(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) 
 /// `6.0` → `"6.0"`, `0.125` → `"0.125"`, `-2.0` → `"-2.0"`. Appends `.0` only
 /// when the ECMA rendering produced no fraction and no exponent — `1e21`
 /// renders as `1e+21` in both languages and must not gain a suffix.
+/// Kotlin renders a double the way dart and java do; the mechanic is shared.
+/// This was a private copy that handled signed zero but NOT NaN or the
+/// infinities.
 pub fn emit_double_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let text = chunks[current].alloc_scratch(1);
-
-    // Negative zero: ECMA's ToString renders it "0" (§6.1.6.1.20), Kotlin
-    // renders the sign — "-0.0". Detected the only way f64 allows: it
-    // compares equal to zero while 1/x is -Infinity. Emitted INLINE, so the
-    // shape is one value-if with the ordinary rendering in its else arm.
-    let v = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_op(Op::F64_EQ, line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_f64_const(1.0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_op(Op::F64_LT, line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_string_const("-0.0", line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_string_const("0.0", line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_else(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    let to_str = chunks[current].add_import("ecma:string", "String");
-    chunks[current].emit_call(to_str, 1, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
-    emit_contains_non_integral_mark(chunks, current, text, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_string_const("", line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_string_const(".0", line);
-    chunks[current].emit_end(line);
-    vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], 2, line);
-
-    chunks[current].emit_end(line);
+    vybe_compiler::primitives::convert::emit_float_to_string(chunks, current, line);
 }
 
 /// Push i32 `1` when the rendered number already shows a fraction or exponent

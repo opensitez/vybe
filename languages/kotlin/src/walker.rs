@@ -5,6 +5,7 @@ use vybe_ast::*;
 
 use super::{KotlinParser, Rule};
 use crate::emitter::tostring::SET_MARKER;
+use vybe_compiler::primitives::class_slots;
 
 #[derive(Clone, Default)]
 struct KotlinReflectionMethodMeta {
@@ -16582,7 +16583,7 @@ fn kt_interface_property_accessors(
     is_readonly: bool,
 ) -> Vec<ClassMember> {
     let getter = Statement::new(StmtKind::FunctionDecl {
-        name: format!("__get_{name}"),
+        name: class_slots::getter_name(&name),
         params: Vec::new(),
         return_type: type_hint.clone(),
         body: Vec::new(),
@@ -16600,7 +16601,7 @@ fn kt_interface_property_accessors(
     if !is_readonly {
         out.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
-                name: format!("__set_{name}"),
+                name: class_slots::setter_name(&name),
                 params: vec![Param {
                     name: "__kt_value".to_string(),
                     type_hint: type_hint.map(Into::into),

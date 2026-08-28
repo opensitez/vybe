@@ -32,6 +32,9 @@
 //! is why `toPattern()` is a no-op — and `pattern.toPattern().matcher(s)` then
 //! walks into the JVM matcher. Change the layout and that stops working.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{collections, instructions::host, ops};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype;
@@ -70,8 +73,8 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn field_get(chunk: &mut Chunk, slot: u16, field: &str, line: u32) {
     get(chunk, slot, line);
-    let k = key(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    let cs = class_slots::resolve(&ClassSlot::Internal(field.to_string()), &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs, Dest::Stack, line);
 }
 
 /// Stack: [value] → []. Writes `slot.field = value`.
@@ -80,8 +83,8 @@ fn field_set_from_stack(chunk: &mut Chunk, slot: u16, field: &str, line: u32) {
     set(chunk, value, line);
     get(chunk, slot, line);
     get(chunk, value, line);
-    let k = key(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 fn null(chunk: &mut Chunk, line: u32) {
@@ -458,7 +461,7 @@ pub fn emit_regex_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     let regex = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], regex, line);
     get(&mut chunks[current], source, line);
@@ -523,7 +526,7 @@ pub fn emit_to_pattern(_chunks: &mut [Chunk], _current: usize, _line: u32) {}
 /// answering only one would make `range.start` work and `range.first` not.
 fn emit_range(chunks: &mut [Chunk], current: usize, start: u16, end: u16, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     let range = chunk.alloc_scratch(1);
     set(chunk, range, line);
 
@@ -578,7 +581,7 @@ fn emit_group_object(
     null(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     let group = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], group, line);
     get(&mut chunks[current], value, line);
@@ -638,8 +641,8 @@ fn dict_put(chunks: &mut [Chunk], current: usize, dict: u16, key_slot: u16, line
     // corpus, because every test binds the match to a variable first.
     chunks[current].emit_op(Op::ARRAY_SET, line);
     get(&mut chunks[current], dict, line);
-    let keys = key(&mut chunks[current], "__keys");
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
     get(&mut chunks[current], key_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -685,7 +688,7 @@ fn emit_match_result(chunks: &mut Vec<Chunk>, current: usize, m: u16, offset: u1
     chunks[current].emit_op(Op::F64_ADD, line);
     set(&mut chunks[current], end, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     let result = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], result, line);
     get(&mut chunks[current], value, line);
@@ -874,11 +877,11 @@ fn emit_match_result(chunks: &mut Vec<Chunk>, current: usize, m: u16, offset: u1
 
 /// An empty dict with the `__keys` sidecar the enumeration primitives read.
 fn new_dict(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     collections::emit_array_new(chunks, current, 0, line);
-    let keys = key(&mut chunks[current], "__keys");
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 // ── Searching ──────────────────────────────────────────────────────────────

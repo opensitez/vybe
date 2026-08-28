@@ -13,6 +13,9 @@
 //! marker as a PROP only; the key walk skips it so the two shapes compare
 //! equal.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 use vybe_compiler::primitives::callable;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -110,10 +113,8 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // the slot itself is the source of truth for operator dispatch.
     let method_slot = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_GET, a, line);
-    let slot_key = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
-    )));
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, slot_key, line);
+    let slot_key = class_slots::resolve_interned(&mut c, &ClassSlot::internal(vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq)), &PlainNames);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &slot_key, Dest::Stack, line);
     c.emit_op_u16(Op::LOCAL_SET, method_slot, line);
     c.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     c.emit_op(Op::REF_IS_NULL, line);
@@ -294,8 +295,8 @@ fn emit_dict_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) 
     // STRUCT_GET, not `ecma:object.get`: host accessors hide `__` keys.
     c.emit_op_u16(Op::LOCAL_GET, a, line);
     {
-        let key = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        let key = class_slots::resolve_interned(c, &ClassSlot::repr("__keys"), &PlainNames);
+        class_slots::emit_class_get(c, ObjSource::Stack, &key, Dest::Stack, line);
     }
     c.emit_op_u16(Op::LOCAL_SET, keys, line);
     c.emit_op_u16(Op::LOCAL_GET, keys, line);
@@ -373,8 +374,8 @@ fn emit_dict_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) 
     c.emit_op_u16(Op::LOCAL_SET, count_b, line);
     c.emit_op_u16(Op::LOCAL_GET, b, line);
     {
-        let key = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
+        class_slots::emit_class_get(c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     }
     c.emit_op_u16(Op::LOCAL_SET, keys, line);
     c.emit_op_u16(Op::LOCAL_GET, keys, line);
