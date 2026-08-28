@@ -1644,7 +1644,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.dart_class_mixins.clear();
     apply_mixins(__w, &mut body, &mixin_names);
     override_inherited_getter_fields(&mut body);
-    apply_inherited_concrete_members(__w, &mut body, &mixin_names);
     apply_user_extensions(__w, &mut body);
     normalize_primitive_extensions(__w, &mut body);
     rewrite_inherited_instance_member_idents(&mut body, &mixin_names);
@@ -1690,6 +1689,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // `this` is ambient, as in ECMA — a Dart method never declares it.
         directives: vybe_ast::Directives {
             receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            // Prototype dispatch, as js — the callable carries its own
+            // receiver. Replaces the profile string `class_method_dispatch`.
+            method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
             ..Default::default()
         },
     })
@@ -4339,25 +4341,47 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
             );
         }
     }
+    // A SUBCLASS INHERITS ITS ANCESTORS' DECLARED MEMBER TYPES.
+    //
+    // `operator_return_types` is keyed `(class, member)` and populated from
+    // each class's OWN members, so a member declared on an ancestor answered
+    // nothing for the child — `abstract class Tax { double apply(double a) }`
+    // / `class SalesTax extends Tax {}` lost `apply`'s `double` and
+    // `SalesTax().apply(100.0)` printed `10` instead of `10.0`.
+    //
+    // ⛔ This loop already existed and already had the right SHAPE — a
+    // fixpoint over `class_parents`, which handles chains of any depth — but
+    // it propagated exactly ONE key, `__dart_iter_element`. One member name
+    // hardcoded where the rule is general. Nothing here is new machinery; the
+    // special case is removed.
+    //
+    // A member the child DECLARES stops the climb: that is an override and its
+    // own declaration wins. Parents are tried left to right, so an earlier
+    // parent (dart's `extends` before `with`/`implements`) is nearer.
     for _ in 0..class_parents.len() {
         let mut changed = false;
+        let mut pending: Vec<((String, String), Option<String>)> = Vec::new();
         for (class_name, parents) in &class_parents {
-            if operator_return_types
-                .contains_key(&(class_name.clone(), "__dart_iter_element".to_string()))
-            {
-                continue;
+            for parent in parents {
+                let inherited: Vec<((String, String), Option<String>)> = operator_return_types
+                    .iter()
+                    .filter(|((owner, _), _)| owner == parent)
+                    .map(|((_, member), ty)| {
+                        ((class_name.clone(), member.clone()), ty.clone())
+                    })
+                    .collect();
+                for (key, ty) in inherited {
+                    if !operator_return_types.contains_key(&key)
+                        && !pending.iter().any(|(k, _)| k == &key)
+                    {
+                        pending.push((key, ty));
+                    }
+                }
             }
-            if let Some(parent_type) = parents.iter().find_map(|parent| {
-                operator_return_types
-                    .get(&(parent.clone(), "__dart_iter_element".to_string()))
-                    .and_then(|ty| ty.clone())
-            }) {
-                operator_return_types.insert(
-                    (class_name.clone(), "__dart_iter_element".to_string()),
-                    Some(parent_type),
-                );
-                changed = true;
-            }
+        }
+        for (key, ty) in pending {
+            operator_return_types.insert(key, ty);
+            changed = true;
         }
         if !changed {
             break;
@@ -6735,108 +6759,6 @@ fn rewrite_inherited_instance_member_idents(
             let extra_refs: Vec<&str> = extra_members.iter().map(String::as_str).collect();
             rewrite_instance_member_idents(members, &extra_refs);
         }
-    }
-}
-
-fn apply_inherited_concrete_members(__w: &mut DartWalker, 
-    body: &mut Vec<Statement>,
-    mixin_names: &std::collections::HashSet<String>,
-) {
-    let mut classes: HashMap<String, (Vec<String>, Vec<ClassMember>)> = HashMap::new();
-    for stmt in body.iter() {
-        if let StmtKind::ClassDecl {
-            name,
-            parents,
-            members,
-            ..
-        } = &stmt.kind
-        {
-            classes.insert(name.clone(), (parents.clone(), members.clone()));
-        }
-    }
-
-    for stmt in body.iter_mut() {
-        if let StmtKind::ClassDecl {
-            name,
-            parents,
-            members,
-            ..
-        } = &mut stmt.kind
-        {
-            if mixin_names.contains(name) || parents.is_empty() {
-                continue;
-            }
-            let mut existing: HashSet<String> = members.iter().filter_map(member_name).collect();
-            // A member a MIXIN supplies must not be pre-empted by copying the
-            // superclass's version in here: Dart says the mixin wins over the
-            // base (`class C extends Base with M` → M.greet, not Base.greet).
-            // The shared augmentation pass folds mixin members later, and it
-            // correctly refuses to overwrite a member the class already has —
-            // so an inherited copy landing first would silently win.
-            for mixin in dart_class_mixins(__w, name) {
-                if let Some((_, mixin_members)) = classes.get(&mixin) {
-                    existing.extend(mixin_members.iter().filter_map(member_name));
-                }
-            }
-            let mut inherited = Vec::new();
-            for parent in parents.iter() {
-                collect_inherited_concrete_members(
-                    parent,
-                    &classes,
-                    &mut HashSet::new(),
-                    &mut inherited,
-                );
-            }
-            for member in inherited {
-                if let Some(name) = member_name(&member) {
-                    if existing.insert(name) {
-                        members.push(member);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn collect_inherited_concrete_members(
-    class_name: &str,
-    classes: &HashMap<String, (Vec<String>, Vec<ClassMember>)>,
-    seen: &mut HashSet<String>,
-    out: &mut Vec<ClassMember>,
-) {
-    if !seen.insert(class_name.to_string()) {
-        return;
-    }
-    let Some((parents, members)) = classes.get(class_name) else {
-        return;
-    };
-    for parent in parents {
-        collect_inherited_concrete_members(parent, classes, seen, out);
-    }
-    for member in members {
-        if let Some(member) = inheritable_concrete_member(member) {
-            out.push(member);
-        }
-    }
-}
-
-fn inheritable_concrete_member(member: &ClassMember) -> Option<ClassMember> {
-    match member {
-        ClassMember::Method(stmt) => match &stmt.kind {
-            StmtKind::FunctionDecl {
-                body, modifiers, ..
-            } if !modifiers.is_static && !modifiers.is_abstract && !body.is_empty() => {
-                Some(member.clone())
-            }
-            _ => None,
-        },
-        ClassMember::Property {
-            getter,
-            setter,
-            modifiers,
-            ..
-        } if !modifiers.is_static && (getter.is_some() || setter.is_some()) => Some(member.clone()),
-        _ => None,
     }
 }
 

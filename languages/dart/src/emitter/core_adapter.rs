@@ -1,6 +1,9 @@
 //! Dart core library adapters for Duration, DateTime, and Uri.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, invoke, reflection, url};
 use vybe_runtime::opcode::Op;
@@ -10,14 +13,14 @@ fn key(chunk: &mut Chunk, name: &str) -> u16 {
     chunk.add_constant(Value::String(Arc::from(name)))
 }
 
-fn set_field(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+fn set_field(chunk: &mut Chunk, name: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(name, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
-fn get_field(chunk: &mut Chunk, name: &str, line: u32) {
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+fn get_field(chunk: &mut Chunk, name: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(name, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 fn emit_slot_is_bigint(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -35,14 +38,14 @@ fn emit_bigint_i32(chunks: &mut [Chunk], current: usize, value: i32, line: u32) 
 fn set_string(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(value, line);
-    set_field(chunk, name, line);
+    set_field(chunk, &ClassSlot::internal(name), line);
 }
 
 #[allow(dead_code)]
 fn set_bool(chunk: &mut Chunk, name: &str, value: bool, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(value, line);
-    set_field(chunk, name, line);
+    set_field(chunk, &ClassSlot::internal(name), line);
 }
 
 fn obj_new(chunk: &mut Chunk, line: u32) {
@@ -73,45 +76,45 @@ fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     stamp_runtime_type(chunk, "Duration", reflection::ReflectKind::Object, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    set_field(chunk, "inMilliseconds", line);
+    set_field(chunk, &ClassSlot::internal("inMilliseconds"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     // Spans from `primitives::datetime`; `MS_PER_SECOND` doubles as the
     // millisecond→microsecond factor, Dart's one-tick-finer resolution.
     chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_SECOND, line);
     chunk.emit_op(Op::F64_MUL, line);
-    set_field(chunk, "inMicroseconds", line);
+    set_field(chunk, &ClassSlot::internal("inMicroseconds"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_SECOND, line);
     chunk.emit_op(Op::F64_DIV, line);
-    set_field(chunk, "inSeconds", line);
+    set_field(chunk, &ClassSlot::internal("inSeconds"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_MINUTE, line);
     chunk.emit_op(Op::F64_DIV, line);
-    set_field(chunk, "inMinutes", line);
+    set_field(chunk, &ClassSlot::internal("inMinutes"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_HOUR, line);
     chunk.emit_op(Op::F64_DIV, line);
-    set_field(chunk, "inHours", line);
+    set_field(chunk, &ClassSlot::internal("inHours"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_DAY, line);
     chunk.emit_op(Op::F64_DIV, line);
-    set_field(chunk, "inDays", line);
+    set_field(chunk, &ClassSlot::internal("inDays"), line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(0.0, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    set_field(chunk, "isNegative", line);
+    set_field(chunk, &ClassSlot::internal("isNegative"), line);
 }
 
 fn duration_ms_from_obj(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, "inMilliseconds", line);
+    get_field(chunk, &ClassSlot::internal("inMilliseconds"), line);
 }
 
 pub fn emit_duration_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -149,7 +152,7 @@ pub fn emit_duration_abs(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_slot_is_type(chunks: &mut [Chunk], current: usize, slot: u16, type_name: &str, line: u32) {
     reflection::emit_is_instance_of(chunks, current, slot, type_name, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(&mut chunks[current], reflection::FIELD_TYPE, line);
+    get_field(&mut chunks[current], &ClassSlot::TypeIdentity, line);
     chunks[current].emit_string_const(type_name, line);
     chunks[current].emit_op(Op::EQ, line);
     chunks[current].emit_op(Op::I32_OR, line);
@@ -205,7 +208,7 @@ pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_slot_is_type(chunks, current, value, "Duration", line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    get_field(&mut chunks[current], "isNegative", line);
+    get_field(&mut chunks[current], &ClassSlot::internal("isNegative"), line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     chunks[current].emit_f64_const(0.0, line);
@@ -311,7 +314,7 @@ fn utc_from_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 #[allow(dead_code)]
 fn datetime_ms_from_obj(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, "millisecondsSinceEpoch", line);
+    get_field(chunk, &ClassSlot::internal("millisecondsSinceEpoch"), line);
 }
 
 fn emit_compare_slots(chunk: &mut Chunk, left: u16, right: u16, line: u32) {

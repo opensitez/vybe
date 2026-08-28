@@ -24,6 +24,9 @@
 use vybe_compiler::primitives::{collections, ops};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames,
+};
 
 const MAP_ORDER_KEY: &str = "__dart_map_order";
 
@@ -433,12 +436,14 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // dart's contract is JsonUnsupportedObjectError.
     let type_slot = slot(&mut chunks[hidx]);
     {
-        let key = chunks[hidx].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-            "__type",
-        )));
-        chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunks[hidx].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
-        chunks[hidx].emit_op_u16(Op::LOCAL_SET, type_slot, line);
+        let key = class_slots::resolve_interned(&mut chunks[hidx], &ClassSlot::TypeIdentity, &PlainNames);
+        class_slots::emit_class_get(
+            &mut chunks[hidx],
+            ObjSource::Local(value_slot),
+            &key,
+            Dest::Local(type_slot),
+            line,
+        );
     }
     chunks[hidx].emit_op_u16(Op::LOCAL_GET, type_slot, line);
     chunks[hidx].emit_op(Op::REF_IS_NULL, line);
@@ -487,11 +492,9 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let keys_slot = slot(&mut chunks[hidx]);
     let key_slot = slot(&mut chunks[hidx]);
     {
-        let order_key = chunks[hidx].add_constant(vybe_runtime::Value::String(
-            std::sync::Arc::from(MAP_ORDER_KEY),
-        ));
+        let order_key = class_slots::resolve_interned(&mut chunks[hidx], &ClassSlot::internal(MAP_ORDER_KEY), &PlainNames);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunks[hidx].emit_struct_field_op(Op::STRUCT_GET, 0, order_key, line);
+        class_slots::emit_class_get(&mut chunks[hidx], ObjSource::Stack, &order_key, Dest::Stack, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
     }
     kind_test(chunks, hidx, keys_slot, "wasm:js-undefined", line);
@@ -501,7 +504,7 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks[hidx].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
     chunks[hidx].emit_end(line);
 
-    chunks[hidx].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[hidx], line);
     chunks[hidx].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[hidx].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     collections::emit_len(chunks, hidx, line);

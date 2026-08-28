@@ -1,6 +1,9 @@
 //! Dart reflection/runtimeType adapters backed by the shared reflection shape.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{loops, reflection};
 use vybe_runtime::opcode::Op;
@@ -13,31 +16,31 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn get_field(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+fn get_field(chunk: &mut Chunk, name: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(name, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
-fn set_field(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+fn set_field(chunk: &mut Chunk, name: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(name, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
 fn set_string_field(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(value, line);
-    set_field(chunk, name, line);
+    set_field(chunk, &ClassSlot::internal(name), line);
 }
 
 fn emit_type_descriptor(chunk: &mut Chunk, name: &str, kind: reflection::ReflectKind, line: u32) {
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     set_string_field(chunk, reflection::FIELD_TYPE, name, line);
     set_string_field(chunk, reflection::FIELD_TYPE_NAME, name, line);
     set_string_field(chunk, reflection::FIELD_KIND, kind.as_str(), line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(name, line);
     chunk.emit_array_new_fixed(0, 1, line);
-    set_field(chunk, reflection::FIELD_TYPES, line);
+    set_field(chunk, &ClassSlot::repr("__types"), line);
 }
 
 fn emit_type_from_slot(
@@ -49,13 +52,13 @@ fn emit_type_from_slot(
 ) {
     let type_name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    get_field(chunk, reflection::FIELD_TYPE, line);
+    get_field(chunk, &ClassSlot::TypeIdentity, line);
     chunk.emit_op_u16(Op::LOCAL_SET, type_name_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, type_name_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    get_field(chunk, reflection::FIELD_TYPE_NAME, line);
+    get_field(chunk, &ClassSlot::repr("__typename"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, type_name_slot, line);
     chunk.emit_end(line);
 
@@ -77,7 +80,7 @@ fn emit_type_descriptor_from_name_on_stack(
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     let descriptor_slot = reserve_slot(chunk);
-    chunk.emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, descriptor_slot, line);
     reflection::emit_set_slot_field_from_local(
         chunk,
@@ -99,7 +102,7 @@ fn emit_type_descriptor_from_name_on_stack(
 
 fn emit_slot_truthy_field(chunk: &mut Chunk, value_slot: u16, name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    get_field(chunk, name, line);
+    get_field(chunk, &ClassSlot::internal(name), line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
@@ -188,7 +191,7 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: `[type_descriptor] -> [type_name_string]`.
 pub fn emit_dart_type_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    get_field(chunk, reflection::FIELD_TYPE_NAME, line);
+    get_field(chunk, &ClassSlot::repr("__typename"), line);
 }
 
 /// Dart `value is List<int>`.
