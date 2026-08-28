@@ -61,7 +61,6 @@ string_indexing = "one_based"          # Pascal strings are 1-based
 array_upper_bound_inclusive = true     # array[0..5] means 0..5 inclusive
 parens_for_index = false               # Pascal uses [] for indexing, not ()
 entry_point = "main"                   # program body is the entry point
-hoist_var = false
 # Pascal `+` is overloaded: string concat (`'a' + 'b'`) AND numeric addition.
 # DYN_ADD checks for string operands first; F64_ADD would coerce strings
 # to NaN. Object Pascal / Delphi / Free Pascal all expose this overload.

@@ -3,6 +3,9 @@
 use vybe_compiler::primitives::{collections, expressions, instructions::host, ops, sets};
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
+use vybe_compiler::primitives::class_slots::{
+    self,
+};
 
 pub fn emit_helper(
     name: &str,
@@ -1258,7 +1261,7 @@ pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, 
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
 
     // The shape `emit_exception_new_finalize` expects: [obj, obj, msg].
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
