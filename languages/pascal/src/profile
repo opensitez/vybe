@@ -46,7 +46,6 @@ type_helper_methods = true
 bare_class_field_is_callable = true
 # Pascal RTTI (`TRttiType.GetProperty`, `GetAttributes`) reads a class's member
 # list at runtime instead of the walker deriving it into a compile-time HashMap.
-class_member_metadata = true
 function_return = "result_slot"        # Pascal uses Result := value
 self_keyword = "self"
 base_keyword = "inherited"

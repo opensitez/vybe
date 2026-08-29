@@ -1057,6 +1057,10 @@ pub fn normalize_class(
         interfaces: normalized_interfaces,
         explicit_self_param: false, // Pascal: Self is implicit
         implicit_self_fields: true, // Pascal: bare field names resolve to Self.field inside methods
+        // Pascal's reflection surface reads a member's declared name, type hint
+        // and kind at RUN time, so the members must carry them. Was the
+        // `class_member_metadata` profile flag — the only language that set it.
+        member_metadata: true,
         ..Default::default()
     }
     .with_members(out)
