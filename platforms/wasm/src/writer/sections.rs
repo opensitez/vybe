@@ -26,7 +26,31 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
         }
     }
 
-    // No vybe:rt imports — all ops lower to inline WASM + standard wasm:js-* builtins
+    // ⛔ DYNAMIC PROPERTY ACCESS CANNOT BE A STRUCT OP. `STRUCT_GET`/`STRUCT_SET`
+    // carry `(typeidx, name-constant)`, and typeidx 0 means "no static type" —
+    // a property read by NAME on an untyped object, which is 897 of the 902
+    // struct ops a plain JS class emits. The writer used to lower those to a
+    // typed `struct.get` against type 0 field 0, because its name search
+    // returns the `(0, 0)` sentinel on a miss. Type 0 is a REAL type, so the
+    // instruction validates as well-formed and V8 rejects it for what it is:
+    // `invalid field index: 0`. That fails on a two-function wast module with
+    // no classes at all, so it is not a class-census problem.
+    //
+    // These two are what an untyped access actually is. They are host imports
+    // rather than inline wasm because core wasm has no by-name property access;
+    // that is the whole reason the GC proposal has typed fields and this path
+    // does not use them.
+    // `new` joins them for the same reason: `struct.new` with typeidx 0 is not
+    // a typed allocation at all, it is "make a fresh dynamic object".
+    for key in [
+        ("ecma:object", "new"),
+        ("ecma:object", "get"),
+        ("ecma:object", "set"),
+    ] {
+        if seen.insert(key) {
+            needed.push(key);
+        }
+    }
     needed
 }
 
@@ -199,7 +223,46 @@ pub fn encode_export_section(_chunks: &[Chunk], import_count: usize) -> Vec<u8> 
 /// section and the `global.get` immediates index into. If the two ever
 /// disagreed the module would still validate and read the *wrong string*.
 pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
+    // ⛔ DO NOT ADD ENTRIES HERE. Tried and reverted 2026-08-28: appending the
+    // dynamic-property names (so a typeidx-0 access could name its key) shifts
+    // the GLOBAL INDEX SPACE, because imports precede defined globals and the
+    // writer uses the bytecode's `GLOBAL_GET`/`GLOBAL_SET` immediate directly
+    // as the wasm global index. The compiler numbered those immediates over
+    // `global_imports ++ defined` WITHOUT the added names, so every defined
+    // global moved and V8 answered `immutable global #12 cannot be assigned` —
+    // a `global.set` landing on an imported string constant.
+    //
+    // The names have to be declared as real `chunk.global_imports` by the
+    // COMPILER, which is the only side that can keep both numberings in step.
     collect_global_imports(chunks, vybe_runtime::chunk::STRING_CONSTANTS_MODULE)
+}
+
+/// Every constant a chunk uses as an untyped (typeidx 0) struct key.
+///
+/// Opcodes are four bytes (group, sub — both big-endian u16) followed by the
+/// operands, and `STRUCT_GET`/`STRUCT_SET` carry `(typeidx, name-constant)` as
+/// two more big-endian u16s. Decoded here rather than reusing the writer's
+/// walker because this runs before the code section is built.
+fn dynamic_property_names(chunk: &Chunk) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut ip = 0usize;
+    let be = |c: &[u8], i: usize| ((c[i] as u16) << 8) | c[i + 1] as u16;
+    while ip + 3 < chunk.code.len() {
+        let Some(op) = Op::decode(be(&chunk.code, ip), be(&chunk.code, ip + 2)) else {
+            ip += 4;
+            continue;
+        };
+        let operands = ip + 4;
+        if (op == Op::STRUCT_GET || op == Op::STRUCT_SET)
+            && operands + 3 < chunk.code.len()
+            && be(&chunk.code, operands) == 0
+            && let Some(value) = chunk.constants.get(be(&chunk.code, operands + 2) as usize)
+        {
+            names.push(format!("{value}"));
+        }
+        ip = operands + op.operand_format().size_in(&chunk.code, operands);
+    }
+    names
 }
 
 /// The module's FREE globals, in declaration order — names it reads but never
@@ -266,7 +329,7 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
     encode_global_section_with_descriptors(globals, None)
 }
 
-/// The global section, plus one immutable descriptor SINGLETON per class.
+/// The global section, plus one descriptor SINGLETON per class.
 ///
 /// Custom Descriptors forbids `struct.new` / `struct.new_default` from
 /// allocating a type carrying a `(descriptor …)` clause, and `types.rs` stamps
@@ -278,20 +341,40 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
 /// Each singleton is emitted as
 ///
 /// ```text
-/// (global (ref (exact $C.desc)) (struct.new_default $C.desc))
+/// (global (ref (exact $C.desc))
+///   (struct.new $C.desc
+///     (ref.null extern)          ;; field 0 — __desc_proto, filled by desc.set_proto
+///     (ref.null extern)          ;; field 1 — __desc_props
+///     (ref.func $C.m0) …))       ;; the vtable, one funcref per method
 /// ```
 ///
 /// * **Non-nullable and immutable.** `struct.new_default_desc` traps on a null
 ///   descriptor; typing the global `(ref …)` rather than `(ref null …)` makes
-///   that trap unreachable by construction instead of by argument.
+///   that trap unreachable by construction instead of by argument, and nothing
+///   emits `global.set` against these (the only consumer is the `global.get` in
+///   `code.rs`'s allocation path), so immutable is the true declaration.
+///
+///   ⛔ This briefly became mutable, on the theory that the class-definition
+///   path would OVERWRITE the singleton with a `struct.new` carrying the
+///   prototype. That is not what landed — field 0 is filled by `struct.set`,
+///   which needs the FIELD mutable, not the global — and a mutable global whose
+///   justification never shipped is worse than no comment.
+///
 /// * **`exact`.** The proposal types the descriptor operand
 ///   `(ref null (exact y))` — a non-exact reference does not satisfy it, so
 ///   `0x62` is load-bearing here, not decoration.
-/// * **`struct.new_default` is legal on the DESCRIPTOR type.** The prohibition
-///   is on allocating a type with a `descriptor` clause; a descriptor struct
-///   carries `describes` and has no descriptor of its own. It is also a
-///   constant instruction, which is what lets this be a global initialiser at
-///   all rather than start-function code.
+///
+/// * **`struct.new` is legal on the DESCRIPTOR type, and legal HERE.** The
+///   allocation prohibition is on types carrying a `descriptor` clause; a
+///   descriptor struct carries `describes` and has none of its own. It is also
+///   a *constant* instruction, as is `ref.func`, which is what lets the whole
+///   vtable be supplied in a global initialiser rather than start-function
+///   code. The functions are in the module's declared-reference set already —
+///   `encode_element_section` names every chunk function in an active segment.
+///
+/// * **Fields 0 and 1 are left null here** and written afterwards. Their values
+///   are runtime objects, so they cannot appear in a constant expression at
+///   all; that is the entire reason they are the two mutable fields.
 ///
 /// Appended AFTER every module-defined global, so the index space the compiler
 /// assigned (`chunk::global_index_space`) is untouched.
@@ -315,14 +398,55 @@ pub fn encode_global_section_with_descriptors(
         // same `(2i, 2i+1)` layout, so this loop and that lookup cannot drift.
         for i in 0..desc_count {
             let desc_type_idx = i * 2 + 1;
-            out.push(0x64); // (ref ht) — non-nullable
+            out.push(0x64); // (ref ht) — NON-nullable
             out.push(0x62); // (exact x)
             write_leb128_u32(&mut out, desc_type_idx);
             out.push(0x00); // immutable
-            // Init expr: struct.new_default $C.desc
-            out.push(0xFB);
-            write_leb128_u32(&mut out, 0x01);
-            write_leb128_u32(&mut out, desc_type_idx);
+
+            // ⛔ The loop bound stays `desc_count`, and the plan is read with
+            // `.get(i)`. `descriptor_global_count()` is the length of a map
+            // keyed on a LOWERCASED name, so two classes whose names fold
+            // together collapse one row and the plan can be longer than the
+            // global count. Indexing the plan by the loop counter and falling
+            // back to `struct.new_default` when it is absent means a fold
+            // collision degrades to the old all-null descriptor instead of
+            // emitting a short operand list — which, since `struct.new` has no
+            // count immediate, would be an INVALID module, not a wrong value.
+            let vtable = descriptors.and_then(|c| c.desc_vtable.get(i as usize));
+            match vtable {
+                Some(methods) => {
+                    // Fields 0 and 1: `ref.null extern`. Runtime objects can
+                    // never be constant-expressed; `desc.set_proto` fills
+                    // field 0 once the prototype exists.
+                    for _ in 0..2 {
+                        out.push(0xD0);
+                        out.push(0x6F); // ref.null extern
+                    }
+                    for m in methods {
+                        match m {
+                            Some(func_idx) => {
+                                out.push(0xD2); // ref.func
+                                write_leb128_u32(&mut out, *func_idx);
+                            }
+                            // Unresolvable chunk index — null THIS slot only.
+                            // The operand count must still match the field
+                            // count exactly.
+                            None => {
+                                out.push(0xD0);
+                                out.push(0x70); // ref.null func
+                            }
+                        }
+                    }
+                    out.push(0xFB);
+                    write_leb128_u32(&mut out, 0x00); // struct.new
+                    write_leb128_u32(&mut out, desc_type_idx);
+                }
+                None => {
+                    out.push(0xFB);
+                    write_leb128_u32(&mut out, 0x01); // struct.new_default
+                    write_leb128_u32(&mut out, desc_type_idx);
+                }
+            }
             out.push(0x0B); // end
         }
     }

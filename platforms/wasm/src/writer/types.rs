@@ -42,6 +42,21 @@ pub struct WasmTypeContext {
     /// untouched — class `i` (the same ordinal `desc_type_indices` is built
     /// from) owns `desc_global_base + i`.
     pub desc_global_base: Option<u32>,
+    /// Per-class descriptor VTABLE plan, in class-ordinal order — one entry
+    /// per descriptor global, holding the WASM function index of every method
+    /// in `TypeEntry.methods` order.
+    ///
+    /// ⛔ Built inside the same loop that writes the descriptor struct's field
+    /// count, because `struct.new` carries NO count immediate: the operand list
+    /// **is** the field count. A plan assembled anywhere else can drift from
+    /// `2 + te.methods.len()` by one and the module is not subtly wrong, it is
+    /// invalid. The `1 +` / `2 +` split between writer and compiler is exactly
+    /// that drift, caught only because nothing read a descriptor yet.
+    ///
+    /// `None` in a slot means the method's chunk index was out of range: that
+    /// slot encodes `ref.null func` so the struct keeps its shape rather than
+    /// the whole class falling back to a null vtable.
+    pub desc_vtable: Vec<Vec<Option<u32>>>,
     /// type_name → vec of field names in order (for field index lookup)
     pub struct_fields: std::collections::HashMap<String, Vec<String>>,
     /// WASM type index for the dynamic array type — `(array (mut externref))`.
@@ -59,6 +74,36 @@ pub struct WasmTypeContext {
     pub gc_type_count: u32,
     /// arity → WASM type index for (externref * arity) -> externref
     pub func_type_by_arity: std::collections::HashMap<u8, u32>,
+    /// Declared functype spelling → its type index. What `call_indirect` needs:
+    /// arity cannot pick between two same-arity types.
+    pub func_type_by_signature: std::collections::HashMap<String, u32>,
+    /// Function indices whose DECLARED result is a bare `i32`/`f64` rather than
+    /// the externref every other value carries, mapped to that valtype byte.
+    ///
+    /// ⛔ THE VALUE ABI IS EXTERNREF; THE SPEC SIGNATURES ARE NOT. A proposal
+    /// builtin like `wasm:js-string.test` really does return i32, and once the
+    /// import is typed truthfully its result can no longer be handed to an
+    /// externref consumer unconverted — an `if (result externref)` arm ending
+    /// in `call $length` is "expected externref, got i32". The call site has to
+    /// box, so it has to know; this is how it knows.
+    pub raw_result_funcs: std::collections::HashMap<u32, u8>,
+
+    /// Declared PARAM valtypes for imports that take a raw numeric operand.
+    ///
+    /// ⛔ THE MIRROR OF `raw_result_funcs`, AND IT WAS MISSING. A truthful
+    /// signature has two halves and so does the ABI reconciliation: results
+    /// are boxed onto the externref value ABI on the way out, and operands
+    /// have to be unboxed on the way in. `wasm:js-string.fromF64` is declared
+    /// `(param f64)` and every caller pushed a BOXED number, because this
+    /// writer boxes every f64 it produces — so the argument arrived as an
+    /// externref and the module was invalid at every single call site.
+    /// Only imports with at least one non-externref param appear here.
+    pub raw_param_funcs: std::collections::HashMap<u32, Vec<u8>>,
+    /// String-constant text → its GLOBAL index. Needed to put a property NAME
+    /// on the stack for a dynamic (typeidx 0) property access, which lowers to
+    /// a host call rather than a struct op. Computed here from the chunks so no
+    /// call site has to thread it in.
+    pub string_const_global: std::collections::HashMap<String, u32>,
     /// `externref^M -> externref^N` functype indices keyed by
     /// (param_count, result_count). Referenced by multi-value block
     /// headers as their s33 typeidx `blocktype`, AND by the
@@ -125,7 +170,7 @@ fn collect_continuation_tags(chunks: &[Chunk]) -> Vec<vybe_runtime::chunk::Conti
 impl WasmTypeContext {
     /// Look up the WASM type index for a described struct type by name.
     pub fn struct_type(&self, name: &str) -> Option<u32> {
-        self.struct_type_indices.get(&name.to_lowercase()).copied()
+        self.struct_type_indices.get(name).copied()
     }
 
     /// Look up the WASM type index for a descriptor type by name.
@@ -141,7 +186,7 @@ impl WasmTypeContext {
     }
 
     pub fn desc_type(&self, name: &str) -> Option<u32> {
-        self.desc_type_indices.get(&name.to_lowercase()).copied()
+        self.desc_type_indices.get(name).copied()
     }
 
     /// How many per-class descriptor singletons this module declares — one per
@@ -199,27 +244,111 @@ impl WasmTypeContext {
 
     /// Look up the field index for a field name within a struct type.
     pub fn field_index(&self, type_name: &str, field_name: &str) -> Option<u32> {
-        let fields = self.struct_fields.get(&type_name.to_lowercase())?;
+        let fields = self.struct_fields.get(type_name)?;
         fields
             .iter()
-            .position(|f| f == &field_name.to_lowercase())
+            .position(|f| f == field_name)
             .map(|i| i as u32)
+    }
+}
+
+/// A declared value type's binary encoding. Anything unrecognised — a GC
+/// reference spelling this table does not carry — falls back to `externref`,
+/// which is what the whole section used to be, so an unknown type degrades to
+/// today's behaviour rather than emitting a wrong byte.
+fn val_type_byte(spelling: &str) -> u8 {
+    match spelling.trim() {
+        "i32" => 0x7F,
+        "i64" => 0x7E,
+        "f32" => 0x7D,
+        "f64" => 0x7C,
+        "v128" => 0x7B,
+        "funcref" => 0x70,
+        _ => TYPE_EXTERNREF,
     }
 }
 
 /// Build the type context and encode the type section.
 /// Layout: [rec group: (described struct + descriptor struct) per TypeEntry] [array type] [function types]
+/// Ask the owning proposal module for a `(module, name)` pair's exact WASM
+/// signature. Returns `false` when no proposal claims the pair, leaving the
+/// caller to supply its own fallback — the `TYPE_FUNC` tag byte has already
+/// been pushed either way.
+///
+/// ⛔ BOTH import tables must ask this. A builtin is the same function whether
+/// it arrives as a host import or a runtime import; typing one table by arity
+/// and the other by signature makes the SAME callee two different types.
+fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool {
+    if module == crate::writer::builtins::js_string_builtins::MODULE {
+        crate::writer::builtins::js_string_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_object_builtins::MODULE {
+        crate::writer::builtins::js_object_builtins::write_signature(out, name)
+    } else {
+        crate::writer::builtins::js_primitive_builtins::write_signature(out, module, name)
+    }
+}
+
+/// Decode the param valtypes of the functype just appended at `start`
+/// (the byte after the `TYPE_FUNC` tag). Single-byte counts are not assumed.
+fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
+    let mut i = start;
+    let mut count = 0u32;
+    let mut shift = 0u32;
+    loop {
+        let Some(&b) = out.get(i) else { return Vec::new() };
+        i += 1;
+        count |= ((b & 0x7f) as u32) << shift;
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    let end = i + count as usize;
+    if end > out.len() {
+        return Vec::new();
+    }
+    out[i..end].to_vec()
+}
+
+/// Record an import whose declared params are not all `externref`, so the
+/// `call` site can unbox them. i64 params are DELIBERATELY not recorded:
+/// there is no i64 unbox — our value ABI is externref and js-primitive-builtins
+/// exposes only `wasm:js-bigint.test`, the i64 conversions having been removed
+/// from the proposal. Recording one would produce a call site that unboxes to
+/// i32 and silently truncates. `wasm:js-string.fromI64`/`fromU64` are the only
+/// two, and no emitter in the tree calls either.
+fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_start: usize) {
+    let params = signature_params(out, sig_start);
+    if params.iter().any(|&t| t == TYPE_I64) {
+        return;
+    }
+    if params.iter().any(|&t| t != TYPE_EXTERNREF) {
+        ctx.raw_param_funcs.insert(func_idx, params);
+    }
+}
+
 pub fn build_type_context(
     chunks: &[Chunk],
     import_count: usize,
     rt_imports: &[(&str, &str)],
 ) -> (Vec<u8>, WasmTypeContext) {
     let mut out = Vec::new();
+    // Global index order is `rt_globals()` first, then the string constants —
+    // see `sections::encode_import_section`. Computed from the chunks so the
+    // map costs no call site a new parameter.
+    let string_const_base = crate::writer::sections::rt_globals().len() as u32;
+    let string_const_global: std::collections::HashMap<String, u32> =
+        crate::writer::sections::collect_string_constants(chunks)
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| (text, string_const_base + i as u32))
+            .collect();
     let mut ctx = WasmTypeContext {
         struct_type_indices: std::collections::HashMap::new(),
         struct_type_by_module_index: Vec::new(),
         desc_type_indices: std::collections::HashMap::new(),
         desc_global_base: None,
+        desc_vtable: Vec::new(),
         struct_fields: std::collections::HashMap::new(),
         array_type_idx: 0,
         string_array_type_idx: 0,
@@ -227,6 +356,10 @@ pub fn build_type_context(
         func_type_base: 0,
         gc_type_count: 0,
         func_type_by_arity: std::collections::HashMap::new(),
+        func_type_by_signature: std::collections::HashMap::new(),
+        raw_result_funcs: std::collections::HashMap::new(),
+        raw_param_funcs: std::collections::HashMap::new(),
+        string_const_global,
         block_type_by_results: std::collections::HashMap::new(),
         exception_type_idx: 0,
         suspend_tag_type_idx: 0,
@@ -429,9 +562,8 @@ pub fn build_type_context(
         for (i, t) in all_rows.iter().enumerate() {
             if t.describes_index != 0 {
                 if let Some(&idx) = ctx.struct_type_by_module_index.get(i) {
-                    ctx.struct_type_indices.insert(t.name.to_lowercase(), idx);
-                    ctx.struct_fields
-                        .insert(t.name.to_lowercase(), t.fields.clone());
+                    ctx.struct_type_indices.insert(t.name.clone(), idx);
+                    ctx.struct_fields.insert(t.name.clone(), t.fields.clone());
                 }
             }
         }
@@ -439,12 +571,26 @@ pub fn build_type_context(
     for (i, te) in type_entries.iter().enumerate() {
         let described_idx = (i as u32) * 2;
         let descriptor_idx = (i as u32) * 2 + 1;
-        let name_lower = te.name.to_lowercase();
+        // ⛔ NOT `to_lowercase()`. These maps used to fold the key
+        // unconditionally, which made `class Foo` and `class FOO` ONE entry:
+        // the type section declared two described/descriptor pairs while the
+        // global section emitted ONE singleton, `FOO`'s descriptor type had no
+        // singleton at all, and `desc_global("FOO")` handed back `Foo`'s global
+        // typed `(ref (exact 1))` — an INVALID module, and under the proposal
+        // `ref.cast_desc_eq` would also test the two classes as each other.
+        //
+        // It is the "a QUERY folded UPSTREAM defeats it" shape from
+        // `casesensitivityplan.md`, at a WRITE site, where it cannot be undone.
+        // The conditional fold could never reach it because the fold happened at
+        // the KEY. Nothing is lost by removing it: the compiler's `canon()`
+        // already folds names for a case-insensitive language BEFORE they get
+        // here, so those keys arrive uniform, while a case-sensitive language
+        // keeps the distinction its source made. Found by Fathom against V8.
         ctx.struct_type_indices
-            .insert(name_lower.clone(), described_idx);
+            .insert(te.name.clone(), described_idx);
         ctx.desc_type_indices
-            .insert(name_lower.clone(), descriptor_idx);
-        ctx.struct_fields.insert(name_lower, te.fields.clone());
+            .insert(te.name.clone(), descriptor_idx);
+        ctx.struct_fields.insert(te.name.clone(), te.fields.clone());
     }
 
     // Types with children must be left "open" (`sub`) rather than
@@ -482,7 +628,6 @@ pub fn build_type_context(
         for (i, te) in type_entries.iter().enumerate() {
             let described_idx = (i as u32) * 2;
             let descriptor_idx = (i as u32) * 2 + 1;
-            let _name_lower = te.name.to_lowercase();
 
             // Opening byte: `sub final` (0x4F) if no subtype extends this,
             // else `sub` (0x50) leaving the type open for extension.
@@ -523,14 +668,76 @@ pub fn build_type_context(
             out.push(CD_DESCRIBES);
             write_leb128_u32(&mut out, described_idx);
             out.push(GC_STRUCT);
-            let desc_field_count = 1 + te.methods.len();
+            // TWO externref slots before the funcrefs, matching the compiler's
+            // row (`append_descriptor_type_rows`: `__desc_proto`,
+            // `__desc_props`, then methods in table order).
+            //
+            // ⛔ This emitted `1 + methods` and left `__desc_props` out
+            // entirely, so the two halves disagreed on the layout of the same
+            // struct: method `k` sat at compiler index `2+k` and writer index
+            // `1+k`. Latent only because nothing reads a descriptor yet — it
+            // detonates on the FIRST reader, which is what a field-0/vtable
+            // writer is. Field 1's CONTENT is Cairn's; the SLOT has to exist
+            // here or neither half can be written.
+            let desc_field_count = 2 + te.methods.len();
             write_leb128_u32(&mut out, desc_field_count as u32);
-            out.push(TYPE_EXTERNREF);
-            out.push(GC_IMMUT);
+            // field 0 — JS prototype; field 1 — property metadata. BOTH
+            // MUTABLE, and the mutability is what makes them fillable at all.
+            //
+            // Their values are runtime objects, so they cannot appear in the
+            // constant init expression that allocates the singleton, and every
+            // descriptor field being `GC_IMMUT` meant there was no legal
+            // instruction that could ever write them afterwards — the
+            // descriptor was sealed empty. `struct.set` needs the field to be
+            // mutable.
+            //
+            // It also sidesteps the ordering problem a `struct.new` runs into:
+            // the descriptor's field COUNT depends on the merged method list,
+            // which is only final after all emission, whereas `struct.set` of
+            // field 0 needs no count.
+            //
+            // ⚠ Mutability here is OURS to choose — the proposal makes
+            // descriptors ordinary structs and does not require immutable
+            // fields. The identity guarantee comes from WHAT is stored (the
+            // very object `C.prototype` is), not from the field being
+            // read-only. Sub/super descriptor field mutability must MATCH for
+            // the prefix rule, and it does: every class gets the same shape.
+            for _ in 0..2 {
+                out.push(TYPE_EXTERNREF);
+                out.push(GC_MUT);
+            }
+            // The vtable stays IMMUTABLE. Fields 0/1 had to become mutable
+            // because their values are runtime objects and so cannot appear in
+            // a constant init expression — but a method's `ref.func` IS a
+            // constant instruction, so the whole vtable can be supplied to the
+            // `struct.new` that allocates the singleton and never needs to be
+            // written again. Immutable is the honest declaration for a vtable
+            // and it costs nothing here.
             for _ in &te.methods {
                 out.push(TYPE_FUNCREF);
                 out.push(GC_IMMUT);
             }
+
+            // ⛔ The vtable PLAN is built here, in the same iteration that just
+            // wrote `desc_field_count`, because `struct.new` carries no count
+            // immediate — the operand list it is given IS the field count. Any
+            // other assembly point can drift from this one, and the failure is
+            // an invalid module rather than a subtle wrong answer.
+            //
+            // Function index = `import_count + chunk_index`, the same mapping
+            // `encode_element_section` uses to fill the funcref table. That
+            // segment is also what puts every chunk function in the module's
+            // declared-reference set, so `ref.func` on any of them is valid in
+            // a constant expression.
+            ctx.desc_vtable.push(
+                te.methods
+                    .iter()
+                    .map(|(_, chunk_idx)| {
+                        (*chunk_idx < chunks.len())
+                            .then(|| (import_count + *chunk_idx) as u32)
+                    })
+                    .collect(),
+            );
         }
     }
 
@@ -584,27 +791,59 @@ pub fn build_type_context(
         }
     }
     for i in 0..host_import_count {
-        let argc = host_arity[i];
         out.push(TYPE_FUNC);
-        write_leb128_u32(&mut out, argc as u32);
-        for _ in 0..argc {
+        // ⛔ ARITY IS NOT A SIGNATURE. A proposal builtin reached through the
+        // HOST import table is the same function as one reached through the
+        // runtime table — `wasm:js-string.test` returns i32 either way — but
+        // this loop used to type every host import `(externref…) -> externref`
+        // purely from a bytecode arity scan. A `test` result then fed an
+        // `if (result i32)` as an externref and V8 refused the module. Ask the
+        // owning proposal module for the real signature; the scan is only the
+        // fallback for genuinely untyped host functions.
+        let (module, name) = {
+            let imp = &chunks[0].imports[i];
+            (imp.module.as_str(), imp.name.as_str())
+        };
+        let sig_start = out.len();
+        if write_proposal_signature(&mut out, module, name) {
+            // Single-result signatures throughout, so the last byte written IS
+            // the result valtype.
+            if let Some(&vt) = out.last()
+                && (vt == TYPE_I32 || vt == TYPE_F64)
+            {
+                ctx.raw_result_funcs.insert(i as u32, vt);
+            }
+            record_raw_params(&mut ctx, i as u32, &out, sig_start);
+        } else {
+            let argc = host_arity[i];
+            write_leb128_u32(&mut out, argc as u32);
+            for _ in 0..argc {
+                out.push(TYPE_EXTERNREF);
+            }
+            write_leb128_u32(&mut out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        write_leb128_u32(&mut out, 1);
-        out.push(TYPE_EXTERNREF);
     }
     // Runtime imports: each proposal module owns the signatures for
     // its own (module, name) pairs. Query them in order, falling back
     // to `(… ) -> externref` for anything unrecognised.
-    for &(module, name) in rt_imports {
+    for (rt_i, &(module, name)) in rt_imports.iter().enumerate() {
+        let func_idx = (host_import_count + rt_i) as u32;
         out.push(TYPE_FUNC);
-        let handled = if module == crate::writer::builtins::js_string_builtins::MODULE {
-            crate::writer::builtins::js_string_builtins::write_signature(&mut out, name)
+        let sig_start = out.len();
+        if write_proposal_signature(&mut out, module, name) {
+            if let Some(&vt) = out.last()
+                && (vt == TYPE_I32 || vt == TYPE_F64)
+            {
+                ctx.raw_result_funcs.insert(func_idx, vt);
+            }
+            record_raw_params(&mut ctx, func_idx, &out, sig_start);
         } else {
-            crate::writer::builtins::js_primitive_builtins::write_signature(&mut out, module, name)
-        };
-        if !handled {
-            // Default for unknown calls: () -> externref
+            // ⛔ THE DEFAULT IS `() -> externref` — ZERO PARAMETERS. Anything
+            // reaching it that is really CALLED with arguments would declare a
+            // signature it does not have. Every module whose imports the writer
+            // itself emits owns a signature table above; this is only for pairs
+            // no proposal claims.
             write_leb128_u32(&mut out, 0);
             write_leb128_u32(&mut out, 1);
             out.push(TYPE_EXTERNREF);
@@ -614,22 +853,74 @@ pub fn build_type_context(
     for (i, chunk) in chunks.iter().enumerate() {
         let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
         out.push(TYPE_FUNC);
-        // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
-        let param_count = chunk.arity as u32;
-        write_leb128_u32(&mut out, param_count);
-        for _ in 0..param_count {
-            out.push(TYPE_EXTERNREF);
-        }
-        // Multi-value proposal: chunks may return more than one externref.
-        let result_count = (chunk.result_arity as u32).max(1);
-        write_leb128_u32(&mut out, result_count);
-        for _ in 0..result_count {
-            out.push(TYPE_EXTERNREF);
+        // ⛔ THE DECLARED SIGNATURE WAS BEING DISCARDED HERE. This loop emitted
+        // `externref` for every parameter and result, from `chunk.arity` — a
+        // COUNT — while `chunk.func_sig` sat beside it holding the declared
+        // value types. So `(func (param i32) (param i32) (result i32))` reached
+        // the binary as `(param externref externref) (result externref)` with a
+        // body that then ran `i32.add` on them: not a missing check, a module
+        // that is genuinely ill-typed as emitted. Confirmed at the bytes by
+        // Vesper — the declared pattern `60 02 7F 7C 01 7F` appears ZERO times
+        // in a module that declares it, while the all-externref pattern appears
+        // nine.
+        //
+        // `func_sig` is `None` for every chunk that is not a wast function, and
+        // those keep the externref shape they had — a dynamic language has no
+        // declared wasm signature to emit.
+        let declared: Option<(Vec<String>, Vec<String>)> = chunk.func_sig.as_ref().map(|(p, r)| {
+            let split = |s: &String| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            (split(p), split(r))
+        });
+        let signature = match &declared {
+            Some((p, r)) => format!("{}->{}", p.join(","), r.join(",")),
+            None => String::new(),
+        };
+        match &declared {
+            Some((params, results)) => {
+                write_leb128_u32(&mut out, params.len() as u32);
+                for t in params {
+                    out.push(val_type_byte(t));
+                }
+                write_leb128_u32(&mut out, results.len() as u32);
+                for t in results {
+                    out.push(val_type_byte(t));
+                }
+            }
+            None => {
+                // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
+                let param_count = chunk.arity as u32;
+                write_leb128_u32(&mut out, param_count);
+                for _ in 0..param_count {
+                    out.push(TYPE_EXTERNREF);
+                }
+                // Multi-value proposal: chunks may return more than one externref.
+                let result_count = (chunk.result_arity as u32).max(1);
+                write_leb128_u32(&mut out, result_count);
+                for _ in 0..result_count {
+                    out.push(TYPE_EXTERNREF);
+                }
+            }
         }
         // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
         ctx.func_type_by_arity
             .entry(chunk.arity)
             .or_insert(type_idx);
+        // ⛔ AND BY SIGNATURE, which is what `call_indirect` needs. Keying only
+        // by arity is `.or_insert` — first type seen per arity wins — so with
+        // real functypes an argc-1 call site would be handed whichever argc-1
+        // type came first, and `call_indirect`'s immediate must EQUAL the
+        // callee's functype or a conforming engine traps.
+        if !signature.is_empty() {
+            ctx.func_type_by_signature
+                .entry(signature)
+                .or_insert(type_idx);
+        }
     }
 
     // Block types: one `externref^M -> externref^N` per distinct

@@ -2960,13 +2960,32 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             || op == Op::BR_ON_CAST_DESC_EQ
             || op == Op::BR_ON_CAST_DESC_EQ_FAIL =>
         {
-            skip_leb128(wasm, pos); // flags
+            let (flags, fread) = read_leb128_u32(&wasm[*pos..]);
+            *pos += fread;
             let (depth, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             skip_heaptype(wasm, pos);
             skip_heaptype(wasm, pos);
-            let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
-            chunk.emit_op_u16(op, idx, 0);
+            // ⚠ The heaptypes themselves are still DISCARDED — a round trip
+            // loses the declared types and rebuilds a placeholder. What is now
+            // preserved is their NULLABILITY, which castflags carries (bit 0 =
+            // ht_1, bit 1 = ht_2) and which the bytecode encodes in the name
+            // SPELLING; dropping it made a nullable cast re-emit as
+            // non-nullable, changing what the instruction means.
+            let name_for = |nullable: bool| -> Arc<str> {
+                if nullable {
+                    Arc::from("ref null __wasm_heaptype")
+                } else {
+                    Arc::from("__wasm_heaptype")
+                }
+            };
+            let to_idx = chunk.add_constant(Value::String(name_for(flags & 0b10 != 0)));
+            let from_idx = chunk.add_constant(Value::String(name_for(flags & 0b01 != 0)));
+            // ht_2 (target) first, then ht_1 (source), then depth — the order
+            // `opcode/gc.rs` declares for `U16_U16_U8`.
+            chunk.emit_op_u16(op, to_idx, 0);
+            chunk.emit((from_idx >> 8) as u8, 0);
+            chunk.emit((from_idx & 0xFF) as u8, 0);
             chunk.emit(depth as u8, 0);
         }
         // ── Custom Descriptors ────────────────────────────────────────────

@@ -50,8 +50,13 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
+        // ⛔ This was `}` followed by a bare `..Default::default()`, which is a
+        // RANGE expression over the struct, not a functional update — so the
+        // file stopped compiling the moment `describes_index` was added for the
+        // described/descriptor pairing, and stayed broken because nothing runs
+        // this test in the normal loop.
+        ..Default::default()
     }
-    ..Default::default()
 }
 
 #[test]
@@ -1054,6 +1059,11 @@ fn run_desc_branch(op: Op, same_descriptor: bool) -> Value {
         c.emit_op(op, 0);
         c.emit((desc >> 8) as u8, 0);
         c.emit((desc & 0xFF) as u8, 0);
+        // `ht_1` (source) — the spec carries BOTH heaptypes as immediates, so
+        // the operand shape is `U16_U16_U8`. Non-nullable spelling here; the
+        // nullable-target case is covered by its own test below.
+        c.emit((desc >> 8) as u8, 0);
+        c.emit((desc & 0xFF) as u8, 0);
         c.emit(0u8, 0); // label depth 0 — exit the enclosing block
         // Fallthrough only.
         c.emit_op(Op::DROP, 0);
@@ -1109,6 +1119,9 @@ fn br_on_cast_desc_eq_fail_traps_on_a_null_descriptor() {
         c.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::BR_ON_CAST_DESC_EQ_FAIL, 0);
+        c.emit((desc >> 8) as u8, 0);
+        c.emit((desc & 0xFF) as u8, 0);
+        // `ht_1` (source) — `U16_U16_U8`.
         c.emit((desc >> 8) as u8, 0);
         c.emit((desc & 0xFF) as u8, 0);
         c.emit(0u8, 0);
@@ -1187,6 +1200,9 @@ fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
     chunk.emit_op_u16_u16(Op::STRUCT_NEW_DESC, 0, 0, 0);
     chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op(Op::BR_ON_CAST_DESC_EQ, 0);
+    chunk.emit((desc >> 8) as u8, 0);
+    chunk.emit((desc & 0xFF) as u8, 0);
+    // `ht_1` (source) — `U16_U16_U8`.
     chunk.emit((desc >> 8) as u8, 0);
     chunk.emit((desc & 0xFF) as u8, 0);
     chunk.emit(0u8, 0);
@@ -1656,7 +1672,10 @@ fn typed_struct_field_ops_trap_out_of_range_and_on_null() {
     chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
-    assert!(err.contains("null reference"), "got: {err}");
+    // ⚠ The VM says "null structure reference (struct.get)" — the spec's own
+    // wording. This asserted "null reference", which is NOT a substring of it,
+    // and went unnoticed because the file had stopped compiling.
+    assert!(err.contains("null structure reference"), "got: {err}");
 }
 
 #[test]

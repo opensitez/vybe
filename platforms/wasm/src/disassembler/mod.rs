@@ -159,6 +159,13 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let b = chunk.code[ip + 5];
             let _ = write!(out, " {a} {b}");
         }
+        // u16 tableidx + u16 tag-name index + u8 argc.
+        OperandFormat::U16_U16_U8 => {
+            let a = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let b = ((chunk.code[ip + 6] as u16) << 8) | chunk.code[ip + 7] as u16;
+            let c = chunk.code[ip + 8];
+            let _ = write!(out, " {a} {b} {c}");
+        }
         OperandFormat::U8_U8_U8 => {
             let a = chunk.code[ip + 4];
             let b = chunk.code[ip + 5];

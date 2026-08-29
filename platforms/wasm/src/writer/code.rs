@@ -66,6 +66,15 @@ pub(crate) fn locals_prefix_size(chunk: &Chunk) -> u32 {
 
 /// Count how many temp locals a chunk needs for stack manipulation.
 /// Returns 0, 1, or 2 depending on which ops are used.
+/// Read a big-endian `u16` immediate at a fixed position, without moving an
+/// instruction pointer — for scans that only need to peek at an operand.
+fn read_u16_at(code: &[u8], at: usize) -> u16 {
+    match (code.get(at), code.get(at + 1)) {
+        (Some(hi), Some(lo)) => ((*hi as u16) << 8) | *lo as u16,
+        _ => 0,
+    }
+}
+
 fn count_temp_locals(chunk: &Chunk) -> u32 {
     let mut need = 0u32;
     let mut ip = 0;
@@ -83,10 +92,30 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // `call_indirect`/`return_call_indirect` stack shape.
                 let call_argc = chunk.code.get(ip + 4).copied().unwrap_or(0) as u32;
                 need = need.max(call_argc + 1);
+            } else if op == Op::STRUCT_NEW
+                && read_u16_at(&chunk.code, ip + 4) == 0
+                && read_u16_at(&chunk.code, ip + 6) != 0
+            {
+                // Dynamic object built from key/value pairs already on the
+                // stack: the object has to exist before any of them can be
+                // stored, so each pair is unstacked through temps.
+                need = need.max(3);
+            } else if memory_store_shape(op).is_some() {
+                // One temp to lift the value off the address underneath it.
+                need = need.max(1);
+            } else if op == Op::CALL {
+                // One spill temp for `emit_unbox_raw_params` — an import with
+                // a raw param under another argument. Reserved for every
+                // static call because the import tables are not built yet
+                // here; one externref local is cheaper than threading them in.
+                need = need.max(1);
             } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET {
                 need = need.max(2); // need 2 temps for 3-operand reorder
+            } else if op == Op::DESC_SET_PROTO {
+                // Expands to local.set / global.get / local.get / struct.set —
+                // one temp to get the descriptor ref UNDER the prototype value.
+                need = need.max(1);
             } else if is_binary_typed_op(op)
-                || op == Op::GLOBAL_SET
                 || op == Op::ARRAY_GET
                 || op == Op::ARRAY_LENGTH
                 || op == Op::REF_IS_NULL
@@ -231,6 +260,61 @@ fn wasm_struct_type_matching_field_count(
     }
 }
 
+/// Resolve a struct field from the TYPE THE BYTECODE ALREADY NAMES.
+///
+/// ⛔ THE TYPEIDX WAS BEING READ AND DISCARDED. Both `STRUCT_GET` and
+/// `STRUCT_SET` carry `(typeidx, field-name-constant)`, and the writer threw the
+/// first away and searched EVERY type in the module for a field of that name —
+/// `wasm_struct_field_for_name` below. Since `constructor`, `__type`, `__types`
+/// and `name` exist on many classes, ambiguity is the ordinary case, and its
+/// answer is the `(0, 0)` sentinel: struct type 0, field 0. Measured on
+/// `class A { constructor(x){ this.x = x; } m(){ return this.x; } }` — **897 of
+/// 902** struct immediates in the emitted binary decoded to `(0, 0)`.
+///
+/// `(0, 0)` is not a safe default: index 0 is a REAL type, so a miss silently
+/// names something valid and the module is invalid rather than rejected. V8:
+/// `invalid field index: 0`, or `struct.set: Field 2 of type 3 is immutable`
+/// when the index runs past the described struct into the paired descriptor's
+/// `GC_IMMUT` vtable slots.
+///
+/// A typeidx of 0 means genuinely dynamic (a JS object literal, a lua table) and
+/// has no declared type to resolve against, so it returns `None` and the caller
+/// falls back. `None` is also returned when the named field is not in that
+/// type's list — which today is most synthesized slots, because
+/// `TypeEntry.fields` carries declared fields and auto-property backing fields
+/// only. That gap is the slot census (`class_slots.rs`), and when it closes this
+/// path answers for everything and the name search can go.
+/// The GLOBAL index of the string constant naming a dynamic property, if the
+/// module imports it. `None` when the constant is not a string or was not
+/// collected, in which case the caller falls back to the struct path rather
+/// than emitting a `global.get` at an index that means something else.
+fn dynamic_prop_name_global(
+    chunk: &Chunk,
+    type_ctx: &WasmTypeContext,
+    field_name_idx: u16,
+) -> Option<u32> {
+    let value = chunk.constants.get(field_name_idx as usize)?;
+    let text = format!("{value}");
+    type_ctx.string_const_global.get(&text).copied()
+}
+
+fn wasm_struct_field_by_typeidx(
+    chunk: &Chunk,
+    type_ctx: &WasmTypeContext,
+    typeidx: u16,
+    field_name_idx: u16,
+) -> Option<(u32, u32)> {
+    if typeidx == 0 {
+        return None;
+    }
+    // The operand is 1-based over `chunk.types`, matching `TypeEntry.parent_index`.
+    let ty = chunk.types.get(typeidx as usize - 1)?;
+    let value = chunk.constants.get(field_name_idx as usize)?;
+    let field_name = format!("{value}");
+    let field_idx = ty.fields.iter().position(|field| field == &field_name)?;
+    Some((type_ctx.struct_type(&ty.name)?, field_idx as u32))
+}
+
 fn wasm_struct_field_for_name(
     chunk: &Chunk,
     type_ctx: &WasmTypeContext,
@@ -353,6 +437,7 @@ pub fn encode_code_section(
         //   after_ip  → close $after
         // Translate opcodes
         let mut ip = 0;
+        let mut i32_block_stack: Vec<bool> = Vec::new();
         while ip < chunk.code.len() {
             if ip + 3 >= chunk.code.len() {
                 break;
@@ -424,6 +509,31 @@ pub fn encode_code_section(
             let op_start = ip;
             ip += 4;
 
+            // ⛔ RAW-REGION TRACKING, NOT A TYPE CHECKER. `block_i32_results`
+            // is the compiler naming the blocks whose result is a bare i32 —
+            // the truthiness ladder and nothing else. All this stack answers is
+            // "is the value I am about to emit an arm result of one of those",
+            // so the i32 producers inside a ladder are left unboxed.
+            let in_i32_block = i32_block_stack.last().copied().unwrap_or(false);
+            let mut closed_i32_region = false;
+            if op == Op::BLOCK || op == Op::IF || op == Op::LOOP {
+                i32_block_stack.push(chunk.block_i32_results.contains(&op_start));
+            } else if op == Op::END {
+                // ⛔ THE RAW REGION HAS TO REJOIN THE VALUE ABI. A truthiness
+                // ladder is a bare i32 throughout — that is what
+                // `block_i32_results` declares — but at its OUTERMOST `end` the
+                // answer stops being an arm result and becomes an ordinary
+                // value: stored to a local, passed to a call, returned. All of
+                // those are externref, and the i32 was reaching a `local.set`
+                // on an externref local.
+                //
+                // Only the outermost `end` boxes. An inner one is still inside
+                // the ladder, and a result feeding `if`/`br_if` is wanted raw —
+                // the same question `box_i32_unless_condition` answers.
+                let closed = i32_block_stack.pop().unwrap_or(false);
+                closed_i32_region = closed && !i32_block_stack.last().copied().unwrap_or(false);
+            }
+
             if op.group() == 0x00 && !op.is_vm_internal() {
                 emit_core_op(
                     &mut body,
@@ -438,6 +548,7 @@ pub fn encode_code_section(
                     type_ctx,
                     host_import_count,
                     tag_plan,
+                    in_i32_block,
                 );
             } else if op.group() == 0xFB {
                 emit_gc_op(
@@ -448,6 +559,7 @@ pub fn encode_code_section(
                     &rt_idx,
                     type_ctx,
                     temp_local_idx,
+                    in_i32_block,
                 );
             } else if op.group() == 0xFC {
                 // 0xFC-prefix ops per the bulk-memory / reference-types spec
@@ -505,9 +617,20 @@ pub fn encode_code_section(
             } else if op.group() == 0xFD {
                 emit_simd_prefixed_op(&mut body, op, chunk, &mut ip);
             } else if op.group() == 0xFE {
-                emit_thread_prefixed_op(&mut body, op, chunk, &mut ip);
+                emit_thread_prefixed_op(
+                    &mut body,
+                    op,
+                    chunk,
+                    &mut ip,
+                    &rt_idx,
+                    in_i32_block,
+                );
             } else {
                 emit_vm_internal_op(&mut body, op, chunk, &mut ip);
+            }
+
+            if closed_i32_region {
+                box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, false);
             }
         }
 
@@ -535,6 +658,7 @@ fn emit_core_op(
     type_ctx: &WasmTypeContext,
     _host_import_count: usize,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
+    in_i32_block: bool,
 ) {
     match op {
         _ if op == Op::LOCAL_GET => {
@@ -542,19 +666,69 @@ fn emit_core_op(
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         }
         _ if op == Op::LOCAL_SET => {
+            // ⛔ `local.set` IS NOT `local.tee`. This emitted `0x22` (tee) on
+            // the stated grounds that "our VM keeps the value for both" — it
+            // does not: `dispatch.rs` `LOCAL_SET` is `let val = self.pop()`
+            // while `LOCAL_TEE` is `self.peek(0).clone()`. Every `local.set` we
+            // emitted therefore left a value the bytecode had consumed, and the
+            // imbalance surfaced at whichever block END came next
+            // ("values remaining on stack at end of block") — never at the
+            // instruction that caused it. The VM could not see it: it runs
+            // Chunks, and in the Chunks the set really does pop.
+            body.push(0x21);
+            write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
+        }
+        // ⛔⛔ `local.tee` HAD NO ARM AT ALL and fell through to the catch-all,
+        // which pushes the opcode byte and DISCARDS the operand. The emitted
+        // `0x22` then swallowed the FOLLOWING instruction's first byte as its
+        // own local index, and every byte after that decoded one position out.
+        //
+        // Measured on `(module)` — the empty wast module, which needs nothing
+        // but the scaffold: `22 | 22 37 | 24 08` where `22 37 24 08` was meant
+        // to be `local.tee 55; global.set 8`. V8 read `local.tee 34`, then took
+        // `0x37` as `i64.store` and its align byte as a memory ordering. That
+        // is the whole of `invalid memory ordering: acquire-release requires
+        // --experimental-wasm-acquire-release`, and it is why NO module we
+        // emitted — in ANY language — could be decoded past its first
+        // `local.tee`.
+        //
+        // `LOCAL_TEE` keeps its value in the VM and in the spec alike, so this
+        // one really is `local.tee`. See the arm above for why `LOCAL_SET` is
+        // not.
+        _ if op == Op::LOCAL_TEE => {
             body.push(0x22);
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
-        } // local.tee
+        }
         // Spec `call`: u16 funcidx + VM-internal u8 argc. The argc byte is
         // dropped — the .wasm binary carries only LEB(funcidx). Imports
         // occupy the front of the module's function index space, so the
         // chunk-scoped import index is already the module-level funcidx.
         _ if op == Op::CALL => {
             let funcidx = read_u16(&chunk.code, ip);
-            let _argc = chunk.code[*ip];
+            let argc = chunk.code[*ip];
             *ip += 1;
+            emit_unbox_raw_params(body, rt_idx, type_ctx, funcidx as u32, argc, temp_idx);
             body.push(0x10);
             write_leb128_u32(body, funcidx as u32);
+            // ⛔ A TRUTHFUL SIGNATURE HAS TWO HALVES. Declaring
+            // `wasm:js-string.test` as `-> i32` is only half of it: its result
+            // then sits on a stack whose every other value is externref, and
+            // the first consumer that is not an `if` rejects it. Box here, and
+            // let the peephole drop the box again when the consumer really
+            // does want the raw i32.
+            match type_ctx.raw_result_funcs.get(&(funcidx as u32)) {
+                Some(&crate::encoding::TYPE_I32) => {
+                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block)
+                }
+                // ⛔ f64 RESULTS NEED IT TOO. `wasm:js-number.toF64` really
+                // returns f64, and the truthiness ladder stores that straight
+                // into a local — a local this writer declares `externref`,
+                // like every other. Boxing here is what keeps the ladder's
+                // `f64.ne` reachable through `emit_binary_f64_cmp`, which
+                // unboxes its operands anyway.
+                Some(&crate::encoding::TYPE_F64) => emit_box_f64(body, rt_idx),
+                _ => {}
+            }
         }
         // `call_ref`: one `u8` argc, callee on the stack, lowered to
         // call_indirect through the function table. (The old `Op::CALL`
@@ -597,9 +771,18 @@ fn emit_core_op(
             // functype (argc externrefs -> results externrefs, from the
             // op's own immediates); first-seen-arity is the fallback for
             // pre-registry chunks.
-            if let Some(&type_idx) = type_ctx
-                .block_type_by_results
-                .get(&(argc, results))
+            // ⛔ DECLARED FUNCTYPE FIRST. The three immediates are counts, and
+            // a count cannot choose between two same-arity types — with real
+            // functypes emitted, `func_type_by_arity` (`.or_insert`, first seen
+            // wins) would hand an argc-1 call site whichever argc-1 type came
+            // first, and `call_indirect`'s immediate must EQUAL the callee's
+            // functype or a conforming engine traps. The side table carries the
+            // call site's own `(type $t)` / `(param…)(result…)`.
+            if let Some(&type_idx) = chunk
+                .call_indirect_sigs
+                .get(&op_start)
+                .and_then(|sig| type_ctx.func_type_by_signature.get(sig))
+                .or_else(|| type_ctx.block_type_by_results.get(&(argc, results)))
                 .or_else(|| type_ctx.func_type_by_arity.get(&argc))
             {
                 body.push(spec_byte);
@@ -627,9 +810,12 @@ fn emit_core_op(
             // structural mismatch (traps in a conforming engine).
             let results = chunk.code[*ip];
             *ip += 1;
-            if let Some(&type_idx) = type_ctx
-                .block_type_by_results
-                .get(&(argc, results))
+            // Declared functype first — see the sibling site above.
+            if let Some(&type_idx) = chunk
+                .call_indirect_sigs
+                .get(&op_start)
+                .and_then(|sig| type_ctx.func_type_by_signature.get(sig))
+                .or_else(|| type_ctx.block_type_by_results.get(&(argc, results)))
                 .or_else(|| type_ctx.func_type_by_arity.get(&argc))
             {
                 body.push(spec_byte);
@@ -677,8 +863,25 @@ fn emit_core_op(
             let result_count = chunk.code[*ip + 1];
             *ip += 2;
             body.push(op.sub() as u8); // 0x02 / 0x03 / 0x04
+            // ⛔ A 1-RESULT BLOCK IS NOT ALWAYS EXTERNREF. This arm used to
+            // push `TYPE_EXTERNREF` unconditionally, because the block
+            // immediate carries `(param_count, result_count)` — two COUNTS and
+            // no type — so there was nothing to choose from. Every truthiness
+            // and comparison chain therefore came out declared `externref`
+            // while its arms pushed i32, and V8 rejected the consumer:
+            // "if[0] expected type i32, found call of type externref".
+            // Our VM never caught it because it does not check block result
+            // types.
+            //
+            // `block_i32_results` is the compiler saying which ones are i32,
+            // keyed by opcode offset (`*ip` is the operand start, so the
+            // opcode began 4 bytes earlier).
+            let opcode_offset = ip.saturating_sub(2).saturating_sub(4);
             match (param_count, result_count) {
                 (0, 0) => body.push(TYPE_VOID),
+                (0, 1) if chunk.block_i32_results.contains(&opcode_offset) => {
+                    body.push(TYPE_I32)
+                }
                 (0, 1) => body.push(TYPE_EXTERNREF),
                 key => {
                     let tidx = *type_ctx
@@ -694,67 +897,68 @@ fn emit_core_op(
             body.push(0x05); // else
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
+            // `memory.grow` takes a raw i32 delta and both answer a raw i32.
+            if op == Op::MEMORY_GROW {
+                emit_unbox_i32(body, rt_idx);
+            }
             body.push(op.sub() as u8);
             let memidx = read_u16(&chunk.code, ip);
             write_leb128_u32(body, memidx as u32);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
-        // Memory load/store with alignment + offset
-        _ if op == Op::I32_LOAD || op == Op::F32_LOAD => {
+        // Memory load: the address is the ONLY operand, so it is on top and
+        // unboxes in place; the loaded value rejoins the value ABI.
+        _ if memory_load_shape(op).is_some() => {
+            let (default_align, result) = memory_load_shape(op).unwrap_or((0, 0));
+            emit_unbox_i32(body, rt_idx); // externref addr → i32
             body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, default_align);
             encode_memarg_with_memidx(body, align, offset, memidx);
+            match result {
+                crate::encoding::TYPE_I32 => {
+                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block)
+                }
+                crate::encoding::TYPE_F64 => emit_box_f64(body, rt_idx),
+                crate::encoding::TYPE_F32 => {
+                    // The reader widens f32 to `Value::F64` and there is no f32
+                    // box — the same widening `f32.const` already does here.
+                    body.push(0xBB); // f64.promote_f32
+                    emit_box_f64(body, rt_idx);
+                }
+                // i64: raw, and it stays raw. There is no i64 box (see the
+                // `i64.const` arm) and its consumers are i64 instructions.
+                _ => {}
+            }
         }
-        _ if op == Op::I64_LOAD || op == Op::F64_LOAD => {
+        // Memory store: [addr, value]. The address is UNDER the value, so the
+        // value goes to a temp exactly as `ARRAY_SET` does.
+        _ if memory_store_shape(op).is_some() => {
+            let (default_align, value) = memory_store_shape(op).unwrap_or((0, 0));
+            let liftable = value != crate::encoding::TYPE_I64;
+            if liftable {
+                body.push(0x21); // local.set $temp (save value)
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx); // externref addr → i32
+                body.push(0x20); // local.get $temp (restore value)
+                write_leb128_u32(body, temp_idx);
+                match value {
+                    crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
+                    crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
+                    crate::encoding::TYPE_F32 => {
+                        emit_unbox_f64(body, rt_idx);
+                        body.push(0xB6); // f32.demote_f64
+                    }
+                    _ => {}
+                }
+            }
+            // ⛔ AN i64 STORE IS LEFT ALONE, DELIBERATELY. Its value operand is
+            // already a raw i64 (only an i64 instruction can have produced it)
+            // and the temps this writer declares are externref, so the value
+            // cannot be lifted out of the way to reach the address underneath.
+            // Reconciling the address alone would reorder a stack it cannot put
+            // back. The wall is the missing i64 unbox, not this arm.
             body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I32_LOAD8_S
-            || op == Op::I32_LOAD8_U
-            || op == Op::I64_LOAD8_S
-            || op == Op::I64_LOAD8_U =>
-        {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I32_LOAD16_S
-            || op == Op::I32_LOAD16_U
-            || op == Op::I64_LOAD16_S
-            || op == Op::I64_LOAD16_U =>
-        {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I64_LOAD32_S || op == Op::I64_LOAD32_U => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I32_STORE || op == Op::F32_STORE => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I64_STORE || op == Op::F64_STORE => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 3);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I32_STORE8 || op == Op::I64_STORE8 => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 0);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I32_STORE16 || op == Op::I64_STORE16 => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 1);
-            encode_memarg_with_memidx(body, align, offset, memidx);
-        }
-        _ if op == Op::I64_STORE32 => {
-            body.push(op.sub() as u8);
-            let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
+            let (align, offset, memidx) = read_optional_memarg(chunk, ip, default_align);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         // WASM global.get/set — the operand IS the global index.
@@ -772,19 +976,20 @@ fn emit_core_op(
             write_leb128_u32(body, gidx);
         }
         _ if op == Op::GLOBAL_SET => {
-            {
-                {
-                    let wasm_gidx = read_u16(&chunk.code, ip) as u32;
-                    // Stack has [value]. global.set consumes it — but our VM keeps it.
-                    // Use local.tee pattern: tee to keep value, then global.set
-                    body.push(0x22);
-                    write_leb128_u32(body, temp_idx); // local.tee $temp
-                    body.push(0x24); // global.set
-                    write_leb128_u32(body, wasm_gidx);
-                    body.push(0x20);
-                    write_leb128_u32(body, temp_idx); // restore value
-                }
-            }
+            // ⛔ THE VM DOES NOT KEEP IT. This emitted
+            // `local.tee $temp; global.set; local.get $temp` on the stated
+            // grounds that "global.set consumes it — but our VM keeps it".
+            // `dispatch.rs` `GLOBAL_SET` is `let val = self.pop()`: it consumes
+            // the value exactly as the spec instruction does. The restore
+            // therefore left a value the bytecode had already spent, and the
+            // surplus surfaced at the next block boundary as "values remaining
+            // on stack at end of block" — never at the global write itself.
+            //
+            // Same false premise as the `LOCAL_SET` arm above, in a second
+            // place: a claim about the VM that the VM does not make.
+            let wasm_gidx = read_u16(&chunk.code, ip) as u32;
+            body.push(0x24); // global.set
+            write_leb128_u32(body, wasm_gidx);
         }
         // Exception-handling proposal. THROW takes the exception value
         // from TOS and raises it via the single `$vybe_exception` tag
@@ -850,12 +1055,12 @@ fn emit_core_op(
         // ref.is_null produces i32 — box it since our value representation is externref
         _ if op == Op::REF_IS_NULL => {
             body.push(0xD1); // ref.is_null → i32
-            emit_box_i32(body, rt_idx); // i32 → externref
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         // GC proposal (core prefix): ref.eq produces i32 — rebox as externref.
         _ if op == Op::REF_EQ => {
             body.push(0xD3);
-            emit_box_i32(body, rt_idx);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         // ref.as_non_null is identity at the WASM level — it only
         // distinguishes a non-null reference type at validation time.
@@ -898,8 +1103,25 @@ fn emit_core_op(
         }
 
         // ── f64 comparisons: unbox both → compare → rebox i32 result ──
-        _ if op == Op::F64_LT || op == Op::F64_GT || op == Op::F64_LE || op == Op::F64_GE => {
-            emit_binary_f64_cmp(body, op.sub() as u8, rt_idx, temp_idx);
+        // ⛔ `F64_EQ`/`F64_NE` WERE ABSENT and fell to the catch-all, which
+        // emits the bare opcode onto two BOXED operands: "expected f64, found
+        // externref". Every comparison that unboxes has to be listed here —
+        // an omission is not a missing optimisation, it is invalid wasm.
+        _ if op == Op::F64_LT
+            || op == Op::F64_GT
+            || op == Op::F64_LE
+            || op == Op::F64_GE
+            || op == Op::F64_EQ
+            || op == Op::F64_NE =>
+        {
+            emit_binary_f64_cmp(
+                !(is_i32_block_result(chunk, *ip, in_i32_block)
+                    || i32_condition_follows(chunk, *ip)),
+                body,
+                op.sub() as u8,
+                rt_idx,
+                temp_idx,
+            );
         }
 
         // ── i32 binary arithmetic: unbox both → i32 op → rebox ──
@@ -919,12 +1141,36 @@ fn emit_core_op(
             || op == Op::I32_ROTL
             || op == Op::I32_ROTR =>
         {
-            emit_binary_i32_op(body, op.sub() as u8, rt_idx, temp_idx);
+            emit_binary_i32_op(
+                !(is_i32_block_result(chunk, *ip, in_i32_block)
+                    || i32_condition_follows(chunk, *ip)),
+                body,
+                op.sub() as u8,
+                rt_idx,
+                temp_idx,
+            );
         }
 
         // ── i32 comparisons (eq, ne): unbox both → compare → rebox ──
-        _ if op == Op::EQ || op == Op::NE => {
-            emit_binary_i32_cmp(body, op.sub() as u8, rt_idx, temp_idx);
+        _ if op == Op::EQ
+            || op == Op::NE
+            || op == Op::I32_LT_S
+            || op == Op::I32_LT_U
+            || op == Op::I32_GT_S
+            || op == Op::I32_GT_U
+            || op == Op::I32_LE_S
+            || op == Op::I32_LE_U
+            || op == Op::I32_GE_S
+            || op == Op::I32_GE_U =>
+        {
+            emit_binary_i32_cmp(
+                !(is_i32_block_result(chunk, *ip, in_i32_block)
+                    || i32_condition_follows(chunk, *ip)),
+                body,
+                op.sub() as u8,
+                rt_idx,
+                temp_idx,
+            );
         }
 
         // ── f64 unary ops: unbox → op → rebox ──
@@ -945,7 +1191,7 @@ fn emit_core_op(
         _ if op == Op::I32_EQZ => {
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8);
-            emit_box_i32(body, rt_idx);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         _ if op == Op::I32_CLZ || op == Op::I32_CTZ || op == Op::I32_POPCNT => {
             emit_unbox_i32(body, rt_idx);
@@ -977,7 +1223,7 @@ fn emit_core_op(
             // chunk_idx is the table index because the element section maps chunks 0..N to table slots.
             body.push(0x41); // i32.const
             write_leb128_i32(body, chunk_idx as i32);
-            emit_box_i32(body, rt_idx); // i32 → externref
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         _ if op == Op::RETHROW || op == Op::DELEGATE => {
             body.push(op.sub() as u8);
@@ -1041,9 +1287,23 @@ fn emit_core_op(
             *ip += sz;
             if op == Op::F64_CONST {
                 emit_box_f64(body, rt_idx);
-            } else {
-                emit_box_i32(body, rt_idx);
+            } else if op == Op::I32_CONST {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
             }
+            // ⛔ `i64.const` IS NOT BOXED, AND ITS OLD "i64 rides box_i32"
+            // PRECEDENT WAS A TYPE ERROR: it emitted
+            // `wasm:js-number.fromI32(i64)`. There is no i64 box to use
+            // instead — our value ABI is externref and js-primitive-builtins
+            // exposes only `wasm:js-bigint.test`, the i64 conversions having
+            // been removed from the proposal — and there does not need to be:
+            // both producers in the tree feed a real i64 instruction.
+            // `canon stream.new`'s packed handle is shifted by `i64.shr_u`
+            // (`io.rs:140`) and `memory.atomic.wait32`'s timeout is consumed
+            // as the i64 the spec declares (`threading.rs`). Raw is what they
+            // want. The remaining half — an i64 STORED INTO A LOCAL, which
+            // this writer declares externref — is not fixable from this arm
+            // and is not fixed here.
+
         }
         _ if op == Op::F32_CONST => {
             let sz = op.operand_format().size_in(&chunk.code, *ip);
@@ -1064,7 +1324,85 @@ fn emit_core_op(
     }
 }
 
-fn emit_thread_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize) {
+/// `(natural alignment, result valtype)` for a plain memory LOAD, or `None`
+/// when `op` is not one. The alignments are the spec's naturals, unchanged
+/// from the arms this replaced.
+fn memory_load_shape(op: Op) -> Option<(u32, u8)> {
+    use crate::encoding::{TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64};
+    Some(match op {
+        _ if op == Op::I32_LOAD => (2, TYPE_I32),
+        _ if op == Op::F32_LOAD => (2, TYPE_F32),
+        _ if op == Op::I64_LOAD => (3, TYPE_I64),
+        _ if op == Op::F64_LOAD => (3, TYPE_F64),
+        _ if op == Op::I32_LOAD8_S || op == Op::I32_LOAD8_U => (0, TYPE_I32),
+        _ if op == Op::I64_LOAD8_S || op == Op::I64_LOAD8_U => (0, TYPE_I64),
+        _ if op == Op::I32_LOAD16_S || op == Op::I32_LOAD16_U => (1, TYPE_I32),
+        _ if op == Op::I64_LOAD16_S || op == Op::I64_LOAD16_U => (1, TYPE_I64),
+        _ if op == Op::I64_LOAD32_S || op == Op::I64_LOAD32_U => (2, TYPE_I64),
+        _ => return None,
+    })
+}
+
+/// `(natural alignment, value valtype)` for a plain memory STORE, or `None`.
+fn memory_store_shape(op: Op) -> Option<(u32, u8)> {
+    use crate::encoding::{TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64};
+    Some(match op {
+        _ if op == Op::I32_STORE => (2, TYPE_I32),
+        _ if op == Op::F32_STORE => (2, TYPE_F32),
+        _ if op == Op::I64_STORE => (3, TYPE_I64),
+        _ if op == Op::F64_STORE => (3, TYPE_F64),
+        _ if op == Op::I32_STORE8 => (0, TYPE_I32),
+        _ if op == Op::I64_STORE8 => (0, TYPE_I64),
+        _ if op == Op::I32_STORE16 => (1, TYPE_I32),
+        _ if op == Op::I64_STORE16 => (1, TYPE_I64),
+        _ if op == Op::I64_STORE32 => (2, TYPE_I64),
+        _ => return None,
+    })
+}
+
+/// An atomic whose ONLY operand is the address and whose result is an i32.
+///
+/// These are the three the whole tree emits with a single operand; every other
+/// atomic takes a value under/over the address and needs the `temp_idx` dance
+/// `ARRAY_SET` uses. See the ⛔ note on `emit_thread_prefixed_op`.
+fn atomic_is_i32_address_only_load(op: Op) -> bool {
+    op == Op::I32_ATOMIC_LOAD || op == Op::I32_ATOMIC_LOAD8_U || op == Op::I32_ATOMIC_LOAD16_U
+}
+
+/// ⛔ AN ATOMIC IS A REAL WASM INSTRUCTION, NOT A DYNAMIC OPERATION.
+///
+/// The VM hides this: `pop_atomic_addr` (`threads.rs:263`) does
+/// `self.pop().as_i32()`, a COERCION, so a boxed address works there and the
+/// corpus never sees the defect. WASM does not coerce — `i32.atomic.load` fed
+/// the externref that `ecma:object.get(obj, "__vybe_shared_addr")` returns is
+/// `type mismatch: expected i32, found externref`, and every emitted module
+/// carrying one is invalid. Same defect class as the `I64_*` ops used as
+/// dynamic BigInt ops, and the same fix shape: reconcile at the ABI boundary
+/// the writer already owns (`ARRAY_GET` unboxes its index here for exactly
+/// this reason).
+///
+/// ⛔ WHAT IS NOT DONE, AND WHY IT CANNOT BE FROM HERE:
+/// `memory.atomic.wait32`/`wait64` and the whole `i64.atomic.*` family take or
+/// return an i64 OPERAND. There is no i64 unbox: our value ABI is externref,
+/// and `wasm:js-bigint` in js-primitive-builtins exposes ONLY `test` — the
+/// i64 conversions were deliberately removed from the proposal. Closing them
+/// needs a host conversion declared `(result i64)`, relying on
+/// JS-BigInt-integration to do the marshalling — a NEW host function, which is
+/// not mine to add. Those arms are left emitting exactly what they emitted
+/// before; they are no more wrong than they were, and the boundary is here in
+/// writing rather than silent.
+fn emit_thread_prefixed_op(
+    body: &mut Vec<u8>,
+    op: Op,
+    chunk: &Chunk,
+    ip: &mut usize,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    in_i32_block: bool,
+) {
+    let address_only_load = atomic_is_i32_address_only_load(op);
+    if address_only_load {
+        emit_unbox_i32(body, rt_idx); // externref addr → i32
+    }
     body.push(0xFE);
     write_leb128_u32(body, op.sub() as u32);
     if op == Op::ATOMIC_FENCE {
@@ -1099,6 +1437,13 @@ fn emit_thread_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut u
     }
     if let Some(memidx) = memidx {
         write_leb128_u32(body, memidx);
+    }
+    if address_only_load {
+        // i32 result → back onto the externref value ABI, unless the consumer
+        // is a raw-i32 region. `box_i32_unless_condition`, not a bare box: an
+        // atomic feeding an `if` directly must stay raw, exactly as for every
+        // other i32 producer in this writer.
+        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
     }
 }
 
@@ -1209,8 +1554,203 @@ fn emit_binary_f64_op(
     emit_box_f64(body, rt_idx);
 }
 
+/// Allocate a fresh dynamic object, consuming `prop_count` key/value pairs
+/// that are already on the stack — the lowering of `struct.new` with typeidx 0.
+///
+/// Stack in:  `[k1, v1, … kN, vN]`
+/// Stack out: `[obj]`
+///
+/// The object cannot be allocated before the pairs, because they are already
+/// below it; and nothing can be stored into it until it exists. So the object
+/// is allocated on top and each pair is then unstacked through temps.
+///
+/// ⛔ PAIRS ARE CONSUMED TOP-DOWN, so keys are inserted in REVERSE source
+/// order. That is visible only through key ORDER (`Object.keys`) or a repeated
+/// key, and no front end emits this form at all — `emit_class_alloc` is the
+/// only producer of typeidx 0 and it always passes `count = 0`, building the
+/// object empty and assigning each property with its own `STRUCT_SET`. Fixing
+/// the order needs 2N locals rather than 3; that is worth doing the day a
+/// producer appears, and not before.
+fn emit_dynamic_object_new(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    new_idx: usize,
+    prop_count: u16,
+    temp_idx: u32,
+) {
+    body.push(0x10); // call ecma:object.new() -> externref
+    write_leb128_u32(body, new_idx as u32);
+    let Some(&set_idx) = rt_idx.get(&("ecma:object", "set")) else {
+        return;
+    };
+    if prop_count == 0 {
+        return;
+    }
+    let (obj, val, key) = (temp_idx, temp_idx + 1, temp_idx + 2);
+    body.push(0x21); // local.set $obj
+    write_leb128_u32(body, obj);
+    for _ in 0..prop_count {
+        body.push(0x21); // local.set $val
+        write_leb128_u32(body, val);
+        body.push(0x21); // local.set $key
+        write_leb128_u32(body, key);
+        for slot in [obj, key, val] {
+            body.push(0x20); // local.get
+            write_leb128_u32(body, slot);
+        }
+        body.push(0x10); // call ecma:object.set(obj, key, val) -> ()
+        write_leb128_u32(body, set_idx as u32);
+    }
+    body.push(0x20); // local.get $obj
+    write_leb128_u32(body, obj);
+}
+
+/// Does a `ref.test` / `ref.cast` on this heaptype operate in the ANY
+/// hierarchy — i.e. does its operand have to be internalized first?
+///
+/// ⛔ OUR VALUE ABI IS EXTERNREF; THESE INSTRUCTIONS TAKE ANYREF. `struct.get`
+/// already internalized before its `ref.cast`, but the standalone `ref.test` /
+/// `ref.cast` arms emitted the instruction straight onto an externref operand:
+/// "expected anyref, found externref". The `extern`/`func` hierarchies are the
+/// exception — an operand already in the right hierarchy must not be converted.
+/// A concrete type index (a non-negative LEB, so below the abstract encodings)
+/// is always a GC type and always needs the conversion.
+fn heaptype_is_internal(ht_bytes: &[u8]) -> bool {
+    !matches!(
+        ht_bytes.first().copied(),
+        Some(HT_EXTERN) | Some(HT_NOEXTERN) | Some(HT_FUNC) | Some(HT_NOFUNC) | None
+    )
+}
+
+/// True when the NEXT bytecode instruction pops a RAW i32 rather than a boxed
+/// value. Spec `if` and `br_if` both take an i32 condition — nothing else in
+/// the emitted stream does.
+///
+/// ⛔ THE VALUE ABI IS NOT UNIFORM. Everything an arm produces is boxed to
+/// externref, but the builtin calls (`wasm:js-string.test` and friends) return
+/// a bare i32 by their declared signature, and `if`/`br_if` consume that i32
+/// directly. So a comparison that boxed its result and was then branched on
+/// came out as `i32.lt_s; fromI32; if` — V8: "if[0] expected type i32, found
+/// call of type externref". The box was pure waste at exactly the sites where
+/// it was also wrong.
+///
+/// `ip` must point at the next opcode header, which is where every arm leaves
+/// it once its own operands are consumed. Bounded like the arity scanner: a
+/// producer at the very end of a chunk has no successor to read.
+fn i32_condition_follows(chunk: &Chunk, ip: usize) -> bool {
+    matches!(next_op(chunk, ip), Some(next) if next == Op::IF || next == Op::BR_IF)
+}
+
+/// Decode the instruction at `ip` without consuming it. Bounded like the arity
+/// scanner: a producer at the very end of a chunk has no successor to read.
+fn next_op(chunk: &Chunk, ip: usize) -> Option<Op> {
+    if ip + 3 >= chunk.code.len() {
+        return None;
+    }
+    let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
+    let sub = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
+    Op::decode(g, sub)
+}
+
+/// Is the value about to be emitted the RESULT of an arm of an i32-typed
+/// block — the last thing pushed before its `else` or `end`?
+///
+/// ⛔ "INSIDE AN i32 BLOCK" IS NOT THE SAME QUESTION, and answering that one
+/// instead left every i32 producer in the ladder raw — including the operands
+/// of `emit_binary_i32_cmp`, which unboxes what it is given and so parked a
+/// bare i32 in an externref temp. Only the arm's RESULT is the block's i32;
+/// everything else inside is an ordinary boxed value.
+fn is_i32_block_result(chunk: &Chunk, ip: usize, in_i32_block: bool) -> bool {
+    in_i32_block
+        && matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE || next == Op::END)
+}
+
+/// Box an i32 to the externref value ABI unless the very next instruction is
+/// going to want it raw. See `i32_condition_follows`.
+fn box_i32_unless_condition(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    chunk: &Chunk,
+    ip: usize,
+    in_i32_block: bool,
+) {
+    // ⛔ AN i32-RESULT BLOCK IS A RAW REGION. `emit_if_i32`/`emit_block_i32`
+    // are the compiler saying "this block's result is a bare i32, not a
+    // value" — that is what the whole truthiness ladder is built from, and
+    // every arm of it ends in an i32 producer. Boxing those made each arm
+    // yield an externref out of a block declared `(result i32)`.
+    if is_i32_block_result(chunk, ip, in_i32_block) || i32_condition_follows(chunk, ip) {
+        return;
+    }
+    emit_box_i32(body, rt_idx);
+}
+
+/// Unbox the arguments of a `call` to an import declared with raw numeric
+/// params — the operand half of the ABI reconciliation `raw_result_funcs`
+/// does for results.
+///
+/// ⛔ NOTHING ON THIS STACK IS EVER A RAW NUMBER. Every f64 and i32 this
+/// writer produces — `f64.const`, `f64.add`, a `-> i32` builtin result — is
+/// boxed onto the externref value ABI immediately. So a compiler that pushes
+/// "an f64" and calls `wasm:js-string.fromF64` (declared `(param f64)`) is
+/// pushing an externref, and V8 rejects it. The compiler is not wrong: raw is
+/// not expressible at a call boundary. The unbox belongs here, where the
+/// declared signature is known.
+///
+/// The deepest raw param may sit under other arguments, so the ones above it
+/// are spilled to temps and restored — the same reorder `ARRAY_SET` uses.
+/// Only ONE spill temp is taken, which covers every signature table the
+/// writer consults (`substring` and `fromCharCodeArray` are the deepest, at
+/// one). A signature needing more is left untransformed rather than half-done.
+fn emit_unbox_raw_params(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    type_ctx: &WasmTypeContext,
+    funcidx: u32,
+    argc: u8,
+    temp_idx: u32,
+) {
+    let Some(params) = type_ctx.raw_param_funcs.get(&funcidx) else {
+        return;
+    };
+    // ⛔ A DECLARED ARITY IS NOT THE CALL SITE'S ARITY. Reordering a stack
+    // that holds a different number of arguments than the table describes
+    // would spill operands that are not there. A call site that disagrees
+    // with its own import's signature is already broken; do not make it
+    // worse, and do not hide it behind a partial reorder.
+    if argc as usize != params.len() {
+        return;
+    }
+    let Some(deepest_raw) = params.iter().position(|&t| t != crate::encoding::TYPE_EXTERNREF)
+    else {
+        return;
+    };
+    let spill = params.len() - 1 - deepest_raw;
+    if spill > 1 {
+        return;
+    }
+    let unbox = |body: &mut Vec<u8>, vt: u8| match vt {
+        crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
+        crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
+        _ => {}
+    };
+    // Spill the arguments sitting above the deepest raw one; temp_idx + i
+    // holds param n-1-i.
+    for i in 0..spill {
+        body.push(0x21); // local.set
+        write_leb128_u32(body, temp_idx + i as u32);
+    }
+    unbox(body, params[deepest_raw]);
+    for i in (0..spill).rev() {
+        body.push(0x20); // local.get
+        write_leb128_u32(body, temp_idx + i as u32);
+        unbox(body, params[params.len() - 1 - i]);
+    }
+}
+
 /// Emit binary f64 comparison: [externref_a, externref_b] → f64.cmp → [externref_result(i32)]
 fn emit_binary_f64_cmp(
+    box_result: bool,
     body: &mut Vec<u8>,
     wasm_opcode: u8,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -1223,11 +1763,14 @@ fn emit_binary_f64_cmp(
     write_leb128_u32(body, temp_idx); // local.get $temp (restore b)
     emit_unbox_f64(body, rt_idx); // toF64(b)
     body.push(wasm_opcode); // f64.lt/gt/le/ge → i32
-    emit_box_i32(body, rt_idx); // fromI32 → externref
+    if box_result {
+        emit_box_i32(body, rt_idx); // fromI32 → externref
+    }
 }
 
 /// Emit binary i32 op: [externref_a, externref_b] → i32.op → [externref_result]
 fn emit_binary_i32_op(
+    box_result: bool,
     body: &mut Vec<u8>,
     wasm_opcode: u8,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -1240,11 +1783,14 @@ fn emit_binary_i32_op(
     write_leb128_u32(body, temp_idx); // local.get $temp (restore b)
     emit_unbox_i32(body, rt_idx); // toI32(b)
     body.push(wasm_opcode); // i32.op → i32
-    emit_box_i32(body, rt_idx); // fromI32 → externref
+    if box_result {
+        emit_box_i32(body, rt_idx); // fromI32 → externref
+    }
 }
 
 /// Emit binary i32 comparison: [externref_a, externref_b] → i32.cmp → [externref_result]
 fn emit_binary_i32_cmp(
+    box_result: bool,
     body: &mut Vec<u8>,
     wasm_opcode: u8,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -1257,7 +1803,9 @@ fn emit_binary_i32_cmp(
     write_leb128_u32(body, temp_idx); // local.get $temp (restore b)
     emit_unbox_i32(body, rt_idx); // toI32(b)
     body.push(wasm_opcode); // i32.eq/ne → i32
-    emit_box_i32(body, rt_idx); // fromI32 → externref
+    if box_result {
+        emit_box_i32(body, rt_idx); // fromI32 → externref
+    }
 }
 
 /// Emit a GC op (prefix 0xFB) — emit real WASM GC binary encoding with type indices.
@@ -1272,9 +1820,10 @@ fn emit_gc_op(
     op: Op,
     chunk: &Chunk,
     ip: &mut usize,
-    _rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     type_ctx: &WasmTypeContext,
     temp_idx: u32,
+    in_i32_block: bool,
 ) {
     match op {
         _ if op == Op::STRUCT_NEW => {
@@ -1283,6 +1832,25 @@ fn emit_gc_op(
             // key/value pair count, as before.
             let chunk_typeidx = read_u16(&chunk.code, ip);
             let prop_count = read_u16(&chunk.code, ip);
+            // ⛔ TYPEIDX 0 IS "NO TYPE", NOT "TYPE 0" — the same convention the
+            // read and write sides already honour. An untyped allocation is a
+            // fresh DYNAMIC object (`emit_class_alloc` emits `(0, 0)` for every
+            // one of them), and there is no wasm struct type that describes it.
+            //
+            // This used to GUESS a struct type by field count. The guess landed
+            // on the user's own class, so `{}` came out as
+            // `struct.new_desc $C` — an allocation that pops as many operands
+            // as `$C` has fields. In a plain `class C { constructor(){…} }` it
+            // ate the two operands sitting under it, and the failure surfaced
+            // three instructions later on an unrelated call:
+            // "expected externref but nothing on stack". The allocation was
+            // never the thing that looked wrong.
+            if chunk_typeidx == 0
+                && let Some(&new_idx) = rt_idx.get(&("ecma:object", "new"))
+            {
+                emit_dynamic_object_new(body, rt_idx, new_idx, prop_count, temp_idx);
+                return;
+            }
             let typeidx = if chunk_typeidx != 0 {
                 wasm_struct_type_for_chunk_type(chunk, type_ctx, chunk_typeidx)
             } else {
@@ -1318,9 +1886,29 @@ fn emit_gc_op(
             emit_externalize(body); // (ref $struct) → externref
         }
         _ if op == Op::STRUCT_GET => {
-            let _typeidx = read_u16(&chunk.code, ip);
+            let named_type = read_u16(&chunk.code, ip);
             let field_name_idx = read_u16(&chunk.code, ip);
-            let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
+            // ⛔ TYPEIDX 0 IS "NO TYPE", NOT "TYPE 0". A dynamic property read
+            // by NAME is not a typed struct access, and lowering it to one
+            // emitted `struct.get 0 0` — a well-formed instruction addressing a
+            // field that does not exist, which is exactly what V8 reports as
+            // `invalid field index: 0`. Core wasm has no by-name property
+            // access, so this is a host call.
+            if named_type == 0
+                && let Some(gidx) = dynamic_prop_name_global(chunk, type_ctx, field_name_idx)
+                && let Some(&fidx) = rt_idx.get(&("ecma:object", "get"))
+            {
+                body.push(0x23); // global.get <name string constant>
+                write_leb128_u32(body, gidx);
+                body.push(0x10); // call ecma:object.get(obj, name)
+                write_leb128_u32(body, fidx as u32);
+                return;
+            }
+            let (typeidx, fieldidx) =
+                wasm_struct_field_by_typeidx(chunk, type_ctx, named_type, field_name_idx)
+                    .unwrap_or_else(|| {
+                        wasm_struct_field_for_name(chunk, type_ctx, field_name_idx)
+                    });
             emit_internalize(body); // externref → anyref
             emit_ref_cast(body, typeidx); // anyref → (ref $struct)
             body.push(0xFB);
@@ -1330,9 +1918,33 @@ fn emit_gc_op(
             // Result is externref (field type) — no conversion needed
         }
         _ if op == Op::STRUCT_SET => {
-            let _typeidx = read_u16(&chunk.code, ip);
+            let named_type = read_u16(&chunk.code, ip);
             let field_name_idx = read_u16(&chunk.code, ip);
-            let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
+            // See the read side above: typeidx 0 is an untyped by-name write.
+            // Stack is `[obj, val]` and the host fn wants `(obj, name, val)`,
+            // so the value is parked in the temp while the name is pushed.
+            if named_type == 0
+                && let Some(gidx) = dynamic_prop_name_global(chunk, type_ctx, field_name_idx)
+                && let Some(&fidx) = rt_idx.get(&("ecma:object", "set"))
+            {
+                body.push(0x21); // local.set $temp = val
+                write_leb128_u32(body, temp_idx);
+                body.push(0x23); // global.get <name>
+                write_leb128_u32(body, gidx);
+                body.push(0x20); // local.get $temp = val
+                write_leb128_u32(body, temp_idx);
+                body.push(0x10); // call ecma:object.set(obj, name, val)
+                write_leb128_u32(body, fidx as u32);
+                // ⛔ NO DROP. `ecma:object.set` is declared `(externref × 3) ->
+                // ()` by `js_object_builtins`, so there is nothing to drop —
+                // dropping here ate the caller's operand instead.
+                return;
+            }
+            let (typeidx, fieldidx) =
+                wasm_struct_field_by_typeidx(chunk, type_ctx, named_type, field_name_idx)
+                    .unwrap_or_else(|| {
+                        wasm_struct_field_for_name(chunk, type_ctx, field_name_idx)
+                    });
             // Stack: [externref_obj, externref_val]. struct.set expects
             // [(ref $struct), externref_val] and pushes NOTHING — the VM's
             // internal op now has the same spec shape, so no compensation:
@@ -1417,7 +2029,7 @@ fn emit_gc_op(
             emit_ref_cast_array(body, type_ctx.array_type_idx);
             body.push(0x20);
             write_leb128_u32(body, temp_idx);
-            emit_unbox_i32(body, _rt_idx);
+            emit_unbox_i32(body, rt_idx);
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
             write_leb128_u32(body, type_ctx.array_type_idx);
@@ -1524,6 +2136,47 @@ fn emit_gc_op(
         // for a type NAME, which has no typeidx to map onto — the same
         // situation as `ref.cast`, so we emit the same conservative `any`
         // heaptype it does.
+        // `desc.set_proto $classname` — store the class's JS prototype into
+        // field 0 of that class's descriptor singleton.
+        //
+        // VM-internal, expanded here; nothing of it reaches the binary. The
+        // immediate names the CLASS rather than a type index because descriptor
+        // type indices and descriptor global indices are both derived HERE
+        // (`desc_type` / `desc_global`, off the `(2i, 2i+1)` layout) and the
+        // compiler has no access to either. A name also survives the
+        // per-chunk problem `desc_global_by_index` warns about: the type table
+        // lives on `chunks[0]` only, while this walks every chunk, and
+        // `desc_type_indices` is on the shared context.
+        //
+        // The prototype is on the stack and `struct.set` wants the ref BELOW
+        // it, so the value is parked in the scratch local the writer already
+        // reserves for exactly this kind of reorder (`count_temp_locals`).
+        _ if op == Op::DESC_SET_PROTO => {
+            let name_idx = read_u16(&chunk.code, ip) as usize;
+            let resolved = match chunk.constants.get(name_idx) {
+                Some(Value::String(s)) => type_ctx
+                    .desc_type(s)
+                    .and_then(|t| type_ctx.desc_global(s).map(|g| (t, g))),
+                _ => None,
+            };
+            match resolved {
+                Some((desc_type_idx, desc_global_idx)) => {
+                    body.push(0x21); // local.set $tmp
+                    write_leb128_u32(body, temp_idx);
+                    body.push(0x23); // global.get $C.desc
+                    write_leb128_u32(body, desc_global_idx);
+                    body.push(0x20); // local.get $tmp
+                    write_leb128_u32(body, temp_idx);
+                    body.push(0xFB);
+                    write_leb128_u32(body, 0x05); // struct.set
+                    write_leb128_u32(body, desc_type_idx);
+                    write_leb128_u32(body, 0); // field 0
+                }
+                // Unresolvable class name: drop the prototype rather than
+                // leaving it on the stack and desynchronising the frame.
+                None => body.push(0x1A), // drop
+            }
+        }
         _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
             let name_idx = read_u16(&chunk.code, ip) as usize;
             let ht_bytes = resolve_heaptype_from_name(chunk, name_idx, type_ctx);
@@ -1532,19 +2185,28 @@ fn emit_gc_op(
             body.extend_from_slice(&ht_bytes);
         }
         _ if op == Op::BR_ON_CAST_DESC_EQ || op == Op::BR_ON_CAST_DESC_EQ_FAIL => {
-            let name_idx = read_u16(&chunk.code, ip) as usize;
+            // Spec: `0xFB 37|38 (null_1?, null_2?):castflags l:labelidx ht_1 ht_2`.
+            //
+            // ⛔ This used to emit castflags hardcoded `0x00` and `HT_ANY` for
+            // `ht_1`, because the bytecode carried only ONE name — so the
+            // emitted instruction did not say what the source said, and a
+            // nullable operand or a narrower source type was silently lost.
+            // Logged once as "a pre-existing GC MVP gap, not a Custom
+            // Descriptors one"; it is a Custom Descriptors gap, both flags and
+            // both heaptypes being this instruction's own immediates.
+            let to_idx = read_u16(&chunk.code, ip) as usize;
+            let from_idx = read_u16(&chunk.code, ip) as usize;
             let depth = chunk.code[*ip];
             *ip += 1;
-            let ht_bytes = resolve_heaptype_from_name(chunk, name_idx, type_ctx);
+            let (to_bytes, to_null) = resolve_heaptype_nullable(chunk, to_idx, type_ctx);
+            let (from_bytes, from_null) = resolve_heaptype_nullable(chunk, from_idx, type_ctx);
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
-            // castflags: bit 0 = ht1 nullable, bit 1 = ht2 nullable. Same
-            // hardcoded 0x00 as `br_on_cast` — the nullable forms are a
-            // pre-existing GC MVP gap, not a Custom Descriptors one.
-            body.push(0x00);
+            // bit 0 = ht_1 (source) nullable, bit 1 = ht_2 (target) nullable
+            body.push((u8::from(from_null)) | (u8::from(to_null) << 1));
             write_leb128_u32(body, depth as u32);
-            body.push(HT_ANY); // ht1: source
-            body.extend_from_slice(&ht_bytes); // ht2: target
+            body.extend_from_slice(&from_bytes); // ht_1: source
+            body.extend_from_slice(&to_bytes); // ht_2: target
         }
         _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
             // Our struct.get uses a field-name-constant u16 operand;
@@ -1565,16 +2227,26 @@ fn emit_gc_op(
             // only a concrete index needs translating into this module's
             // numbering.
             let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
+            if heaptype_is_internal(&ht_bytes) {
+                emit_internalize(body); // externref → anyref
+            }
             body.push(0xFB);
             write_leb128_u32(body, 0x15);
             body.extend_from_slice(&ht_bytes);
-            emit_box_i32(body, _rt_idx);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         _ if op == Op::REF_CAST_NULL => {
             let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
+            let internal = heaptype_is_internal(&ht_bytes);
+            if internal {
+                emit_internalize(body); // externref → anyref
+            }
             body.push(0xFB);
             write_leb128_u32(body, 0x17);
             body.extend_from_slice(&ht_bytes);
+            if internal {
+                emit_externalize(body); // the cast result rejoins the value ABI
+            }
         }
         _ if op == Op::ANY_CONVERT_EXTERN => {
             // Our externref is the universal value carrier — the op is a
@@ -1596,7 +2268,7 @@ fn emit_gc_op(
             emit_ref_cast_array(body, type_ctx.array_type_idx); // anyref → (ref null $arr)
             body.push(0x20);
             write_leb128_u32(body, temp_idx); // local.get $temp (restore idx)
-            emit_unbox_i32(body, _rt_idx); // externref_idx → i32
+            emit_unbox_i32(body, rt_idx); // externref_idx → i32
             body.push(0xFB);
             write_leb128_u32(body, 0x0B); // array.get
             write_leb128_u32(body, type_ctx.array_type_idx);
@@ -1616,7 +2288,7 @@ fn emit_gc_op(
             emit_ref_cast_array(body, type_ctx.array_type_idx); // anyref → (ref null $arr)
             body.push(0x20);
             write_leb128_u32(body, temp_idx + 1); // local.get $temp2 (restore idx)
-            emit_unbox_i32(body, _rt_idx); // externref_idx → i32
+            emit_unbox_i32(body, rt_idx); // externref_idx → i32
             body.push(0x20);
             write_leb128_u32(body, temp_idx); // local.get $temp (restore val)
             // Stack: [(ref null $arr), i32, externref]
@@ -1632,7 +2304,7 @@ fn emit_gc_op(
             body.push(0xFB);
             write_leb128_u32(body, 0x0F); // array.len → i32
             // Result is i32, box to externref
-            emit_box_i32(body, _rt_idx);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         _ if op == Op::ARRAY_FILL => {
             emit_internalize(body);
@@ -1652,12 +2324,66 @@ fn emit_gc_op(
             write_leb128_u32(body, type_ctx.array_type_idx);
             emit_externalize(body);
         }
+        // ⛔⛔ EXACT CASTS ADD NO OPCODE. Custom Descriptors, Overview
+        // "Instructions": *"All existing instructions that take heap type
+        // immediates work without modification with the encoding of exact heap
+        // types."* Exactness rides in the HEAPTYPE — `0x62 x` — not in a new
+        // instruction. `REF_TEST_EXACT` … `REF_CAST_EXACT_NULL` (0xFB 0x27-0x2A)
+        // are VM-INTERNAL numbers with no spec counterpart, so they must be
+        // rewritten here to the ordinary `ref.test` / `ref.cast` opcode plus an
+        // exact heaptype.
+        //
+        // They had no arm at all and fell to `emit_gc_op`'s catch-all, which
+        // emits `0xFB <sub>` and DISCARDS the operand — so they reached the
+        // binary as an opcode the spec does not define, carrying no heaptype,
+        // desyncing everything after. Invisible to the descriptor suite:
+        // `exact.wast` and `exact-casts.wast` pass 11/11 because the VM runs
+        // Chunks and never the emitted module. Same shape as the `local.tee`
+        // hole, one layer down.
+        _ if op == Op::REF_TEST_EXACT
+            || op == Op::REF_TEST_EXACT_NULL
+            || op == Op::REF_CAST_EXACT
+            || op == Op::REF_CAST_EXACT_NULL =>
+        {
+            let spec_sub: u32 = if op == Op::REF_TEST_EXACT {
+                0x14 // ref.test (ref ht)
+            } else if op == Op::REF_TEST_EXACT_NULL {
+                0x15 // ref.test (ref null ht)
+            } else if op == Op::REF_CAST_EXACT {
+                0x16 // ref.cast (ref ht)
+            } else {
+                0x17 // ref.cast (ref null ht)
+            };
+            let ht_bytes = read_exact_heaptype_operand(chunk, ip, type_ctx);
+            let internal = heaptype_is_internal(&ht_bytes);
+            if internal {
+                emit_internalize(body); // externref → anyref
+            }
+            body.push(0xFB);
+            write_leb128_u32(body, spec_sub);
+            body.extend_from_slice(&ht_bytes);
+            let is_test = op == Op::REF_TEST_EXACT || op == Op::REF_TEST_EXACT_NULL;
+            if is_test {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            } else if internal {
+                emit_externalize(body); // the cast result rejoins the value ABI
+            }
+        }
         _ if op == Op::REF_TEST || op == Op::REF_CAST => {
             // `ref.test` / `ref.cast` (non-null): `0xFB {0x14|0x16} <heaptype>`.
             let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
+            let internal = heaptype_is_internal(&ht_bytes);
+            if internal {
+                emit_internalize(body); // externref → anyref
+            }
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
             body.extend_from_slice(&ht_bytes);
+            if op == Op::REF_TEST {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            } else if internal {
+                emit_externalize(body); // the cast result rejoins the value ABI
+            }
         }
         // `ref.eq` moved to the core prefix (0xD3) — emit path is in
         // `emit_core_op`. This branch is kept intentionally empty as a
@@ -1686,7 +2412,7 @@ fn emit_gc_op(
         }
         _ if op == Op::I31_NEW => {
             // i31.new expects i32 — unbox externref first
-            emit_unbox_i32(body, _rt_idx);
+            emit_unbox_i32(body, rt_idx);
             body.push(0xFB);
             write_leb128_u32(body, 0x1C); // ref.i31
             emit_externalize(body); // (ref i31) → externref
@@ -1695,7 +2421,7 @@ fn emit_gc_op(
             emit_internalize(body); // externref → anyref
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
-            emit_box_i32(body, _rt_idx); // i32 → externref
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         _ => {
             // Other GC ops: emit directly
@@ -1731,6 +2457,7 @@ fn emit_dyn_binary_numeric(
 /// Emit inline dyn comparison: unbox both as f64, compare, box i32 result.
 #[allow(dead_code)]
 fn emit_dyn_binary_cmp(
+    box_result: bool,
     body: &mut Vec<u8>,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
@@ -1743,7 +2470,9 @@ fn emit_dyn_binary_cmp(
     write_leb128_u32(body, temp_idx); // local.get $temp (restore b)
     emit_unbox_f64(body, rt_idx); // toF64(b)
     body.push(f64_cmp_opcode); // f64.lt/gt/le/ge/eq/ne → i32
-    emit_box_i32(body, rt_idx); // fromI32 → externref
+    if box_result {
+        emit_box_i32(body, rt_idx); // fromI32 → externref
+    }
 }
 
 /// Emit a string constant from the chunk's constant pool.
@@ -1783,6 +2512,109 @@ fn resolve_heaptype_from_name(
 /// only so a `ref.test` could name it, and never defined here — widens to
 /// `anyref` so the module still validates; the VM's declared-name fallback is
 /// what answers that test until the platforms allocate typed objects.
+/// The same heaptype operand as [`read_heaptype_operand`], encoded EXACT.
+///
+/// `heaptype ::= … | 0x62 x:u32 => exact x`.
+///
+/// ⛔ An ABSTRACT heap type is returned unprefixed. The proposal
+/// (Overview, "Exact heap types") states that the encoding *"intentionally
+/// makes it impossible to encode an exact abstract heap type"* — `0x62` takes
+/// a typeidx, so prefixing an abstract byte would produce a typeidx out of a
+/// tag. Only a concrete type can be exact.
+fn read_exact_heaptype_operand(
+    chunk: &Chunk,
+    ip: &mut usize,
+    type_ctx: &WasmTypeContext,
+) -> Vec<u8> {
+    let (value, len) = read_leb128_i32(&chunk.code[*ip..]);
+    *ip += len;
+    let mut buf = Vec::new();
+    match vybe_runtime::opcode::heaptype::HeapType::from_sleb(value) {
+        vybe_runtime::opcode::heaptype::HeapType::Abstract(byte) => buf.push(byte),
+        vybe_runtime::opcode::heaptype::HeapType::Concrete(index) => {
+            match type_ctx.struct_type_by_index(index) {
+                Some(wasm_idx) => {
+                    buf.push(0x62); // exact
+                    write_leb128_u32(&mut buf, wasm_idx);
+                }
+                None => buf.push(HT_ANY),
+            }
+        }
+    }
+    buf
+}
+
+/// A name-constant heaptype plus the nullability its SPELLING declared.
+///
+/// The bytecode carries reftypes as names (`$t`, `ref null $t`, `any`), which
+/// is what lets a two-heaptype instruction fit an existing operand format —
+/// see the `br_on_cast_desc_eq` row in `opcode/gc.rs`. `castflags` needs the
+/// nullability separately from the heaptype bytes, so it is returned rather
+/// than folded in.
+/// Split a REFTYPE spelling into its heap type bytes and its nullability.
+///
+/// ⛔ THE NAME HAS TO BE PEELED BEFORE IT IS RESOLVED. This read the
+/// nullability off the spelling and then handed the WHOLE spelling to
+/// `resolve_heaptype_from_name`, which looks the string up as a type name —
+/// so `"ref null $a"` missed the type table and widened to `anyref`, losing
+/// exactly the concrete type the immediate exists to name. Latent only
+/// because nothing emitted the nullable spelling yet; the first producer
+/// would have inherited it silently, since a too-wide heap type still
+/// validates and still passes every cast the narrow one passes.
+///
+/// Accepts `(ref null $a)`, `ref $a`, and the §2.3.4 abbreviations
+/// (`anyref`, `eqref`, …), which are shorthand for a NULLABLE reference —
+/// `funcref ≡ (ref null func)`.
+fn resolve_heaptype_nullable(
+    chunk: &Chunk,
+    name_idx: usize,
+    type_ctx: &WasmTypeContext,
+) -> (Vec<u8>, bool) {
+    use vybe_runtime::opcode::heaptype::HeapType;
+    let raw = match chunk.constants.get(name_idx) {
+        Some(v) => v.to_string(),
+        None => String::new(),
+    };
+    let spelled = raw
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    // `ref null ht` → nullable; `ref ht` → not.
+    //
+    // ⛔ A BARE NAME IS NOT AUTOMATICALLY NULLABLE. Only the §2.3.4
+    // ABBREVIATIONS are nullable shorthand (`funcref ≡ (ref null func)`); a
+    // bare user type name is what the instructions that encode nullability in
+    // the OPCODE store — `ref.cast_desc_eq` and friends — and it says nothing
+    // about nullability at all. Treating every bare name as nullable set the
+    // castflag on those, which `gc_test`'s encoding assertion caught.
+    let (bare, nullable) = match spelled.strip_prefix("ref ") {
+        Some(rest) => match rest.trim().strip_prefix("null ") {
+            Some(ht) => (ht.trim(), true),
+            None => (rest.trim(), false),
+        },
+        None => (
+            spelled,
+            HeapType::from_spec_reftype_name(spelled).is_some(),
+        ),
+    };
+    // A user type wins over an abstract spelling: a module may legitimately
+    // declare a type called `any`, and the type table is the authority on
+    // what this module actually emitted.
+    if let Some(idx) = type_ctx.struct_type(bare) {
+        let mut buf = Vec::new();
+        write_leb128_i32(&mut buf, idx as i32);
+        return (buf, nullable);
+    }
+    let abstract_ht = HeapType::from_spec_reftype_name(bare)
+        .and_then(|(heap, _)| HeapType::from_spec_name(heap))
+        .or_else(|| HeapType::from_spec_name(bare));
+    match abstract_ht {
+        Some(HeapType::Abstract(byte)) => (vec![byte], nullable),
+        _ => (vec![HT_ANY], nullable),
+    }
+}
+
 fn read_heaptype_operand(chunk: &Chunk, ip: &mut usize, type_ctx: &WasmTypeContext) -> Vec<u8> {
     let (value, len) = read_leb128_i32(&chunk.code[*ip..]);
     *ip += len;
