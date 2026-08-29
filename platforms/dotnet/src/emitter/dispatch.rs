@@ -1086,7 +1086,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::culture_adapter::emit_text_info_to_lower(chunks, current, line)
         }
         "dotnet.event_wait_all" => {
-            crate::emitter::core::wait_handle_adapter::emit_wait_all(chunks, current, line)
+            crate::emitter::core::wait_handle_adapter::emit_wait_all(chunks, current, argc, line)
         }
         "dotnet.event_wait_one" => {
             crate::emitter::core::wait_handle_adapter::emit_wait_one(chunks, current, argc, line)
@@ -1722,6 +1722,118 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.guid_try_parse" => {
             crate::emitter::core::guid_adapter::emit_guid_try_parse(chunks, current, argc, line)
+        }
+
+        // `System.HashCode` — one fold shared by `Combine` and
+        // `Add`/`ToHashCode`, so .NET's guarantee that they agree is
+        // structural rather than a coincidence to re-prove.
+        // `Int128` / `UInt128` — the width discipline the synthesized classes
+        // call out to; see `int128_adapter`.
+        "dotnet.bigint_zero" => {
+            crate::emitter::core::int128_adapter::emit_const(chunks, current, 0, line)
+        }
+        "dotnet.bigint_two" => {
+            crate::emitter::core::int128_adapter::emit_const(chunks, current, 2, line)
+        }
+        "dotnet.i128_is_numeric" => {
+            crate::emitter::core::int128_adapter::emit_is_numeric(chunks, current, line)
+        }
+        "dotnet.i128_str" => {
+            crate::emitter::core::int128_adapter::emit_to_string(chunks, current, line)
+        }
+        "dotnet.i128_sign" => {
+            crate::emitter::core::int128_adapter::emit_sign(chunks, current, line)
+        }
+        "dotnet.i128_abs" => {
+            crate::emitter::core::int128_adapter::emit_abs(chunks, current, line)
+        }
+        "dotnet.i128_is_even" => {
+            crate::emitter::core::int128_adapter::emit_is_even(chunks, current, line)
+        }
+        "dotnet.i128_cmp" => {
+            crate::emitter::core::int128_adapter::emit_cmp(chunks, current, line)
+        }
+        "dotnet.i128_clamp" => {
+            crate::emitter::core::int128_adapter::emit_clamp(chunks, current, line)
+        }
+        "dotnet.i128_min" => {
+            crate::emitter::core::int128_adapter::emit_pick(chunks, current, true, line)
+        }
+        "dotnet.i128_max" => {
+            crate::emitter::core::int128_adapter::emit_pick(chunks, current, false, line)
+        }
+        "dotnet.i128_add" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "add", line)
+        }
+        "dotnet.i128_sub" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "sub", line)
+        }
+        "dotnet.i128_mul" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "mul", line)
+        }
+        "dotnet.i128_div" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "div", line)
+        }
+        "dotnet.i128_rem" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "rem", line)
+        }
+        "dotnet.i128_and" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "and", line)
+        }
+        "dotnet.i128_or" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "or", line)
+        }
+        "dotnet.i128_xor" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "xor", line)
+        }
+        "dotnet.i128_eq" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "eq", line)
+        }
+        "dotnet.i128_ne" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "ne", line)
+        }
+        "dotnet.i128_lt" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "lt", line)
+        }
+        "dotnet.i128_le" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "le", line)
+        }
+        "dotnet.i128_gt" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "gt", line)
+        }
+        "dotnet.i128_ge" => {
+            crate::emitter::core::int128_adapter::emit_binop(chunks, current, "ge", line)
+        }
+        "dotnet.int128_wrap" => {
+            crate::emitter::core::int128_adapter::emit_wrap_signed(chunks, current, line)
+        }
+        "dotnet.uint128_wrap" => {
+            crate::emitter::core::int128_adapter::emit_wrap_unsigned(chunks, current, line)
+        }
+        "dotnet.int128_shl" => {
+            crate::emitter::core::int128_adapter::emit_shift(chunks, current, true, line)
+        }
+        "dotnet.int128_shr" => {
+            crate::emitter::core::int128_adapter::emit_shift(chunks, current, false, line)
+        }
+
+        "dotnet.hashcode_new" => {
+            crate::emitter::core::hashcode_adapter::emit_new(chunks, current, line)
+        }
+        "dotnet.hashcode_add" => {
+            crate::emitter::core::hashcode_adapter::emit_add(chunks, current, line)
+        }
+        "dotnet.hashcode_add_comparer" => {
+            crate::emitter::core::hashcode_adapter::emit_add_with_comparer(chunks, current, line)
+        }
+        "dotnet.hashcode_to_hash_code" => {
+            crate::emitter::core::hashcode_adapter::emit_to_hash_code(chunks, current, line)
+        }
+        "dotnet.hashcode_combine" => {
+            crate::emitter::core::hashcode_adapter::emit_combine(chunks, current, argc, line)
+        }
+        "dotnet.hashcode_unsupported" => {
+            crate::emitter::core::hashcode_adapter::emit_unsupported(chunks, current, argc, line)
         }
 
         "dotnet.version_new" => {
@@ -4214,6 +4326,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.system.math.tanh" => {
             let idx = chunks[current].add_import("ecma:math", "tanh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.asinh" => {
+            let idx = chunks[current].add_import("ecma:math", "asinh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.acosh" => {
+            let idx = chunks[current].add_import("ecma:math", "acosh");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        "dotnet.system.math.atanh" => {
+            let idx = chunks[current].add_import("ecma:math", "atanh");
             chunks[current].emit_call(idx, 1, line);
         }
         "dotnet.system.math.sign" => {

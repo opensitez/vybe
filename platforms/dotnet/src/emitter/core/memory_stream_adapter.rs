@@ -68,7 +68,6 @@ fn call(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
 
 /// `[obj, value] → []`
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,
@@ -81,7 +80,6 @@ fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
 /// `[] → [value]` — a field of the object in `slot`.
 fn field(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     get(chunk, slot, line);
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,

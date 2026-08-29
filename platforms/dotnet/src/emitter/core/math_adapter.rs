@@ -23,7 +23,6 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,

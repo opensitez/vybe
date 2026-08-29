@@ -41,7 +41,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 /// `[obj, value] → []`
 fn set_field(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,
@@ -54,7 +53,6 @@ fn set_field(chunk: &mut Chunk, key: &str, line: u32) {
 /// `[] → [value]`
 fn get_field_from(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,

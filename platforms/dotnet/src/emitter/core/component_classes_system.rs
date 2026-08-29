@@ -1126,6 +1126,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.system.math.round".into()),
                 ))
+                // ⛔ `Round` WAS DECLARED AT ARITY 1 ONLY, and the declared
+                // arity is what the unqualified path passes to the emitter.
+                // `Math.Round(d, 2)` therefore reached `dotnet.system.math.round`
+                // with `argc == 1` while BOTH operands sat on the stack, so it
+                // rounded the DIGIT COUNT and answered `2`. The emitter has
+                // handled the two- and three-operand forms all along; nothing
+                // declared them. `System.Math.Round(d, 2)` was unaffected and
+                // passing, which is what made this look like a Complex bug.
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    2,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    3,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Min",
                     2,
@@ -1215,6 +1233,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Tanh",
                     1,
                     MethodBody::Common("dotnet.system.math.tanh".into()),
+                ))
+                // The INVERSE hyperbolics were missing while their forward
+                // forms were registered, so `[math]::Acosh` reached
+                // `undefined is not callable` in every .NET-shaped frontend.
+                .with_method(MethodDef::static_method(
+                    "Asinh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.asinh".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Acosh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.acosh".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Atanh",
+                    1,
+                    MethodBody::Common("dotnet.system.math.atanh".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Sign",

@@ -27,6 +27,8 @@ mod component_classes_network;
 mod component_classes_span;
 #[path = "component_classes_system.rs"]
 mod component_classes_system;
+#[path = "component_classes_system_hashcode.rs"]
+mod component_classes_system_hashcode;
 #[path = "component_classes_system_values.rs"]
 mod component_classes_system_values;
 #[path = "component_classes_system_version.rs"]
@@ -57,6 +59,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.extend(component_classes_span::exports());
         exports.extend(component_classes_system::exports());
         exports.push(component_classes_system::biginteger_export());
+        exports.extend(component_classes_system_hashcode::exports());
         exports.extend(component_classes_system_values::exports());
         exports.extend(component_classes_system_version::exports());
         exports.extend(component_classes_threading::exports());

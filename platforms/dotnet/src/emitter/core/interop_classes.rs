@@ -71,11 +71,11 @@ pub fn synthesize_interop_classes(source: &str) -> Vec<Statement> {
 
 // ── AST helpers ─────────────────────────────────────────────────────────
 
-fn this() -> Expression {
+pub(super) fn this() -> Expression {
     Expression::new(ExprKind::This)
 }
 
-fn me(field: &str) -> Expression {
+pub(super) fn me(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(this()),
         field: field.into(),
@@ -83,7 +83,7 @@ fn me(field: &str) -> Expression {
     })
 }
 
-fn assign(field: &str, value: Expression) -> Statement {
+pub(super) fn assign(field: &str, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![me(field)],
         value,
@@ -116,14 +116,14 @@ fn call_me(method: &str) -> Expression {
 
 /// A `ByRef` parameter — `DangerousAddRef(ByRef success As Boolean)` reports
 /// through its argument, so the write has to reach the caller's variable.
-fn by_ref_param(name: &str) -> Param {
+pub(super) fn by_ref_param(name: &str) -> Param {
     Param {
         pass_by: PassBy::Ref,
         ..param(name, Expression::bool(false))
     }
 }
 
-fn param(name: &str, default: Expression) -> Param {
+pub(super) fn param(name: &str, default: Expression) -> Param {
     Param {
         name: name.into(),
         type_hint: None,
@@ -146,7 +146,7 @@ fn field(name: &str) -> ClassMember {
 /// `undefined` while `h.IsAllocated` from outside read the value a write had
 /// put there dynamically. `GCHandle.Free` therefore saw `Not undefined` and
 /// threw "handle is not allocated" on a live handle.
-fn typed_field(name: &str, type_hint: &str) -> ClassMember {
+pub(super) fn typed_field(name: &str, type_hint: &str) -> ClassMember {
     ClassMember::Field {
         name: name.into(),
         type_hint: Some(type_hint.into()),
@@ -158,7 +158,7 @@ fn typed_field(name: &str, type_hint: &str) -> ClassMember {
     }
 }
 
-fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_sub: bool) -> ClassMember {
+pub(super) fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_sub: bool) -> ClassMember {
     plain_or_virtual_method(name, params, body, is_sub, false)
 }
 
@@ -197,7 +197,7 @@ fn plain_or_virtual_method(
 }
 
 /// A `Shared` method — `GCHandle.Alloc` is called on the CLASS.
-fn shared_method(name: &str, params: Vec<Param>, body: Vec<Statement>) -> ClassMember {
+pub(super) fn shared_method(name: &str, params: Vec<Param>, body: Vec<Statement>) -> ClassMember {
     ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
         name: name.into(),
         params,
@@ -253,7 +253,7 @@ fn throw_new(exception: &str, message: &str) -> Statement {
     })
 }
 
-fn getter(name: &str, body: Vec<Statement>) -> ClassMember {
+pub(super) fn getter(name: &str, body: Vec<Statement>) -> ClassMember {
     ClassMember::Property {
         name: name.into(),
         type_hint: None,
@@ -267,7 +267,7 @@ fn getter(name: &str, body: Vec<Statement>) -> ClassMember {
     }
 }
 
-fn class(name: &str, parents: Vec<String>, members: Vec<ClassMember>) -> Statement {
+pub(super) fn class(name: &str, parents: Vec<String>, members: Vec<ClassMember>) -> Statement {
     Statement::with_span(
         StmtKind::ClassDecl {
             name: name.into(),

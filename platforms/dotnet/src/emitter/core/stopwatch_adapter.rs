@@ -23,7 +23,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 }
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(field)));
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,
@@ -34,7 +33,6 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(field)));
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,

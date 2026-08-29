@@ -114,7 +114,6 @@ pub fn emit_datarow_new(chunk: &mut Chunk, line: u32) {
 // ── Method adapters ──────────────────────────────────────────────────────────
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(field)));
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,

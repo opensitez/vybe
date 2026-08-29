@@ -201,7 +201,6 @@ pub fn emit_http_client_new(chunks: &mut [Chunk], current: usize, line: u32) {
     class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("HttpClient", line);
-    let idx = chunk.add_constant(Value::String(Arc::from("__type")));
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,

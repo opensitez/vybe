@@ -171,9 +171,20 @@ pub fn emit_wait_one(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 /// factored into a called chunk because the loop already owns the slots.
 ///
 /// Stack: `[handles]` → `[bool]`.
-pub fn emit_wait_all(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_wait_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = chunks[current].alloc_scratch(5);
     let (handles, index, len, all, item) = (base, base + 1, base + 2, base + 3, base + 4);
+    // ⛔ `WaitAll(handles)` AND `WaitAll(handles, timeout)` REACH THIS ONE BODY.
+    // The dotnet STATIC lookup matches on NAME ALONE and never reads arity, so a
+    // second `MethodDef` for the timeout overload would be dead code and this
+    // body would run with the timeout still on the stack — the array would be
+    // read from the wrong slot. One registration branching on `argc` is the
+    // pattern; `emit_wait_one` above already does it for the same reason.
+    // The timeout is discarded: with the state on the instance there is nothing
+    // to wait FOR.
+    if argc > 1 {
+        chunks[current].emit_op(Op::DROP, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_SET, handles, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, handles, line);
