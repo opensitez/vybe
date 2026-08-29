@@ -234,7 +234,7 @@ fn register_type_adds_entry() {
 #[test]
 fn emit_attach_static_method_sets_on_constructor() {
     let mut chunk = Chunk::new("test");
-    classes::emit_attach_static_method(&mut chunk, 2, "create", 5, None, None, 0);
+    classes::emit_attach_static_method(&mut chunk, true, 2, "create", 5, None, None, 0);
     let has_create = chunk
         .constants
         .iter()

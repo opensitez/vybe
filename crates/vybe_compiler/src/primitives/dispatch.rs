@@ -898,6 +898,9 @@ pub fn emit_common(
         // python lowercases option names and php does not.
         "config.parse" => config::emit_parse(chunks, current, line),
         "csv.parse_line" => csv::emit_parse_line(chunks, current, line),
+        // A whole document, because a newline inside an enclosure is CONTENT and
+        // no pre-split can know that.
+        "csv.parse_document" => csv::emit_parse_document(chunks, current, line),
         "csv.format_row" => {
             csv::emit_format_row(chunks, current, csv::FormatOptions::minimal(), line)
         }

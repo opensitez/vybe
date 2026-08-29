@@ -72,6 +72,16 @@ impl Op {
     pub const REF_TEST_EXACT_NULL: Op = Op::new(0xFB, 0x28);
     pub const REF_CAST_EXACT: Op = Op::new(0xFB, 0x29);
     pub const REF_CAST_EXACT_NULL: Op = Op::new(0xFB, 0x2A);
+    /// VM-internal. `desc.set_proto $classname` — store the class's JS
+    /// prototype into field 0 of that class's descriptor singleton.
+    ///
+    /// Not a spec opcode: the writer expands it to `local.set` / `global.get`
+    /// / `local.get` / `struct.set`, so nothing VM-internal reaches the binary.
+    /// It exists because the descriptor's field COUNT depends on the merged
+    /// method list, which is only final after all emission — so a `struct.new`
+    /// cannot be emitted on the class path, while a `struct.set` of field 0
+    /// needs no count at all.
+    pub const DESC_SET_PROTO: Op = Op::new(0xFB, 0x2B);
 
     // Stringref proposal (0x80..=0xB7). Byte values per proposals/stringref
     // Overview.md. Strings map onto `Value::String`. Ops carrying a `$mem`
@@ -189,8 +199,19 @@ opcode_category! {
     // depth for the branching forms.
     [0x23] ref_cast_desc_eq        => U16,    "ref.cast_desc_eq";
     [0x24] ref_cast_desc_eq_null   => U16,    "ref.cast_desc_eq_null";
-    [0x25] br_on_cast_desc_eq      => U16_U8, "br_on_cast_desc_eq";
-    [0x26] br_on_cast_desc_eq_fail => U16_U8, "br_on_cast_desc_eq_fail";
+    // ⛔ `U16_U16_U8`, not `U16_U8`. The spec form is
+    //   `0xFB 37 (null_1?, null_2?):castflags l:labelidx ht_1 ht_2`
+    // — BOTH heaptypes and BOTH null flags are this instruction's own
+    // immediates. With one name the writer had nothing to say for `ht_1` and
+    // emitted `HT_ANY` with castflags hardcoded `0x00`, so the emitted
+    // instruction did not say what the source said.
+    //
+    // The two u16s are name-constant indices for `ht_2` (target) then `ht_1`
+    // (source); NULLABILITY RIDES IN THE SPELLING (`ref null $t`), the same
+    // convention `wasm_heap_type_ref_exact` already parses, which is why this
+    // needs no new `OperandFormat` variant. The u8 is the label depth.
+    [0x25] br_on_cast_desc_eq      => U16_U16_U8, "br_on_cast_desc_eq";
+    [0x26] br_on_cast_desc_eq_fail => U16_U16_U8, "br_on_cast_desc_eq_fail";
     // Exact reference tests / casts — `(ref null? (exact $t))`.
     //
     // ⚠ THESE ARE VM-INTERNAL OPCODES WITH NO SPEC COUNTERPART, and that is
@@ -215,6 +236,11 @@ opcode_category! {
     [0x28] ref_test_exact_null     => SlI32,  "ref.test_exact_null";
     [0x29] ref_cast_exact          => SlI32,  "ref.cast_exact";
     [0x2A] ref_cast_exact_null     => SlI32,  "ref.cast_exact_null";
+    // VM-internal, expanded by the writer — see `DESC_SET_PROTO`. The
+    // immediate is a constant-pool index naming the CLASS, because descriptor
+    // type indices and descriptor global indices are both writer-side
+    // concepts the compiler has no access to.
+    [0x2B] desc_set_proto          => U16,    "desc.set_proto";
 
     // ── Stringref proposal (0x80..=0xB7) ──────────────────────────────────
     // operand_format is None for ALL of these: the ops that take a `$mem`

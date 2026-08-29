@@ -63,3 +63,73 @@
   (func (export "get") (result i32) (i31.get_u (table.get $t (i32.const 0)))))
 
 (assert_return (invoke "get") (i32.const 55))
+
+;; ── PASSIVE segments hold element expressions too ───────────────────
+;; ⛔ EVERY CASE ABOVE IS AN *ACTIVE* SEGMENT, and that is why this file went
+;; green while `gc/i31` stayed red. An active segment lowers to `table.set`
+;; statements and evaluates its expressions like any other code; a passive one
+;; is a segment the VM materializes at instantiation, and it could hold nothing
+;; but function references. The two paths share a parser and no lowering, so
+;; covering one says nothing about the other.
+(module
+  (table $t 6 i31ref)
+  (elem $e i31ref
+    (item (ref.i31 (i32.const 123)))
+    (item (ref.i31 (i32.const 456)))
+    (item (ref.null i31))
+    (item (ref.i31 (i32.const 789))))
+
+  (func (export "init") (param $d i32) (param $s i32) (param $n i32)
+    (table.init $t $e (local.get $d) (local.get $s) (local.get $n)))
+  (func (export "get") (param $i i32) (result i32)
+    (i31.get_u (table.get $t (local.get $i))))
+  (func (export "is_null") (param $i i32) (result i32)
+    (ref.is_null (table.get $t (local.get $i))))
+  (func (export "drop") (elem.drop $e)))
+
+;; Nothing is in the table until the segment is copied in.
+(assert_return (invoke "is_null" (i32.const 0)) (i32.const 1))
+(invoke "init" (i32.const 0) (i32.const 0) (i32.const 4))
+(assert_return (invoke "get" (i32.const 0)) (i32.const 123))
+(assert_return (invoke "get" (i32.const 1)) (i32.const 456))
+;; The `ref.null` item OCCUPIES its slot: dropping it would shift 789 down.
+(assert_return (invoke "is_null" (i32.const 2)) (i32.const 1))
+(assert_return (invoke "get" (i32.const 3)) (i32.const 789))
+
+;; Copying from a non-zero source offset — the check that a dropped slot
+;; renumbers the segment rather than merely blanking one entry.
+(invoke "init" (i32.const 4) (i32.const 3) (i32.const 1))
+(assert_return (invoke "get" (i32.const 4)) (i32.const 789))
+
+;; A dropped segment is an EMPTY one, not an error.
+(invoke "drop")
+(assert_return (invoke "init" (i32.const 0) (i32.const 0) (i32.const 0)))
+(assert_trap (invoke "init" (i32.const 0) (i32.const 0) (i32.const 1))
+             "out of bounds table access")
+
+;; ── An element expression is evaluated ONCE, at instantiation ───────
+;; `(item (array.new_default …))` ALLOCATES. The spec evaluates element
+;; expressions during module instantiation, so every read of that slot yields
+;; the SAME array — two `array.new_elem`s off one segment must return
+;; references that compare equal. Re-evaluating per use would allocate twice
+;; and answer 0, which is the shape the spec's own `array_new_elem.wast`
+;; checks. It is also why the segment cannot be materialized lazily.
+(module
+  (type $inner (array (mut i32)))
+  (type $arr (array (mut arrayref)))
+  (elem $elem arrayref (item (array.new_default $inner (i32.const 3))))
+  (func (export "same") (result i32)
+    (local $a (ref null $arr))
+    (local $b (ref null $arr))
+    (local.set $a (array.new_elem $arr $elem (i32.const 0) (i32.const 1)))
+    (local.set $b (array.new_elem $arr $elem (i32.const 0) (i32.const 1)))
+    (ref.eq (array.get $arr (local.get $a) (i32.const 0))
+            (array.get $arr (local.get $b) (i32.const 0))))
+  ;; …and the allocated array is a real one of the declared length.
+  (func (export "len") (result i32)
+    (array.len (array.get $arr
+      (array.new_elem $arr $elem (i32.const 0) (i32.const 1))
+      (i32.const 0)))))
+
+(assert_return (invoke "same") (i32.const 1))
+(assert_return (invoke "len") (i32.const 3))

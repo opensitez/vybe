@@ -615,6 +615,10 @@ impl VM {
     }
 
     fn call_value_inner(&mut self, argc: usize, bypass_generator: bool) -> Result<(), VMError> {
+        // Consume the one-shot flag: was this dispatch initiated by host
+        // plumbing (`invoke_callback`) rather than by a bytecode call site?
+        // Taken here so a call the callee makes does not inherit it.
+        let from_host = std::mem::take(&mut self.host_originated_call);
         let callee_idx = self.stack.len() - 1 - argc;
         let callee = self.stack[callee_idx].clone();
 
@@ -625,6 +629,32 @@ impl VM {
                     ObjectKind::Function(func) => {
                         let func = func.clone();
                         drop(o);
+                        // ⛔ A `func_switch` HAS NO TYPE AND CANNOT BE DIRECTLY
+                        // CALLED — Design §Functions: "The new function has no
+                        // type and cannot be directly called, but we can get a
+                        // `funcref` for it by using `func.ref`, with the
+                        // expectation that it later gets called using
+                        // `call_with_tag`."
+                        //
+                        // It was directly callable and answered silently: with
+                        // no type there is no signature for the ordinary call
+                        // type-check to reject, which is precisely why the
+                        // proposal forbids the call itself rather than leaving
+                        // it to the checker. The call selects no arm, so the
+                        // caller gets whichever arm ran to fall out.
+                        //
+                        // This does NOT touch the sanctioned path:
+                        // `call_with_tag` resolves the switch to its matching
+                        // ARM and calls that chunk, never the switch, so
+                        // `test_func_switch_dispatch` and `..._forward` are
+                        // unaffected — they are this check's controls.
+                        if self.func_switches.contains_key(&func.chunk_index) {
+                            return Err(VMError::new(
+                                "call: a func_switch has no type and cannot be called \
+                                 directly — reach it with call_with_tag"
+                                    .to_string(),
+                            ));
+                        }
                         // Remove callee from stack (WASM convention: only args, no callee)
                         self.stack.remove(callee_idx);
                         if bypass_generator {
@@ -660,9 +690,21 @@ impl VM {
                             self.stack.pop();
                         }
                         self.stack.pop();
+                        // ⛔ THE RECEIVER IS A PROPERTY OF THE CALL. A bytecode
+                        // call site under `ReceiverAbi::Parameter` pushed one as
+                        // argument 0 (ECMA-262 §10.2.1); host plumbing invoking
+                        // this same function with arguments it constructed did
+                        // not. The host function cannot tell those apart from the
+                        // argument list, so it is told.
+                        let call_receiver_argc = usize::from(
+                            !from_host
+                                && self.module_receiver_abi()
+                                    == crate::chunk::ReceiverAbi::Parameter,
+                        );
                         let host_fn = self.host_fns[idx].clone();
                         let result = {
                             let mut ctx = self.make_host_context();
+                            ctx.call_receiver_argc = call_receiver_argc;
                             host_fn(&mut ctx, &args)
                         };
                         if let Some(exc) = self.last_exception.take() {
@@ -720,6 +762,17 @@ impl VM {
                         )));
                     }
                 }
+            }
+            // A WASM GC TYPED null at a call site is a null FUNCTION
+            // reference: validation cannot put a struct or array null where a
+            // callee goes, so the spec's wording is unambiguous here. Only
+            // `__wast_typed_null` produces this value — every other language's
+            // null reaches the arm below unchanged.
+            Value::TypedNull(_) => {
+                let stack = self.capture_call_stack();
+                return Err(
+                    VMError::new("trap: null function reference".to_string()).with_stack(stack)
+                );
             }
             _ => {
                 let stack = self.capture_call_stack();

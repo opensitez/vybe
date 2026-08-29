@@ -127,7 +127,7 @@ fn build_miss_handler(
     {
         // The class binds no miss hook, so this really is an undefined method.
         // A catchable language error, not a VM trap.
-        h.emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(&mut h, line);
         h.emit_dup(line);
         h.emit_string_const("Call to undefined method ", line);
         h.emit_string_const(method, line);
@@ -203,6 +203,12 @@ impl Compiler {
             tag.clone(),
             (argc + 1) as u8,
             1,
+            // No declared functype: the class model's dispatch tags are minted
+            // over generic objects, not over a wasm signature, so there is
+            // nothing to spell. An empty signature keeps them on the shape-only
+            // key — `call_tag.new` never interns anyway, so this only affects
+            // how the tag PRINTS.
+            String::new(),
             Some(handler),
             false,
         );

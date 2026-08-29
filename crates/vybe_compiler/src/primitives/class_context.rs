@@ -6,6 +6,207 @@
 use crate::primitives::class_slots;
 use super::*;
 
+pub(crate) use vybe_runtime::chunk::ReceiverAbi;
+
+/// The module's receiver ABI, read off the module chunk (`chunks[0]`).
+///
+/// For the emitters that hold `&mut [Chunk]` and no `Compiler` — see the field
+/// docs on [`vybe_runtime::chunk::Chunk::module_receiver_abi`].
+pub(crate) fn module_receiver_abi(chunks: &[Chunk]) -> ReceiverAbi {
+    chunks
+        .first()
+        .map_or(ReceiverAbi::Ambient, |m| m.module_receiver_abi)
+}
+
+/// Bind `recv_slot` as the receiver of the invoke that immediately follows.
+///
+/// ⛔ Emits the `local.get` TOO, not just the store — under
+/// [`ReceiverAbi::Parameter`] both have to disappear together, and a caller
+/// that pushed the value itself would leave it stranded on the stack.
+///
+/// Under `Parameter` this emits NOTHING, and that is the whole point: every
+/// site that calls this already pushes the receiver as argument 0 of the
+/// invoke (host builtins have always read their receiver there — `ecma:array.map`
+/// opens `array_of(args, 0)`). The ambient store was the SECOND copy, kept
+/// only for the bytecode path. Deleting it leaves the argument as the single
+/// channel, which is ECMA-262 §10.2.1.
+/// Takes `abi` rather than `&[Chunk]` because every caller has already
+/// destructured `let chunk = &mut chunks[current]` and holds that borrow.
+pub(crate) fn bind_ambient_receiver(
+    chunk: &mut Chunk,
+    abi: ReceiverAbi,
+    recv_slot: u16,
+    line: u32,
+) {
+    if abi != ReceiverAbi::Ambient {
+        return;
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
+    crate::primitives::globals::emit_write(chunk, "__js_this", line);
+}
+
+/// The local frame of a HAND-BUILT stdlib chunk (`build_generator_next` and
+/// friends), which have no `Compiler` and no scope to allocate against.
+///
+/// ⛔ THIS EXISTS BECAUSE THOSE BUILDERS WROTE THEIR LOCAL INDICES AS
+/// LITERALS — `let value_local = 0u16; let has_more_local = 1u16;`. Under
+/// [`ReceiverAbi::Parameter`] the receiver takes slot 0 and every one of those
+/// literals is off by one. Renumbering them by hand means being right at every
+/// site in the builder, silently reading a neighbouring local everywhere else;
+/// `alloc_scratch` aliasing named locals has already cost one dart test that
+/// way. Allocating the slots makes the shift happen ONCE, here.
+pub(crate) struct StdlibFrame {
+    abi: ReceiverAbi,
+    /// Does THIS chunk declare a receiver parameter?
+    ///
+    /// ⛔ NOT the same question as `abi`. The module's ABI decides how this
+    /// chunk CALLS other functions; how this chunk is REACHED decides whether
+    /// it declares a parameter of its own, and the two can disagree.
+    /// `__stdlib_iter_drain` is the case in point: it invokes user methods, so
+    /// it must pass receivers the new way, but its only caller is a hand-built
+    /// site in this crate that pushes none — give it a receiver parameter and
+    /// its one real call site desyncs.
+    declares_receiver: bool,
+}
+
+impl StdlibFrame {
+    /// For a chunk reached as a METHOD — installed as an object property and
+    /// called `o.m()`, so under `Parameter` its call sites push a receiver and
+    /// it must declare one. Reserves slot 0 for it.
+    ///
+    /// Allocate the user parameters first, in declaration order, then the
+    /// scratch locals — binding is POSITIONAL, so declaration order is the ABI.
+    pub(crate) fn method(abi: ReceiverAbi, chunk: &mut Chunk) -> Self {
+        let declares_receiver = abi == ReceiverAbi::Parameter;
+        if declares_receiver {
+            chunk.alloc_scratch(1); // slot 0, the receiver
+        }
+        Self {
+            abi,
+            declares_receiver,
+        }
+    }
+
+    /// For a chunk reached ONLY from hand-built call sites in this crate,
+    /// which push no receiver argument under either ABI. It declares none —
+    /// but still CALLS other functions with the module's ABI.
+    pub(crate) fn plain(abi: ReceiverAbi) -> Self {
+        Self {
+            abi,
+            declares_receiver: false,
+        }
+    }
+
+    /// The next slot. Same call for parameters and locals: a WASM frame does
+    /// not distinguish them, only the arity split does.
+    ///
+    /// ⛔ DELEGATES TO THE CHUNK'S OWN ALLOCATOR — it does NOT keep a counter
+    /// of its own. A parallel counter is what made the first version of this
+    /// wrong: the frame's slots were only published to `chunk.local_count` at
+    /// `finish()`, so an emitter helper calling `alloc_scratch` in between
+    /// (`emit_next` does, on its very first line) was handed slot 0 and
+    /// silently aliased the receiver. With one allocator that cannot happen,
+    /// and interleaving a helper's allocations with the frame's is safe.
+    pub(crate) fn slot(&self, chunk: &mut Chunk) -> u16 {
+        chunk.alloc_scratch(1)
+    }
+
+    /// Push this function's own receiver. `local.get 0` under `Parameter`,
+    /// the ambient global otherwise — the one place the difference is spelled.
+    pub(crate) fn emit_receiver(&self, chunk: &mut Chunk, line: u32) {
+        if self.declares_receiver {
+            chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+        } else {
+            crate::primitives::globals::emit_read(chunk, "__js_this", line);
+        }
+    }
+
+    /// Emit `callee_slot(recv_slot)` — an invoke whose only argument is the
+    /// receiver, which is how a zero-parameter method (`it.next()`,
+    /// `v[Symbol.iterator]()`) is called.
+    ///
+    /// ⛔ The two ABIs need OPPOSITE emission orders, which is why this is a
+    /// method and not a flag on the call site. Under `Ambient` the receiver is
+    /// pushed FIRST because it feeds the global store, and the invoke takes no
+    /// argument at all. Under `Parameter` the callee is pushed first and the
+    /// receiver follows it as argument 0. Sharing a single `local.get` between
+    /// them would strand a value on the stack in one of the two.
+    ///
+    /// ⛔ Unlike [`bind_ambient_receiver`], these sites pass argc 0 today — the
+    /// receiver is NOT already on the argument list, so `Parameter` has to add
+    /// it rather than just drop the ambient store.
+    pub(crate) fn emit_receiver_invoke(
+        &self,
+        chunk: &mut Chunk,
+        callee_slot: u16,
+        recv_slot: u16,
+        line: u32,
+    ) {
+        let argc = if self.abi == ReceiverAbi::Parameter {
+            chunk.emit_op_u16(Op::LOCAL_GET, callee_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
+            1
+        } else {
+            chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
+            crate::primitives::globals::emit_write(chunk, "__js_this", line);
+            chunk.emit_op_u16(Op::LOCAL_GET, callee_slot, line);
+            0
+        };
+        crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
+    }
+
+    /// Save the CALLER's ambient receiver, so this helper's internal rebinds
+    /// don't leak back out. Returns the slot holding it.
+    ///
+    /// ⛔ `None` under `Parameter`, and that is M5's whole point: with the
+    /// receiver travelling as an argument there is no shared cell to clobber,
+    /// so the save, the restore and the local they need all disappear. This is
+    /// the hand-rolled shadow stack, and it is deleted rather than ported.
+    ///
+    /// Call it AFTER the other slots — the first `arity` slots are the
+    /// parameters, and this one is never one of them.
+    pub(crate) fn save_ambient_this(&self, chunk: &mut Chunk, line: u32) -> Option<u16> {
+        if self.abi == ReceiverAbi::Parameter {
+            return None;
+        }
+        let slot = self.slot(chunk);
+        crate::primitives::globals::emit_read(chunk, "__js_this", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        Some(slot)
+    }
+
+    /// Undo [`Self::save_ambient_this`]. A `None` saved slot emits nothing.
+    pub(crate) fn restore_ambient_this(&self, chunk: &mut Chunk, saved: Option<u16>, line: u32) {
+        let Some(slot) = saved else { return };
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        crate::primitives::globals::emit_write(chunk, "__js_this", line);
+    }
+
+    /// Declare the finished frame. `arity`/`param_count` include the receiver
+    /// where it is a REAL parameter — see the `param_count` note in
+    /// `classes.rs`.
+    ///
+    /// ⛔ `local_count` is NOT assigned here. `alloc_scratch` has been
+    /// maintaining it all along — for the frame's own slots and the emitter
+    /// helpers' alike — so `finalize_local_count(0)` only re-asserts the
+    /// `scratch_high_water` maximum. Assigning a count would clobber whatever
+    /// those helpers allocated.
+    ///
+    /// ⛔ Under `Ambient` this writes `arity` and NOTHING else, reproducing
+    /// exactly what the builders assigned before. `param_count` and
+    /// `takes_receiver` stay at their defaults there, so the fourteen
+    /// non-ambient languages see no change from this refactor.
+    pub(crate) fn finish(&self, chunk: &mut Chunk, user_params: u8) {
+        let receiver = u8::from(self.declares_receiver);
+        chunk.arity = user_params + receiver;
+        if receiver == 1 {
+            chunk.param_count = chunk.arity;
+            chunk.takes_receiver = true;
+        }
+        chunk.finalize_local_count(0);
+    }
+}
+
 impl Compiler {
     pub(super) fn is_class_static_field_type_hint(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
@@ -226,31 +427,13 @@ impl Compiler {
     /// `Module.directives`, so it travels with the UNIT — a multi-language
     /// bundle answers per unit, which a profile installed once per compilation
     /// structurally cannot do.
-    /// Cooperative `super()` over a C3 linearization, vs a static parent.
-    /// Is `super()` COOPERATIVE — resolved by walking the C3 linearization from
-    /// the class the call textually belongs to — rather than static dispatch to
-    /// the declared parent?
-    ///
-    /// ⛔ This was `class_multiple_inheritance`, and that name made one field
-    /// answer THREE different questions (§5, "reusing a field as a marker"):
-    /// "does this class have several bases" (which `class.bases` already
-    /// answers, so the flag was redundant), "bind ancestors only for a diamond",
-    /// and this one. The first meaning colliding with the third is what
-    /// truncated python's `__mro__`: C3 was gated on `bases.len() > 1`, and **C3
-    /// over a one-parent chain IS the chain**, so every grandparent was lost.
-    ///
-    /// ⚠ Cooperative super is not the same feature as C-style multiple
-    /// inheritance — ruby has the former without the latter — which is the
-    /// clearest evidence the old name was describing the wrong thing.
-    ///
-    /// ⛔ Still the WRONG CARRIER: by directives.md §3 this describes how a
-    /// CALLEE is dispatched, which is question 3 — a property of the
-    /// declaration, not of a region of code. It reads one channel rather than
-    /// two, which is the most that can be fixed without the declaration-side
-    /// field existing.
-    pub(crate) fn super_is_cooperative(&self) -> bool {
-        self.profile.class_multiple_inheritance
-    }
+    // `super_is_cooperative` is GONE. It read `profile.class_multiple_inheritance`
+    // — a language-wide flag standing in for how a CALLEE is dispatched — and its
+    // own docstring said so: "Still the WRONG CARRIER: by directives.md §3 this
+    // describes how a CALLEE is dispatched, which is question 3 … which is the
+    // most that can be fixed without the declaration-side field existing." The
+    // field now exists: `NormalClass::cooperative_super`, read through
+    // `classes_with_cooperative_super` where only the class NAME is in scope.
 
     /// A missing argument binds `undefined` (ECMA-262 §10.2.1.1).
     pub(crate) fn missing_arg_is_undefined(&self) -> bool {
@@ -260,6 +443,54 @@ impl Compiler {
     /// Static fields are own properties of the class object.
     pub(crate) fn static_fields_are_own_properties(&self) -> bool {
         self.directives().static_fields_are_own_properties.unwrap_or(false)
+    }
+
+    /// In a SUBPROGRAM body, local declarations compile before nested
+    /// procedures. See [`vybe_ast::Directives::body_declarations_first`].
+    pub(crate) fn body_declarations_first(&self) -> bool {
+        self.directives().body_declarations_first.unwrap_or(false)
+    }
+
+    /// Must a declared INSTANCE field be an own property of the instance —
+    /// enumerable through the ordinary object surface? See
+    /// [`vybe_ast::Directives::instance_fields_are_own_properties`].
+    pub(crate) fn instance_fields_are_own_properties(&self) -> bool {
+        self.directives()
+            .instance_fields_are_own_properties
+            .unwrap_or(false)
+    }
+
+    /// Is a declared function a first-class OBJECT carrying `name`, `length`,
+    /// `prototype` and a `__nonenum` set — or just code? See
+    /// [`vybe_ast::Directives::functions_are_objects`].
+    ///
+    /// Defaults to TRUE: the ECMA object model is what most of the wired
+    /// walkers want, and a language whose functions are not objects says so.
+    pub(crate) fn functions_are_objects(&self) -> bool {
+        self.directives().functions_are_objects.unwrap_or(true)
+    }
+
+    /// Stamp `name` / `length` / `prototype` non-enumerably onto the function
+    /// object on TOS, or DROP it when this unit's functions are not objects.
+    ///
+    /// A method rather than a bare call at each site so the directive read and
+    /// the `self.chunk()` borrow do not collide, and so no site can forget it.
+    pub(crate) fn stamp_fn_metadata_nonenum(&mut self, line: u32) {
+        let objects = self.functions_are_objects();
+        crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), objects, line);
+    }
+
+    /// Stamp the function object on TOS with its kind's intrinsic prototype,
+    /// or DROP it when this unit's functions are not objects.
+    pub(crate) fn stamp_function_kind_proto(&mut self, is_async: bool, is_generator: bool, line: u32) {
+        let objects = self.functions_are_objects();
+        crate::primitives::prototypes::emit_stamp_function_kind_proto(
+            self.chunk(),
+            objects,
+            is_async,
+            is_generator,
+            line,
+        );
     }
 
     /// Private members are internal slots, not properties (JS `#x`).
@@ -272,10 +503,9 @@ impl Compiler {
         self.profile.separate_property_method_namespace
     }
 
-    /// The class object carries `__name__` / `__mro__` / `__bases__`.
-    pub(crate) fn class_introspection_metadata(&self) -> bool {
-        self.profile.class_introspection_metadata
-    }
+    // `class_introspection_metadata` is GONE — now
+    // `NormalClass::introspection_metadata`, read directly off the class in
+    // `compile_class` where both of its sites already had one in scope.
 
     /// Default argument expressions evaluate once at definition time.
     pub(crate) fn default_args_evaluated_once(&self) -> bool {
@@ -317,10 +547,12 @@ impl Compiler {
         self.profile.has_undefined_value
     }
 
-    /// Class members carry declared metadata readable at run time.
-    pub(crate) fn class_member_metadata(&self) -> bool {
-        self.profile.class_member_metadata
-    }
+    // `class_member_metadata` is GONE. It asked whether a class's members carry
+    // their declared metadata into the runtime — a property of the DECLARATION —
+    // of a PROFILE, which is installed once per compilation and cannot answer
+    // per unit. It is now `NormalClass::member_metadata`, set by the pascal
+    // frontend the way php sets `late_static_binding`, and read directly where
+    // the class is in scope.
 
 
     pub(crate) fn method_receiver_model(&self) -> Option<vybe_ast::MethodReceiver> {
@@ -474,7 +706,7 @@ impl Compiler {
         // never reached the coercion that would have answered it.
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit(Op::REF_IS_NULL);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_i32(line);
         inst!(self, core_wasm::i32_const, 0);
         self.chunk().emit_else(line);
 
@@ -502,7 +734,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, bool_method);
         self.emit(Op::REF_IS_NULL);
         self.emit(Op::I32_EQZ);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, bool_method);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
@@ -523,7 +755,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_method);
         self.emit(Op::REF_IS_NULL);
         self.emit(Op::I32_EQZ);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, len_method);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
@@ -540,7 +772,7 @@ impl Compiler {
         fn_call!(self, "wasm:js-string", "equals", 2);
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
         self.chunk().emit_op(Op::I32_OR, line);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         crate::primitives::collections::emit_len(&mut self.chunks, self.current, line);
         inst!(self, core_wasm::i32_const, 0);
@@ -566,9 +798,53 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, slot);
     }
 
-    pub(super) fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
+}
+
+/// How the receiver reaches the callee at ONE call site.
+///
+/// This used to be an `Option<u16>`, which could say *whether* a receiver
+/// travels but not *how* — and M5 turns "how" into the whole question. The
+/// three members of the protocol below read this one value, so a site
+/// cannot save under one mechanism and restore under another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReceiverBind {
+    /// No receiver protocol at a call in this region — the fourteen
+    /// languages whose calls carry no `this` at all.
+    None,
+    /// The receiver rides the ambient `__js_this` global; `saved` holds the
+    /// caller's value so the call can put it back. ⛔ Not a WASM concept:
+    /// a mutable module global standing in for a parameter, with a
+    /// hand-rolled shadow stack around every call. M5 deletes this arm.
+    Ambient { saved: u16 },
+    /// The receiver is **argument 0** of the call — ECMA-262 §10.2.1
+    /// `[[Call]](thisArgument, argumentsList)`. `slot` parks it between the
+    /// point it is computed and the point the callee reference is on the
+    /// stack, because `call_ref` wants `[callee, receiver, args…]` and the
+    /// receiver is computed first.
+    Argument { slot: u16 },
+}
+
+impl ReceiverBind {
+    /// Does a receiver travel at all here? Replaces the old
+    /// `Option::is_some`, which every call site used to ask.
+    pub(super) fn is_active(self) -> bool {
+        !matches!(self, ReceiverBind::None)
+    }
+}
+
+impl Compiler {
+    pub(super) fn begin_receiver_bind(&mut self, local_name: &str) -> ReceiverBind {
+        if self.universal_receiver() {
+            // Nothing to save: no global is being clobbered, so there is no
+            // caller state to put back. The slot only parks the value.
+            let slot = self
+                .scope()
+                .resolve(local_name)
+                .unwrap_or_else(|| self.define_local(local_name));
+            return ReceiverBind::Argument { slot };
+        }
         if !self.ambient_this() {
-            return None;
+            return ReceiverBind::None;
         }
         let slot = self
             .scope()
@@ -576,7 +852,7 @@ impl Compiler {
             .unwrap_or_else(|| self.define_local(local_name));
         self.emit_global_read("__js_this");
         self.emit_u16(Op::LOCAL_SET, slot);
-        Some(slot)
+        ReceiverBind::Ambient { saved: slot }
     }
 
     /// Clear the ambient receiver so a CONSTRUCTION allocates instead of
@@ -635,8 +911,45 @@ impl Compiler {
     /// and dead code that is *also* half a pair is how the two halves drifted.
     /// `restore_js_this(None)` reads the same `Option`, so all three members of
     /// the save/bind/restore triple now agree by construction.
-    pub(super) fn set_js_this_from_stack(&mut self) {
-        self.emit_global_write("__js_this");
+    pub(super) fn bind_receiver_from_stack(&mut self, bind: ReceiverBind) {
+        match bind {
+            // The ambient protocol: the receiver leaves the stack and lands in
+            // the global, where the callee reads it. M5 deletes this arm.
+            ReceiverBind::Ambient { .. } => self.emit_global_write("__js_this"),
+            // The receiver is an ARGUMENT, so it must end up on the stack ABOVE
+            // the callee reference — and it was computed BELOW it. Park it; the
+            // call site pushes it back with `push_receiver_argument` once the
+            // callee is in place.
+            ReceiverBind::Argument { slot } => self.emit_u16(Op::LOCAL_SET, slot),
+            // A site that got `None` is not supposed to reach here — it must
+            // not have computed or pushed a receiver at all. Kept EXACTLY as
+            // the unconditional global write this replaced, rather than
+            // asserted: the arm is reachable only from the fourteen non-ambient
+            // languages, this crate builds in debug, and a `debug_assert!` here
+            // would panic the COMPILER for them instead of showing up as a
+            // test. Behaviour-neutral first; tightening it is its own change
+            // with its own gate.
+            ReceiverBind::None => self.emit_global_write("__js_this"),
+        }
+    }
+
+    /// Push the receiver as **argument 0** and report the extra argument count
+    /// the call site must add to its `argc`.
+    ///
+    /// Call it after the callee reference is on the stack and before the
+    /// declared arguments, which is the `[callee, thisArgument, args…]` order
+    /// `call_ref` consumes and ECMA-262 §10.2.1 specifies. Returns `0` for
+    /// every non-`Argument` binding, so a site can call it unconditionally and
+    /// add the result — which is what keeps the argument count and the receiver
+    /// push from ever being decided separately.
+    pub(super) fn push_receiver_argument(&mut self, bind: ReceiverBind) -> u8 {
+        match bind {
+            ReceiverBind::Argument { slot } => {
+                self.emit_u16(Op::LOCAL_GET, slot);
+                1
+            }
+            _ => 0,
+        }
     }
 
     /// **The** answer to "what is `this` here". One function, one answer.
@@ -687,18 +1000,24 @@ impl Compiler {
             .iter()
             .any(|tag| tag == vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG);
 
-        if !receiver_is_a_parameter
-            && self.ambient_this()
-            && self.current_class.is_some()
-            && self.current_func_name.as_deref() != Some("<lambda>")
-            && self.current_func_name.as_deref().is_some_and(|name| {
-                !name.eq_ignore_ascii_case(&self.profile.constructor_name)
-            })
-        {
-            self.emit_global_read("__js_this");
-            return;
-        }
-
+        // ▶▶ M5 STEP 1 — A BOUND RECEIVER OUTRANKS THE AMBIENT GLOBAL.
+        //
+        // This test used to sit BELOW the ambient branch, so `this` answered
+        // from `__js_this` even in a chunk that had the receiver as a real
+        // local. `receiver_is_a_parameter` patched the one case anyone had
+        // caught (the accessor tag) by SUPPRESSING the ambient branch; every
+        // other bound-receiver shape still lost to the global.
+        //
+        // Ordering it this way is the whole of "there must be a `this`
+        // REFERENCE": where the language has bound one, that binding IS the
+        // answer, and the module global is what remains only for the shapes
+        // that have not been converted yet. M0 unified the two READERS; this is
+        // the first step that changes what the reader RESOLVES TO.
+        //
+        // ⛔ Deliberately BEFORE the ambient branch and deliberately not
+        // guarded by `receiver_is_a_parameter`: a local named by the self
+        // keyword is a receiver whether or not a call tag advertised it. The
+        // tag guard stays below only for chunks that have no such local.
         let self_kw = self.profile.self_keyword.clone();
         if let Some(slot) = self
             .scope()
@@ -715,6 +1034,21 @@ impl Compiler {
                 crate::primitives::classes::emit_this_initialized_guard(self.chunk(), slot, l);
             }
             self.emit_u16(Op::LOCAL_GET, slot);
+            return;
+        }
+
+        // No bound receiver in scope — fall back to the ambient global, which
+        // is what M5 removes once every shape passes the receiver as a
+        // parameter.
+        if !receiver_is_a_parameter
+            && self.ambient_this()
+            && self.current_class.is_some()
+            && self.current_func_name.as_deref() != Some("<lambda>")
+            && self.current_func_name.as_deref().is_some_and(|name| {
+                !name.eq_ignore_ascii_case(&self.profile.constructor_name)
+            })
+        {
+            self.emit_global_read("__js_this");
             return;
         }
 
@@ -747,12 +1081,17 @@ impl Compiler {
         }
     }
 
-    pub(super) fn restore_js_this(&mut self, slot: Option<u16>) {
-        let Some(slot) = slot else {
-            return;
-        };
-        self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit_global_write("__js_this");
+    /// End the binding: put the caller's receiver back.
+    ///
+    /// Only the ambient protocol has anything to undo — a receiver passed as an
+    /// argument was never global, so there is no caller state it could have
+    /// clobbered. That asymmetry is the point of M5: the restore half of every
+    /// pair disappears with the global, not one site at a time.
+    pub(super) fn end_receiver_bind(&mut self, bind: ReceiverBind) {
+        if let ReceiverBind::Ambient { saved } = bind {
+            self.emit_u16(Op::LOCAL_GET, saved);
+            self.emit_global_write("__js_this");
+        }
     }
 
     pub(super) fn save_js_new_target(&mut self, local_name: &str) -> Option<u16> {

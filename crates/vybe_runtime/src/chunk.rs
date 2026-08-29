@@ -3,6 +3,28 @@ use crate::value::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// How a callable receives its receiver — the ABI, not the source spelling.
+///
+/// This is the lowered form of [`vybe_ast::ReceiverBinding`], reduced to the
+/// only distinction the emitters make: is the receiver a WASM parameter, or is
+/// it read out of the ambient `__js_this` module global? `ExplicitParameter`
+/// and `UniversalParameter` differ in WHICH callables take one — a question
+/// already settled by the time a chunk is being built — so both lower to
+/// [`ReceiverAbi::Parameter`] here.
+///
+/// [`ReceiverAbi::Ambient`] is the default: a module that never sets this
+/// behaves exactly as it did before the receiver moved.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ReceiverAbi {
+    /// Receiver travels in the `__js_this` module global, with a hand-rolled
+    /// save/restore around every call that binds one.
+    #[default]
+    Ambient,
+    /// Receiver is a real parameter in slot 0 — ECMA-262 §10.2.1
+    /// `[[Call]](thisArgument, argumentsList)`.
+    Parameter,
+}
+
 /// The namespace designated for imported string constants
 /// (js-string-builtins, § String constants). Every import from it is a global
 /// of type `(ref extern)` whose value **is** the import's field name.
@@ -96,6 +118,10 @@ pub struct CallTagDecl {
     pub debug_name: String,
     pub params: u8,
     pub results: u8,
+    /// The DECLARED functype spelling (`"i32->i32"`). Empty when the producer
+    /// supplied none — every non-wast frontend — which keeps those on the
+    /// shape-only canonical key. See `vybe_ast::StmtKind::WasmCallTagDecl`.
+    pub signature: String,
     /// `(canon)` — intern this tag per SIGNATURE (`call_tag.canon`). Without it
     /// the declaration is `call_tag.new`: a fresh identity. Kept as a flag
     /// rather than folded into the name, because the call site still names the
@@ -249,6 +275,19 @@ pub enum ConstExpr {
     /// Create a function reference from a chunk index.
     /// Evaluated at load time — produces a callable Function object.
     RefFunc(usize),
+    /// `ref.i31 c` — an unboxed i31ref (WASM 3.0 GC).
+    RefI31(Box<ConstExpr>),
+    /// `array.new_default $t n` — a defaulted GC array. `typeidx` is the
+    /// 1-based script-chunk type-table index (0 = dynamic), the same
+    /// immediate `Op::ARRAY_NEW_DEFAULT` carries, so both paths resolve the
+    /// rtt identically.
+    ArrayNewDefault { typeidx: u16, len: Box<ConstExpr> },
+    /// `array.new $t v n` — every lane initialized to `value`. The wast walker
+    /// rewrites `array.new_default` to this whenever the element type HAS a
+    /// known default (every numeric one, and a concrete typed null), so a
+    /// segment holding `(item (array.new_default $t …))` arrives here or at
+    /// [`ConstExpr::ArrayNewDefault`] depending on `$t`'s element type.
+    ArrayNew { typeidx: u16, value: Box<ConstExpr>, len: Box<ConstExpr> },
 }
 
 /// A global variable initializer — evaluated at link/load time.
@@ -457,6 +496,44 @@ pub struct Chunk {
     /// anonymous lambda, so there is no name to key on — and being per-chunk it
     /// survives the index offsetting a module gets when it is installed.
     pub handled_call_tags: Vec<String>,
+    /// Bytecode offsets of `BLOCK`/`LOOP`/`IF` opcodes whose single result is
+    /// an **i32**, not an externref.
+    ///
+    /// ⛔ WHY A SIDE TABLE AND NOT A BYTECODE CHANGE. The block immediate is
+    /// `(param_count, result_count)` — two COUNTS, no type — so the wasm writer
+    /// has nothing to choose from and defaults every 1-result block to
+    /// `externref` (`writer/code.rs`). That is what makes `emit_dyn_to_bool`'s
+    /// i32 if-chain come out declared `externref`, and V8 then rejects the
+    /// `if` that consumes it: *"if[0] expected type i32, found call of type
+    /// externref"*. Our VM never noticed because it does not check block
+    /// result types.
+    ///
+    /// Widening the immediate would change the operand width of three opcodes
+    /// read by **39** sites — the same class of change that, done wrong,
+    /// desynchronised every bytecode walker past a call tag. A side table keyed
+    /// by opcode offset touches the writer only: no VM change, no walker
+    /// change, no width change.
+    pub block_i32_results: std::collections::HashSet<usize>,
+    /// `call_indirect` / `return_call_indirect` bytecode offset → the DECLARED
+    /// functype at that call site, as its source spelling (`"i32,f64->i32"`).
+    ///
+    /// ⛔ THE INSTRUCTION'S OWN IMMEDIATES CANNOT CARRY IT. They are
+    /// `(argc, tableidx, results)` — counts — so the writer had to pick a type
+    /// index from `(argc, results)` and fall back to `func_type_by_arity`,
+    /// which is `.or_insert`: FIRST TYPE SEEN PER ARITY WINS. That was harmless
+    /// only while every emitted functype was all-externref, because then any
+    /// type with the right counts WAS the right type. With real functypes the
+    /// first-seen `(i32)->i32` would answer for an argc-1 call whose callee is
+    /// `(f64)->i32`, and `call_indirect`'s immediate must equal the callee's
+    /// functype or a conforming engine traps.
+    ///
+    /// A SIDE TABLE, not a wider immediate — the same choice, for the same
+    /// reason, as `block_i32_results` above: widening an operand changes the
+    /// width read by every bytecode walker, which is precisely what
+    /// desynchronised every pass past a call tag earlier today. Keyed by
+    /// offset, written by the compiler, read by the writer; the VM never looks
+    /// at it.
+    pub call_indirect_sigs: std::collections::HashMap<usize, String>,
     /// Type imports — types from other components this chunk needs.
     /// Each entry is (interface_name, type_name).
     pub type_imports: Vec<(String, String)>,
@@ -495,15 +572,60 @@ pub struct Chunk {
     pub elem_segments: Vec<Vec<Value>>,
     /// Passive element segments compiled from source (`(elem $e $f …)`), stored
     /// as per-segment lists of function chunk indices. The VM resolves each to a
-    /// funcref `Value` at instantiation (same as `REF_FUNC`) and populates
-    /// `elem_segments`, so `table.init`/`array.new_elem` read real funcrefs.
-    pub passive_elem_funcs: Vec<Vec<usize>>,
+    /// element EXPRESSION at instantiation and populates `elem_segments`, so
+    /// `table.init`/`array.new_elem` read the real values.
+    ///
+    /// ⚠ AN ELEMENT SEGMENT HOLDS EXPRESSIONS, NOT FUNCTION INDICES. WASM 3.0
+    /// §4.5.4 evaluates each element expression at instantiation — the grammar
+    /// is the constant expressions, which is `ref.func` and `ref.null` but
+    /// equally `ref.i31`, `array.new_default`, `struct.new` and `global.get`.
+    /// Modelling a segment as `Vec<usize>` of chunk indices could express only
+    /// the funcref half: `(item (ref.i31 (i32.const 999)))` had nowhere to go
+    /// and the slot silently kept a null, which is `gc/i31` and
+    /// `gc/array_new_elem`. It also needed a `NULL_ELEM` sentinel to say
+    /// "occupied but not a function", which [`ConstExpr::Value`] says directly.
+    ///
+    /// Every declared slot is PRESENT whatever its form: dropping one
+    /// renumbers the segment, so a `table.init` copying from a later offset
+    /// reads the wrong entry or runs off the end.
+    pub passive_elem_items: Vec<Vec<ConstExpr>>,
     /// Active data segments to instantiate before executing decoded WASM.
     pub active_data_segments: Vec<ActiveDataSegment>,
     /// Active element segments to instantiate before executing decoded WASM.
     pub active_elem_segments: Vec<ActiveElementSegment>,
     /// Stack-switching handler vectors keyed by bytecode opcode offset.
     pub stack_switch_handlers: BTreeMap<usize, Vec<StackSwitchHandler>>,
+    /// Does argument 0 of this function bind the RECEIVER — ECMA-262 §10.2.1
+    /// `[[Call]](thisArgument, argumentsList)`?
+    ///
+    /// Set by the compiler wherever it declares a receiver as the first local
+    /// of the frame, which under `ReceiverBinding::UniversalParameter` is every
+    /// callable: methods, plain function declarations and lambdas alike.
+    ///
+    /// ⛔ Distinct from `is_method`, which asks whether the function BELONGS to
+    /// a class. A plain `function f(a)` in an ECMA region is not a method and
+    /// still takes a receiver, and an arrow takes one it is forbidden to
+    /// observe (§10.2.11). The question a caller needs answered is "how many
+    /// arguments does this take", and only this flag answers it.
+    ///
+    /// The consumer that cannot do without it is `VM::invoke_callback`: host
+    /// code calls a bytecode callback (`Array.prototype.map`'s function,
+    /// `Promise.then`'s handler) with the ECMA argument list and NO receiver,
+    /// because from the host's side there is none. Without this flag the first
+    /// real argument binds to the receiver slot and every parameter shifts by
+    /// one — `[1,2,3].map(x => x*2)` returning garbage rather than failing
+    /// loudly.
+    pub takes_receiver: bool,
+    /// How callables in THIS MODULE receive their receiver. Module-level, so
+    /// it is only meaningful on `chunks[0]` — the same chunk that already
+    /// carries the module's import table and `global_inits`, per WASM's
+    /// one-module-one-index-space rule.
+    ///
+    /// Read by the hand-built stdlib emitters, which take `&mut Chunk`
+    /// (= `chunks[0]`) or `&mut [Chunk]` and have no `Compiler` in scope.
+    /// Threading a bool through their ten signatures would have put the same
+    /// fact in ten places; a module property belongs on the module.
+    pub module_receiver_abi: ReceiverAbi,
     /// Number of results this function returns. Default 1 (single
     /// externref) matches the pre-multi-value ABI. A chunk that wants
     /// to take advantage of the multi-value proposal sets this >1; the
@@ -514,8 +636,15 @@ pub struct Chunk {
     /// implicit leading receiver slot (`self`/`this`). Imported WASM functions
     /// (no receiver) leave this false.
     pub is_method: bool,
-    /// The function's declared WASM parameter count (user params only, no
-    /// receiver). Paired with `result_arity`, this is the function's type
+    /// The function's declared WASM parameter count — EVERY declared
+    /// parameter, receiver included where the receiver IS one.
+    ///
+    /// ⛔ Under [`ReceiverAbi::Ambient`] there is no receiver parameter to
+    /// count, which is what made "user params only" true when this was
+    /// written. Under `Parameter` the receiver is an ordinary slot-0
+    /// parameter and counting it is the whole point: WASM functions have no
+    /// implicit receiver, so a shape that omitted it would not describe the
+    /// function. Paired with `result_arity`, this is the function's type
     /// "shape" — the `call_indirect` runtime type check compares it against
     /// the call site's expected `[params]→[results]`.
     pub param_count: u8,
@@ -531,6 +660,16 @@ pub struct Chunk {
     /// `None` for chunks that are not wast functions — those never carry a
     /// declared WASM function type.
     pub func_sig: Option<(String, String)>,
+    /// The NAME of the function type this wast function was DECLARED with —
+    /// `(func $f (type $t) …)` → `$t`, module-qualified.
+    ///
+    /// `func_sig` above is the STRUCTURAL identity, which is what ordinary
+    /// `ref.test`/`ref.cast` match on (`Comptype_sub/func` names no type). But
+    /// Custom Descriptors' EXACT casts are nominal: `exact-casts.wast` declares
+    /// `$super` and `$sub` with identical signatures and asserts that casting a
+    /// `$sub` function to `(ref (exact $super))` TRAPS. Structure cannot tell
+    /// them apart, so the declared name is recorded alongside it.
+    pub declared_func_type: Option<String>,
     /// JSPI: this function is `async` in its source language. The
     /// compiler sets this flag when compiling an `async function` /
     /// `async def` / `Async Function`. The WASM emitter writes a
@@ -672,6 +811,10 @@ impl Chunk {
             func_switch_decls: Vec::new(),
             func_call_tag_decls: Vec::new(),
             handled_call_tags: Vec::new(),
+            takes_receiver: false,
+            module_receiver_abi: ReceiverAbi::Ambient,
+            block_i32_results: std::collections::HashSet::new(),
+            call_indirect_sigs: std::collections::HashMap::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
             global_inits: Vec::new(),
@@ -684,7 +827,7 @@ impl Chunk {
             table_is_64: Vec::new(),
             data_segments: Vec::new(),
             elem_segments: Vec::new(),
-            passive_elem_funcs: Vec::new(),
+            passive_elem_items: Vec::new(),
             active_data_segments: Vec::new(),
             active_elem_segments: Vec::new(),
             stack_switch_handlers: BTreeMap::new(),
@@ -692,6 +835,7 @@ impl Chunk {
             is_method: false,
             param_count: 0,
             func_sig: None,
+            declared_func_type: None,
             is_async: false,
             is_generator: false,
             capture_count: 0,
@@ -782,6 +926,7 @@ impl Chunk {
         name: impl Into<String>,
         params: u8,
         results: u8,
+        signature: String,
         fallback: Option<String>,
         canonical: bool,
     ) -> u16 {
@@ -795,6 +940,7 @@ impl Chunk {
             debug_name: name,
             params,
             results,
+            signature,
             canonical,
             fallback,
         });
@@ -1037,32 +1183,44 @@ impl Chunk {
         }
     }
 
+    /// Signed LEB128, minimal — the encoding the spec calls `s33`/`i32`.
+    ///
+    /// ⛔ THIS SHIFTED A `u32` AND COMPARED AGAINST `0xFFFF_FFFF >> 6`, WHICH
+    /// IS NOT WHAT `-1` LOOKS LIKE AFTER A LOGICAL SHIFT BY 7. Every negative
+    /// value ran to the 5-byte limit and terminated on a byte the spec forbids:
+    /// `i32.const -8` came out `f8 ff ff ff 0f`, and `wasm-tools` answers
+    /// `invalid var_i32: integer too large`. It never showed up because
+    /// `vm.rs:4180` is a CORRECT signed-LEB reader — it accepts both the
+    /// minimal form and this padded one — so the bytecode round-tripped
+    /// through our own VM and only a real decoder ever objected. A sign
+    /// extension needs an ARITHMETIC shift; `-1` is the sentinel, not a
+    /// constant derived from `u32::MAX`.
     pub fn emit_leb_i32(&mut self, value: i32, line: u32) {
-        let mut v = value as u32;
+        let mut v = value;
         loop {
-            let mut byte = (v & 0x7f) as u8;
-            v >>= 7;
+            let byte = (v & 0x7f) as u8;
+            v >>= 7; // arithmetic — keeps the sign
             let sign_bit = (byte & 0x40) != 0;
-            if (v == 0 && !sign_bit) || (v == 0xFFFF_FFFF >> 6 && sign_bit) {
+            if (v == 0 && !sign_bit) || (v == -1 && sign_bit) {
                 self.emit(byte, line);
                 break;
             }
-            byte |= 0x80;
-            self.emit(byte, line);
+            self.emit(byte | 0x80, line);
         }
     }
 
+    /// Signed LEB128, minimal. Same defect and same fix as [`Self::emit_leb_i32`].
     pub fn emit_leb_i64(&mut self, value: i64, line: u32) {
-        let mut v = value as u64;
+        let mut v = value;
         loop {
-            let mut byte = (v & 0x7f) as u8;
-            v >>= 7;
+            let byte = (v & 0x7f) as u8;
+            v >>= 7; // arithmetic — keeps the sign
             let sign_bit = (byte & 0x40) != 0;
-            if (v == 0 && !sign_bit) || (v == u64::MAX >> 6 && sign_bit) {
+            if (v == 0 && !sign_bit) || (v == -1 && sign_bit) {
                 self.emit(byte, line);
                 break;
             }
-            byte |= 0x80;
+            let byte = byte | 0x80;
             self.emit(byte, line);
         }
     }
@@ -1182,6 +1340,24 @@ impl Chunk {
     /// Emit IF that leaves one externref on the stack (then/else both push one Value).
     pub fn emit_if_value(&mut self, line: u32) -> usize {
         self.emit_if_params(line, 0, 1)
+    }
+
+    /// Emit IF whose single result is an **i32** — a truthiness/comparison
+    /// chain, not a value chain. Records the offset so the wasm writer emits
+    /// `(if (result i32))` instead of defaulting to externref.
+    pub fn emit_if_i32(&mut self, line: u32) -> usize {
+        let opcode_offset = self.code.len();
+        let id = self.emit_if_params(line, 0, 1);
+        self.block_i32_results.insert(opcode_offset);
+        id
+    }
+
+    /// Emit BLOCK whose single result is an **i32**. See [`Self::emit_if_i32`].
+    pub fn emit_block_i32(&mut self, line: u32) -> usize {
+        let opcode_offset = self.code.len();
+        let id = self.emit_block_params(line, 0, 1);
+        self.block_i32_results.insert(opcode_offset);
+        id
     }
 
     /// Emit IF with a full (params, results) blocktype — spec multi-value.

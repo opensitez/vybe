@@ -130,6 +130,49 @@ pub struct NormalClass {
     /// they disagree about the receiver.
     pub late_static_binding: bool,
 
+    /// This class's MEMBERS carry their declared metadata into the runtime —
+    /// names, type hints and kinds readable through the reflection surface —
+    /// rather than the compiler deriving what it needs and emitting nothing.
+    ///
+    /// A class-shape trait, declared by the frontend, exactly as
+    /// [`late_static_binding`](Self::late_static_binding) above is. It replaces
+    /// the `class_member_metadata` PROFILE flag, which asked the same question
+    /// of a language installed once per compilation — so a multi-language
+    /// bundle got one answer for every unit in it, and a class could not say
+    /// what its own members carry. Only Pascal ever set it, which is the
+    /// clearest evidence it was a property of the DECLARATION wearing a
+    /// language-wide carrier (`directives.md` §3 question 3).
+    pub member_metadata: bool,
+
+    /// `super()` in this class is COOPERATIVE: it resolves the NEXT method
+    /// along the instance's C3 linearization from the class the call textually
+    /// belongs to, rather than dispatching statically to the declared parent.
+    ///
+    /// A class-shape trait, declared by the frontend, exactly as
+    /// [`late_static_binding`](Self::late_static_binding) is. It replaces the
+    /// `class_multiple_inheritance` PROFILE flag — a name that described the
+    /// wrong thing twice over: it is not about MULTIPLE inheritance (ruby has
+    /// cooperative `super` without it, and C3 over a one-parent chain IS the
+    /// chain), and it is not a property of a language installed once per
+    /// compilation but of how a CALLEE is dispatched — `directives.md` §3
+    /// question 3. Python was the only language that set it.
+    pub cooperative_super: bool,
+
+    /// Instances of this class link back to their class object, and the class
+    /// object carries `__name__` / `__mro__` / `__bases__`, so a program can
+    /// ask an object what it is AT RUN TIME rather than the compiler deriving
+    /// it and emitting nothing.
+    ///
+    /// A class-shape trait, declared by the frontend, exactly as
+    /// [`member_metadata`](Self::member_metadata) is. It replaces the
+    /// `class_introspection_metadata` PROFILE flag, whose reader carried the
+    /// comment *"Universal — every class gets it, keyed on class construction,
+    /// no language check"* while being gated on a flag only PYTHON set. Both
+    /// halves of that sentence were true of the emission and false of the gate;
+    /// the gate is a property of the declaration (`directives.md` §3 question
+    /// 3), and it is one here.
+    pub introspection_metadata: bool,
+
     /// Bare identifiers inside instance methods resolve to fields on
     /// `self` before falling through to locals / globals, as in Python
     /// and VB.NET. Walker-set; threaded through the compiler via
@@ -488,6 +531,9 @@ impl Default for NormalClass {
             semantics: crate::ValueSemantics::default(),
             explicit_self_param: false,
             late_static_binding: false,
+            member_metadata: false,
+            cooperative_super: false,
+            introspection_metadata: false,
             implicit_self_fields: false,
             instance_fields: Vec::new(),
             static_fields: Vec::new(),

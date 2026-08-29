@@ -5,7 +5,41 @@
 //! private-by-convention, called from the core compile paths in `mod.rs`.
 
 use crate::primitives::class_slots;
+use vybe_runtime::chunk::ConstExpr;
 use super::*;
+
+/// Split a wast-mangled opcode name into its base name, memarg `offset=`, and
+/// multi-memory selectors.
+///
+/// The wast walker cannot add an AST argument for either of these: every
+/// `OperandFormat` arm below indexes its immediates POSITIONALLY
+/// (`args.first()`, `args.get(1)`, `args.iter().skip(2)`), so one extra
+/// argument would silently shift a lane index or a typeidx. It appends name
+/// suffixes instead — `i32.load@@off25@@mem1` — and the base name is
+/// everything before the FIRST `@@`.
+///
+/// ⛔ ONE decomposition, called from both consumers. The earlier
+/// `split("@@mem")` here and `split_once("@@mem")` at the routing site
+/// disagreed the moment a second suffix existed: with `@@off` written last,
+/// this one parsed `"1@@off25"` as a selector and dropped the memidx; with it
+/// written first, the routing site kept `@@off25` in the name and failed to
+/// recognise the opcode at all. A shared key format needs a shared reader.
+fn split_wasm_op_suffixes(name: &str) -> (&str, u64, Vec<u32>) {
+    let mut parts = name.split("@@");
+    let base = parts.next().unwrap_or(name);
+    let mut offset: u64 = 0;
+    let mut selectors: Vec<u32> = Vec::new();
+    for p in parts {
+        if let Some(n) = p.strip_prefix("off") {
+            offset = n.parse::<u64>().unwrap_or(0);
+        } else if let Some(n) = p.strip_prefix("mem") {
+            if let Ok(v) = n.parse::<u32>() {
+                selectors.push(v);
+            }
+        }
+    }
+    (base, offset, selectors)
+}
 
 /// Compile-time `u8` from a literal instruction argument (a SIMD lane index).
 fn expr_const_u8(expr: Option<&Expression>) -> u8 {
@@ -38,6 +72,34 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
 
 /// A string literal argument's value (empty when not a string literal). Used
 /// for the wast struct-type registration directive's name/parent fields.
+/// The `ref.null` heaptype byte for a wast abstract-heaptype SPELLING.
+///
+/// ⛔ THE ONE PLACE THE SPELLING BECOMES A BYTE. The wast walker reads the
+/// immediate through `abs_heap` — the same function its `parse_vt` stack-typing
+/// path uses — and hands the spelling here, so the emitted byte and the type
+/// the validator believes cannot drift apart. They did: every spelling used to
+/// emit `HT_NONE` while `parse_vt` reported the declared type, and nothing in
+/// the tree compared the two.
+///
+/// An empty spelling is a concrete `$T` the walker could not resolve without
+/// the compiler's type table. `none` is its correct bottom — a concrete GC type
+/// lives in the ANY hierarchy, which is exactly what `none` bottoms.
+pub fn wast_null_heaptype(spelling: &str) -> u8 {
+    use vybe_runtime::opcode::heaptype::*;
+    match spelling {
+        "any" => HT_ANY,
+        "eq" => HT_EQ,
+        "i31" => HT_I31,
+        "struct" => HT_STRUCT,
+        "array" => HT_ARRAY,
+        "func" => HT_FUNC,
+        "nofunc" => HT_NOFUNC,
+        "extern" => HT_EXTERN,
+        "noextern" => HT_NOEXTERN,
+        _ => HT_NONE,
+    }
+}
+
 fn expr_str_lit(expr: Option<&Expression>) -> String {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
@@ -49,6 +111,23 @@ fn expr_str_lit(expr: Option<&Expression>) -> String {
 /// it is nullable. A bare `$T` arrives as `Ident("T")` → `(name, false)`; a
 /// folded `(ref null $T)` carries a `null` marker → `(name, true)`. The name is
 /// recovered from the first ident found so either shape resolves.
+/// A reftype immediate written back out in its FULL spelling — `ref null $a`,
+/// `ref any` — so that nullability survives into the constant pool.
+///
+/// `wasm_heap_type_ref` answers with the heap type and the null flag as
+/// separate values, which is right for the instructions that encode
+/// nullability in the OPCODE. `br_on_cast_desc_eq` has a single opcode and
+/// carries both flags as immediates, so its two type names have to keep the
+/// flag attached to them.
+fn spelled_reftype(expr: Option<&Expression>) -> String {
+    let (name, nullable) = wasm_heap_type_ref(expr);
+    if nullable {
+        format!("ref null {name}")
+    } else {
+        format!("ref {name}")
+    }
+}
+
 fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
     let (name, nullable, _exact) = wasm_heap_type_ref_exact(expr);
     (name, nullable)
@@ -241,50 +320,13 @@ impl Compiler {
     ) -> Result<bool, String> {
         let line = self.line;
 
-        // Language name dropped. This one cannot move to a language emitter:
-        // it reads `self.defined_globals`, which only the compiler has. A user
-        // function named `globals()` in another language would now reach here —
-        // no profile declares that name today.
-        if name == "globals" && args.is_empty() {
-            common::dict::emit_new(&mut self.chunks, self.current, line);
-
-            inst!(self, core_wasm::dup);
-            self.emit_const(Value::String(Arc::from("__main__")));
-            self.class_set(
-                class_slots::ObjSource::Stack,
-                &class_slots::ClassSlot::internal("__name__"),
-                class_slots::ValueSource::Stack,
-            );
-            inst!(self, core_wasm::dup);
-            let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
-            self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
-            self.emit_const(Value::String(Arc::from("__name__")));
-            common::collections::emit_push(&mut self.chunks, self.current, line);
-            self.emit(Op::DROP);
-
-            let mut globals: Vec<String> = self.defined_globals.iter().cloned().collect();
-            globals.sort();
-            globals.dedup();
-            for global in globals {
-                if global == "__name__" {
-                    continue;
-                }
-                inst!(self, core_wasm::dup);
-                self.emit_var_get(&global);
-                self.class_set(
-                    class_slots::ObjSource::Stack,
-                    &class_slots::ClassSlot::internal(&global),
-                    class_slots::ValueSource::Stack,
-                );
-
-                inst!(self, core_wasm::dup);
-                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__keys"));
-                self.emit_const(Value::String(Arc::from(global.as_str())));
-                common::collections::emit_push(&mut self.chunks, self.current, line);
-                self.emit(Op::DROP);
-            }
-            return Ok(true);
-        }
+        // `globals()` removed. It built a dict from `self.defined_globals`
+        // for the NAME `globals`, and its own comment named the hazard: *"A
+        // user function named `globals()` in another language would now reach
+        // here."* The spelling now ends in python's walker, which normalizes
+        // the call to `ExprKind::GlobalNamespace`; the object is built by
+        // `globals::emit_global_namespace_object`, shared with lua's `_G`,
+        // php's `$GLOBALS` and js's `globalThis`.
 
         // `frozenset` removed: the python profile already binds it to
         // `common:python.make_set`, whose emitter is in the language module.
@@ -1140,9 +1182,22 @@ impl Compiler {
                 // signature goes on its chunk.
                 "__wast_register_func_type" => {
                     let name = expr_str_lit(args.first().copied());
-                    let params = expr_str_lit(args.get(1).copied());
-                    let results = expr_str_lit(args.get(2).copied());
+                    // args[1] is the declared SUPERTYPE (possibly empty) — part
+                    // of a func type's identity, not decoration: two func types
+                    // with one signature are still distinct when one declares a
+                    // supertype and the other does not.
+                    let parent = expr_str_lit(args.get(1).copied());
+                    let params = expr_str_lit(args.get(2).copied());
+                    let results = expr_str_lit(args.get(3).copied());
                     if !name.is_empty() {
+                        let parent_idx = if parent.is_empty() {
+                            0u16
+                        } else {
+                            crate::primitives::classes::reserve_type_slot(
+                                &mut self.chunks,
+                                &parent,
+                            )
+                        };
                         let idx = crate::primitives::classes::reserve_type_slot(
                             &mut self.chunks,
                             &name,
@@ -1151,6 +1206,9 @@ impl Compiler {
                             let entry = &mut self.chunks[0].types[idx - 1];
                             entry.kind = vybe_runtime::chunk::CompositeKind::Func;
                             entry.fields = vec![params, results];
+                            if parent_idx != 0 {
+                                entry.parent_index = parent_idx;
+                            }
                         }
                     }
                     return Ok(true);
@@ -1159,10 +1217,30 @@ impl Compiler {
                     let fname = expr_str_lit(args.first().copied());
                     let params = expr_str_lit(args.get(1).copied());
                     let results = expr_str_lit(args.get(2).copied());
+                    // ⚠ THE CLASS IS AN ARGUMENT, NOT A CONSTANT.
+                    //
+                    // This hardcoded `"__wasm_module"`, which is only the FIRST
+                    // module's class — the second is `__wasm_module_1`. So in
+                    // every module after the first the lookup found nothing and
+                    // the signature was silently never recorded, leaving
+                    // `ref.test (ref $t)` on a function reference to compare
+                    // against an empty signature and answer 0. The walker knows
+                    // which class it just emitted, so it says.
+                    let class = {
+                        let c = expr_str_lit(args.get(3).copied());
+                        if c.is_empty() { "__wasm_module".to_string() } else { c }
+                    };
+                    let declared = expr_str_lit(args.get(4).copied());
                     if let Some(ci) =
-                        self.resolve_unique_static_method_chunk_for_class("__wasm_module", &fname)
+                        self.resolve_unique_static_method_chunk_for_class(&class, &fname)
                     {
                         self.chunks[ci].func_sig = Some((params, results));
+                        // Recorded alongside the structural signature — exact
+                        // casts are nominal and two distinct types can share a
+                        // structure.
+                        if !declared.is_empty() {
+                            self.chunks[ci].declared_func_type = Some(declared);
+                        }
                     }
                     return Ok(true);
                 }
@@ -1185,27 +1263,39 @@ impl Compiler {
                     }
                     return Ok(true);
                 }
-                // Compile-time directive from the wast walker: register a passive
-                // element segment's funcref list (resolved to function chunk
-                // indices) under its segment index, so `table.init`/`array.new_elem`
-                // read real funcrefs the VM materializes at instantiation.
+                // Compile-time directive from the wast walker: register a
+                // passive element segment's ELEMENT EXPRESSIONS under its
+                // segment index. The VM evaluates them at instantiation, in
+                // WASM 3.0 §4.5.4 order, and populates `elem_segments` so
+                // `table.init`/`array.new_elem` read the resulting values.
                 "__wast_register_passive_elem" => {
                     let seg_index = expr_const_u16(args.first().copied()) as usize;
-                    let mut chunk_indices = Vec::new();
-                    for a in &args[1..] {
-                        let name = expr_str_lit(Some(a));
-                        if let Some(idx) = self
-                            .resolve_unique_static_method_chunk_for_class("__wasm_module", &name)
-                        {
-                            chunk_indices.push(idx);
-                        }
-                    }
-                    if self.chunks[0].passive_elem_funcs.len() <= seg_index {
+                    // ⚠ ONE ARGUMENT PER SLOT, AND IT IS AN EXPRESSION.
+                    //
+                    // This used to take an (OWNER CLASS, METHOD) PAIR per slot,
+                    // which could say "this element is that function" and
+                    // nothing else. An element expression is a CONSTANT
+                    // EXPRESSION — `ref.i31`, `array.new_default`, `global.get`
+                    // are all legal — so every non-funcref item collapsed to an
+                    // empty pair and the slot materialized null. That is
+                    // `gc/i31` and `gc/array_new_elem`, and it read as a table
+                    // bug because the failure surfaces at the table.
+                    //
+                    // A funcref item still needs its owner, because an item may
+                    // name an IMPORTED function, which lives in the EXPORTING
+                    // module's class rather than this one's — the walker sends
+                    // it as `__elem_func(owner, method)`. Everything else is
+                    // the walked expression itself.
+                    let items: Vec<ConstExpr> = args[1..]
+                        .iter()
+                        .map(|a| self.elem_const_expr(a))
+                        .collect();
+                    if self.chunks[0].passive_elem_items.len() <= seg_index {
                         self.chunks[0]
-                            .passive_elem_funcs
+                            .passive_elem_items
                             .resize_with(seg_index + 1, Vec::new);
                     }
-                    self.chunks[0].passive_elem_funcs[seg_index] = chunk_indices;
+                    self.chunks[0].passive_elem_items[seg_index] = items;
                     return Ok(true);
                 }
                 // `ref.test <ht>` / `ref.cast <ht>` — runtime type check against
@@ -1221,10 +1311,23 @@ impl Compiler {
                 // heaptype immediate, and round-tripping as `0xD0 0x71`. The
                 // VM's GC accessors trap on it; it is a plain null elsewhere.
                 // Non-wast callers pass `HT_EXTERN` and get the lenient null.
+                // ⛔ THE HEAPTYPE ARRIVES AS AN ARGUMENT NOW, AND IT MUST.
+                // This emitted `HT_NONE` for every spelling, so `ref.null
+                // extern` serialized as `ref.null none`. The VM cannot see it
+                // — it has one null — but `none` bottoms the ANY hierarchy and
+                // `noextern` bottoms the EXTERN one, so `nullref </: externref`
+                // and V8 rejects the store. The spelling is read by the SAME
+                // `abs_heap` the wast walker's `parse_vt` uses, so the emitter
+                // and the typed view cannot drift apart again.
+                //
+                // No argument = a concrete `$T`, which the walker cannot
+                // resolve without the compiler's type table. `HT_NONE` is the
+                // right bottom for that case: a concrete GC type is in the ANY
+                // hierarchy, exactly what `none` bottoms.
                 "__wast_typed_null" => {
                     let l = self.line;
-                    self.chunk()
-                        .emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, l);
+                    let ht = wast_null_heaptype(&expr_str_lit(args.first().copied()));
+                    self.chunk().emit_ref_null(ht, l);
                     return Ok(true);
                 }
                 // Stamp a struct instance with its WASM GC rtt: compile the
@@ -1419,6 +1522,65 @@ impl Compiler {
                     self.chunks[self.current].emit_op_u16(op, name_idx, l);
                     return Ok(true);
                 }
+                // `br_on_cast_desc_eq $l ht_1 ht_2` / `..._fail` — the Custom
+                // Descriptors BRANCHING casts, emitted as real instructions
+                // rather than lowered into `ref.is_null` + `if`/`else`.
+                //
+                // Args, in order: the target label NAME, the source reftype,
+                // the target reftype, then the two stack operands (reference,
+                // descriptor). The label arrives as a name and NOT as a depth
+                // on purpose — `break_depth` already resolves a name against
+                // the live `LoopCtx` stack, and it is the only place that
+                // knows how many wasm blocks the compiler actually opened.
+                // A walker counting its own source-level nesting would have to
+                // predict that, and would be wrong the moment the compiler
+                // wrapped anything.
+                //
+                // Both reftypes are stored with their FULL spelling
+                // (`ref null $a`, not `$a`): this instruction has one opcode
+                // for both nullabilities — unlike `ref.cast_desc_eq`, which
+                // gets a separate opcode per nullability — so the spelling is
+                // the only place the null flags can ride. The writer peels it
+                // back apart into castflags plus a heap type.
+                "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail"
+                | "br.on_cast_desc_eq" | "br.on_cast_desc_eq_fail" => {
+                    let label = match args.first().map(|a| &a.kind) {
+                        Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
+                        Some(ExprKind::Ident(n)) => n.clone(),
+                        _ => String::new(),
+                    };
+                    // ⛔ Resolve the depth BEFORE compiling the operands. The
+                    // operands are ordinary expressions and may open blocks of
+                    // their own; a depth read afterwards would be measured
+                    // from inside them.
+                    let Some(depth) = self.break_depth(Some(label.as_str())) else {
+                        // No such label in scope — the function-level implicit
+                        // label, which is a `return`, not a `br`. The walker
+                        // keeps its lowering for that case; refuse rather than
+                        // emit a branch to a depth that does not exist.
+                        return Ok(false);
+                    };
+                    let from_spelled = spelled_reftype(args.get(1).copied());
+                    let to_spelled = spelled_reftype(args.get(2).copied());
+                    for a in args.iter().skip(3) {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    let to_idx = self.str_const(&to_spelled);
+                    let from_idx = self.str_const(&from_spelled);
+                    let op = if name.ends_with("_fail") {
+                        Op::BR_ON_CAST_DESC_EQ_FAIL
+                    } else {
+                        Op::BR_ON_CAST_DESC_EQ
+                    };
+                    // `U16_U16_U8`: ht_2 (target), ht_1 (source), label depth.
+                    let chunk = &mut self.chunks[self.current];
+                    chunk.emit_op_u16(op, to_idx, l);
+                    chunk.emit((from_idx >> 8) as u8, l);
+                    chunk.emit((from_idx & 0xff) as u8, l);
+                    chunk.emit(depth, l);
+                    return Ok(true);
+                }
                 "array_get" => {
                     for a in args {
                         self.compile_expr(a)?;
@@ -1445,10 +1607,11 @@ impl Compiler {
                 }
                 _ => {}
             }
-            // A `@@mem<N>` suffix (wast multi-memory selector) is not part of the
-            // opcode name — check the base name so the op still routes here;
-            // `emit_builtin_opcode` strips the suffix and emits the selector.
-            let base_name = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+            // The `@@off<N>` / `@@mem<N>` suffixes (wast memarg offset and
+            // multi-memory selector) are not part of the opcode name — check
+            // the base name so the op still routes here; `emit_builtin_opcode`
+            // strips them and emits them as the instruction's memarg.
+            let base_name = name.split_once("@@").map(|(b, _)| b).unwrap_or(name);
             if Op::from_flattened_name(base_name).is_some() {
                 self.emit_builtin_opcode(name, args)?;
                 return Ok(true);
@@ -1463,6 +1626,84 @@ impl Compiler {
     /// registry id of a registered `(array …)` defined type; the VM stamps that
     /// id onto the instance so `array.get`/`set`/`copy` trap per spec. Stack
     /// operands follow the type immediate in fold order (value then length).
+    /// One element segment slot, lowered from the walker's AST to the constant
+    /// expression the VM evaluates at instantiation.
+    ///
+    /// The grammar is WASM 3.0's constant expressions restricted to what an
+    /// element expression can be. Anything unrecognized becomes a null SLOT
+    /// rather than no slot: a missing entry renumbers the segment, so a
+    /// `table.init` copying from a later offset would read the wrong element or
+    /// run off the end.
+    fn elem_const_expr(&mut self, e: &Expression) -> ConstExpr {
+        match &e.kind {
+            ExprKind::Call { callee, args, .. } => {
+                let name = match &callee.kind {
+                    ExprKind::Ident(n) => n.as_str(),
+                    _ => return ConstExpr::Value(Value::Null),
+                };
+                let arg = |i: usize| args.get(i).map(|a: &Argument| &a.value);
+                match name {
+                    // `ref.func` — the walker resolved the item (a name OR a
+                    // numeric funcidx) to its owning class and method.
+                    "__elem_func" => {
+                        let class = expr_str_lit(arg(0));
+                        let method = expr_str_lit(arg(1));
+                        if class.is_empty() || method.is_empty() {
+                            return ConstExpr::Value(Value::Null);
+                        }
+                        match self.resolve_unique_static_method_chunk_for_class(&class, &method) {
+                            Some(idx) => ConstExpr::RefFunc(idx),
+                            None => ConstExpr::Value(Value::Null),
+                        }
+                    }
+                    "ref_i31" => ConstExpr::RefI31(Box::new(
+                        arg(0)
+                            .map(|a| self.elem_const_expr(a))
+                            .unwrap_or(ConstExpr::Value(Value::I32(0))),
+                    )),
+                    // The type immediate resolves through the SAME pair
+                    // `emit_gc_array_new` uses, so the segment's array and an
+                    // `array.new_default` instruction carry one rtt.
+                    "array_new_default" => {
+                        let type_name = arg(0).map(wasm_type_ref_name).unwrap_or_default();
+                        let typeidx = self.resolve_gc_array_type_id(&type_name) as u16;
+                        let len = arg(1)
+                            .map(|a| self.elem_const_expr(a))
+                            .unwrap_or(ConstExpr::Value(Value::I32(0)));
+                        ConstExpr::ArrayNewDefault { typeidx, len: Box::new(len) }
+                    }
+                    // The walker rewrites `array.new_default $t n` to
+                    // `array.new $t <default> n` whenever `$t`'s element type
+                    // has a known default, so both spellings of ONE spec
+                    // instruction reach here — covering only the literal one
+                    // left `(item (array.new_default $t …))` null for every
+                    // numeric element type.
+                    "array_new" => {
+                        let type_name = arg(0).map(wasm_type_ref_name).unwrap_or_default();
+                        let typeidx = self.resolve_gc_array_type_id(&type_name) as u16;
+                        let value = arg(1)
+                            .map(|a| self.elem_const_expr(a))
+                            .unwrap_or(ConstExpr::Value(Value::Null));
+                        let len = arg(2)
+                            .map(|a| self.elem_const_expr(a))
+                            .unwrap_or(ConstExpr::Value(Value::I32(0)));
+                        ConstExpr::ArrayNew {
+                            typeidx,
+                            value: Box::new(value),
+                            len: Box::new(len),
+                        }
+                    }
+                    _ => ConstExpr::Value(Value::Null),
+                }
+            }
+            ExprKind::Lit(Literal::Int(v)) => ConstExpr::Value(Value::I32(*v as i32)),
+            ExprKind::Lit(Literal::Float(v)) => ConstExpr::Value(Value::F64(*v)),
+            // `ref.null` and anything this grammar does not cover: an occupied
+            // slot holding no reference.
+            _ => ConstExpr::Value(Value::Null),
+        }
+    }
+
     fn emit_gc_array_new(
         &mut self,
         args: &[&Expression],
@@ -1984,6 +2225,62 @@ impl Compiler {
         }
     }
 
+    /// Emit the OPTIONAL marker-tagged memarg shared by every core and v128
+    /// load/store (`OperandFormat::SimdMemArg` / `MemLane`). Nothing is written
+    /// when there is neither an `offset=` nor a non-default memory — dispatch's
+    /// peek then sees no 0x80 marker and consumes no byte.
+    ///
+    /// ⛔ The `offset=` MUST travel here rather than being folded into the
+    /// address expression. WASM's effective address is `unsigned(addr) +
+    /// offset` in unbounded arithmetic; an AST `addr + offset` is a SIGNED add,
+    /// so `i32.load offset=25` at address −1 computed 24 and read a byte where
+    /// the spec traps. `effective_addr` already does the unsigned widen.
+    ///
+    /// The bytes are deliberately NOT padded to the 4-byte opcode grid: only
+    /// OPCODES sit on that grid, and `simd_memarg_size` walks these LEBs the
+    /// same way dispatch does, so the verifier follows a variable-length
+    /// memarg exactly.
+    fn emit_marker_memarg(&mut self, offset: u64, mem_selectors: &[u32]) {
+        let l = self.line;
+        let memidx = mem_selectors.first().copied();
+        if offset == 0 && memidx.is_none() {
+            return;
+        }
+        // 0x80 = present; 0x100 = the offset is a u64 (memory64); 0x40 = an
+        // explicit memidx LEB follows. The low bits are the alignment hint,
+        // which the semantics do not depend on.
+        let mut flags: u32 = 0x80;
+        if offset > u32::MAX as u64 {
+            flags |= 0x100;
+        }
+        if memidx.is_some() {
+            flags |= 0x40;
+        }
+        self.chunk().emit_leb_u32(flags, l);
+        self.emit_leb_u64_operand(offset);
+        if let Some(m) = memidx {
+            self.chunk().emit_leb_u32(m, l);
+        }
+    }
+
+    /// LEB128 an operand that may exceed `u32` (a memory64 `offset=`). `Chunk`
+    /// only carries the u32 emitter, and the two encodings agree byte for byte
+    /// wherever the value fits in 32 bits.
+    fn emit_leb_u64_operand(&mut self, mut value: u64) {
+        let l = self.line;
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            self.chunk().emit(byte, l);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
     pub(super) fn emit_builtin_opcode(
         &mut self,
         op_name: &str,
@@ -2471,18 +2768,14 @@ impl Compiler {
                 }
             }
             _ => {
-                // Multi-memory selector suffix from the wast walker
-                // (`i32.store@@mem1`, or `memory.copy@@mem<dst>@@mem<src>` with
-                // two indices): non-default linear memories. Strip the suffixes
-                // to resolve the base opcode; loads/stores carry the memidx in
-                // their marker-tagged memarg, memory.size/grow/fill/copy/init
-                // in their fixed u16 memidx immediates.
-                let (op_name, mem_selectors): (&str, Vec<u32>) = {
-                    let mut parts = op_name.split("@@mem");
-                    let base = parts.next().unwrap_or(op_name);
-                    let sels: Vec<u32> = parts.filter_map(|p| p.parse::<u32>().ok()).collect();
-                    (base, sels)
-                };
+                // Emitter-channel suffixes from the wast walker: `@@off<N>`
+                // (a load/store's `offset=` memarg) and `@@mem<N>` (a
+                // non-default linear memory — two of them for
+                // `memory.copy@@mem<dst>@@mem<src>`). Strip them to resolve the
+                // base opcode; loads/stores carry BOTH in their marker-tagged
+                // memarg, memory.size/grow/fill/copy/init carry the memidx in
+                // their fixed u16 immediates.
+                let (op_name, memarg_offset, mem_selectors) = split_wasm_op_suffixes(op_name);
                 // Single source of truth: resolve any remaining opcode straight
                 // from the VM's opcode table. The VM's `operand_format` (same
                 // table) tells us how to encode any immediates — lane index,
@@ -2590,14 +2883,18 @@ impl Compiler {
                         // (the address arrived where the vector belonged, so the
                         // op returned an all-zero vector) and papered over the
                         // matching inversion in the VM's `store*_lane` arms.
-                        // Only a lane byte is emitted — the VM's optional-memarg
-                        // peek never consumes a byte because lane indices are
-                        // < 0x80 (so the byte reads back as the lane).
+                        // The optional memarg comes FIRST, then the mandatory
+                        // lane byte — the order dispatch reads them in. With
+                        // neither an `offset=` nor a selector no memarg byte is
+                        // written at all, and the peek never consumes one
+                        // because a lane index is < 0x80 (so the byte reads
+                        // back as the lane).
                         for a in args.get(1..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         let lane = expr_const_u8(args.first().copied());
                         self.chunk().emit_op(op, l);
+                        self.emit_marker_memarg(memarg_offset, &mem_selectors);
                         self.chunk().emit(lane, l);
                     }
                     // Two byte immediates then stack operands (call_indirect:
@@ -2614,13 +2911,30 @@ impl Compiler {
                     // argc, tableidx, expected result count). The fold puts all
                     // three immediates first.
                     OperandFormat::U8_U8_U8 => {
-                        for a in args.get(3..).unwrap_or(&[]) {
+                        // ⚠ A FOURTH, NON-IMMEDIATE ARGUMENT. `U8_U8_U8` is used
+                        // by exactly two opcodes — `call_indirect` and
+                        // `return_call_indirect` — and the wast walker appends
+                        // the DECLARED functype after the three counts. It is
+                        // not an immediate: it is recorded in a side table keyed
+                        // by this opcode's offset, for the writer to pick a type
+                        // index that matches the callee rather than guessing
+                        // from `(argc, results)`. See `Chunk::call_indirect_sigs`.
+                        let sig = match args.get(3).map(|a| &a.kind) {
+                            Some(ExprKind::Lit(Literal::Str(s))) => Some(s.to_string()),
+                            _ => None,
+                        };
+                        let operands_from = if sig.is_some() { 4 } else { 3 };
+                        for a in args.get(operands_from..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
+                        let offset = self.chunk().code.len();
                         self.chunk().emit_op(op, l);
                         self.chunk().emit(expr_const_u8(args.first().copied()), l);
                         self.chunk().emit(expr_const_u8(args.get(1).copied()), l);
                         self.chunk().emit(expr_const_u8(args.get(2).copied()), l);
+                        if let Some(sig) = sig.filter(|s| !s.is_empty()) {
+                            self.chunk().call_indirect_sigs.insert(offset, sig);
+                        }
                     }
                     // i8x16.shuffle: 16 lane-index immediates, then two vectors.
                     OperandFormat::Shuffle => {
@@ -2633,19 +2947,42 @@ impl Compiler {
                         }
                     }
                     // Marker-tagged optional memarg (core + v128 loads/stores):
-                    // a non-default memory rides IN the memarg — 0x80 presence
-                    // marker + 0x40 memidx flag, offset 0 — NOT the 0xEE
-                    // selector block, which would break the unambiguous marker
-                    // peek. No selector → no memarg bytes at all.
+                    // the `offset=` AND a non-default memory both ride IN the
+                    // memarg — 0x80 presence marker + 0x40 memidx flag — NOT
+                    // the 0xEE selector block, which would break the
+                    // unambiguous marker peek. Neither → no memarg bytes.
                     OperandFormat::SimdMemArg => {
                         for a in args {
                             self.compile_expr(a)?;
                         }
                         self.emit(op);
-                        for midx in &mem_selectors {
-                            self.chunk().emit_leb_u32(0x80 | 0x40, l);
-                            self.chunk().emit_leb_u32(0, l);
-                            self.chunk().emit_leb_u32(*midx, l);
+                        self.emit_marker_memarg(memarg_offset, &mem_selectors);
+                    }
+                    // MANDATORY memarg (the atomics, prefix 0xFE): dispatch
+                    // reads align + offset unconditionally, so unlike
+                    // `SimdMemArg` there is no "omit it" case — falling to the
+                    // plain arm below made the VM read the NEXT instruction's
+                    // bytes as the align/offset pair. The align field is a
+                    // validator-facing hint here; dispatch only reads its 0x40
+                    // (memidx follows) and 0x80 (64-bit offset) flags.
+                    OperandFormat::MemArg | OperandFormat::MemArg64 => {
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
+                        self.emit(op);
+                        let memidx = mem_selectors.first().copied();
+                        // ⛔ The offset is a u32 LEB here, NOT a u64: dispatch's
+                        // `read_atomic_memarg` switches on 0x80 but the format's
+                        // own size walker (`memarg_size`) always reads a u32, so
+                        // a u64 offset would desync the verifier from the
+                        // decoder. A >4GiB atomic offset needs memory64 atomics,
+                        // which are not in the WASM 3.0 merged set; closing that
+                        // is a threads-proposal job on both readers at once.
+                        let flags: u32 = if memidx.is_some() { 0x40 } else { 0 };
+                        self.chunk().emit_leb_u32(flags, l);
+                        self.chunk().emit_leb_u32(memarg_offset as u32, l);
+                        if let Some(m) = memidx {
+                            self.chunk().emit_leb_u32(m, l);
                         }
                     }
                     // Plain opcode: operands on the stack, no immediate.
@@ -2891,12 +3228,24 @@ impl Compiler {
                 // `ToString` protocol slot is the same question with no
                 // spelling to keep in sync, and it carries the language's own
                 // date format rather than ISO.
-                let tostring_key = self.chunk().add_constant(Value::String(Arc::from(
-                    vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
-                )));
+                // ⛔ WAS `add_constant(protocol_slot_key(ToString))` — a SECOND
+                // spelling of a key the owner already owns. §2a: a language
+                // binds a slot, it never names it.
+                let tostring_key = crate::primitives::class_slots::resolve_interned(
+                    self.chunk(),
+                    &crate::primitives::class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::ToString),
+                    &crate::primitives::class_slots::PlainNames,
+                );
                 let method_slot = self.define_local("__vb_cstr_tostring");
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, tostring_key);
+                let line = self.line;
+                crate::primitives::class_slots::emit_class_get(
+                    self.chunk(),
+                    crate::primitives::class_slots::ObjSource::Stack,
+                    &tostring_key,
+                    crate::primitives::class_slots::Dest::Stack,
+                    line,
+                );
                 self.emit_u16(Op::LOCAL_SET, method_slot);
                 self.emit_u16(Op::LOCAL_GET, method_slot);
                 self.emit(Op::REF_IS_NULL);

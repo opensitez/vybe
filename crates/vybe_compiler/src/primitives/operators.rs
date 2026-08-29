@@ -31,6 +31,85 @@ fn emit_f64_pow(chunk: &mut Chunk, line: u32) {
 }
 
 impl Compiler {
+    /// ECMA-262 §13.10.2 — `a instanceof B`.
+    ///
+    /// `B[Symbol.hasInstance]` (canonical name `hasinstance`) is consulted
+    /// FIRST and called as `B[hasinstance](a)` when present; only when it is
+    /// absent is OrdinaryHasInstance performed, as `ecma:value.instanceOf`.
+    ///
+    /// ⛔ **Do not "optimise" this into a `ref.test` against the declared
+    /// class.** Both halves are observable, and the corpus measured both:
+    ///
+    /// * skipping the `hasinstance` lookup cost **11** tests
+    ///   (`symbol_hasinstance*`, `symbol_has_instance*`) — a user-defined
+    ///   `static [Symbol.hasInstance]()` may answer anything at all, including
+    ///   for objects the class never constructed;
+    /// * skipping the prototype WALK cost **3** more
+    ///   (`proxy_getprototypeof_instanceof_operator_trigger`,
+    ///   `promise_subclass_species_constructor`,
+    ///   `derived_ctor_returning_primitive_returns_this`) — OrdinaryHasInstance
+    ///   performs `[[GetPrototypeOf]]`, which a Proxy traps.
+    ///
+    /// Where identity is the prototype chain it is also MUTABLE
+    /// (`Object.setPrototypeOf`) while an rtt is fixed at allocation, so the
+    /// two disagree by design. The rtt is the right answer for languages whose
+    /// declared type is immutable — see the guard in
+    /// `expressions.rs`'s `InstanceOf` arm.
+    ///
+    /// Dispatch is emitted inline rather than through a host fn because the JS
+    /// method-call protocol has to stay intact (`__js_this` bound to B), which
+    /// `ctx.invoke` cannot do.
+    pub(crate) fn emit_has_instance_protocol(&mut self, lhs_slot: u16, rhs_slot: u16) {
+        self.class_get(
+            class_slots::ObjSource::Local(rhs_slot),
+            &class_slots::ClassSlot::internal("hasinstance"),
+        );
+        let method_slot = self.define_local("__has_inst_method");
+        self.emit_u16(Op::LOCAL_SET, method_slot);
+        self.emit_u16(Op::LOCAL_GET, method_slot);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+        // — no `Symbol.hasInstance`: OrdinaryHasInstance, the prototype walk —
+        let helper = self.import("ecma:value", "instanceOf");
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit_host_call(helper, 2);
+        self.chunk().emit_else(line);
+        // — `B[Symbol.hasInstance](a)`, with `this` = B —
+        let saved_this = self.begin_receiver_bind("__js_prev_this_hasinst");
+        if saved_this.is_active() {
+            self.emit_u16(Op::LOCAL_GET, rhs_slot);
+            self.bind_receiver_from_stack(saved_this);
+        }
+        self.emit_u16(Op::LOCAL_GET, method_slot);
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_direct_callable_invoke(1);
+        {
+            let line = self.line;
+            // §13.10.2 step 4: ToBoolean of whatever the hook returned, then
+            // widen to a real `boolean`.
+            //
+            // ⛔ NARROW-THEN-WIDEN IS THE PAIR, NOT A REDUNDANCY — do not
+            // delete either half. The hook may return ANY value (`return 0`,
+            // `return "x"`), so `emit_dyn_to_bool` applies ToBoolean and hands
+            // back an **i32**; `emit_i32_to_bool` is what turns that into the
+            // `boolean` §13.10.2 requires. This is the one composition in which
+            // the two helpers belong together — everywhere else, reaching for
+            // `emit_dyn_to_bool` in a value position is the bug it caused in
+            // `emit_is_instance_of`.
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        };
+        let result_slot = self.define_local("__has_inst_result");
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+        self.end_receiver_bind(saved_this);
+        self.emit_u16(Op::LOCAL_GET, result_slot);
+        self.chunk().emit_end(line);
+    }
+}
+
+impl Compiler {
     pub(super) fn emit_to_primitive(&mut self, hint: &str) {
         let value_slot = self.define_local("__to_primitive_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -1710,46 +1789,7 @@ impl Compiler {
                     let lhs_slot = self.define_local("__js_instanceof_lhs");
                     self.emit_u16(Op::LOCAL_SET, rhs_slot);
                     self.emit_u16(Op::LOCAL_SET, lhs_slot);
-                    // ECMA-262 §13.10.2: `a instanceof B` first checks for
-                    // `B[Symbol.hasInstance]` (canonical name `hasinstance`)
-                    // and calls it as `B[hasinstance](a)` if present.
-                    // Compiler-side dispatch keeps the JS method-call
-                    // protocol intact (`__js_this` bound to B) — host
-                    // `ctx.invoke` can't do that, so we emit the
-                    // method-call inline instead of going through the
-                    // host fn for this case.
-                    self.class_get(class_slots::ObjSource::Local(rhs_slot), &class_slots::ClassSlot::internal("hasinstance"));
-                    let method_slot = self.define_local("__has_inst_method");
-                    self.emit_u16(Op::LOCAL_SET, method_slot);
-                    self.emit_u16(Op::LOCAL_GET, method_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if_value(line);
-                    let helper = self.import("ecma:value", "instanceOf");
-                    self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                    self.emit_host_call(helper, 2);
-                    self.chunk().emit_else(line);
-                    let saved_this = self.save_js_this("__js_prev_this_hasinst");
-                    if saved_this.is_some() {
-                        self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                        self.set_js_this_from_stack();
-                    }
-                    self.emit_u16(Op::LOCAL_GET, method_slot);
-                    self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                    self.emit_direct_callable_invoke(1);
-                    {
-                        let line = self.line;
-                        // Convert dynamic result to Bool (consistent with
-                        // instanceOf host fn which also returns Bool).
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                    };
-                    let result_slot = self.define_local("__has_inst_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot);
-                    self.restore_js_this(saved_this);
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                    self.chunk().emit_end(line);
+                    self.emit_has_instance_protocol(lhs_slot, rhs_slot);
                 } else {
                     // Dynamic-RHS fallback: the static `a instanceof TypeName`
                     // form is intercepted upstream in `expressions.rs` and
@@ -1767,9 +1807,18 @@ impl Compiler {
                     let t_ctor = self.define_local("__io_ctor");
                     self.emit_u16(Op::LOCAL_SET, t_ctor); // [val]
                     self.emit_u16(Op::LOCAL_GET, t_ctor);
-                    let name_key = self.str_const("name");
-                    self.chunk()
-                        .emit_struct_field_op(Op::STRUCT_GET, 0, name_key, l); // [val, ctor_name]
+                    let name_key = crate::primitives::class_slots::resolve_interned(
+                        self.chunk(),
+                        &crate::primitives::class_slots::ClassSlot::internal("name"),
+                        &crate::primitives::class_slots::PlainNames,
+                    );
+                    crate::primitives::class_slots::emit_class_get(
+                        self.chunk(),
+                        crate::primitives::class_slots::ObjSource::Stack,
+                        &name_key,
+                        crate::primitives::class_slots::Dest::Stack,
+                        l,
+                    ); // [val, ctor_name]
                     common::reflection::emit_instanceof(&mut self.chunks, self.current, l);
                 }
             }

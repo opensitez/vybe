@@ -477,6 +477,76 @@ pub fn emit_exception_new(
     emit_exception_new_finalize(chunk, exc_name, line);
 }
 
+/// The JS error constructors the host actually publishes a `__ctor_<Name>`
+/// anchor for (`ecma_globals::register`, §20.5). Linking an error's
+/// [[Prototype]] emits `GLOBAL_GET __ctor_<Name>`, so a kind that is NOT on
+/// this list must never be linked: the read would name a global no host
+/// publishes.
+///
+/// ⛔ THIS LIST AND `ecma_globals::register`'S ERROR LIST ARE ONE FACT AT TWO
+/// ADDRESSES. `SuppressedError` was on the compiler's read side and missing
+/// from the host's write side; the anchor resolved to nothing, the JS prelude
+/// wired a prototype onto `undefined`, and every `new SuppressedError(...)`
+/// came back an instance of nothing. The host is the authority — anything
+/// added there must be added here.
+pub fn has_js_error_anchor(kind: &str) -> bool {
+    matches!(
+        canonical_js_error_name(kind),
+        "Error"
+            | "TypeError"
+            | "RangeError"
+            | "ReferenceError"
+            | "SyntaxError"
+            | "URIError"
+            | "EvalError"
+            | "AggregateError"
+            | "SuppressedError"
+    )
+}
+
+/// The spelling `emit_finish_js_error_instance` will read the anchor under —
+/// the name as written, trimmed. Deliberately NOT `canonical_exception_name`:
+/// that folds language spellings into a Python-shaped canon (`RangeError` →
+/// `IndexError`), which is the right answer for catch dispatch and the wrong
+/// one for a `__ctor_<Name>` lookup.
+fn canonical_js_error_name(kind: &str) -> &str {
+    kind.trim()
+}
+
+/// `emit_exception_new_finalize`, plus the §20.5 prototype link when the
+/// profile has ECMA error shape AND the kind has a published anchor.
+///
+/// ⚠ WHY A WRAPPER AND NOT THE FINALIZER ITSELF. The link needs two facts the
+/// finalizer cannot see: it takes a bare `&mut Chunk`, so it can ask neither
+/// the profile (`ecma_error_object_shape`) nor anything else. Linking
+/// unconditionally is not an option — the ~45 call sites under `languages/`
+/// and `platforms/{jvm,dotnet}` mint Python/Ruby/PHP/.NET exceptions whose
+/// kinds (`KeyError`, `ValueError`, `AssertionError`, …) have no anchor at
+/// all, and the emitted `GLOBAL_GET __ctor_KeyError` would name a global no
+/// host publishes.
+///
+/// So the honest scope is NOT "55 callers". It is the handful of sites in
+/// `crates/vybe_compiler/src/primitives/` that a JS program can reach with an
+/// anchored kind; every other site is correct as it stands and must NOT link.
+pub fn emit_exception_new_finalize_linked(
+    chunk: &mut Chunk,
+    exc_name: &str,
+    line: u32,
+    ecma_error_shape: bool,
+) {
+    emit_exception_new_finalize(chunk, exc_name, line);
+    // ⛔ TRIM ONCE, AND PASS THE TRIMMED SPELLING TO BOTH HALVES. The guard
+    // canonicalises (which trims) while `emit_finish_js_error_instance` builds
+    // `format!("__ctor_{kind}")` from the RAW name — so `"Error "` (walkers do
+    // produce a trailing space; see `canonical_exception_name`) would pass the
+    // check and then emit `GLOBAL_GET "__ctor_Error "`, a global nobody
+    // publishes. That is the SuppressedError bug at a new address.
+    let kind = exc_name.trim();
+    if ecma_error_shape && has_js_error_anchor(kind) {
+        emit_finish_js_error_instance(chunk, kind, line);
+    }
+}
+
 pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32) {
     let canon = canonical_exception_name(exc_name);
     let original = exc_name.trim();

@@ -375,10 +375,16 @@ impl Compiler {
             && !resolvable
             && !cname.starts_with("__")
             && !is_js_builtin_ctor_value(&cname)
+            // `globalThis` is NOT among these any more, and its absence is
+            // the point: it is no longer a NAME. The js walker normalizes the
+            // word to `ExprKind::GlobalNamespace` at the parse path, so no
+            // identifier resolution can ever be asked about it and an entry
+            // here could match nothing. Its neighbours are still spellings in
+            // shared code — a separate, larger debt, left visible rather than
+            // half-tidied.
             && !matches!(
                 name,
-                "globalThis"
-                    | "window"
+                "window"
                     | "self"
                     | "global"
                     | "globalObject"
@@ -403,7 +409,20 @@ impl Compiler {
                 .replace("{}", name);
             let error_kind = self.profile.unresolved_reference_error.clone();
             self.emit_const(Value::String(Arc::from(message.as_str())));
-            crate::primitives::errors::emit_exception_new_finalize(self.chunk(), &error_kind, line);
+            // ⛔ LINK THE PROTOTYPE. Building the object and stamping it is
+            // not enough — an error that is an instance of nothing answers
+            // `false` to `e instanceof ReferenceError` AND to
+            // `e instanceof Error`. It only looked right while the ECMA host
+            // answered `instanceof` from the `__type` stamp; with that gone,
+            // `if (false) { const branch = … } … try { branch } catch (e)`
+            // caught an object no `catch` filter could recognise.
+            let ecma_shape = self.ecma_error_object_shape();
+            crate::primitives::errors::emit_exception_new_finalize_linked(
+                self.chunk(),
+                &error_kind,
+                line,
+                ecma_shape,
+            );
             crate::primitives::errors::emit_throw(self.chunk(), line);
             return;
         }
@@ -617,6 +636,26 @@ impl Compiler {
                     "TypeError",
                     line,
                 );
+            // ⛔ LINK THE PROTOTYPE. Building the object and stamping it is
+                // not enough — an error that is an instance of nothing answers
+                // `false` to `e instanceof ReferenceError` AND to
+                // `e instanceof Error`. It only looked right while the ECMA host
+                // answered `instanceof` from the `__type` stamp; with that gone,
+                // `if (false) { const branch = … } … try { branch } catch (e)`
+                // caught an object no `catch` filter could recognise.
+                //
+                // ⚠ Of ~55 `emit_exception_new_finalize` call sites across the
+                // tree, only two linked. The right home for this is the finalizer
+                // itself, guarded so it is a no-op where no `__ctor_<Kind>` anchor
+                // exists — recorded in the plan; done here for the sites whose
+                // profile gate is in reach.
+                if self.ecma_error_object_shape() {
+                    crate::primitives::errors::emit_finish_js_error_instance(
+                        self.chunk(),
+                        "TypeError",
+                        line,
+                    );
+                }
                 crate::primitives::errors::emit_throw(self.chunk(), line);
                 return;
             }
@@ -732,9 +771,11 @@ impl Compiler {
             && !shadows_named_global
             && !cname.starts_with("__")
             && !is_js_builtin_ctor_value(&cname)
+            // See the note on the sibling carve-out above: `globalThis` is a
+            // NODE now, never an identifier, so it is not listed here.
             && !matches!(
                 name,
-                "globalThis" | "window" | "self" | "global" | "globalObject" | "arguments"
+                "window" | "self" | "global" | "globalObject" | "arguments"
             )
         {
             let line = self.line;
@@ -748,6 +789,26 @@ impl Compiler {
                 "ReferenceError",
                 line,
             );
+            // ⛔ LINK THE PROTOTYPE. Building the object and stamping it is
+            // not enough — an error that is an instance of nothing answers
+            // `false` to `e instanceof ReferenceError` AND to
+            // `e instanceof Error`. It only looked right while the ECMA host
+            // answered `instanceof` from the `__type` stamp; with that gone,
+            // `if (false) { const branch = … } … try { branch } catch (e)`
+            // caught an object no `catch` filter could recognise.
+            //
+            // ⚠ Of ~55 `emit_exception_new_finalize` call sites across the
+            // tree, only two linked. The right home for this is the finalizer
+            // itself, guarded so it is a no-op where no `__ctor_<Kind>` anchor
+            // exists — recorded in the plan; done here for the sites whose
+            // profile gate is in reach.
+            if self.ecma_error_object_shape() {
+                crate::primitives::errors::emit_finish_js_error_instance(
+                    self.chunk(),
+                    "ReferenceError",
+                    line,
+                );
+            }
             crate::primitives::errors::emit_throw(self.chunk(), line);
             return;
         }

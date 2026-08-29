@@ -17,4 +17,5 @@ use crate::VM;
 pub fn register(vm: &mut VM) {
     crate::js_string_builtins::register(vm);
     crate::js_primitive_builtins::register(vm);
+    crate::js_prototype_builtins::register(vm);
 }

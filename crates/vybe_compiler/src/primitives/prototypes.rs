@@ -37,10 +37,19 @@ pub fn fn_kind_intrinsic(is_async: bool, is_generator: bool) -> &'static str {
 /// four before any user function's metadata executes (top-level, hoisted).
 pub fn emit_stamp_function_kind_proto(
     chunk: &mut Chunk,
+    objects: bool,
     is_async: bool,
     is_generator: bool,
     line: u32,
 ) {
+    // A language whose functions are not OBJECTS has no [[Prototype]] to
+    // stamp. The operand is still consumed — the stack contract is the
+    // helper's, not the object model's, and every caller has already
+    // `dup`ed for it. See `Directives::functions_are_objects`.
+    if !objects {
+        chunk.emit_op(Op::DROP, line);
+        return;
+    }
     let intrinsic = fn_kind_intrinsic(is_async, is_generator);
     // §20.2.3.5 Function.prototype.toString reads this classifier to
     // synthesize the async/generator tokens (source text isn't retained).
@@ -95,7 +104,15 @@ pub fn emit_stamp_function_kind_proto(
 /// `Object.keys` filter against).
 ///
 /// Stack before: [fn]   Stack after: [] (consumed)
-pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
+pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, objects: bool, line: u32) {
+    // ⛔ Not a harmless extra for a language without function objects: this
+    // emits a `struct.set` of `name` / `length` / `prototype` against a
+    // declaration that has no such fields. In wast that alone stops the module
+    // loading on a spec engine. See `Directives::functions_are_objects`.
+    if !objects {
+        chunk.emit_op(Op::DROP, line);
+        return;
+    }
     chunk.emit_string_const("name", line);
     chunk.emit_string_const("length", line);
     // §10.2.5: `prototype` on ordinary functions is non-enumerable too.

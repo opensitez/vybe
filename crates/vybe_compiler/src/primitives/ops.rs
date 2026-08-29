@@ -43,6 +43,9 @@ fn i32_to_bool(chunk: &mut Chunk, line: u32) {
 /// etc.) produces `i32` but the ECMA-262 runtime expects `boolean`.
 /// Branch conditions (`if`/`br_if`/`emit_loop_cond`) accept both `i32` and
 /// `Bool`, so this wrapper is only needed in *value* positions.
+///
+/// ⛔ This is the one that PRODUCES a boolean. [`emit_dyn_to_bool`] does not —
+/// despite the name it CONSUMES any value and produces an `i32`. See its doc.
 pub fn emit_i32_to_bool(chunk: &mut Chunk, line: u32) {
     i32_to_bool(chunk, line);
 }
@@ -53,6 +56,71 @@ fn save(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn load(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+/// Emit an ECMA BigInt COMPARISON on `[a, b]`, leaving the i32 the dynamic
+/// ladders expect.
+///
+/// ⛔ `Op::I64_*` IS A REAL i64 INSTRUCTION, NOT A DYNAMIC BigInt OPERATION.
+/// Every bigint arm in this file used to reach for one — `i64.eq` for
+/// equality, `i64.add`, `0 - v` for negation, `i64.ne` against `i64.const 0`
+/// for truthiness — with two BOXED BigInt values on the stack. Both halves of
+/// the contract were broken in the same place:
+///
+/// * **VM ≠ wasm.** It only ran because the VM's `I64_EQ`/`I64_NE`/… do
+///   `self.pop().as_i64()`, COERCING whatever `Value` they find. `i64.eq`
+///   does not mean "coerce two values and compare"; it means "compare two
+///   i64s". The interpreter was not executing wasm.
+/// * **The operation never reached the host as ECMA.** BigInt comparison and
+///   arithmetic are ECMA-262 §6.1.6.2 operations, and `ecma:bigint` has
+///   provided the whole set — `eq ne lt le gt ge add sub mul neg …` — all
+///   along. The arms simply were not asking for it.
+///
+/// It is also why nothing we emit can load: js-primitive-builtins specifies
+/// `wasm:js-bigint` with `test` and NOTHING ELSE. `fromI64` / `wrapToI64` and
+/// the arithmetic were considered and DELIBERATELY REMOVED (Overview.md,
+/// "bigint operations"), so a module cannot extract an i64 from a JS BigInt at
+/// all. There is no compliant lowering of `i64.eq` on two BigInts — the
+/// operation has to be the host's, which is exactly where it belonged.
+fn emit_bigint_cmp(chunk: &mut Chunk, name: &str, line: u32) {
+    let op = chunk.add_import("ecma:bigint", name);
+    call2(chunk, op, line); // [a, b] -> Bool
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    call1(chunk, cast, line); // Bool -> i32, the ladder's arm type
+}
+
+/// Emit an ECMA BigInt binary operation on `[a, b]`, leaving a BigInt.
+/// See [`emit_bigint_cmp`] for why this is a host call and not `i64.*`.
+fn emit_bigint_binop(chunk: &mut Chunk, name: &str, line: u32) {
+    let op = chunk.add_import("ecma:bigint", name);
+    call2(chunk, op, line); // [a, b] -> BigInt
+}
+
+/// Emit ECMA BigInt unary negation on `[a]`. The arms spelled this `0n - a`
+/// with `i64.sub`; §6.1.6.2.1 BigInt::unaryMinus is one host operation.
+fn emit_bigint_neg(chunk: &mut Chunk, line: u32) {
+    let op = chunk.add_import("ecma:bigint", "neg");
+    call1(chunk, op, line); // [a] -> BigInt
+}
+
+/// Emit `0n`. ECMA-262 §7.1.2 ToBoolean is "false when the BigInt is `0n`",
+/// so the truthiness arms need a zero to compare against — and with no
+/// `fromI64` they cannot conjure one from an `i64.const`.
+fn emit_bigint_zero(chunk: &mut Chunk, line: u32) {
+    i32_const(chunk, 0, line);
+    let ctor = chunk.add_import("ecma:bigint", "BigInt");
+    call1(chunk, ctor, line); // 0 -> 0n
+}
+
+/// The `ecma:bigint` spelling of a relational operator — the host twin of
+/// [`i64_cmp_op`], which is now only for real i64 operands.
+fn bigint_cmp_name(op: &CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "lt",
+        CmpOp::Gt => "gt",
+        CmpOp::Le => "le",
+        CmpOp::Ge => "ge",
+    }
 }
 
 fn i32_const(chunk: &mut Chunk, v: i32, line: u32) {
@@ -119,6 +187,25 @@ fn emit_both_object_field_present(
     chunk.emit_op(Op::I32_AND, line);
 }
 
+/// ECMA-262 §7.1.4 ToNumber, as a value-ABI expression.
+///
+/// ⛔ EVERY ARM YIELDS A NUMBER, SO EVERY BLOCK IS `(result externref)` —
+/// `emit_if_value`, not `emit_if`. A bare `emit_if` declares `(0,0)`, which
+/// the VM tolerates (blocks share one operand stack) and WASM rejects with
+/// `values remaining on stack at end of block`.
+///
+/// The arms produce RAW f64s (`f64.const`, `f64.convert_i32_s`,
+/// `js-number.toF64`); the writer boxes each onto the value ABI at the block
+/// boundary and the consuming f64 op unboxes both operands again — the same
+/// round trip `f64.lt` already performs. That is why this needs no raw-f64
+/// block kind alongside `block_i32_results`: the value ABI already carries it.
+///
+/// The result is therefore a boxed NUMBER VALUE, not a bare f64, and no caller
+/// needs to change: an `f64` instruction has its operands unboxed by the
+/// writer, and an import declared `(param f64)` — `wasm:js-string.fromF64`,
+/// `wasm:js-number.fromF64` — has its argument unboxed at the call site by
+/// `emit_unbox_raw_params`. Raw is not expressible across a block or a call
+/// boundary here, and it does not need to be.
 fn emit_js_to_number_f64(
     chunk: &mut Chunk,
     slot: u16,
@@ -132,19 +219,19 @@ fn emit_js_to_number_f64(
         let idx = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(idx, 1, line);
     }
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     f64_const(chunk, f64::NAN, line);
     chunk.emit_else(line);
 
     load(chunk, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     f64_const(chunk, 0.0, line);
     chunk.emit_else(line);
 
     load(chunk, slot, line);
     call1(chunk, test_bool, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     load(chunk, slot, line);
     call1(chunk, cast_bool, line);
     chunk.emit_op(Op::F64_FROM_I32, line);
@@ -162,6 +249,21 @@ fn emit_js_to_number_f64(
 /// Truthy coercion — ECMA-262 §7.1.2 ToBoolean.
 /// Stack: [v] → [i32: 0 or 1]
 /// Uses WASM structured control flow: Op::IF / Op::ELSE / Op::END.
+///
+/// ⛔ **THE NAME LIES ABOUT THE DIRECTION, AND IT IS NOT THE INVERSE OF
+/// [`emit_i32_to_bool`].** Read the two together:
+///
+/// | helper | in | out | means |
+/// |---|---|---|---|
+/// | `emit_dyn_to_bool`  | any value | **i32** | ToBoolean — *narrow to a condition* |
+/// | `emit_i32_to_bool`  | i32       | **`Value::Bool`** | *widen to a real boolean* |
+///
+/// So this one is right in a CONDITION position and wrong in a VALUE position:
+/// using it to "make a boolean" leaves a **number**. That is exactly how
+/// `c instanceof C` came to print `1` with `typeof` reporting `"number"` —
+/// three rebuilds were spent blaming js-specific rendering for a helper that
+/// was doing precisely what it says on the tin. If what you need is a value
+/// ECMA-262 calls a `boolean`, you want [`emit_i32_to_bool`].
 pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     let slots = alloc_locals(chunk, 2);
     let v = slots;
@@ -180,14 +282,14 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     // null / undefined → false
     load(chunk, v, line);
     chunk.emit_op(Op::REF_IS_NULL, line); // i32: 1 if null
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     i32_const(chunk, 0, line);
     chunk.emit_else(line);
 
     // boolean? — cast_bool returns i32 (1=true, 0=false) for a known Bool value
     load(chunk, v, line);
     call1(chunk, test_bool, line); // i32: 1 if bool
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, v, line);
     call1(chunk, cast_bool, line); // Bool → i32
     chunk.emit_else(line);
@@ -195,14 +297,14 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     // number?
     load(chunk, v, line);
     call1(chunk, test_num, line); // i32: 1 if number
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, v, line);
     call1(chunk, to_f64, line); // f64
     save(chunk, f, line);
     load(chunk, f, line);
     load(chunk, f, line);
     chunk.emit_op(Op::F64_NE, line); // i32: 1 if NaN (NaN != NaN)
-    chunk.emit_if(line); // NaN → false
+    chunk.emit_if_i32(line); // NaN → false
     i32_const(chunk, 0, line);
     chunk.emit_else(line);
     load(chunk, f, line);
@@ -215,7 +317,7 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     // string?
     load(chunk, v, line);
     call1(chunk, test_str, line); // i32: 1 if string
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, v, line);
     call1(chunk, str_length, line); // i32 length
     i32_const(chunk, 0, line);
@@ -225,10 +327,11 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     // bigint?
     load(chunk, v, line);
     call1(chunk, test_bigint, line); // i32: 1 if bigint
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
+    // §7.1.2 ToBoolean: a BigInt is falsy exactly when it is `0n`.
     load(chunk, v, line);
-    i64_const(chunk, 0, line);
-    chunk.emit_op(Op::I64_NE, line); // i32: 1 if nonzero
+    emit_bigint_zero(chunk, line);
+    emit_bigint_cmp(chunk, "ne", line);
     chunk.emit_else(line);
     i32_const(chunk, 1, line); // object / symbol → truthy
     chunk.emit_end(line);
@@ -251,13 +354,13 @@ pub fn emit_lua_to_bool(chunk: &mut Chunk, line: u32) {
 
     load(chunk, v, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     i32_const(chunk, 0, line);
     chunk.emit_else(line);
 
     load(chunk, v, line);
     call1(chunk, test_bool, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, v, line);
     call1(chunk, cast_bool, line);
     chunk.emit_else(line);
@@ -298,11 +401,11 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     // a is null/undefined?
     load(chunk, a_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line); // i32
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     // a is null → true iff b is also null
     load(chunk, b_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line); // i32
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     i32_const(chunk, 1, line); // both null → equal
     chunk.emit_else(line);
     i32_const(chunk, 0, line); // a null, b not → not equal
@@ -316,7 +419,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_num, line);
     chunk.emit_op(Op::I32_AND, line); // i32: 1 if both numbers
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
@@ -330,7 +433,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_str, line);
     chunk.emit_op(Op::I32_AND, line); // i32: 1 if both strings
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     call2(chunk, str_eq, line);
@@ -342,7 +445,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_bool, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     // cast_bool(v) → i32 (1=true, 0=false) for known Bool values
     load(chunk, a_slot, line);
     call1(chunk, cast_bool, line);
@@ -357,10 +460,10 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_bigint, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
-    chunk.emit_op(Op::I64_EQ, line);
+    emit_bigint_cmp(chunk, "eq", line);
     chunk.emit_else(line);
     // DateTime-like comparable objects carry a numeric `__time` field.
     emit_both_object_field_present(
@@ -372,7 +475,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
         "Ticks",
         line,
     );
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_time_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_time_slot, line);
@@ -425,7 +528,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
         let idx = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(idx, 1, line);
     }
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, b_slot, line);
     {
         let idx = chunk.add_import("wasm:js-undefined", "test");
@@ -434,7 +537,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_else(line);
 
     emit_slot_is_null_only(chunk, a_slot, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     emit_slot_is_null_only(chunk, b_slot, line);
     chunk.emit_else(line);
 
@@ -443,7 +546,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_num, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
@@ -456,7 +559,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_str, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     call2(chunk, str_eq, line);
@@ -467,7 +570,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_bool, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     call1(chunk, cast_bool, line);
     load(chunk, b_slot, line);
@@ -480,10 +583,10 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     call1(chunk, test_bigint, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
-    chunk.emit_op(Op::I64_EQ, line);
+    emit_bigint_cmp(chunk, "eq", line);
     chunk.emit_else(line);
 
     load(chunk, a_slot, line);
@@ -563,7 +666,7 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     load(chunk, b_slot, line);
     call1(chunk, test_num, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
@@ -577,7 +680,7 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     load(chunk, b_slot, line);
     call1(chunk, test_str, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     call2(chunk, str_compare, line); // i32 (-1/0/1)
@@ -591,10 +694,10 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     load(chunk, b_slot, line);
     call1(chunk, test_bigint, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
-    chunk.emit_op(i64_cmp_op(&op), line);
+    emit_bigint_cmp(chunk, bigint_cmp_name(&op), line);
     chunk.emit_else(line);
     // DateTime-like comparable objects carry a numeric `__time` field.
     emit_both_object_field_present(
@@ -606,7 +709,7 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
         "Ticks",
         line,
     );
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_time_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_time_slot, line);
@@ -621,6 +724,12 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
+    // ⛔ EVERY ARM OF THIS LADDER ENDS IN AN i32 COMPARISON, so every
+    // block here is `(result i32)` — `emit_if_i32`, not `emit_if`. A bare
+    // `emit_if` declares `(0,0)`: the VM tolerates it (one shared operand
+    // stack), WASM does not (`values remaining on stack at end of block`),
+    // and the writer, seeing no i32 marking, boxed each arm's raw i32 into
+    // an externref the void block could not carry either.
     // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions
 }
 
@@ -693,7 +802,7 @@ fn emit_js_relational_cmp(
         // Only the UNKNOWN side is asked; the `i32.and` goes with the other.
         load(chunk, if a_known_num { b_slot } else { a_slot }, line);
         call1(chunk, test_num, line);
-        chunk.emit_if(line);
+        chunk.emit_if_i32(line);
         load(chunk, a_slot, line);
         if !a_known_num {
             call1(chunk, to_f64, line);
@@ -738,7 +847,7 @@ fn emit_js_relational_cmp(
     load(chunk, b_slot, line);
     call1(chunk, test_num, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
@@ -752,7 +861,7 @@ fn emit_js_relational_cmp(
     load(chunk, b_slot, line);
     call1(chunk, test_str, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     call2(chunk, str_compare, line); // i32 (-1/0/1)
@@ -766,10 +875,10 @@ fn emit_js_relational_cmp(
     load(chunk, b_slot, line);
     call1(chunk, test_bigint, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
-    chunk.emit_op(i64_cmp_op(&op), line);
+    emit_bigint_cmp(chunk, bigint_cmp_name(&op), line);
     chunk.emit_else(line);
     // fallback: ToNumber both (NaN-safe), compare as f64.
     load(chunk, a_slot, line);
@@ -838,11 +947,21 @@ fn emit_to_primitive_in_place(chunk: &mut Chunk, slot: u16, line: u32) {
         crate::primitives::instructions::recipes::is_object(chunk, line);
         chunk.emit_if(line);
 
-        let key = chunk.add_constant(Value::String(Arc::from(
-            vybe_ast::protocol_slot_key(protocol_slot).as_str(),
-        )));
+        // ⛔ WAS `add_constant(protocol_slot_key(..))` — see §2a; the owner
+        // holds the spelling, callers hold the BINDING.
+        let key = crate::primitives::class_slots::resolve_interned(
+            chunk,
+            &crate::primitives::class_slots::ClassSlot::Slot(protocol_slot),
+            &crate::primitives::class_slots::PlainNames,
+        );
         load(chunk, slot, line);
-        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        crate::primitives::class_slots::emit_class_get(
+            chunk,
+            crate::primitives::class_slots::ObjSource::Stack,
+            &key,
+            crate::primitives::class_slots::Dest::Stack,
+            line,
+        );
         chunk.emit_op_u16(Op::LOCAL_SET, method, line);
 
         load(chunk, method, line);
@@ -902,7 +1021,7 @@ fn emit_add_operand_as_string(
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     load(chunk, slot, line);
     call1(chunk, test_str, line); // i32: 1 if already string
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     load(chunk, slot, line);
     call1(chunk, str_cast, line);
     chunk.emit_else(line);
@@ -1036,7 +1155,7 @@ fn emit_dyn_add_inner(
     if !a_known_num && !b_known_num {
         chunk.emit_op(Op::I32_OR, line); // i32: 1 if either is string
     }
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     emit_add_operand_as_string(chunk, a_slot, a_known_num, bool_text, line);
     emit_add_operand_as_string(chunk, b_slot, b_known_num, bool_text, line);
     call2(chunk, str_concat, line);
@@ -1051,10 +1170,10 @@ fn emit_dyn_add_inner(
         load(chunk, b_slot, line);
         call1(chunk, test_bigint, line);
         chunk.emit_op(Op::I32_AND, line);
-        chunk.emit_if(line);
+        chunk.emit_if_value(line);
         load(chunk, a_slot, line);
         load(chunk, b_slot, line);
-        chunk.emit_op(Op::I64_ADD, line);
+        emit_bigint_binop(chunk, "add", line);
         chunk.emit_else(line);
     }
     // number + number (or coerce) → f64.add
@@ -1084,10 +1203,9 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
     // bigint → i64 negation
     load(chunk, v, line);
     call1(chunk, test_bigint, line); // i32: 1 if bigint
-    chunk.emit_if(line);
-    i64_const(chunk, 0, line);
+    chunk.emit_if_value(line);
     load(chunk, v, line);
-    chunk.emit_op(Op::I64_SUB, line);
+    emit_bigint_neg(chunk, line);
     chunk.emit_else(line);
     // number → f64 negation
     emit_js_to_number_f64(chunk, v, to_f64, test_bool, cast_bool, line);
@@ -1127,27 +1245,27 @@ pub fn emit_dyn_to_bool_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) 
 
     load(code, v, line);
     code.emit_op(Op::REF_IS_NULL, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     i32_const(code, 0, line);
     code.emit_else(line);
 
     load(code, v, line);
     call1(code, test_bool, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, v, line);
     call1(code, cast_bool, line); // Bool → i32
     code.emit_else(line);
 
     load(code, v, line);
     call1(code, test_num, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, v, line);
     call1(code, to_f64, line);
     save(code, f, line);
     load(code, f, line);
     load(code, f, line);
     code.emit_op(Op::F64_NE, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     i32_const(code, 0, line);
     code.emit_else(line);
     load(code, f, line);
@@ -1158,7 +1276,7 @@ pub fn emit_dyn_to_bool_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) 
 
     load(code, v, line);
     call1(code, test_str, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, v, line);
     call1(code, str_length, line);
     i32_const(code, 0, line);
@@ -1167,10 +1285,10 @@ pub fn emit_dyn_to_bool_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) 
 
     load(code, v, line);
     call1(code, test_bigint, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, v, line);
-    i64_const(code, 0, line);
-    code.emit_op(Op::I64_NE, line);
+    emit_bigint_zero(code, line);
+    emit_bigint_cmp(code, "ne", line);
     code.emit_else(line);
     i32_const(code, 1, line);
     code.emit_end(line);
@@ -1206,10 +1324,10 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
     load(code, a_slot, line);
     code.emit_op(Op::REF_IS_NULL, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, b_slot, line);
     code.emit_op(Op::REF_IS_NULL, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     i32_const(code, 1, line);
     code.emit_else(line);
     i32_const(code, 0, line);
@@ -1221,7 +1339,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_num, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     call1(code, to_f64, line);
     load(code, b_slot, line);
@@ -1234,7 +1352,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_str, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
     call2(code, str_eq, line);
@@ -1245,7 +1363,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_bool, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     call1(code, cast_bool, line); // Bool → i32
     load(code, b_slot, line);
@@ -1258,10 +1376,10 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_bigint, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
-    code.emit_op(Op::I64_EQ, line);
+    emit_bigint_cmp(code, "eq", line);
     code.emit_else(line);
     emit_both_object_field_present(
         code,
@@ -1272,7 +1390,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
         "Ticks",
         line,
     );
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_time_slot, line);
     call1(code, to_f64, line);
     load(code, b_time_slot, line);
@@ -1319,7 +1437,7 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     load(code, b_slot, line);
     call1(code, test_num, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     call1(code, to_f64, line);
     load(code, b_slot, line);
@@ -1332,7 +1450,7 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     load(code, b_slot, line);
     call1(code, test_str, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
     call2(code, str_compare, line);
@@ -1345,10 +1463,10 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     load(code, b_slot, line);
     call1(code, test_bigint, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
-    code.emit_op(i64_cmp_op(&op), line);
+    emit_bigint_cmp(code, bigint_cmp_name(&op), line);
     code.emit_else(line);
     emit_both_object_field_present(
         code,
@@ -1359,7 +1477,7 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
         "Ticks",
         line,
     );
-    code.emit_if(line);
+    code.emit_if_i32(line);
     load(code, a_time_slot, line);
     call1(code, to_f64, line);
     load(code, b_time_slot, line);
@@ -1412,10 +1530,10 @@ pub fn emit_dyn_add_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_str, line);
     code.emit_op(Op::I32_OR, line);
-    code.emit_if(line);
+    code.emit_if_value(line);
     load(code, a_slot, line);
     call1(code, test_str, line);
-    code.emit_if(line);
+    code.emit_if_value(line);
     load(code, a_slot, line);
     call1(code, str_cast, line);
     code.emit_else(line);
@@ -1424,7 +1542,7 @@ pub fn emit_dyn_add_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_end(line);
     load(code, b_slot, line);
     call1(code, test_str, line);
-    code.emit_if(line);
+    code.emit_if_value(line);
     load(code, b_slot, line);
     call1(code, str_cast, line);
     code.emit_else(line);
@@ -1439,10 +1557,10 @@ pub fn emit_dyn_add_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     call1(code, test_bigint, line);
     code.emit_op(Op::I32_AND, line);
-    code.emit_if(line);
+    code.emit_if_value(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
-    code.emit_op(Op::I64_ADD, line);
+    emit_bigint_binop(code, "add", line);
     code.emit_else(line);
     emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
     emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
@@ -1465,10 +1583,9 @@ pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
     load(code, v, line);
     call1(code, test_bigint, line);
-    code.emit_if(line);
-    i64_const(code, 0, line);
+    code.emit_if_value(line);
     load(code, v, line);
-    code.emit_op(Op::I64_SUB, line);
+    emit_bigint_neg(code, line);
     code.emit_else(line);
     emit_js_to_number_f64(code, v, to_f64, test_bool, cast_bool, line);
     code.emit_op(Op::F64_NEG, line);

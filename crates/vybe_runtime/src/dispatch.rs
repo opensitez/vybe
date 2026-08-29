@@ -3708,7 +3708,7 @@ impl VM {
             _ => return Err(VMError::new("trap: expected array reference")),
         };
         if start > end || end > elems.len() {
-            return Err(VMError::new("trap: array access out of bounds"));
+            return Err(VMError::new("trap: out of bounds array access"));
         }
         Ok(elems[start..end]
             .iter()
@@ -3860,7 +3860,7 @@ impl VM {
         let idx = value.as_i64();
         if idx < 0 {
             return Err(VMError::new(format!(
-                "trap: {context} negative table index"
+                "trap: out of bounds table access ({context}: negative index)"
             )));
         }
         usize::try_from(idx).map_err(|_| VMError::new(format!("trap: {context} index too large")))
@@ -4129,7 +4129,7 @@ impl VM {
                         // `struct.new` / `struct.new_default` put its values.
                         let obj = self.pop();
                         if obj.is_null_ref() {
-                            return Err(VMError::new("trap: struct.get on null reference"));
+                            return Err(VMError::new("trap: null structure reference (struct.get)"));
                         }
                         let val = match &obj {
                             Value::Object(o) => o
@@ -4152,7 +4152,7 @@ impl VM {
                     // (a GC reference) traps; a plain null — a dynamic-language
                     // `obj.field` on null — stays lenient (handled below).
                     if matches!(obj, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: struct.get on null reference"));
+                        return Err(VMError::new("trap: null structure reference (struct.get)"));
                     }
                     // Auto-join thread when accessing .result on a Task/Thread object
                     if let Value::Object(ref o) = obj {
@@ -4245,7 +4245,7 @@ impl VM {
                         let val = self.pop();
                         let obj = self.pop();
                         if obj.is_null_ref() {
-                            return Err(VMError::new("trap: struct.set on null reference"));
+                            return Err(VMError::new("trap: null structure reference (struct.set)"));
                         }
                         match &obj {
                             Value::Object(o) => {
@@ -4290,7 +4290,7 @@ impl VM {
                     // WASM GC `struct.set` traps on a typed null (GC ref); a plain
                     // null (dynamic-language write) stays lenient.
                     if matches!(obj, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: struct.set on null reference"));
+                        return Err(VMError::new("trap: null structure reference (struct.set)"));
                     }
                     if let Value::Object(o) = &obj {
                         // Check for setter: __set_{name}. Property setters
@@ -4345,7 +4345,7 @@ impl VM {
                     // WASM GC `array.get` traps on a typed null (GC array ref);
                     // a plain null (dynamic subscript) stays lenient.
                     if matches!(obj, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.get on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.get)"));
                     }
                     match &obj {
                         Value::Object(o) => {
@@ -4371,7 +4371,7 @@ impl VM {
                                         }
                                         _ => {
                                             return Err(VMError::new(
-                                                "trap: array.get out of bounds",
+                                                "trap: out of bounds array access (array.get)",
                                             ));
                                         }
                                     }
@@ -4499,7 +4499,7 @@ impl VM {
                     // WASM GC `array.set` traps on a typed null (GC array ref);
                     // a plain null (dynamic subscript) stays lenient.
                     if matches!(obj, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.set on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.set)"));
                     }
                     if let Value::Object(o) = &obj {
                         // WASM GC `array.set`: spec (trap on out-of-bounds).
@@ -4518,7 +4518,7 @@ impl VM {
                                         continue;
                                     }
                                     _ => {
-                                        return Err(VMError::new("trap: array.set out of bounds"));
+                                        return Err(VMError::new("trap: out of bounds array access (array.set)"));
                                     }
                                 }
                             }
@@ -4921,7 +4921,7 @@ impl VM {
                     let val = table
                         .get(idx)
                         .cloned()
-                        .ok_or_else(|| VMError::new("trap: table.get out of bounds"))?;
+                        .ok_or_else(|| VMError::new("trap: out of bounds table access (table.get)"))?;
                     self.push(val)?;
                 }
                 // `table.set tbl` — pop value + index, write into table.
@@ -4938,7 +4938,7 @@ impl VM {
                         .table_mut(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
                     if idx >= table.len() {
-                        return Err(VMError::new("trap: table.set out of bounds"));
+                        return Err(VMError::new("trap: out of bounds table access (table.set)"));
                     }
                     table[idx] = val;
                 }
@@ -5311,6 +5311,55 @@ impl VM {
                     let argc = self.read_byte() as usize;
                     let ci = self.frame().chunk_index;
                     let tag = self.resolve_chunk_call_tag(ci, name_idx)?;
+                    // "…where `[to*]` is a SUBTYPE OF THE RESULT TYPE OF THE
+                    // FUNCTION CONTAINING THIS INSTRUCTION" — Design
+                    // §Instructions. A tail call hands the callee's results
+                    // straight to THIS function's caller, so they have to be
+                    // results this function was allowed to return. Nothing
+                    // checked it: a func declaring no results tail-called a tag
+                    // yielding `[i32]` and the module was accepted.
+                    //
+                    // ⚠ HONEST LIMIT: runtime types are erased here — a
+                    // `CallTagDef`'s signature IS its arity (`params`/`results`,
+                    // and the struct says so) — so this enforces the ARITY half
+                    // of the subtype relation, not element-wise subtyping. It
+                    // catches the shape the proposal names and would not catch
+                    // `[i32]` against `[i64]`. A full check belongs at load,
+                    // with declared types, and is a bigger change than the
+                    // instruction it would guard.
+                    if let Some(tag_def) = self.call_tags.get(tag as usize) {
+                        let declared = self.chunks[ci].result_arity;
+                        if tag_def.results != declared {
+                            return Err(VMError::new(format!(
+                                "call_return_with_tag: tag '{}' returns {} result(s), \
+                                 but the containing function declares {declared} — \
+                                 [to*] must be a subtype of the function's result type",
+                                tag_def.debug_name, tag_def.results
+                            )));
+                        }
+                    }
+                    // ⛔ THE "RETURN" HALF WAS NOT IMPLEMENTED. This arm was
+                    // byte-identical to `CALL_WITH_TAG` — it dispatched and kept
+                    // the frame, so the instruction the proposal defines as
+                    // "TAIL calls the given funcref" accumulated one frame per
+                    // call. 200_000 self-calls exhausted the stack; the limit
+                    // sat between 5_000 and 20_000. A genuine tail call has no
+                    // limit, which is what makes the depth the assertion.
+                    //
+                    // Same shape as `RETURN_CALL_REF` above: relocate
+                    // `[args… funcref]` down to this frame's base, drop the
+                    // frame — `pop_frame_for_tail_call` also disarms its
+                    // `try_table` handlers, which a bare `frames.pop()` does not
+                    // — and only then dispatch. Dispatch stays `call_with_tag`
+                    // so the tag check, `func_switch` resolution and the
+                    // fall-back path are the ones already proven.
+                    let old_base = self.frame().base;
+                    let operand_idx = self.stack.len() - argc - 1;
+                    for i in 0..=argc {
+                        self.stack[old_base + i] = self.stack[operand_idx + i].clone();
+                    }
+                    self.stack.truncate(old_base + 1 + argc);
+                    self.pop_frame_for_tail_call();
                     self.call_with_tag(tag, argc)?;
                 }
                 // Multi-value RETURN: the current chunk declares how many
@@ -5731,18 +5780,25 @@ impl VM {
                 Op::ARRAY_NEW_DATA => {
                     let _typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
-                    if self.dropped_data.contains(&dataidx) {
-                        return Err(VMError::new("array.new_data: data segment dropped"));
-                    }
+                    // ⚠ A DROPPED segment is an EMPTY one, not an error of
+                    // its own. The spec drops the payload and leaves the
+                    // segment in place, so the bounds check is what decides:
+                    // a zero-length copy off a dropped segment SUCCEEDS, and
+                    // only a non-zero one traps. Returning early here made
+                    // `(array_init_data 0 0 0)` after `drop_segs` trap, which
+                    // the fixture asserts must return. `MEMORY_INIT` already
+                    // modelled it this way; these did not.
+                    let dropped = self.dropped_data.contains(&dataidx);
                     let size = self.pop().as_i32().max(0) as usize;
                     let offset = self.pop().as_i32().max(0) as usize;
                     let data = self
                         .data_segments
                         .get(dataidx as usize)
-                        .ok_or_else(|| VMError::new("array.new_data: missing data segment"))?;
+                        .ok_or_else(|| VMError::new("trap: array.new_data: missing data segment"))?;
+                    let seg_len = if dropped { 0 } else { data.len() };
                     let end = offset.saturating_add(size);
-                    if end > data.len() {
-                        return Err(VMError::new("trap: array.new_data: out of bounds"));
+                    if end > seg_len {
+                        return Err(VMError::new("trap: out of bounds memory access (array.new_data)"));
                     }
                     let elems = data[offset..end]
                         .iter()
@@ -5753,18 +5809,25 @@ impl VM {
                 Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
                     let elemidx = self.read_u16() as u32;
-                    if self.dropped_elems.contains(&elemidx) {
-                        return Err(VMError::new("array.new_elem: element segment dropped"));
-                    }
+                    // ⚠ A DROPPED segment is an EMPTY one, not an error of
+                    // its own. The spec drops the payload and leaves the
+                    // segment in place, so the bounds check is what decides:
+                    // a zero-length copy off a dropped segment SUCCEEDS, and
+                    // only a non-zero one traps. Returning early here made
+                    // `(array_init_data 0 0 0)` after `drop_segs` trap, which
+                    // the fixture asserts must return. `MEMORY_INIT` already
+                    // modelled it this way; these did not.
+                    let dropped = self.dropped_elems.contains(&elemidx);
                     let size = self.pop().as_i32().max(0) as usize;
                     let offset = self.pop().as_i32().max(0) as usize;
                     let elems = self
                         .elem_segments
                         .get(elemidx as usize)
-                        .ok_or_else(|| VMError::new("array.new_elem: missing element segment"))?;
+                        .ok_or_else(|| VMError::new("trap: array.new_elem: missing element segment"))?;
+                    let seg_len = if dropped { 0 } else { elems.len() };
                     let end = offset.saturating_add(size);
-                    if end > elems.len() {
-                        return Err(VMError::new("trap: array.new_elem: out of bounds"));
+                    if end > seg_len {
+                        return Err(VMError::new("trap: out of bounds table access (array.new_elem)"));
                     }
                     self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems[offset..end].to_vec(),
@@ -5792,7 +5855,7 @@ impl VM {
                     // packed-field read could never fail — unlike `array.get`
                     // directly above, which has always trapped.
                     if matches!(arr, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.get on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.get)"));
                     }
                     let gc_len = match &arr {
                         Value::Object(o) if self.is_gc_array_obj(o) => {
@@ -5805,7 +5868,7 @@ impl VM {
                     };
                     if let Some(len) = gc_len {
                         if raw_idx < 0 || raw_idx as usize >= len {
-                            return Err(VMError::new("trap: array.get out of bounds"));
+                            return Err(VMError::new("trap: out of bounds array access (array.get)"));
                         }
                     }
                     let idx = raw_idx.max(0) as usize;
@@ -5871,9 +5934,8 @@ impl VM {
                 Op::ARRAY_INIT_DATA => {
                     let _typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
-                    if self.dropped_data.contains(&dataidx) {
-                        return Err(VMError::new("array.init_data: data segment dropped"));
-                    }
+                    // A dropped segment is an EMPTY one — see ARRAY_NEW_DATA.
+                    let dropped = self.dropped_data.contains(&dataidx);
                     let size = self.pop().as_i32().max(0) as usize;
                     let src_offset = self.pop().as_i32().max(0) as usize;
                     let dst_offset = self.pop().as_i32().max(0) as usize;
@@ -5881,12 +5943,13 @@ impl VM {
                     let data = self
                         .data_segments
                         .get(dataidx as usize)
-                        .ok_or_else(|| VMError::new("array.init_data: missing data segment"))?
+                        .ok_or_else(|| VMError::new("trap: array.init_data: missing data segment"))?
                         .clone();
+                    let seg_len = if dropped { 0 } else { data.len() };
                     let check_src = |elem_size: usize| -> Result<(), VMError> {
                         let end = src_offset.saturating_add(size.saturating_mul(elem_size));
-                        if end > data.len() {
-                            return Err(VMError::new("trap: array.init_data: source out of bounds"));
+                        if end > seg_len {
+                            return Err(VMError::new("trap: out of bounds memory access (array.init_data source)"));
                         }
                         Ok(())
                     };
@@ -5906,13 +5969,18 @@ impl VM {
                         let mut o = obj.lock().unwrap();
                         match &mut o.kind {
                             ObjectKind::Array(elems) => {
-                                check_src(elem_size)?;
+                                // ⚠ DESTINATION FIRST. When both ends
+                                // overrun, the fixtures name the ARRAY:
+                                // `array_init_data (0,0,13)` into a 12-element
+                                // array off a 12-byte segment expects "out of
+                                // bounds array access", not the memory one.
                                 let dst_end = dst_offset.saturating_add(size);
                                 if dst_end > elems.len() {
                                     return Err(VMError::new(
-                                        "array.init_data: destination out of bounds",
+                                        "trap: out of bounds array access (array.init_data destination)",
                                     ));
                                 }
+                                check_src(elem_size)?;
                                 for i in 0..size {
                                     let base = src_offset + i * elem_size;
                                     elems[dst_offset + i] =
@@ -5921,31 +5989,30 @@ impl VM {
                             }
                             ObjectKind::TypedArray(ta) => {
                                 let elem_size = ta.elem.bytes_per_element();
-                                check_src(elem_size)?;
                                 let dst_end = dst_offset.saturating_add(size);
                                 if dst_end > typed_array_live_length(ta) {
                                     return Err(VMError::new(
-                                        "array.init_data: destination out of bounds",
+                                        "trap: out of bounds array access (array.init_data destination)",
                                     ));
                                 }
+                                check_src(elem_size)?;
                                 for i in 0..size {
                                     let base = src_offset + i * elem_size;
                                     let v = decode_typed_le(ta.elem, &data[base..base + elem_size]);
                                     typed_array_write(ta, dst_offset + i, &v);
                                 }
                             }
-                            _ => return Err(VMError::new("array.init_data: not an array")),
+                            _ => return Err(VMError::new("trap: null array reference (array.init_data)")),
                         }
                     } else {
-                        return Err(VMError::new("array.init_data: not an array"));
+                        return Err(VMError::new("trap: null array reference (array.init_data)"));
                     }
                 }
                 Op::ARRAY_INIT_ELEM => {
                     let _typeidx = self.read_u16();
                     let elemidx = self.read_u16() as u32;
-                    if self.dropped_elems.contains(&elemidx) {
-                        return Err(VMError::new("array.init_elem: element segment dropped"));
-                    }
+                    // A dropped segment is an EMPTY one — see ARRAY_NEW_DATA.
+                    let dropped = self.dropped_elems.contains(&elemidx);
                     let size = self.pop().as_i32().max(0) as usize;
                     let src_offset = self.pop().as_i32().max(0) as usize;
                     let dst_offset = self.pop().as_i32().max(0) as usize;
@@ -5953,27 +6020,33 @@ impl VM {
                     let source = self
                         .elem_segments
                         .get(elemidx as usize)
-                        .ok_or_else(|| VMError::new("array.init_elem: missing element segment"))?;
+                        .ok_or_else(|| VMError::new("trap: array.init_elem: missing element segment"))?;
+                    let seg_len = if dropped { 0 } else { source.len() };
                     let src_end = src_offset.saturating_add(size);
-                    if src_end > source.len() {
-                        return Err(VMError::new("trap: array.init_elem: source out of bounds"));
-                    }
+                    // ⚠ The DESTINATION check is inside the object match below
+                    // and runs FIRST when both ends overrun — see ARRAY_INIT_DATA.
+                    let src_oob = src_end > seg_len;
                     if let Value::Object(obj) = array {
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(elems) = &mut o.kind {
                             let dst_end = dst_offset.saturating_add(size);
                             if dst_end > elems.len() {
                                 return Err(VMError::new(
-                                    "array.init_elem: destination out of bounds",
+                                    "trap: out of bounds array access (array.init_elem destination)",
+                                ));
+                            }
+                            if src_oob {
+                                return Err(VMError::new(
+                                    "trap: out of bounds table access (array.init_elem source)",
                                 ));
                             }
                             elems[dst_offset..dst_end]
                                 .clone_from_slice(&source[src_offset..src_end]);
                         } else {
-                            return Err(VMError::new("array.init_elem: not an array"));
+                            return Err(VMError::new("trap: null array reference (array.init_elem)"));
                         }
                     } else {
-                        return Err(VMError::new("array.init_elem: not an array"));
+                        return Err(VMError::new("trap: null array reference (array.init_elem)"));
                     }
                 }
                 // `struct.new_default $t` — no operands on the stack; the
@@ -6135,14 +6208,43 @@ impl VM {
                 // either way; the reference stays for both the branch and the
                 // fallthrough.
                 Op::BR_ON_CAST_DESC_EQ | Op::BR_ON_CAST_DESC_EQ_FAIL => {
-                    let _typeidx = self.read_u16();
+                    // `ht_2` (target) then `ht_1` (source), then the label
+                    // depth. `ht_1` is carried for the WRITER — it is one of
+                    // this instruction's spec immediates and the binary is
+                    // wrong without it — and is not consulted here, because
+                    // nothing at run time depends on the static source type.
+                    let to_idx = self.read_u16();
+                    let _from_idx = self.read_u16();
                     let depth = self.read_byte() as usize;
+                    // ⛔ A NULL REFERENCE MATCHES A NULLABLE TARGET.
+                    //
+                    // This read `matched = !val.is_null_ref() && …`, so a null
+                    // reference never matched even against `(ref null ht_2)`,
+                    // which the spec requires it to. That is exactly why the
+                    // wast walker LOWERED this instruction into
+                    // `ref.is_null` + `if`/`else` instead of emitting it — the
+                    // lowering was the only correct implementation available,
+                    // not laziness. Nullability rides in the target's spelling.
+                    let target_nullable = self
+                        .frames
+                        .last()
+                        .and_then(|f| self.chunks.get(f.chunk_index))
+                        .and_then(|c| c.constants.get(to_idx as usize))
+                        .map(|v| v.to_string())
+                        .is_some_and(|n| {
+                            let n = n.trim_start_matches('(').trim();
+                            n.starts_with("ref null") || n.starts_with("null ")
+                        });
                     let expected = self.pop();
                     if expected.is_null_ref() {
                         return Err(VMError::new("trap: null descriptor reference"));
                     }
                     let val = self.peek(0).clone();
-                    let matched = !val.is_null_ref() && ref_eq(&descriptor_of(&val), &expected);
+                    let matched = if val.is_null_ref() {
+                        target_nullable
+                    } else {
+                        ref_eq(&descriptor_of(&val), &expected)
+                    };
                     let take = if op == Op::BR_ON_CAST_DESC_EQ {
                         matched
                     } else {
@@ -6188,7 +6290,7 @@ impl VM {
                     let val = self.peek(0).clone();
                     if !val.is_null_ref() && !self.ref_test_or_declared_name(&val, ht) {
                         return Err(VMError::new(&format!(
-                            "trap: ref.cast_null failed: value is not {}",
+                            "trap: cast failure: value is not {}",
                             self.heaptype_label(ht)
                         )));
                     }
@@ -6296,6 +6398,27 @@ impl VM {
                     };
                     self.push(wasm_bool(result))?;
                 }
+                // VM-internal (`desc.set_proto`). The descriptor singleton is a
+                // WASM-GC construct that only exists in the emitted binary —
+                // this interpreter resolves prototypes through its own object
+                // model and never reads descriptor field 0. So the VM's whole
+                // job here is to keep the stack honest: consume the prototype
+                // the class path pushed, and read the immediate so the
+                // instruction stream stays in sync.
+                //
+                // ⛔ That means field 0 is NOT observable from this
+                // interpreter, and no test run under it can check the write.
+                // The check is at the BINARY level (`-w`, then decode) for
+                // exactly this reason.
+                Op::DESC_SET_PROTO => {
+                    // U16, not a LEB: the compiler writes it with `emit_u16`
+                    // and the writer reads it with `read_u16`. All three sides
+                    // of the operand contract must agree or the instruction
+                    // stream desynchronises — which it did, as
+                    // "Unhandled opcode: unknown".
+                    let _name_idx = self.read_u16();
+                    let _proto = self.pop();
+                }
                 Op::REF_CAST_EXACT | Op::REF_CAST_EXACT_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
@@ -6322,7 +6445,7 @@ impl VM {
                         // uncaught: the spec says `ref.cast` TRAPS, and a trap
                         // has to be catchable like every other one.
                         return Err(VMError::new(&format!(
-                            "trap: ref.cast failed: value is not {}",
+                            "trap: cast failure: value is not {}",
                             self.heaptype_label(ht)
                         )));
                     }
@@ -6370,7 +6493,7 @@ impl VM {
                     // genuine `ref.i31 0`.
                     let raw = self.pop();
                     if raw.is_null_ref() {
-                        return Err(VMError::new("trap: i31.get_s on null reference"));
+                        return Err(VMError::new("trap: null i31 reference (i31.get_s)"));
                     }
                     let v = raw.as_i32();
                     // Sign extend from 31 bits
@@ -6384,7 +6507,7 @@ impl VM {
                 Op::I31_GET_U => {
                     let raw = self.pop();
                     if raw.is_null_ref() {
-                        return Err(VMError::new("trap: i31.get_u on null reference"));
+                        return Err(VMError::new("trap: null i31 reference (i31.get_u)"));
                     }
                     self.push(Value::I32(raw.as_i32() & 0x7FFF_FFFF))?;
                 }
@@ -6469,7 +6592,7 @@ impl VM {
                         _ => return Err(VMError::new("trap: expected array reference")),
                     };
                     if start.saturating_add(units.len()) > elems.len() {
-                        return Err(VMError::new("trap: array access out of bounds"));
+                        return Err(VMError::new("trap: out of bounds array access"));
                     }
                     for (i, u) in units.iter().enumerate() {
                         elems[start + i] = Value::I32(*u as i32);
@@ -6559,7 +6682,7 @@ impl VM {
                         _ => return Err(VMError::new("trap: expected array reference")),
                     };
                     if start.saturating_add(units.len()) > elems.len() {
-                        return Err(VMError::new("trap: array access out of bounds"));
+                        return Err(VMError::new("trap: out of bounds array access"));
                     }
                     for (i, u) in units.iter().enumerate() {
                         elems[start + i] = Value::I32(*u as i32);
@@ -7064,7 +7187,7 @@ impl VM {
                                 || ch.result_arity as usize != expected_results
                             {
                                 return Err(VMError::new(format!(
-                                    "trap: return_call_indirect: signature mismatch \
+                                    "trap: indirect call type mismatch (return_call_indirect) \
                                      (callee {}→{}, expected {}→{})",
                                     ch.param_count, ch.result_arity, argc, expected_results
                                 )));
@@ -7564,7 +7687,7 @@ impl VM {
                     // because `assert_trap` used to ignore its message.
                     if funcref.is_null_ref() || matches!(funcref, Value::Undefined) {
                         return Err(VMError::new(format!(
-                            "trap: uninitialized element: table slot {} is null",
+                            "trap: uninitialized element {} (table slot is null)",
                             raw_idx
                         )));
                     }
@@ -7585,6 +7708,42 @@ impl VM {
                                     ch.param_count, ch.result_arity, argc, expected_results
                                 )));
                             }
+                        }
+                    }
+                    // ▶▶ CALL TAGS, Design §Instructions: "call_indirect
+                    // $table $functype is now shorthand for (call_with_tag
+                    // (call_tag.canon $functype) (table.get $table))".
+                    //
+                    // Without this, plain `call_indirect` bypassed tag checking
+                    // entirely, so a func declaring `(call_tag $t1)` — which by
+                    // the proposal handles EXACTLY $t1 and therefore NOT the
+                    // canonical tag — stayed reachable through the front door.
+                    // That defeats the property the proposal exists for:
+                    // "a funcref called under a convention it does not handle
+                    // STOPS, rather than being called anyway under the wrong
+                    // shape."
+                    //
+                    // The canonical tag is taken from the CALL SITE's static
+                    // `$functype` (argc → expected_results), exactly as the
+                    // shorthand says. An undeclared func handles the canonical
+                    // tag of its own shape, and the type check just above has
+                    // already established that shape equals this one — so
+                    // nothing that works today changes.
+                    let callee_chunk = match &funcref {
+                        Value::Object(o) => match &o.lock().unwrap().kind {
+                            crate::value::ObjectKind::Function(f) => Some(f.chunk_index),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(ci) = callee_chunk {
+                        // Shape key: this instruction's immediates are counts, not types.
+                        let canon = self.call_tag_canon(argc as u8, expected_results as u8, "");
+                        if !self.func_handles_call_tag(ci, canon) {
+                            return Err(VMError::new(format!(
+                                "trap: call_indirect: funcref does not handle the canonical \
+                                 call tag for [{argc}->{expected_results}]"
+                            )));
                         }
                     }
                     let insert_pos = self.stack.len() - argc;
@@ -7626,10 +7785,10 @@ impl VM {
                             .unwrap_or(0)
                     };
                     if src.saturating_add(count) > seg_len {
-                        return Err(VMError::new("trap: memory.init source out of bounds"));
+                        return Err(VMError::new("trap: out of bounds memory access (memory.init source)"));
                     }
                     if dst.saturating_add(count) > self.mem_len(memidx) {
-                        return Err(VMError::new("trap: memory.init destination out of bounds"));
+                        return Err(VMError::new("trap: out of bounds memory access (memory.init destination)"));
                     }
                     if count > 0 {
                         let bytes =
@@ -7702,7 +7861,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
                     let end = dst.saturating_add(count);
                     if end > table.len() {
-                        return Err(VMError::new("trap: table.fill out of bounds"));
+                        return Err(VMError::new("trap: out of bounds table access (table.fill)"));
                     }
                     for i in dst..end {
                         table[i] = value.clone();
@@ -7720,23 +7879,29 @@ impl VM {
                         .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
                     if src.saturating_add(count) > source.len() {
-                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
+                        return Err(VMError::new("trap: out of bounds table access (table.copy)".to_string()));
                     }
                     let values: Vec<Value> = source[src..src + count].to_vec();
                     let destination = self
                         .table_mut(dst_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
                     if dst.saturating_add(count) > destination.len() {
-                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
+                        return Err(VMError::new("trap: out of bounds table access (table.copy)".to_string()));
                     }
                     destination[dst..dst + count].clone_from_slice(&values);
                 }
                 Op::TABLE_INIT => {
                     let elem_idx = self.read_u16() as u32;
                     let table_idx = self.read_u16() as usize;
-                    if self.dropped_elems.contains(&elem_idx) {
-                        return Err(VMError::new("table.init: element segment dropped"));
-                    }
+                    // ⚠ A DROPPED segment is an EMPTY one, not an error of
+                    // its own. The spec drops the payload and leaves the
+                    // segment in place, so the bounds check is what decides:
+                    // a zero-length copy off a dropped segment SUCCEEDS, and
+                    // only a non-zero one traps. Returning early here made
+                    // `(array_init_data 0 0 0)` after `drop_segs` trap, which
+                    // the fixture asserts must return. `MEMORY_INIT` already
+                    // modelled it this way; these did not.
+                    let dropped = self.dropped_elems.contains(&elem_idx);
                     let is64 = self.tbl_is_64(table_idx);
                     let count = self.pop_table_count(is64);
                     let src = self.pop_table_count(is64);
@@ -7744,16 +7909,17 @@ impl VM {
                     let elems = self
                         .elem_segments
                         .get(elem_idx as usize)
-                        .ok_or_else(|| VMError::new("table.init: missing element segment"))?;
-                    if src.saturating_add(count) > elems.len() {
-                        return Err(VMError::new("trap: table.init source out of bounds"));
+                        .ok_or_else(|| VMError::new("trap: table.init: missing element segment"))?;
+                    let seg_len = if dropped { 0 } else { elems.len() };
+                    if src.saturating_add(count) > seg_len {
+                        return Err(VMError::new("trap: out of bounds table access (table.init source)"));
                     }
                     let values: Vec<Value> = elems[src..src + count].to_vec();
                     let table = self
                         .table_mut(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.init unknown table"))?;
                     if dst.saturating_add(count) > table.len() {
-                        return Err(VMError::new("trap: table.init destination out of bounds"));
+                        return Err(VMError::new("trap: out of bounds table access (table.init destination)"));
                     }
                     table[dst..dst + count].clone_from_slice(&values);
                 }
@@ -7792,7 +7958,7 @@ impl VM {
                     let limit = self.mem_len(memidx);
                     if dst.saturating_add(count) > limit {
                         return Err(VMError::new(format!(
-                            "trap: memory access out of bounds: addr={dst} size={count} limit={limit}"
+                            "trap: out of bounds memory access: addr={dst} size={count} limit={limit}"
                         )));
                     }
                     let buf = vec![val; count];
@@ -7806,7 +7972,7 @@ impl VM {
                     let arr = self.pop();
                     // `array.len` takes `(ref null array)` and traps on null.
                     if matches!(arr, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.len on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.len)"));
                     }
                     let len = if let Value::Object(obj) = &arr {
                         let o = obj.lock().unwrap();
@@ -7840,7 +8006,7 @@ impl VM {
                     let start = self.pop().as_i32().max(0) as usize;
                     let arr = self.pop();
                     if matches!(arr, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.fill on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.fill)"));
                     }
                     // `array.fill` traps when the filled region leaves the
                     // array, exactly as `array.copy` does — clamping to the end
@@ -7853,7 +8019,7 @@ impl VM {
                                 _ => 0,
                             };
                             if start + count > len {
-                                return Err(VMError::new("trap: array.fill out of bounds"));
+                                return Err(VMError::new("trap: out of bounds array access (array.fill)"));
                             }
                         }
                     }
@@ -7874,7 +8040,7 @@ impl VM {
                     let dst_off = self.pop().as_i32().max(0) as usize;
                     let dst = self.pop();
                     if matches!(src, Value::TypedNull(_)) || matches!(dst, Value::TypedNull(_)) {
-                        return Err(VMError::new("trap: array.copy on null reference"));
+                        return Err(VMError::new("trap: null array reference (array.copy)"));
                     }
                     // WASM GC `array.copy` traps when the copy region is out of
                     // bounds of a stamped GC array; dynamic-language arrays stay
@@ -7893,7 +8059,7 @@ impl VM {
                             }
                         };
                         if src_off + len > arr_len(&src) || dst_off + len > arr_len(&dst) {
-                            return Err(VMError::new("trap: array.copy out of bounds"));
+                            return Err(VMError::new("trap: out of bounds array access (array.copy)"));
                         }
                     }
                     // Read source slice

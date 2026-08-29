@@ -1033,26 +1033,24 @@ impl Compiler {
             // The global namespace object as a VALUE — the four spellings
             // (`globalThis`, `_G`, `$GLOBALS`, `globals()`) normalized by their
             // walkers into one node.
-            //
-            // ⚠ Only a language with a REAL ECMA global object can hand one
-            // back; `has_ecma_globals` is the gap, not a language difference.
-            // The others reach this node only through `expr_is_global_namespace`
-            // on the member/index paths, which compile to a direct global
-            // access and never need the object itself — so evaluating one HERE
-            // is undefined for them today, exactly as `_G` alone already was.
             ExprKind::GlobalNamespace => {
-                // ONE object for all four spellings. `ecma:globalThis.get` is a
-                // process singleton (ECMA-262 §19.3.1), so `_G`, `$GLOBALS`,
-                // `globals()` and `globalThis` name the same thing — which is
-                // the whole point of normalizing them to one node.
-                //
-                // This used to hand back null unless `has_ecma_globals`, so
-                // `_G` alone evaluated to nil and `pairs(_G)` iterated nothing.
-                // The iteration machinery was never the gap: `pairs`/`foreach`
-                // are fully wired through `generators.rs`, and a plain table
-                // enumerates correctly. The OBJECT was missing.
-                let idx = self.import("ecma:globalThis", "get");
-                self.emit_host_call(idx, 0);
+                if self.profile.has_ecma_globals {
+                    // A REAL global object exists, carries the host-installed
+                    // builtins, and is a process singleton (ECMA-262 §19.3.1),
+                    // so it must be handed back as itself — a rebuilt copy
+                    // would lose `globalThis.Math` and break identity.
+                    let idx = self.import("ecma:globalThis", "get");
+                    self.emit_host_call(idx, 0);
+                } else {
+                    // No such object exists for lua/python/php, so one is built
+                    // from the module's own members. This used to hand back
+                    // null, so `_G` alone evaluated to nil and `pairs(_G)`
+                    // iterated nothing. The iteration machinery was never the
+                    // gap: `pairs`/`foreach` are fully wired through
+                    // `generators.rs` and a plain table enumerates correctly.
+                    // The OBJECT was missing.
+                    self.emit_global_namespace_object();
+                }
             }
 
             ExprKind::Super => {
@@ -1228,16 +1226,34 @@ impl Compiler {
                     // and no instruction can change it.
                     if let crate::ast::ExprKind::Ident(type_name) = &right.kind {
                         let declared = self.canon(&self.resolve_source_type_alias(type_name));
-                        // ⚠ SCOPED: not under prototype dispatch. Routing is
-                        // correct for every model in principle, but js renders
-                        // this helper's result as `1`/`0` instead of
-                        // `true`/`false` — and does so for EVERY boolean
-                        // conversion tried (`emit_i32_to_bool`,
-                        // `emit_bool_const` i.e. `wasm:js-boolean.fromI32`, and
-                        // `emit_dyn_to_bool`), while dart renders the SAME
-                        // helper correctly. So the defect is js-specific
-                        // rendering of the result, not the conversion — and a
-                        // forgery is not worth trading for a wrong-typed answer.
+                        // A class this compiler declared is answered by the
+                        // **rtt** — stamped at allocation, so no instruction can
+                        // forge it, and the same answer typed `catch` gets.
+                        //
+                        // ⛔ NOT under prototype dispatch, and this is a
+                        // semantic boundary rather than a workaround. Where
+                        // identity IS the prototype chain, `instanceof` is
+                        // observable twice over and the rtt answers a different
+                        // question:
+                        //
+                        //  1. `B[Symbol.hasInstance]` may replace the answer
+                        //     entirely (ECMA-262 §13.10.2) — that hook is why
+                        //     `emit_has_instance_protocol` exists;
+                        //  2. OrdinaryHasInstance itself performs
+                        //     `[[GetPrototypeOf]]`, which a **Proxy traps** —
+                        //     `proxy_getprototypeof_instanceof_operator_trigger`
+                        //     fails the moment the walk is skipped;
+                        //  3. `Object.setPrototypeOf` MUTATES identity after
+                        //     allocation. The rtt cannot change and must not.
+                        //
+                        // So for js the rtt is not a faster spelling of
+                        // `instanceof` — the two disagree by design. It stays
+                        // the answer where the declared type is immutable
+                        // (pascal, C#, java, kotlin, VB, fortran), and the
+                        // prototype walk stays the answer where it is not.
+                        // Measured: routing js here costs 3 spec tests
+                        // (proxy getPrototypeOf trap, promise species, derived
+                        // ctor returning primitive) and buys one forgery.
                         if !self.class_prototype_dispatch()
                             && (self.pending_classes.contains_key(declared.as_str())
                                 || self.defined_classes.contains(&declared))
@@ -1257,46 +1273,33 @@ impl Compiler {
                         }
                     }
                     if self.class_prototype_dispatch() {
+                        // ⛔ A 25-NAME ECMA CONSTRUCTOR TABLE STOOD HERE AND IS
+                        // DELETED. It matched `Error` / `RegExp` / `Map` / `Set`
+                        // / `Date` / `Promise` / … and pushed the constructor's
+                        // NAME AS A STRING instead of compiling the expression,
+                        // so the host received `x instanceof "Error"` — which
+                        // ECMA-262 does not have (a string is not a
+                        // constructor; §13.10.1 step 4 throws TypeError). The
+                        // only thing that could consume it was a `__type`
+                        // string compare in the ECMA host, i.e. a name table in
+                        // shared code existing solely to feed a layering
+                        // violation on the other side.
+                        //
+                        // It was also unnecessary, and one line of source shows
+                        // it — bind the SAME constructor to a name the table
+                        // does not list and the real path answers correctly:
+                        //
+                        //     const E = Error;
+                        //     new Error("x")     instanceof E   → true   ✅
+                        //     new Error("x")     instanceof Error → false ⛔ (table)
+                        //     new TypeError("t") instanceof E   → true   ✅ (inherited)
+                        //
+                        // `Object.getPrototypeOf(new Error("x")) === Error.prototype`
+                        // is already `true`, so OrdinaryHasInstance had every
+                        // link it needed; the table was the only thing standing
+                        // between it and the right answer.
                         self.compile_expr(left)?;
-                        match &right.kind {
-                            // For built-in constructors that stamp `__type` on their instances,
-                            // pass the name as a string — `js_instanceof` matches it against
-                            // `__type` / `__types`, avoiding namespace-alias objects that have
-                            // no `.name` property and would always yield `false`.
-                            ExprKind::Ident(name)
-                                if matches!(
-                                    name.as_str(),
-                                    "Error"
-                                        | "EvalError"
-                                        | "RangeError"
-                                        | "ReferenceError"
-                                        | "SyntaxError"
-                                        | "TypeError"
-                                        | "URIError"
-                                        | "AggregateError"
-                                        | "SuppressedError"
-                                        | "RegExp"
-                                        | "Map"
-                                        | "Set"
-                                        | "WeakMap"
-                                        | "WeakSet"
-                                        | "WeakRef"
-                                        | "FinalizationRegistry"
-                                        | "ArrayBuffer"
-                                        | "DataView"
-                                        | "Date"
-                                        | "Promise"
-                                        | "SharedArrayBuffer"
-                                        | "URL"
-                                        | "URLSearchParams"
-                                        | "TextEncoder"
-                                        | "TextDecoder"
-                                ) =>
-                            {
-                                self.emit_const(Value::String(Arc::from(name.as_str())));
-                            }
-                            _ => self.compile_expr(right)?,
-                        }
+                        self.compile_expr(right)?;
                         self.compile_binop(op);
                         return Ok(());
                     }
@@ -1345,7 +1348,13 @@ impl Compiler {
                             // was this object constructed by the declaring
                             // class — and it answers the negative case
                             // correctly too.
-                            if let Some(class) = self.indexed_owner_of_storage(&storage_name) {
+                            // Declaration, not storage — see
+                            // `declaring_owner_of_storage`. `#x in proxy` must
+                            // answer from the BRAND (ECMA-262 §13.10.1), and a
+                            // property probe forwards through a Proxy to its
+                            // target and says `true` where the answer is
+                            // `false`.
+                            if let Some(class) = self.declaring_owner_of_storage(&storage_name) {
                                 self.compile_expr(right)?;
                                 let line = self.line;
                                 self.emit_ref_type_test(Op::REF_TEST, &class, line);
@@ -2779,13 +2788,13 @@ impl Compiler {
                 {
                     if self.current_class.is_some() {
                         let result_slot = self.define_local("__js_super_prop_result");
-                        let saved_this = self.save_js_this("__js_prev_this_super_prop");
+                        let saved_this = self.begin_receiver_bind("__js_prev_this_super_prop");
                         // `None` ⇒ no ambient receiver in this language, so the
                         // value must not be COMPUTED either — pushing one that
                         // nothing pops leaks an operand.
-                        if saved_this.is_some() {
+                        if saved_this.is_active() {
                             self.emit_js_current_this_value();
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_this);
                         }
 
                         let getter_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&format!("__get_{}", field)));
@@ -2805,7 +2814,7 @@ impl Compiler {
                         self.emit_direct_callable_invoke(1);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.restore_js_this(saved_this);
+                        self.end_receiver_bind(saved_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         return Ok(());
                     }
@@ -2856,17 +2865,17 @@ impl Compiler {
                     self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&getter_name));
                     let getter_slot = self.define_local("__js_private_getter");
                     self.emit_u16(Op::LOCAL_SET, getter_slot);
-                    let saved_this = self.save_js_this("__js_prev_this_private_get");
-                    if saved_this.is_some() {
+                    let saved_this = self.begin_receiver_bind("__js_prev_this_private_get");
+                    if saved_this.is_active() {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.set_js_this_from_stack();
+                        self.bind_receiver_from_stack(saved_this);
                     }
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_direct_callable_invoke(1);
                     let result_slot = self.define_local("__js_private_member_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot);
-                    self.restore_js_this(saved_this);
+                    self.end_receiver_bind(saved_this);
                     self.emit_u16(Op::LOCAL_GET, result_slot);
 
                     self.chunk().emit_else(line);
@@ -2898,8 +2907,16 @@ impl Compiler {
                             self.emit_host_call(constructor_of, 1);
                         } else if field == "length" {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            let prop = self.str_const("length");
-                            self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                            let prop = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("length"));
+                            let line = self.line;
+                            class_slots::emit_class_get(
+                                self.chunk(),
+                                class_slots::ObjSource::Stack,
+                                &prop,
+                                class_slots::Dest::Stack,
+                                line,
+                            );
                         } else {
                             let field_name =
                                 self.js_member_storage_name_for_receiver(object, field);
@@ -2928,10 +2945,10 @@ impl Compiler {
                         // path doesn't set `__js_this` itself; doing it
                         // here keeps the semantics consistent with the
                         // explicit method-call path.
-                        let saved_this = self.save_js_this("__js_prev_this_member");
-                        if saved_this.is_some() {
+                        let saved_this = self.begin_receiver_bind("__js_prev_this_member");
+                        if saved_this.is_active() {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_this);
                         }
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2958,7 +2975,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_host_call(constructor_of, 1);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.restore_js_this(saved_this);
+                            self.end_receiver_bind(saved_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             return Ok(());
                         }
@@ -2980,7 +2997,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.chunk().emit_end(lookup_line);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.restore_js_this(saved_this);
+                            self.end_receiver_bind(saved_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             return Ok(());
                         }
@@ -3024,7 +3041,7 @@ impl Compiler {
                         if let Some(line) = symbol_end {
                             self.chunk().emit_end(line);
                         }
-                        self.restore_js_this(saved_this);
+                        self.end_receiver_bind(saved_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
                     return Ok(());
@@ -3741,11 +3758,18 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_SET, key_slot);
-                    let getter = self.str_const(&vybe_ast::protocol_slot_key(
+                    let getter = self.resolve_slot_interned(&class_slots::ClassSlot::Slot(
                         vybe_ast::ProtocolSlot::GetItem,
                     ));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, getter);
+                    let line = self.line;
+                    class_slots::emit_class_get(
+                        self.chunk(),
+                        class_slots::ObjSource::Stack,
+                        &getter,
+                        class_slots::Dest::Stack,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
                     crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 2, line);
@@ -4581,6 +4605,7 @@ impl Compiler {
                     let canon_type = self.canon(type_name);
                     if self.abstract_classes.contains(&canon_type) {
                         let line = self.line;
+                        let ecma_shape = self.ecma_error_object_shape();
                         let chunk = self.chunk();
                         class_slots::emit_class_alloc(chunk, line);
                         chunk.emit_dup(line);
@@ -4588,8 +4613,11 @@ impl Compiler {
                             &format!("Cannot instantiate abstract class {}", type_name),
                             line,
                         );
-                        crate::primitives::errors::emit_exception_new_finalize(
-                            chunk, "Error", line,
+                        crate::primitives::errors::emit_exception_new_finalize_linked(
+                            chunk,
+                            "Error",
+                            line,
+                            ecma_shape,
                         );
                         crate::primitives::errors::emit_throw(chunk, line);
                         return Ok(());
@@ -4663,7 +4691,7 @@ impl Compiler {
                             self.emit_global_read(&canon_type);
                             self.set_js_new_target_from_stack();
                         }
-                        let saved_this = self.save_js_this(&format!(
+                        let saved_this = self.begin_receiver_bind(&format!(
                             "__js_prev_this_new_{}",
                             self.chunks[self.current].local_count
                         ));
@@ -4673,7 +4701,7 @@ impl Compiler {
                         // method write into that receiver and hand it back.
                         self.clear_js_this();
                         self.emit_direct_callable_invoke(effective_len as u8);
-                        self.restore_js_this(saved_this);
+                        self.end_receiver_bind(saved_this);
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
@@ -5036,9 +5064,21 @@ impl Compiler {
                                     spec.ancestry.len() as u16,
                                     line,
                                 );
-                                let types_key =
-                                    self.str_const(crate::primitives::reflection::FIELD_TYPES);
-                                self.emit_struct_field_op(Op::STRUCT_SET, 0, types_key);
+                                let line = self.line;
+                                let types_key = class_slots::resolve_interned(
+                                    self.chunk(),
+                                    &class_slots::ClassSlot::internal(
+                                        crate::primitives::reflection::FIELD_TYPES,
+                                    ),
+                                    &class_slots::PlainNames,
+                                );
+                                class_slots::emit_class_set(
+                                    self.chunk(),
+                                    class_slots::ObjSource::Stack,
+                                    &types_key,
+                                    class_slots::ValueSource::Stack,
+                                    line,
+                                );
                             }
                         }
 
@@ -7457,20 +7497,20 @@ impl Compiler {
                         self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
 
                         if self.ambient_this() {
-                            let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
+                            let saved_js_this = self.begin_receiver_bind("__js_prev_this_super_expr");
                             if let Some(self_slot) = self.scope().resolve(&self_kw) {
                                 self.emit_u16(Op::LOCAL_GET, self_slot);
                             } else {
                                 self.emit_global_read("__js_this");
                             }
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_js_this);
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
                             self.emit_direct_callable_invoke(args.len() as u8);
                             let result_slot = self.define_local("__js_super_expr_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.restore_js_this(saved_js_this);
+                            self.end_receiver_bind(saved_js_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                         } else if let Some(self_slot) = self.scope().resolve(&self_kw) {
                             self.emit_u16(Op::LOCAL_GET, self_slot);
@@ -7898,7 +7938,7 @@ impl Compiler {
                 self.declare_class_identity(&class_name);
                 let parents: Vec<String> = parent_name.into_iter().collect();
                 let saved_expr_js_this = if self.ambient_this() {
-                    Some(self.save_js_this(&format!("__js_prev_this_class_expr_{}", class_name)))
+                    Some(self.begin_receiver_bind(&format!("__js_prev_this_class_expr_{}", class_name)))
                 } else {
                     None
                 };
@@ -7913,7 +7953,7 @@ impl Compiler {
                     vybe_ast::ValueSemantics::default(),
                 )?;
                 if let Some(saved) = saved_expr_js_this {
-                    self.restore_js_this(saved);
+                    self.end_receiver_bind(saved);
                 }
                 self.emit_global_read(&class_name);
             }
@@ -8644,7 +8684,11 @@ pub fn emit_short_circuit_end(chunk: &mut Chunk, block: usize) {
 pub fn emit_null_coalesce_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let block = chunk.emit_block(line);
+    // `[left, is_null]` in. The non-null exit keeps `left`; the null path
+    // drops it and the CALLER compiles the right operand in its place. Both
+    // leave exactly one value, so this is `(2, 1)` — not the `(0, 0)` that a
+    // stack-sharing VM lets pass.
+    let block = chunk.emit_block_params(line, 2, 1);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);

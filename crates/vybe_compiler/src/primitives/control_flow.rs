@@ -927,7 +927,13 @@ impl Compiler {
         let test = self.import("wasm:js-string", "test");
         self.emit_host_call(test, 1);
         let line = self.line;
-        self.chunk().emit_if(line);
+        // ⛔ BOTH ARMS PRODUCE A VALUE, so the block is not void. `equals`
+        // returns i32 and the else arm is `I32(0)`, which makes this an
+        // i32-result block — `emit_if_i32`, the same shape every other
+        // comparison chain uses. Declared `(0, 0)` it was only survivable
+        // because the VM shares one operand stack across blocks; wasm blocks
+        // do not, and the surplus is rejected at the `else`.
+        self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_const(Value::String(Arc::from(literal)));
         let eq = self.import("wasm:js-string", "equals");
@@ -957,7 +963,12 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         inst!(self, recipes::is_object);
         let obj_line = self.line;
-        self.chunk().emit_if(obj_line);
+        // ⛔ EVERY CONDITIONAL IN THIS FUNCTION YIELDS A VALUE — an autoderef
+        // leaves the pointed-to value on the stack down every one of the
+        // cell / carray / shared / passthrough arms. Declared `emit_if` they
+        // were all `(0, 0)`: void blocks whose arms each push. The VM tolerated
+        // it because its blocks share one operand stack; wasm blocks do not.
+        self.chunk().emit_if_value(obj_line);
 
         let kind_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__ref_kind"));
 
@@ -965,7 +976,7 @@ impl Compiler {
         self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("cell");
         let cell_line = self.line;
-        self.chunk().emit_if(cell_line);
+        self.chunk().emit_if_value(cell_line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(cell_line);
@@ -974,7 +985,7 @@ impl Compiler {
         self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("carray");
         let carray_line = self.line;
-        self.chunk().emit_if(carray_line);
+        self.chunk().emit_if_value(carray_line);
 
         let base_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__base"));
         let idx_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__idx"));
@@ -987,13 +998,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, base_slot);
         inst!(self, recipes::is_object);
         let base_obj_line = self.line;
-        self.chunk().emit_if(base_obj_line);
+        self.chunk().emit_if_value(base_obj_line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("cell");
         let base_cell_line = self.line;
-        self.chunk().emit_if(base_cell_line);
+        self.chunk().emit_if_value(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(base_cell_line);
@@ -1018,7 +1029,7 @@ impl Compiler {
         self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
         let shared_line = self.line;
-        self.chunk().emit_if(shared_line);
+        self.chunk().emit_if_value(shared_line);
         self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY));
         {
             let line = self.line;

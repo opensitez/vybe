@@ -38,6 +38,18 @@ impl Compiler {
         self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::Ambient)
     }
 
+    /// Does EVERY callable in this region take a leading receiver parameter —
+    /// ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`?
+    ///
+    /// Asked wherever an arity is DECLARED or an argument count is COUNTED, and
+    /// nowhere else. It is deliberately not folded into [`Self::ambient_this`]:
+    /// those two are the before and after of M5 and every site must be on
+    /// exactly one of them, so a region reading `true` from both would be a
+    /// region emitting both protocols.
+    pub(crate) fn universal_receiver(&self) -> bool {
+        self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::UniversalParameter)
+    }
+
     /// Does this region decide truth by asking the OBJECT — `ProtocolSlot::Bool`
     /// then `ProtocolSlot::Len` — rather than by ECMA ToBoolean?
     ///
@@ -257,18 +269,18 @@ impl Compiler {
                     }
 // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
-                        let saved_js_this = self.save_js_this("__js_stmt_prev_this");
+                        let saved_js_this = self.begin_receiver_bind("__js_stmt_prev_this");
                         if self.ambient_this() {
                             let line = self.line;
                             common::expressions::emit_undefined(self.chunk(), line);
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_js_this);
                         }
                         self.emit_var_get(name);
                         self.emit_direct_callable_invoke(0);
-                        if saved_js_this.is_some() {
+                        if saved_js_this.is_active() {
                             let result_slot = self.define_local("__js_stmt_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.restore_js_this(saved_js_this);
+                            self.end_receiver_bind(saved_js_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                         }
                         self.emit(Op::DROP);
@@ -283,9 +295,17 @@ impl Compiler {
                         }
                         self.compile_expr(object)?;
                         let field_name = self.canon(field);
-                        let prop = self.str_const(&field_name);
+                        let prop = self
+                            .resolve_slot_interned(&class_slots::ClassSlot::internal(field_name));
                         inst!(self, core_wasm::dup);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        let line = self.line;
+                        class_slots::emit_class_get(
+                            self.chunk(),
+                            class_slots::ObjSource::Stack,
+                            &prop,
+                            class_slots::Dest::Stack,
+                            line,
+                        );
                         let fn_tmp = self.define_local("__fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                         let obj_tmp = self.define_local("__obj");
@@ -297,8 +317,33 @@ impl Compiler {
                         self.emit(Op::DROP);
                     }
                     _ => {
+                        // ⛔ THE `DROP` IS CONDITIONAL ON SOMETHING HAVING BEEN
+                        // PUSHED. An expression statement discards its value,
+                        // but a compile-time DIRECTIVE spelled as a call —
+                        // `__wast_register_struct_type`, `__wast_register_func_type`,
+                        // and the rest of that family — emits no bytecode at
+                        // all, so there is no value to discard and the `DROP`
+                        // underflows the stack.
+                        //
+                        // Our VM tolerated it (a pop on an empty operand stack
+                        // is a no-op there), which is why every wast module we
+                        // emitted carried one unbalanced `drop` per registered
+                        // struct type and no test could see it. A spec engine
+                        // rejects the module outright: V8 gives
+                        // `not enough arguments on the stack for drop (need 1,
+                        // got 0)` before it reaches anything else.
+                        //
+                        // Zero bytes emitted means zero stack effect — a value
+                        // can only reach the stack via an instruction — so the
+                        // emitted LENGTH is the honest signal, and it is
+                        // language-agnostic: no name check, and every
+                        // emit-nothing directive present or future is covered
+                        // without being enumerated here.
+                        let before = self.chunks[self.current].code.len();
                         self.compile_expr(expr)?;
-                        self.emit(Op::DROP);
+                        if self.chunks[self.current].code.len() != before {
+                            self.emit(Op::DROP);
+                        }
                     }
                 }
             }
@@ -3857,6 +3902,7 @@ impl Compiler {
                 name,
                 params,
                 results,
+                signature,
                 canonical,
                 fallback,
             } => {
@@ -3871,6 +3917,7 @@ impl Compiler {
                     name.clone(),
                     *params,
                     *results,
+                    signature.clone(),
                     fallback.clone(),
                     *canonical,
                 );
@@ -4833,9 +4880,15 @@ impl Compiler {
                             let line = self.line;
                             inst!(self, core_wasm::dup);
                             self.emit_const(Value::String(Arc::from(name.as_str())));
-                            let name_key = self.str_const("name");
-                            self.chunk()
-                                .emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+                            let name_key = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("name"));
+                            class_slots::emit_class_set(
+                                self.chunk(),
+                                class_slots::ObjSource::Stack,
+                                &name_key,
+                                class_slots::ValueSource::Stack,
+                                line,
+                            );
                         }
                     }
                 } else if decl.array_bounds.is_some() || decl.type_hint.is_some() {
@@ -5733,10 +5786,10 @@ impl Compiler {
                     let line = self.line;
                     let obj_slot = self.define_local("__js_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    let saved_this = self.save_js_this("__js_prev_this_set");
-                    if saved_this.is_some() {
+                    let saved_this = self.begin_receiver_bind("__js_prev_this_set");
+                    if saved_this.is_active() {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.set_js_this_from_stack();
+                        self.bind_receiver_from_stack(saved_this);
                     }
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_const(Value::String(Arc::from(field_name.as_str())));
@@ -5751,7 +5804,7 @@ impl Compiler {
                         self.chunk().emit_call(set_idx, 3, line);
                     }
                     self.emit(Op::DROP);
-                    self.restore_js_this(saved_this);
+                    self.end_receiver_bind(saved_this);
                 } else {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.class_set(
@@ -5763,8 +5816,8 @@ impl Compiler {
                 // Writing a member of the global namespace object also sets
                 // the module global, so a bare `X` resolves — ECMA-262 §19.3
                 // for `globalThis`, and the same rule for Lua `_G`, PHP
-                // `$GLOBALS` and Python `globals()`. The spelling comes from
-                // the profile (`primitives/globals.rs`).
+                // `$GLOBALS` and Python `globals()`. One node, no spelling:
+                // each walker normalized its own word before this ran.
                 if matches!(&object.kind, ExprKind::GlobalNamespace) {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit_global_write(&field_name);
@@ -5808,11 +5861,18 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_SET, key_slot);
-                    let setter = self.str_const(&vybe_ast::protocol_slot_key(
+                    let setter = self.resolve_slot_interned(&class_slots::ClassSlot::Slot(
                         vybe_ast::ProtocolSlot::SetItem,
                     ));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, setter);
+                    let line = self.line;
+                    class_slots::emit_class_get(
+                        self.chunk(),
+                        class_slots::ObjSource::Stack,
+                        &setter,
+                        class_slots::Dest::Stack,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -6701,8 +6761,16 @@ impl Compiler {
                 for prop in props {
                     if let crate::ast::ObjectProperty::Shorthand(name) = prop {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        let key = self.str_const(name);
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                        let key =
+                            self.resolve_slot_interned(&class_slots::ClassSlot::internal(name.as_str()));
+                        let line = self.line;
+                        class_slots::emit_class_get(
+                            self.chunk(),
+                            class_slots::ObjSource::Stack,
+                            &key,
+                            class_slots::Dest::Stack,
+                            line,
+                        );
                         self.emit_var_set(name);
                     } else if let crate::ast::ObjectProperty::KeyValue { key, value } = prop {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);

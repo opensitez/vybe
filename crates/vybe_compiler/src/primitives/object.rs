@@ -420,15 +420,30 @@ pub fn emit_retype_object_dynamic(
         line,
     );
 
-    let types_key = chunks[current].add_constant(Value::String(Arc::from(
-        crate::primitives::reflection::FIELD_TYPES,
-    )));
+    let types_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(crate::primitives::reflection::FIELD_TYPES),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, types_key, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &types_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_dup(line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    let init_block = chunks[current].emit_block(line);
+    // ⛔ THIS BLOCK TAKES PARAMS. Stack in is `[this, types_or_null, is_null]`
+    // and both exits leave `[this, array_or_types]`, so the block reaches TWO
+    // deep and leaves ONE. The VM does not isolate a block's operand stack, so
+    // `(0, 0)` ran correctly there — a `br` truncating to a height ABOVE the
+    // current one is a no-op. Wasm blocks DO isolate: everything below the
+    // entry is invisible, and V8 rejected the body for consuming a stack that,
+    // as declared, was empty.
+    let init_block = chunks[current].emit_block_params(line, 2, 1);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(0, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -440,7 +455,13 @@ pub fn emit_retype_object_dynamic(
     chunks[current].emit_op_u16(Op::LOCAL_GET, class_name_slot, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &types_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 /// Bind a property getter as __get_<name> on the instance.
 /// The getter_chunk_idx should point to a compiled closure with arity=1 (self/this).

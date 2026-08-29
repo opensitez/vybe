@@ -2529,20 +2529,32 @@ pub fn emit_is_instance_of(
     let ht = crate::primitives::classes::heaptype_for_name(chunks, type_name);
     chunks[current].emit_ref_type_op(Op::REF_TEST, ht, line);
     chunks[current].emit_if_value(line);
-    // ⛔ BOTH BRANCHES MUST YIELD THE SAME TYPE. `ref.test` gives an i32 and the
-    // fallback gives a Bool, so a raw `i32.const 1` here made the answer's TYPE
-    // depend on which branch ran — `c instanceof C` printed `1` where js prints
-    // `true`. Push the boolean directly rather than converting: the conversion
-    // helper allocates a scratch local, and `alloc_scratch` aliases named
-    // locals — including the operand slot this function just spilled.
+    // ⛔ BOTH BRANCHES MUST YIELD THE SAME TYPE, and the conversion belongs
+    // AFTER the merge, not inside each arm.
+    //
+    // The cause of `1`/`0` was the CONVERSION HELPER, not this block: the old
+    // code finished with `emit_dyn_to_bool`, which returns an **i32** (see its
+    // doc — it is ToBoolean, not the inverse of `emit_i32_to_bool`), so
+    // `typeof (c instanceof C)` reported `"number"`.
+    //
+    // Converting once after the merge is kept because it is cleaner than
+    // converting in both arms, and it satisfies the same-type-out-of-both-arms
+    // invariant with one instruction sequence instead of two. It was NOT
+    // measured to be load-bearing on its own — `emit_i32_to_bool` inside both
+    // arms was never tried, so do not cite this position as the fix.
     chunks[current].emit_i32_const(1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_string_const(type_name, line);
     emit_instanceof(chunks, current, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
+    // ⛔ `emit_i32_to_bool`, NOT `emit_dyn_to_bool`. The two names read like
+    // inverses and are not: `emit_i32_to_bool` turns an i32 into a real
+    // `Value::Bool`, while `emit_dyn_to_bool` is ToBoolean — it takes ANY
+    // dynamic value and returns an **i32**. Converting with the latter is why
+    // `c instanceof C` printed `1` and `typeof` reported `"number"`: the value
+    // was never a boolean at all. This is the same helper `#x in obj` uses.
+    crate::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// Stack: unchanged. Writes `object.__type = type_name`.
@@ -3067,17 +3079,28 @@ pub fn emit_instanceof_chain(
     class_name: &str,
     line: u32,
 ) {
-    let types_key = chunks[current].add_constant(Value::String(Arc::from(
-        crate::primitives::reflection::FIELD_TYPES,
-    )));
+    let types_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(crate::primitives::reflection::FIELD_TYPES),
+        &class_slots::PlainNames,
+    );
 
     // Stack: []
     chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
     chunks[current].emit_dup(line); // [this, this]
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, types_key, line); // [this, types_or_null]
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &types_key,
+        class_slots::Dest::Stack,
+        line,
+    ); // [this, types_or_null]
     chunks[current].emit_dup(line); // [this, tn, tn]
     chunks[current].emit_op(Op::REF_IS_NULL, line); // [this, tn, bool]
-    let init_block = chunks[current].emit_block(line);
+    // `[this, tn, bool]` in, `[this, array]` out — two params, one result.
+    // See the note on the twin site in `object.rs`: the VM tolerates `(0, 0)`
+    // because its blocks share one operand stack; wasm blocks do not.
+    let init_block = chunks[current].emit_block_params(line, 2, 1);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(0, line);
     chunks[current].emit_op(Op::DROP, line); // [this] (drop the null)
@@ -3092,12 +3115,38 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_string_const(class_name, line); // [this, array, array, name]
     crate::primitives::collections::emit_push(chunks, current, line); // [this, array, len]
     chunks[current].emit_op(Op::DROP, line); // [this, array]
-    // Spec struct.set pushes nothing, so keep the array (this fn's OUTPUT)
-    // in a scratch local across the write.
+    // ⛔ NET ZERO — and it was not. This ended with `LOCAL_GET out_slot`,
+    // keeping the `__types` array "as this fn's OUTPUT" across the spec
+    // `struct.set` (which pushes nothing). But the header above says
+    // `Stack: []`, and ALL ELEVEN call sites — calls.rs, classes.rs ×3,
+    // dart ×6, php ×2 — call it for effect and never drop a result. So every
+    // call leaked one value, once per chain entry:
+    //
+    //   "x=" + String(new TypeError("e"))
+    //     → "TypeError,Exception,BaseException,TypeError,ErrorTypeError: e"
+    //
+    // The leaked array displaced the concat's left operand. Invisible for
+    // `throw new E(...)` (a statement — the throw takes the top and the rest
+    // of the frame goes away) and fatal for `new E(...)` in expression
+    // position. `php/array_adapter.rs:1792` calls this INSIDE an `if`, where
+    // a leak unbalances the branch.
+    //
+    // ⛔ THE `alloc_scratch` STAYS, deliberately, even though nothing reads
+    // `out_slot` any more. Removing it would renumber every SUBSEQUENT
+    // `alloc_scratch` in the same chunk, and `alloc_scratch` aliases named
+    // locals — so dropping one changes which named locals get aliased
+    // downstream. That is a slot-numbering change riding along with a
+    // stack-balance fix, and the two must not be gated together. Retiring the
+    // slot is a separate, separately-measured edit.
     let out_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_TEE, out_slot, line); // [this, array]
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line); // []
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line); // [array]
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &types_key,
+        class_slots::ValueSource::Stack,
+        line,
+    ); // []
 }
 
 

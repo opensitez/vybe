@@ -163,10 +163,19 @@ impl Compiler {
             let key = self.variable_global_binding_key(name);
             self.emit_global_read(&key);
         }
-        let addr_key = self
-            .chunk()
-            .add_constant(Value::String(Arc::from(SHARED_ADDR_KEY)));
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, addr_key);
+        let line = self.line;
+        let addr_key = crate::primitives::class_slots::resolve_interned(
+            self.chunk(),
+            &crate::primitives::class_slots::ClassSlot::internal(SHARED_ADDR_KEY),
+            &crate::primitives::class_slots::PlainNames,
+        );
+        crate::primitives::class_slots::emit_class_get(
+            self.chunk(),
+            crate::primitives::class_slots::ObjSource::Stack,
+            &addr_key,
+            crate::primitives::class_slots::Dest::Stack,
+            line,
+        );
         Ok(())
     }
 }

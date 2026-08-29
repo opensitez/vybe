@@ -1495,25 +1495,58 @@ impl Compiler {
     }
 
     pub(super) fn emit_stamp_rest_metadata_on_stack(&mut self, fixed_count: usize) {
-        let key = self.str_const("__vybe_rest_fixed_arity");
+        let key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            "__vybe_rest_fixed_arity",
+        ));
         inst!(self, core_wasm::dup);
         self.emit_const(Value::F64(fixed_count as f64));
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+        let line = self.line;
+        class_slots::emit_class_set(
+            self.chunk(),
+            class_slots::ObjSource::Stack,
+            &key,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 
+    /// Emit `getMethodForCall`'s optional third argument and report the argc.
+    ///
+    /// The host binds a builtin's receiver INTO the returned callable, which is
+    /// right only while the call site passes none. Where the receiver is
+    /// argument 0 of the call, that binding is a second copy and the real
+    /// arguments arrive one place late — see the argument's own comment in
+    /// `platforms/ecma/src/value.rs`. Answered from the directive, once, here.
+    fn emit_method_lookup_bind_arg(&mut self) -> u8 {
+        if self.universal_receiver() {
+            self.emit_const(Value::Bool(false));
+            3
+        } else {
+            2
+        }
+    }
+
+    /// Bind the receiver for a CALL — the one place that answers "what does a
+    /// plain call pass as `this`".
+    ///
+    /// With no receiver of its own it materialises `globalThis` (sloppy-mode
+    /// §10.2.1.1 OrdinaryCallBindThis), which is the answer the ambient global
+    /// was previously reaching by accident: a call that bound nothing inherited
+    /// whatever the last call left in `__js_this`, and some behaviour rides on
+    /// that staleness. Stating it here is what lets the global go.
     fn bind_js_this_for_call(
         &mut self,
         receiver_slot: Option<u16>,
         saved_name: &str,
-    ) -> Option<u16> {
-        let saved_js_this = self.save_js_this(saved_name);
-        if !self.ambient_this() {
+    ) -> super::class_context::ReceiverBind {
+        let saved_js_this = self.begin_receiver_bind(saved_name);
+        if !saved_js_this.is_active() {
             return saved_js_this;
         }
 
         if let Some(slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, slot);
-            self.set_js_this_from_stack();
+            self.bind_receiver_from_stack(saved_js_this);
             return saved_js_this;
         }
 
@@ -1539,17 +1572,17 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
-        self.set_js_this_from_stack();
+        self.bind_receiver_from_stack(saved_js_this);
         saved_js_this
     }
 
-    fn restore_js_this_after_call(&mut self, saved_js_this: Option<u16>, result_local_name: &str) {
-        let Some(_) = saved_js_this else {
+    fn restore_js_this_after_call(&mut self, saved_js_this: super::class_context::ReceiverBind, result_local_name: &str) {
+        if !saved_js_this.is_active() {
             return;
-        };
+        }
         let result_slot = self.define_local(result_local_name);
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.restore_js_this(saved_js_this);
+        self.end_receiver_bind(saved_js_this);
         self.emit_u16(Op::LOCAL_GET, result_slot);
     }
 
@@ -1563,7 +1596,13 @@ impl Compiler {
         let saved_js_this =
             self.bind_js_this_for_call(js_this_slot.or(receiver_slot), "__js_prev_this_arg_call");
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        if let Some(receiver_slot) = receiver_slot {
+        // `[callee, thisArgument, args…]` — the receiver goes on FIRST, above
+        // the callee reference and below the declared arguments. Under a
+        // non-`Argument` binding this pushes nothing and returns 0, so the
+        // explicit-receiver path below is unchanged; under `Argument` it IS
+        // that path, which is why the two are exclusive rather than additive.
+        let recv_argc = self.push_receiver_argument(saved_js_this);
+        if recv_argc == 0 && let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
         }
         for slot in arg_slots {
@@ -1574,10 +1613,11 @@ impl Compiler {
             && arg_slots.len() == 1
         {
             inst!(self, core_wasm::undefined);
-            self.emit_direct_callable_invoke(2);
+            self.emit_direct_callable_invoke(2 + recv_argc);
         } else {
             self.emit_direct_callable_invoke(
-                (arg_slots.len() + usize::from(receiver_slot.is_some())) as u8,
+                (arg_slots.len() + usize::from(recv_argc == 0 && receiver_slot.is_some())) as u8
+                    + recv_argc,
             );
         }
         self.restore_js_this_after_call(saved_js_this, "__js_arg_call_result");
@@ -1595,12 +1635,16 @@ impl Compiler {
             js_this_slot.or(receiver_slot),
             "__js_prev_this_rest_arg_call",
         );
-        let argc = fixed_count + 1 + usize::from(receiver_slot.is_some());
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, callee_slot);
-        if let Some(receiver_slot) = receiver_slot {
+        let recv_argc = self.push_receiver_argument(saved_js_this);
+        if recv_argc == 0 && let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
         }
+        let argc = fixed_count
+            + 1
+            + usize::from(recv_argc == 0 && receiver_slot.is_some())
+            + usize::from(recv_argc);
         for index in 0..fixed_count {
             if let Some(slot) = arg_slots.get(index) {
                 self.emit_u16(Op::LOCAL_GET, *slot);
@@ -2161,7 +2205,8 @@ impl Compiler {
         let lookup = self.import("ecma:value", "getMethodForCall");
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::String(Arc::from(method_name)));
-        self.emit_host_call(lookup, 2);
+        let lookup_argc = self.emit_method_lookup_bind_arg();
+        self.emit_host_call(lookup, lookup_argc);
         let lookup_slot = self.define_local("__js_lookup_fn");
         self.emit_u16(Op::LOCAL_SET, lookup_slot);
 
@@ -2264,7 +2309,8 @@ impl Compiler {
     ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         inst!(self, core_wasm::string_const, method_name);
-        fn_call!(self, "ecma:value", "getMethodForCall", 2);
+        let lookup_argc = self.emit_method_lookup_bind_arg();
+        fn_call!(self, "ecma:value", "getMethodForCall", lookup_argc);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, args_slot);
         fn_call!(self, "ecma:function", "apply", 3);
@@ -2973,6 +3019,25 @@ impl Compiler {
                 self.compile_expr(arg)?;
             }
             self.emit_host_call(idx, (args.len() + 1) as u8);
+            // §20.5.5.5: link [[Prototype]] to %SuppressedError.prototype%,
+            // exactly as the other eight error constructors do.
+            //
+            // ⛔ THE HOST CANNOT DO THIS ONE. `class_alloc` hands the host fn
+            // an object whose `__proto__` is ALREADY %Error.prototype%, and
+            // `link_error_prototype` skips an object that has one — so the
+            // instance kept Error's prototype (`se instanceof SuppressedError`
+            // false) while the host still stripped the own `name` stamp, so
+            // `se.name` resolved up the chain to "Error". Linking here
+            // overwrites with the right prototype; `name` then resolves to
+            // "SuppressedError" through it.
+            if self.ecma_error_object_shape() {
+                let line = self.line;
+                crate::primitives::errors::emit_finish_js_error_instance(
+                    self.chunk(),
+                    "SuppressedError",
+                    line,
+                );
+            }
             return Ok(());
         }
 
@@ -3001,9 +3066,22 @@ impl Compiler {
             for key in ["cause", "code"] {
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 self.emit_u16(Op::LOCAL_GET, opts_tmp);
-                let k = self.str_const(key);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, k);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, k);
+                let k = self.resolve_slot_interned(&class_slots::ClassSlot::internal(key));
+                let line = self.line;
+                class_slots::emit_class_get(
+                    self.chunk(),
+                    class_slots::ObjSource::Stack,
+                    &k,
+                    class_slots::Dest::Stack,
+                    line,
+                );
+                class_slots::emit_class_set(
+                    self.chunk(),
+                    class_slots::ObjSource::Stack,
+                    &k,
+                    class_slots::ValueSource::Stack,
+                    line,
+                );
             }
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
         }
@@ -3884,7 +3962,11 @@ impl Compiler {
                 let parent_name_for_super = parent_name.clone();
 
                 if let Some(_parent) = parent_name {
-                    if self.super_is_cooperative() {
+                    let cooperative = class_name
+                        .as_deref()
+                        .map(|cn| self.canon(cn))
+                        .is_some_and(|cn| self.classes_with_cooperative_super.contains(&cn));
+                    if cooperative {
                         // Cooperative super (multiple inheritance): resolve the NEXT
                         // method by walking the instance's runtime C3 MRO from the
                         // class this `super()` textually belongs to — so B.f's
@@ -3962,8 +4044,12 @@ impl Compiler {
                         // `base.m()` means the same method the instance
                         // carries — fall back to the plain slot.
                         let owner = self.canon(class_name.as_deref().unwrap_or(""));
-                        let base_key =
-                            self.str_const(&format!("__base_{}${}", owner, canon_field));
+                        let base_key = self.resolve_slot_interned(
+                            &class_slots::ClassSlot::internal(format!(
+                                "__base_{}${}",
+                                owner, canon_field
+                            )),
+                        );
                         let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&canon_field));
                         let line = self.line;
                         if let Some(s) = self_slot {
@@ -3971,7 +4057,13 @@ impl Compiler {
                         } else {
                             self.emit_null();
                         }
-                        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
+                        class_slots::emit_class_get(
+                            self.chunk(),
+                            class_slots::ObjSource::Stack,
+                            &base_key,
+                            class_slots::Dest::Stack,
+                            line,
+                        );
                         let picked = self.define_local("__base_method_fn");
                         self.emit_u16(Op::LOCAL_SET, picked);
                         self.emit_u16(Op::LOCAL_GET, picked);
@@ -5716,10 +5808,10 @@ impl Compiler {
                             self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&method_name));
                         }
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        let saved_js_this = self.save_js_this("__js_prev_this_static_method");
-                        if saved_js_this.is_some() {
+                        let saved_js_this = self.begin_receiver_bind("__js_prev_this_static_method");
+                        if saved_js_this.is_active() {
                             self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_js_this);
                         }
                         let qualified_method = self.canon(&format!("{}.{}", canon, field));
                         if let Some(param_modes) = self
@@ -5756,12 +5848,12 @@ impl Compiler {
                                 self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                                 let pack_slot = self.define_local("__js_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
-                                self.restore_js_this(saved_js_this);
+                                self.end_receiver_bind(saved_js_this);
 
                                 // With nothing to write back the callee returned
                                 // a plain value, not a pack — hand it back.
                                 // Returning BEFORE the store above would skip
-                                // `restore_js_this`, so the value is popped and
+                                // `end_receiver_bind`, so the value is popped and
                                 // pushed rather than left on the stack.
                                 if !needs_packed_result {
                                     self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -5806,7 +5898,7 @@ impl Compiler {
                         self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_static_method_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.restore_js_this(saved_js_this);
+                        self.end_receiver_bind(saved_js_this);
                         if args.iter().any(|arg| arg.by_ref) {
                             let mut ref_out_index = 1usize;
                             for arg in args {
@@ -7699,10 +7791,10 @@ impl Compiler {
                     );
                 }
 
-                let saved_js_this = self.save_js_this("__js_prev_this_private_call");
-                if saved_js_this.is_some() {
+                let saved_js_this = self.begin_receiver_bind("__js_prev_this_private_call");
+                if saved_js_this.is_active() {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.set_js_this_from_stack();
+                    self.bind_receiver_from_stack(saved_js_this);
                 }
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 for arg in &arg_exprs {
@@ -7711,7 +7803,7 @@ impl Compiler {
                 self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_private_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.restore_js_this(saved_js_this);
+                self.end_receiver_bind(saved_js_this);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return Ok(());
             }
@@ -8326,7 +8418,8 @@ impl Compiler {
                     let lookup = self.import("ecma:value", "getMethodForCall");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    self.emit_host_call(lookup, 2);
+                    let lookup_argc = self.emit_method_lookup_bind_arg();
+                    self.emit_host_call(lookup, lookup_argc);
                     let lookup_slot = self.define_local("__js_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot);
                     let spread_args = args.iter().any(|arg| arg.spread);
@@ -8490,10 +8583,10 @@ impl Compiler {
                     if let Some(chunk_idx) =
                         self.resolve_unique_static_method_chunk_for_class(&class_name, field)
                     {
-                        let saved_js_this = self.save_js_this("__js_prev_this_private_static_call");
-                        if saved_js_this.is_some() {
+                        let saved_js_this = self.begin_receiver_bind("__js_prev_this_private_static_call");
+                        if saved_js_this.is_active() {
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.set_js_this_from_stack();
+                            self.bind_receiver_from_stack(saved_js_this);
                         }
                         let line = self.line;
                         self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
@@ -8504,7 +8597,7 @@ impl Compiler {
                         self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_private_static_call_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.restore_js_this(saved_js_this);
+                        self.end_receiver_bind(saved_js_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         return Ok(());
                     }
@@ -9507,7 +9600,8 @@ impl Compiler {
                     let lookup = self.import("ecma:value", "getMethodForCall");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    self.emit_host_call(lookup, 2);
+                    let lookup_argc = self.emit_method_lookup_bind_arg();
+                    self.emit_host_call(lookup, lookup_argc);
                     let lookup_slot = self.define_local("__js_member_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot);
                     let spread_args = args.iter().any(|arg| arg.spread);
@@ -10454,9 +10548,18 @@ impl Compiler {
                 // The Call SLOT. Python spells it `__call__`, PHP `__invoke`,
                 // Dart `call`, C# an `()` operator — one slot, so a callable
                 // object stays callable across the language boundary.
-                let dunder_prop =
-                    self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call));
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, dunder_prop);
+                // ⛔ was `str_const(protocol_slot_key(Call))` — §2a, the owner
+                // holds the spelling.
+                let dunder_prop = self
+                    .resolve_slot_interned(&class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Call));
+                let line = self.line;
+                class_slots::emit_class_get(
+                    self.chunk(),
+                    class_slots::ObjSource::Stack,
+                    &dunder_prop,
+                    class_slots::Dest::Stack,
+                    line,
+                );
                 let dunder_slot = self.define_local("__py_dunder_call_method");
                 self.emit_u16(Op::LOCAL_SET, dunder_slot);
                 self.emit_u16(Op::LOCAL_GET, dunder_slot);
@@ -10693,7 +10796,7 @@ impl Compiler {
                 let obj_tmp = self.define_local("__js_idx_obj");
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                let saved_js_this = self.save_js_this("__js_prev_this_idx");
+                let saved_js_this = self.begin_receiver_bind("__js_prev_this_idx");
                 // §13.3.7: the property key and the arguments are evaluated with
                 // the CALLER's `this`; `this` is bound to the receiver only for
                 // the call itself (just before CALL_REF below). Binding it here
@@ -10821,14 +10924,14 @@ impl Compiler {
                 // receiver nothing emits the GLOBAL_SET, the receiver stays on
                 // the stack, and CALL_REF reads [callee, ..args, receiver] with
                 // everything shifted by one.
-                if saved_js_this.is_some() {
+                if saved_js_this.is_active() {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.set_js_this_from_stack();
+                    self.bind_receiver_from_stack(saved_js_this);
                 }
                 self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.restore_js_this(saved_js_this);
+                self.end_receiver_bind(saved_js_this);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return Ok(());
             }
@@ -10892,9 +10995,16 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             self.emit_u16(Op::LOCAL_SET, invoke_receiver);
             self.emit_u16(Op::LOCAL_GET, callee_slot);
-            let slot_key =
-                self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call));
-            self.emit_struct_field_op(Op::STRUCT_GET, 0, slot_key);
+            let slot_key = self
+                .resolve_slot_interned(&class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Call));
+            let line = self.line;
+            class_slots::emit_class_get(
+                self.chunk(),
+                class_slots::ObjSource::Stack,
+                &slot_key,
+                class_slots::Dest::Stack,
+                line,
+            );
             let method_slot = self.define_local("__call_ref_invoke_method");
             self.emit_u16(Op::LOCAL_SET, method_slot);
 

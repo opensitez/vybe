@@ -476,6 +476,50 @@ impl VM {
     /// abstract heap type". An abstract immediate here can only come from a
     /// malformed input, so it falls back to the ordinary test rather than
     /// inventing an answer.
+    /// Are two DECLARED function types the same type, for an exact cast?
+    ///
+    /// ⚠ NOT a name comparison. WASM type identity is STRUCTURAL after
+    /// canonicalisation, and our type names are module-qualified — so module A's
+    /// `(func)` and module B's `(func)` have different NAMES and are the same
+    /// TYPE. `exact-func-import.wast` asserts exactly that: a function imported
+    /// from another module still casts to the importer's `(ref (exact $f))`.
+    ///
+    /// But the structure that matters includes the SUBTYPE DECLARATION, not
+    /// just params and results. That is what separates `exact-casts.wast`'s
+    ///   (type $super (sub (func (result funcref))))
+    ///   (type $sub   (sub $super (func (result funcref))))
+    /// which share a signature and are still distinct types — `$sub` declares a
+    /// supertype and `$super` does not. Comparing signatures alone would call
+    /// them identical and let a `$sub` pass an exact cast to `$super`;
+    /// comparing NAMES alone would call A's `(func)` and B's `(func)` distinct
+    /// and fail a legal cross-module cast. Both halves are needed.
+    fn func_types_identical(&self, a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        let Some(types) = self.chunks.first().map(|c| &c.types) else {
+            return false;
+        };
+        let entry = |n: &str| types.iter().find(|t| t.name == n);
+        let (Some(ea), Some(eb)) = (entry(a), entry(b)) else {
+            return false;
+        };
+        if ea.fields != eb.fields {
+            return false;
+        }
+        // Supertype declarations must correspond. Comparing the parents'
+        // SHAPES rather than their indices keeps this module-independent for
+        // the same reason the signature comparison is.
+        let parent_shape = |e: &crate::chunk::TypeEntry| -> Option<Vec<String>> {
+            if e.parent_index == 0 {
+                None
+            } else {
+                types.get(e.parent_index as usize - 1).map(|p| p.fields.clone())
+            }
+        };
+        parent_shape(ea) == parent_shape(eb)
+    }
+
     pub(crate) fn ref_test_exact(
         &self,
         val: &Value,
@@ -484,11 +528,28 @@ impl VM {
         let crate::opcode::heaptype::HeapType::Concrete(index) = ht else {
             return self.ref_test(val, ht);
         };
-        // A concrete FUNCTION type stays structural, for the same reason the
-        // inexact path gives: a `__type` match must not override a signature.
-        // Structural equality is already exact, so this delegates unchanged.
+        // ⚠ A FUNCTION TYPE IS MATCHED NOMINALLY WHEN THE CAST IS EXACT.
+        //
+        // Ordinary `ref.test`/`ref.cast` compare function types STRUCTURALLY —
+        // `Comptype_sub/func` names no type, only params and results. Exactness
+        // cannot be expressed that way: `exact-casts.wast` declares
+        //   (type $super (sub (func (result funcref))))
+        //   (type $sub   (sub $super (func (result funcref))))
+        // — identical structures, distinct names — and asserts that casting a
+        // `$sub` function to `(ref (exact $super))` TRAPS. Structure says they
+        // match; only the declared NAME tells them apart.
+        //
+        // Falls back to the structural answer when the function carries no
+        // declared type (nothing to compare), rather than inventing a verdict.
         if self.declared_func_sig(index).is_some() {
-            return self.ref_test(val, ht);
+            let want = self.declared_type_name(index);
+            let got = self
+                .function_chunk_index(val)
+                .and_then(|ci| self.chunks[ci].declared_func_type.clone());
+            return match (want, got) {
+                (Some(w), Some(g)) => self.func_types_identical(&w, &g),
+                _ => self.ref_test(val, ht),
+            };
         }
         // ⚠ RESOLVE THE RTT THE WAY `test_concrete` DOES — `resolve_gc_rtt`,
         // which is module-relative — NOT by looking the declared NAME up in the

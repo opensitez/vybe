@@ -5,6 +5,7 @@
 //! the single compiler-side surface for WebAssembly stack-switching generator
 //! opcodes.
 
+use crate::primitives::class_context::{ReceiverAbi, StdlibFrame};
 use crate::primitives::class_slots;
 use crate::primitives::instructions::{core_wasm, host, recipes};
 use std::sync::Arc;
@@ -652,6 +653,7 @@ pub fn emit_resolve_async_iterator(
     iter_slot: u16,
     line: u32,
 ) {
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let fn_slot = chunk.alloc_scratch(1);
 
@@ -712,8 +714,7 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    crate::primitives::globals::emit_write(chunk, "__js_this", line);
+    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, iter_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -741,6 +742,7 @@ pub fn emit_drain_async_iterable(chunks: &mut [Chunk], current: usize, line: u32
 }
 
 fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, async_iter: bool) {
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(1);
     let iter_fn_slot = chunk.alloc_scratch(1);
@@ -864,8 +866,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
 
     // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    crate::primitives::globals::emit_write(chunk, "__js_this", line);
+    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -961,9 +962,8 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     let block_p = chunk.emit_block(line);
     let (loop_p, _) = chunk.emit_loop_s(line);
 
-    // __js_this = iter; step = next_fn(iter)
-    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    crate::primitives::globals::emit_write(chunk, "__js_this", line);
+    // receiver = iter; step = next_fn(iter)
+    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, iter_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -1035,12 +1035,13 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
 /// Sync driver — drive one step, return the raw `{value, done}`
 /// IteratorResult (§27.5.1.2).
-pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
+pub fn build_generator_next(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     let mut c = Chunk::new("__stdlib_generator_next");
-    c.arity = 0;
-    c.local_count = 2; // value(0) + has_more(1)
-    let value_local = 0u16;
-    let has_more_local = 1u16;
+    // Reached as `gen.next()` — `attach_continuation_protocols` installs it as
+    // the continuation's `"next"` property, so the call site pushes a receiver.
+    let frame = StdlibFrame::method(abi, &mut c);
+    let value_local = frame.slot(&mut c);
+    let has_more_local = frame.slot(&mut c);
     let value_key = class_slots::resolve_interned(
         &mut c,
         &class_slots::ClassSlot::internal("value"),
@@ -1052,7 +1053,7 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
         &class_slots::PlainNames,
     );
 
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     emit_next(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
@@ -1078,6 +1079,7 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
         0,
     );
     c.emit_op(Op::RETURN, 0);
+    frame.finish(&mut c, 0);
     c
 }
 
@@ -1096,14 +1098,16 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
 ///     undefined (§27.5.3.5); `done` is a real Boolean;
 ///   - any throw out of the body REJECTS (`ecma:promise.reject`)
 ///     instead of throwing synchronously into the caller.
-pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
+pub fn build_async_generator_next(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     let mut c = Chunk::new("__stdlib_async_generator_next");
-    c.arity = 1; // optional resume value; missing arg pads as Undefined
-    c.local_count = 4; // v(0) + value(1) + done_i32(2) + err(3)
-    let v_local = 0u16;
-    let value_local = 1u16;
-    let done_local = 2u16;
-    let err_local = 3u16;
+    // Reached as `gen.next(v)` — same installed-property path as the sync driver.
+    let frame = StdlibFrame::method(abi, &mut c);
+    // Declaration order IS the ABI: the one user parameter (the optional
+    // resume value; a missing arg pads as Undefined) first, then scratch.
+    let v_local = frame.slot(&mut c);
+    let value_local = frame.slot(&mut c);
+    let done_local = frame.slot(&mut c);
+    let err_local = frame.slot(&mut c);
     let value_key = class_slots::resolve_interned(
         &mut c,
         &class_slots::ClassSlot::internal("value"),
@@ -1133,7 +1137,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
 
     crate::primitives::errors::emit_try_start(&mut c, 0);
 
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     class_slots::emit_class_get(
         &mut c,
         class_slots::ObjSource::Stack,
@@ -1158,25 +1162,25 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::REF_IS_NULL, 0);
     c.emit_if(0);
     // next() — drive one step; emit_next pushes [value, has_more].
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     emit_next(&mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0); // i32 done = !has_more
     c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
     c.emit_else(0);
     // next(v) — RESUME with v; the suspended `yield` evaluates to v.
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
     emit_resume(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     c.emit_call(is_done_idx, 1, 0);
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
     c.emit_end(0);
 
     // Stamp started — `.throw()` on an unstarted generator keys on it.
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    frame.emit_receiver(&mut c, 0);
     core_wasm::bool_const(&mut c, 0, true);
     class_slots::emit_class_set(
         &mut c,
@@ -1244,6 +1248,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, err_local, 0);
     c.emit_call(reject_idx, 1, 0);
     c.emit_op(Op::RETURN, 0);
+    frame.finish(&mut c, 1);
     c
 }
 
@@ -1268,13 +1273,29 @@ enum BufferedGeneratorStepMode {
 }
 
 impl Compiler {
-    fn emit_buffered_generator_set_bool_property(&mut self, obj_slot: u16, key: u16, value: bool) {
+    fn emit_buffered_generator_set_bool_property(
+        &mut self,
+        obj_slot: u16,
+        key: &class_slots::ResolvedSlot,
+        value: bool,
+    ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::Bool(value));
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+        let line = self.line;
+        class_slots::emit_class_set(
+            self.chunk(),
+            class_slots::ObjSource::Stack,
+            key,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 
-    fn emit_buffered_generator_mark_started(&mut self, obj_slot: u16, started_key: u16) {
+    fn emit_buffered_generator_mark_started(
+        &mut self,
+        obj_slot: u16,
+        started_key: &class_slots::ResolvedSlot,
+    ) {
         self.emit_buffered_generator_set_bool_property(obj_slot, started_key, true);
     }
 
@@ -1282,27 +1303,63 @@ impl Compiler {
         &mut self,
         obj_slot: u16,
         value_slot: u16,
-        done_key: u16,
-        current_key: u16,
+        done_key: &class_slots::ResolvedSlot,
+        current_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_buffered_generator_set_bool_property(obj_slot, done_key, false);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_generator_yield_value(value_slot);
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
+        {
+
+            let line = self.line;
+
+            class_slots::emit_class_set(
+
+                self.chunk(),
+
+                class_slots::ObjSource::Stack,
+
+                &current_key,
+
+                class_slots::ValueSource::Stack,
+
+                line,
+
+            );
+
+        }
     }
 
     fn emit_buffered_generator_store_completed_state(
         &mut self,
         obj_slot: u16,
         value_slot: u16,
-        done_key: u16,
-        current_key: u16,
-        return_key: u16,
+        done_key: &class_slots::ResolvedSlot,
+        current_key: &class_slots::ResolvedSlot,
+        return_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_buffered_generator_set_bool_property(obj_slot, done_key, true);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, return_key);
+        {
+
+            let line = self.line;
+
+            class_slots::emit_class_set(
+
+                self.chunk(),
+
+                class_slots::ObjSource::Stack,
+
+                &return_key,
+
+                class_slots::ValueSource::Stack,
+
+                line,
+
+            );
+
+        }
         self.emit_buffered_generator_set_bool_property(obj_slot, current_key, false);
     }
 
@@ -1335,9 +1392,9 @@ impl Compiler {
         has_more_slot: u16,
         result_slot: u16,
         mode: BufferedGeneratorStepMode,
-        done_key: u16,
-        current_key: u16,
-        return_key: u16,
+        done_key: &class_slots::ResolvedSlot,
+        current_key: &class_slots::ResolvedSlot,
+        return_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         {
@@ -1374,9 +1431,9 @@ impl Compiler {
         obj_slot: u16,
         value_slot: u16,
         result_slot: u16,
-        done_key: u16,
-        current_key: u16,
-        return_key: u16,
+        done_key: &class_slots::ResolvedSlot,
+        current_key: &class_slots::ResolvedSlot,
+        return_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         let is_done_idx = self.import("ecma:value", "isGeneratorDone");
@@ -1425,10 +1482,10 @@ impl Compiler {
         obj_slot: u16,
         result_slot: u16,
         mode: BufferedGeneratorStepMode,
-        started_key: u16,
-        done_key: u16,
-        current_key: u16,
-        return_key: u16,
+        started_key: &class_slots::ResolvedSlot,
+        done_key: &class_slots::ResolvedSlot,
+        current_key: &class_slots::ResolvedSlot,
+        return_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         let line = self.line;
@@ -1567,10 +1624,26 @@ impl Compiler {
             return Ok(None);
         }
 
-        let started_key = self.str_const("__php_gen_started");
-        let current_key = self.str_const("__php_gen_current");
-        let done_key = self.str_const("__php_gen_done");
-        let return_key = self.str_const("__php_gen_return");
+        let started_key = class_slots::resolve_interned(
+            self.chunk(),
+            &class_slots::ClassSlot::internal("__php_gen_started"),
+            &class_slots::PlainNames,
+        );
+        let current_key = class_slots::resolve_interned(
+            self.chunk(),
+            &class_slots::ClassSlot::internal("__php_gen_current"),
+            &class_slots::PlainNames,
+        );
+        let done_key = class_slots::resolve_interned(
+            self.chunk(),
+            &class_slots::ClassSlot::internal("__php_gen_done"),
+            &class_slots::PlainNames,
+        );
+        let return_key = class_slots::resolve_interned(
+            self.chunk(),
+            &class_slots::ClassSlot::internal("__php_gen_return"),
+            &class_slots::PlainNames,
+        );
         let result_slot = self.define_local("__php_gen_method_result");
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -1583,12 +1656,48 @@ impl Compiler {
         match field_name {
             "getReturn" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, return_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &return_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 self.emit_u16(Op::LOCAL_SET, result_slot);
             }
             "valid" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &started_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1597,7 +1706,25 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &done_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1613,16 +1740,34 @@ impl Compiler {
                     obj_tmp,
                     result_slot,
                     BufferedGeneratorStepMode::Valid,
-                    started_key,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &started_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.chunk().emit_end(line);
             }
             "current" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &started_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1631,7 +1776,25 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &done_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1642,7 +1805,25 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, current_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &current_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
                 self.chunk().emit_end(line);
@@ -1651,16 +1832,34 @@ impl Compiler {
                     obj_tmp,
                     result_slot,
                     BufferedGeneratorStepMode::Current,
-                    started_key,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &started_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.chunk().emit_end(line);
             }
             "send" | "next" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &started_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1669,7 +1868,25 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &done_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1693,9 +1910,9 @@ impl Compiler {
                     obj_tmp,
                     value_slot,
                     result_slot,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.chunk().emit_end(line);
 
@@ -1704,10 +1921,10 @@ impl Compiler {
                     obj_tmp,
                     result_slot,
                     BufferedGeneratorStepMode::Value,
-                    started_key,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &started_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.chunk().emit_end(line);
                 // Mark as moved for rewind() check
@@ -1722,7 +1939,25 @@ impl Compiler {
             }
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &started_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1731,7 +1966,25 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_get(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &done_key,
+
+                        class_slots::Dest::Stack,
+
+                        line,
+
+                    );
+
+                }
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1751,9 +2004,9 @@ impl Compiler {
                     obj_tmp,
                     value_slot,
                     result_slot,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.chunk().emit_end(line);
 
@@ -1768,7 +2021,25 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
+                {
+
+                    let line = self.line;
+
+                    class_slots::emit_class_set(
+
+                        self.chunk(),
+
+                        class_slots::ObjSource::Stack,
+
+                        &started_key,
+
+                        class_slots::ValueSource::Stack,
+
+                        line,
+
+                    );
+
+                }
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 {
@@ -1787,18 +2058,18 @@ impl Compiler {
                     obj_tmp,
                     start_resume_slot,
                     result_slot,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
 
                 self.chunk().emit_else(line);
                 self.emit_buffered_generator_store_completed_state(
                     obj_tmp,
                     start_value_slot,
-                    done_key,
-                    current_key,
-                    return_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
                 );
                 self.emit_buffered_generator_set_step_result(
                     start_value_slot,
@@ -1900,24 +2171,32 @@ impl Compiler {
 // the natural shape (Array → as-is, String → per-codepoint at the host
 // level, etc.).
 //
-// Method-call protocol: `__js_this` is bound to the receiver before each
-// method invocation per ECMA-262 §13.3.7 (CallMemberExpression). We save
-// the caller's `__js_this` on entry and restore on exit so calling
-// iter_drain doesn't leak our internal `this` rebinds.
-pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
+// Method-call protocol: under `Ambient`, `__js_this` is bound to the receiver
+// before each method invocation per ECMA-262 §13.3.7 (CallMemberExpression),
+// and this helper saves the caller's `__js_this` on entry and restores it on
+// exit so calling iter_drain doesn't leak our internal `this` rebinds.
+//
+// ⛔ THAT SAVE/RESTORE PAIR IS THE HAND-ROLLED SHADOW STACK M5 DELETES. Under
+// `Parameter` there is nothing to save: each invocation's receiver is that
+// invocation's own argument, so no caller state is clobbered and the entry
+// read, the exit write and the `saved_this` local all vanish — see
+// `frame.save_ambient_this` / `restore_ambient_this` below.
+pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_iter_drain");
-    c.arity = 1;
-    // v(0) + result(1) + out(2) + it(3) + method(4) + step(5) + counter(6) + saved_this(7)
-    c.local_count = 8;
-    let v = 0u16;
-    let result = 1;
-    let out = 2;
-    let it = 3;
-    let method = 4;
-    let step = 5;
-    let counter = 6;
-    let saved_this = 7;
+    // ⛔ `plain`, NOT `method`. Its one call site is hand-built
+    // (`build_pyiter` in `collections.rs`) and pushes no receiver under either
+    // ABI, so declaring one would desync exactly that call — even though this
+    // chunk DOES have to invoke user methods the new way.
+    let frame = StdlibFrame::plain(abi);
+    // Declaration order IS the ABI: the one user parameter first, then scratch.
+    let v = frame.slot(&mut c);
+    let result = frame.slot(&mut c);
+    let out = frame.slot(&mut c);
+    let it = frame.slot(&mut c);
+    let method = frame.slot(&mut c);
+    let step = frame.slot(&mut c);
+    let counter = frame.slot(&mut c);
     let async_iter_key = class_slots::resolve_interned(
         &mut c,
         &class_slots::ClassSlot::internal("asyncIterator"),
@@ -1931,9 +2210,15 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // then spelling) rather than a substitution. The slot itself is verified
     // stamped and callable: `getattr(r, "__vybe_slot_5")()` returns a working
     // iterator. See flexclassplan.md §2g.
-    let iter_slot_key = c.add_constant(vybe_runtime::Value::String(Arc::from(
-        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Iterator).as_str(),
-    )));
+    // ⛔ WAS `add_constant(protocol_slot_key(Iterator))` — naming the slot's
+    // SPELLING here, which is the one thing §2a forbids: a language binds a
+    // slot, it never names it. `ClassSlot::Slot` asks the owner for the same
+    // string, so the spelling has one authority again.
+    let iter_slot_key = class_slots::resolve_interned(
+        &mut c,
+        &class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Iterator),
+        &class_slots::PlainNames,
+    );
     let iter_alt_key = class_slots::resolve_interned(
         &mut c,
         &class_slots::ClassSlot::internal("__iter__"),
@@ -1959,9 +2244,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // for-of loops).
     let exit_block = c.emit_block(0);
 
-    // saved_this = __js_this
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
-    c.emit_op_u16(Op::LOCAL_SET, saved_this, 0);
+    let saved_this = frame.save_ambient_this(&mut c, 0);
 
     // Fast path: built-in Array → result = v, exit. Walking the
     // prototype chain for `iterator` would resolve to Array.prototype's
@@ -2087,7 +2370,13 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_struct_field_op(Op::STRUCT_GET, 0, iter_slot_key, 0);
+    class_slots::emit_class_get(
+        &mut c,
+        class_slots::ObjSource::Stack,
+        &iter_slot_key,
+        class_slots::Dest::Stack,
+        0,
+    );
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
     c.patch_block(try_slot);
@@ -2108,11 +2397,8 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(has_method);
 
-    // __js_this = v; it = method()
-    c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
-    c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
+    // it = v.method() — the receiver is `v`
+    frame.emit_receiver_invoke(&mut c, method, v, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
 
@@ -2201,11 +2487,8 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(1, 0); // counter >= cap → break
 
-    c.emit_op_u16(Op::LOCAL_GET, it, 0);
-    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
+    // step = it.method() — the receiver is `it`
+    frame.emit_receiver_invoke(&mut c, method, it, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
 
@@ -2256,13 +2539,14 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(exit_block);
 
-    // Restore __js_this and return result. RETURN is at the function's
-    // top level, so structured control flow has fully unwound by the
-    // time we hit it — no leaked labels.
-    c.emit_op_u16(Op::LOCAL_GET, saved_this, 0);
-    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
+    // Restore the caller's ambient receiver (nothing to restore under
+    // `Parameter`) and return result. RETURN is at the function's top level,
+    // so structured control flow has fully unwound by the time we hit it —
+    // no leaked labels.
+    frame.restore_ambient_this(&mut c, saved_this, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
+    frame.finish(&mut c, 1);
     c
 }
 
@@ -2275,11 +2559,15 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 // `__vybe_drain_generator`. Draining goes through
 // `emit_drain_into_array_into` inline at the call site.
 
-pub fn build_generator_self() -> Chunk {
+/// `[Symbol.iterator]()` on a continuation — returns the generator itself
+/// (§27.5.1.5). `attach_continuation_protocols` installs it as an ordinary
+/// `"iterator"` PROPERTY of the generator object, so it is reached as a
+/// METHOD CALL and the call site supplies the receiver under `Parameter`.
+pub fn build_generator_self(abi: ReceiverAbi) -> Chunk {
     let mut c = Chunk::new("__stdlib_generator_self");
-    c.arity = 0;
-    c.local_count = 0;
-    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    let frame = StdlibFrame::method(abi, &mut c);
+    frame.emit_receiver(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
+    frame.finish(&mut c, 0);
     c
 }

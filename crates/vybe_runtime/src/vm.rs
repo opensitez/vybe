@@ -86,6 +86,37 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.pending_exit — set by `wasi:cli/exit` to end the run.
     /// Null when no VM is attached (HostContext::empty()).
     exit_slot: *mut bool,
+    /// Raw pointer to `VM::host_receiver` — the thisArgument for the NEXT
+    /// callback this host function makes.
+    ///
+    /// The receiver used to travel in the `__js_this` module global, which the
+    /// host could write because the compiler declared it. Under
+    /// `ReceiverBinding::UniversalParameter` the compiler emits no reference to
+    /// it, so the global does not exist — and `slot_set` deliberately never
+    /// creates one (a module's global index space is fixed at instantiation;
+    /// a global conjured at runtime cannot exist on a stock engine). Writing it
+    /// therefore became a SILENT NO-OP, which is what made `f.call(o)` and
+    /// `map(fn, thisArg)` lose their receiver while plain `map(fn)` was fine.
+    ///
+    /// This slot is the host's own channel for that value. It is VM state, not
+    /// a module global, so it costs the emitted module nothing and disappears
+    /// from the WASM surface entirely — which is the point of M5.
+    host_receiver_slot: *mut Value,
+    /// The running module's receiver ABI, copied from its module chunk.
+    ///
+    /// It is what decides which of the two channels above is live, and it has
+    /// to be carried explicitly: a `HostContext` holds raw slots, not the
+    /// chunk table, so it cannot ask the module itself. Defaults to `Ambient`
+    /// in `empty()`, the behaviour every host had before the second channel
+    /// existed.
+    module_receiver_abi: crate::chunk::ReceiverAbi,
+    /// How many leading argument slots THIS call handed to the receiver.
+    ///
+    /// Set per invocation by `call_value_inner`, because it is a property of
+    /// the CALL: a JS call from bytecode under `ReceiverAbi::Parameter`
+    /// carries a receiver, and host plumbing invoking the same function with
+    /// arguments it built itself does not.
+    pub(crate) call_receiver_argc: usize,
     /// Raw pointer to VM.pending_exit_code — the status `wasi:cli/exit` was
     /// given. Null when no VM is attached (`HostContext::empty()`).
     exit_code_slot: *mut i32,
@@ -173,9 +204,48 @@ impl<'a> HostContext<'a> {
         // unrelated reasons, and treating that as receiver-first hands a
         // one-parameter setter the receiver as its VALUE. Require the arity to
         // agree with a receiver-first setter as well.
+        // ⛔ `arity >= 2` IS AN ABI-DEPENDENT HEURISTIC. It was written when an
+        // `is_method` chunk had NO receiver parameter, so "arity of at least 2"
+        // meant "more parameters than a plain one-value setter" and excluded
+        // the accessor this guard exists to exclude. Under
+        // `ReceiverAbi::Parameter` that same setter GAINS a real slot-0
+        // receiver, its arity goes 1 → 2, and the test starts admitting
+        // precisely the case it was added to reject. Compare against the
+        // receiver-inclusive threshold instead, so the question stays "does it
+        // take a receiver AND a value" under either ABI.
+        let receiver_params = u8::from(self.module_uses_host_receiver_channel());
         chunks
             .get(chunk_index)
-            .is_some_and(|c| c.is_method && c.arity >= 2)
+            .is_some_and(|c| c.is_method && c.arity >= 2 + receiver_params)
+    }
+
+    /// How many leading argument slots the RECEIVER occupies in a call.
+    ///
+    /// 1 under [`crate::chunk::ReceiverAbi::Parameter`], where ECMA-262
+    /// §10.2.1 `[[Call]](thisArgument, argumentsList)` is taken literally and
+    /// EVERY call passes a receiver — including one that lands on a host
+    /// function, which is why host functions have to know about it. 0 under
+    /// `Ambient`, where the receiver travels in a module global instead.
+    ///
+    /// ⛔ The receiver slot is always PRESENT under `Parameter`, sometimes
+    /// holding `undefined` (§10.2.1.1 OrdinaryCallBindThis, for a non-object
+    /// thisArgument). "Absent" and "undefined" must not be the same thing, or
+    /// the uniform rule is back to being a special case.
+    pub fn receiver_argc(&self) -> usize {
+        self.call_receiver_argc
+    }
+
+    /// The USER arguments of a host call: the leading `captures` bound values
+    /// and the receiver slot both skipped.
+    ///
+    /// A host function reached as a value (`d.resolve(42)`) is handed
+    /// `[captures…, receiver, args…]`. `captures` is the function's OWN fact —
+    /// it built them — while the receiver slot is the module's ABI, which the
+    /// function cannot know. Asking here keeps the second half in one place
+    /// rather than in every settler's index arithmetic.
+    pub fn user_args<'v>(&self, args: &'v [Value], captures: usize) -> &'v [Value] {
+        let base = (captures + self.receiver_argc()).min(args.len());
+        &args[base..]
     }
 
     /// Call a VM function reference from host code.
@@ -305,16 +375,51 @@ impl<'a> HostContext<'a> {
     /// Read the current JS receiver binding (`__js_this`) from globals.
     /// Returns `Undefined` when no binding exists.
     pub fn current_js_this(&self) -> Value {
-        unsafe {
-            self.slot_get("__js_this")
+        if !self.module_uses_host_receiver_channel() {
+            return unsafe { self.slot_get("__js_this") };
+        }
+        if self.host_receiver_slot.is_null() {
+            return Value::Undefined;
+        }
+        unsafe { (*self.host_receiver_slot).clone() }
+    }
+
+    /// Update the current JS receiver binding in whichever channel this module
+    /// has. See [`HostContext::host_receiver_slot`] for why there are two.
+    pub fn set_js_this(&mut self, value: Value) {
+        if !self.module_uses_host_receiver_channel() {
+            unsafe {
+                self.slot_set("__js_this", value);
+            }
+            return;
+        }
+        if !self.host_receiver_slot.is_null() {
+            unsafe {
+                *self.host_receiver_slot = value;
+            }
         }
     }
 
-    /// Update the current JS receiver binding (`__js_this`) in globals.
-    pub fn set_js_this(&mut self, value: Value) {
-        unsafe {
-            self.slot_set("__js_this", value);
-        }
+    /// Does this module carry its host-side receiver in `VM::host_receiver`
+    /// rather than in the ambient `__js_this` global?
+    ///
+    /// ⛔ THIS ASKS THE MODULE'S ABI, NOT WHETHER THE GLOBAL EXISTS. Keying it
+    /// on `global_index.contains_key("__js_this")` — which is what this did
+    /// first — conflates two different modules: one under
+    /// `UniversalParameter`, which genuinely has no such global, and one under
+    /// `Ambient` that simply never mentions `this`, so `declare_free_globals`
+    /// had no reference to create the global from. The second is the common
+    /// case in vb/dotnet, and it was silently routed onto the host channel:
+    /// `set_js_this` used to be a NO-OP there (`slot_set` never creates a
+    /// global) and `current_js_this` used to read `Undefined`, where the host
+    /// channel makes the write persist and the read return it.
+    ///
+    /// Measured: `tests/vb/vb_event_subscribing_in_constructor` 10 → 17
+    /// failing, `RuntimeError: [object]` in a `Handles`-wired `OnTick`. A
+    /// js+dart gate cannot see this — under `Ambient` both of those DO declare
+    /// the global, so both take the unchanged branch either way.
+    fn module_uses_host_receiver_channel(&self) -> bool {
+        self.module_receiver_abi == crate::chunk::ReceiverAbi::Parameter
     }
 
     /// Enqueue a callback on the ready queue. What the entry MEANS is the
@@ -612,6 +717,9 @@ impl<'a> HostContext<'a> {
             memory: None,
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
+            host_receiver_slot: std::ptr::null_mut(),
+            module_receiver_abi: crate::chunk::ReceiverAbi::Ambient,
+            call_receiver_argc: 0,
             exit_slot: std::ptr::null_mut(),
             exit_code_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
@@ -1020,10 +1128,22 @@ pub(crate) struct FuncSwitch {
 pub(crate) struct CallTagDef {
     /// Spelling, for traps and disassembly.
     pub(crate) debug_name: String,
-    /// The tag's signature. Runtime types are erased here, so a signature is
-    /// its shape: parameter count and result count.
+    /// The tag's SHAPE — parameter count and result count. Kept because every
+    /// arity check at a call site is expressed in it.
     pub(crate) params: u8,
     pub(crate) results: u8,
+    /// The DECLARED functype spelling (`"i32->i32"`), empty when the producer
+    /// supplied none.
+    ///
+    /// ⛔ A SHAPE IS NOT A FUNCTYPE, and canonical tags used to be interned on
+    /// the shape alone: `canonical_call_tags: HashMap<(u8,u8), u32>`. So
+    /// `call_tag.canon [i32]->[i32]` and `call_tag.canon [f64]->[f64]` were ONE
+    /// tag, and an `i32`-shaped funcref answered the `f64` canonical tag —
+    /// measured, accepted, wrong. The Overview derives the canonical tag *of a
+    /// functype*; two functypes are two tags. Since `call_indirect $table
+    /// $functype` is shorthand for `call_with_tag (call_tag.canon $functype)`,
+    /// interning on the shape reduced the Security property to arity-safety.
+    pub(crate) signature: String,
     /// Fall-back handler (`call_tag.new $functype $func`). When a `funcref`
     /// does not handle this tag, the Overview tail-calls this with the same
     /// arguments "but replacing the call-tag value with the value of the
@@ -1162,6 +1282,15 @@ impl HostFnDecl {
 /// The host (compiler runtime) registers native functions via `register_host_fn`
 /// and sets up globals before calling `run`.
 pub struct VM {
+    /// The thisArgument a host function has set for the callback it is about to
+    /// make — see [`HostContext::host_receiver_slot`] for why the module global
+    /// cannot carry it once the receiver becomes a parameter.
+    pub(crate) host_receiver: Value,
+    /// Set by `invoke_callback` immediately before it dispatches, and CONSUMED
+    /// by the next `call_value_inner`. One-shot on purpose: a call the callee
+    /// itself makes is ordinary bytecode and must NOT inherit "this came from
+    /// host plumbing".
+    pub(crate) host_originated_call: bool,
     pub chunks: Vec<Chunk>,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) stack: Vec<Value>,
@@ -1223,7 +1352,7 @@ pub struct VM {
     /// signature so the same functype always yields the same tag.
     pub(crate) call_tags: Vec<CallTagDef>,
     /// Canonical-tag interning: `(params, results)` → index in `call_tags`.
-    pub(crate) canonical_call_tags: HashMap<(u8, u8), u32>,
+    pub(crate) canonical_call_tags: HashMap<String, u32>,
     /// `func_switch` definitions, keyed by the chunk index standing in for the
     /// definition. The Overview makes this "an alternative to `func`": it has
     /// no type, cannot be called directly, and exists to be reached by
@@ -1574,6 +1703,24 @@ pub struct VmSnapshot {
     handle_table: crate::handle_table::HandleTable,
     waitable_sets: crate::waitable::WaitableRegistry,
     cm_tasks: Vec<crate::cm_task::CMTask>,
+    /// The component model's CANON SECTION and its type spaces.
+    ///
+    /// ⛔ These were the one piece of component state the snapshot did not
+    /// capture, and `merge_canon_section` REJECTS a second, different section
+    /// rather than overwriting one — "this program declares two different canon
+    /// sections; each numbers its canonidx space from zero, so they cannot be
+    /// merged". So the FIRST job with a canon section poisoned every later one
+    /// in the same warm worker, and 16 component tests failed under
+    /// `--worker` while passing 5/5 alone and 2025/2025 under `--cold`.
+    ///
+    /// It read as flakiness because which tests share a worker varies with
+    /// scheduling — the failing SET moved run to run while its size did not.
+    /// `worker.rs`'s own doc states the rule this restores: "any difference
+    /// between warm and cold execution is a bug in it, not a property of warm
+    /// mode."
+    canon_defs: Vec<crate::canon_def::CanonDef>,
+    canon_types: Vec<Option<crate::component::ValType>>,
+    canon_functypes: Vec<Option<crate::canon_def::CanonFuncType>>,
     try_group_counter: u64,
     cur_fiber_id: u64,
     next_fiber_id: u64,
@@ -1592,7 +1739,7 @@ pub struct VmSnapshot {
     /// id that no longer exists.
     call_tags_len: usize,
     call_tag_registry: HashMap<String, u32>,
-    canonical_call_tags: HashMap<(u8, u8), u32>,
+    canonical_call_tags: HashMap<String, u32>,
     chunk_call_tag_maps_len: usize,
     // Registries a SCRIPT extends by running. Every one of these used to
     // survive a reset — the doc comment on `reset_to` even advertised leaving
@@ -1709,6 +1856,8 @@ impl VM {
 
     pub fn new() -> Self {
         VM {
+            host_receiver: Value::Undefined,
+            host_originated_call: false,
             chunks: Vec::new(),
             frames: Vec::new(),
             stack: Vec::with_capacity(256),
@@ -1836,6 +1985,9 @@ impl VM {
             dropped_data: self.dropped_data.clone(),
             dropped_elems: self.dropped_elems.clone(),
             active_memory: self.active_memory,
+            canon_defs: self.canon_defs.clone(),
+            canon_types: self.canon_types.clone(),
+            canon_functypes: self.canon_functypes.clone(),
             handle_table: self.handle_table.clone(),
             waitable_sets: self.waitable_sets.clone(),
             cm_tasks: self.cm_tasks.clone(),
@@ -1907,6 +2059,12 @@ impl VM {
         self.handle_table = snap.handle_table.clone();
         self.waitable_sets = snap.waitable_sets.clone();
         self.cm_tasks = snap.cm_tasks.clone();
+        // The canon section and its type spaces — see `VmSnapshot::canon_defs`.
+        // A second job's section is REJECTED, not overwritten, so leaving these
+        // behind made the first component program in a worker poison the rest.
+        self.canon_defs = snap.canon_defs.clone();
+        self.canon_types = snap.canon_types.clone();
+        self.canon_functypes = snap.canon_functypes.clone();
         // 4b. Drop the prior run's appended CODE (and its embedded string/data
         //     constants — security: no earlier tenant's bytes survive) + the
         //     chunk-parallel structures that grow with it. Everything below the
@@ -2387,13 +2545,31 @@ impl VM {
     /// Evaluate a constant expression (Extended Const Expressions).
     /// Used for global initialization at load time.
     pub(crate) fn eval_const_expr(&self, expr: &crate::chunk::ConstExpr) -> Value {
+        // The executing frame names the type base, exactly as `resolve_gc_rtt`
+        // does for the equivalent instruction.
+        let base = self
+            .frames
+            .last()
+            .and_then(|frame| self.chunk_type_base.get(frame.chunk_index))
+            .copied()
+            .unwrap_or(0);
+        self.eval_const_expr_with_type_base(expr, base)
+    }
+
+    /// [`Self::eval_const_expr`] with the GC type base stated outright, for the
+    /// instantiation-time callers that have no frame to derive it from.
+    pub(crate) fn eval_const_expr_with_type_base(
+        &self,
+        expr: &crate::chunk::ConstExpr,
+        type_base: usize,
+    ) -> Value {
         use crate::chunk::ConstExpr;
         match expr {
             ConstExpr::Value(v) => v.clone(),
             ConstExpr::GlobalGet(name) => self.global(name).cloned().unwrap_or(Value::Null),
             ConstExpr::Add(left, right) => {
-                let l = self.eval_const_expr(left);
-                let r = self.eval_const_expr(right);
+                let l = self.eval_const_expr_with_type_base(left, type_base);
+                let r = self.eval_const_expr_with_type_base(right, type_base);
                 match (&l, &r) {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_add(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_add(*b)),
@@ -2402,8 +2578,8 @@ impl VM {
                 }
             }
             ConstExpr::Mul(left, right) => {
-                let l = self.eval_const_expr(left);
-                let r = self.eval_const_expr(right);
+                let l = self.eval_const_expr_with_type_base(left, type_base);
+                let r = self.eval_const_expr_with_type_base(right, type_base);
                 match (&l, &r) {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_mul(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
@@ -2427,7 +2603,51 @@ impl VM {
                     Value::Null
                 }
             }
+            // An `i31ref` is UNBOXED: `Op::I31_NEW` masks to 31 bits and pushes
+            // a plain `I32`. The constant form must produce the SAME value, or
+            // `ref.eq` — which for i31 compares the integer, there being no
+            // pointer — would separate a segment's `ref.i31 7` from an
+            // instruction's.
+            ConstExpr::RefI31(inner) => {
+                let v = self.eval_const_expr_with_type_base(inner, type_base).as_i32();
+                Value::I32(v & 0x7FFF_FFFF)
+            }
+            // Mirrors `Op::ARRAY_NEW_DEFAULT`: a defaulted array carrying the
+            // resolved rtt, so a GC array built by an element expression traps
+            // on out-of-bounds exactly like one built by the instruction.
+            ConstExpr::ArrayNewDefault { typeidx, len } => {
+                let n = self
+                    .eval_const_expr_with_type_base(len, type_base)
+                    .as_i32()
+                    .max(0) as usize;
+                self.const_array(*typeidx, type_base, vec![Value::Null; n])
+            }
+            ConstExpr::ArrayNew { typeidx, value, len } => {
+                let v = self.eval_const_expr_with_type_base(value, type_base);
+                let n = self
+                    .eval_const_expr_with_type_base(len, type_base)
+                    .as_i32()
+                    .max(0) as usize;
+                self.const_array(*typeidx, type_base, vec![v; n])
+            }
         }
+    }
+
+    /// A GC array built by a constant expression, stamped with the rtt its
+    /// type immediate names. Mirrors `Op::ARRAY_NEW`/`ARRAY_NEW_DEFAULT` so an
+    /// array from an element segment traps on out-of-bounds exactly like one
+    /// built by the instruction. `typeidx` is 1-based (0 = dynamic).
+    fn const_array(&self, typeidx: u16, type_base: usize, elems: Vec<Value>) -> Value {
+        let mut obj = Object::new_array(elems);
+        obj.type_id = if typeidx == 0 {
+            0
+        } else {
+            self.module_type_ids
+                .get(type_base + typeidx as usize - 1)
+                .copied()
+                .unwrap_or(0)
+        };
+        Value::Object(crate::heap::alloc(obj))
     }
 
     /// Get the size (in bytes) of a memory by spec memory index.
@@ -2547,7 +2767,7 @@ impl VM {
             self.memory.with_buffer(|buf| {
                 if addr.saturating_add(size) > buf.len() {
                     Err(crate::VMError::new(format!(
-                        "trap: memory access out of bounds: addr={} size={} limit={}",
+                        "trap: out of bounds memory access: addr={} size={} limit={}",
                         addr,
                         size,
                         buf.len()
@@ -2560,7 +2780,7 @@ impl VM {
             let mem = self.extra_mem(memidx);
             if addr.saturating_add(size) > mem.len() {
                 Err(crate::VMError::new(format!(
-                    "trap: memory access out of bounds: addr={} size={} limit={}",
+                    "trap: out of bounds memory access: addr={} size={} limit={}",
                     addr,
                     size,
                     mem.len()
@@ -2581,7 +2801,7 @@ impl VM {
             self.memory.with_buffer_mut(|buf| {
                 if addr.saturating_add(bytes.len()) > buf.len() {
                     Err(crate::VMError::new(format!(
-                        "trap: memory access out of bounds: addr={} size={} limit={}",
+                        "trap: out of bounds memory access: addr={} size={} limit={}",
                         addr,
                         bytes.len(),
                         buf.len()
@@ -2595,7 +2815,7 @@ impl VM {
             let mem = self.extra_mem_mut(memidx);
             if addr.saturating_add(bytes.len()) > mem.len() {
                 Err(crate::VMError::new(format!(
-                    "trap: memory access out of bounds: addr={} size={} limit={}",
+                    "trap: out of bounds memory access: addr={} size={} limit={}",
                     addr,
                     bytes.len(),
                     mem.len()
@@ -2732,25 +2952,35 @@ impl VM {
     /// `call_with_tag (call_tag.canon $functype)`, so every module deriving the
     /// canonical tag for the same signature must get the SAME tag, or an
     /// indirect call would stop matching a func that handles it.
-    pub fn call_tag_canon(&mut self, params: u8, results: u8) -> u32 {
+    pub fn call_tag_canon(&mut self, params: u8, results: u8, signature: &str) -> u32 {
+        // ⛔ THE KEY IS THE FUNCTYPE, NOT THE SHAPE. A producer that supplies no
+        // spelling (every non-wast frontend) falls back to the shape, so its
+        // behaviour is unchanged; wast supplies the declared types and gets one
+        // canonical tag per functype, which is what the Overview defines.
+        let key = if signature.is_empty() {
+            format!("#shape[{params}->{results}]")
+        } else {
+            signature.to_string()
+        };
         // Same staleness rule as the name registry: an interned canonical id
         // is only valid while its entity is still present.
-        if let Some(existing) = self.canonical_call_tags.get(&(params, results))
+        if let Some(existing) = self.canonical_call_tags.get(&key)
             && (*existing as usize) < self.call_tags.len()
         {
             return *existing;
         }
         let idx = self.call_tags.len() as u32;
         self.call_tags.push(CallTagDef {
-            debug_name: format!("canon[{params}->{results}]"),
+            debug_name: format!("canon[{key}]"),
             params,
             results,
+            signature: signature.to_string(),
             // "For canonical call tags, the answer is simply that the program
             // traps" — a canonical tag has no fall-back, by definition.
             fallback: None,
             canonical: true,
         });
-        self.canonical_call_tags.insert((params, results), idx);
+        self.canonical_call_tags.insert(key, idx);
         idx
     }
 
@@ -2766,11 +2996,13 @@ impl VM {
         debug_name: &str,
         params: u8,
         results: u8,
+        signature: &str,
         fallback: Option<Value>,
     ) -> u32 {
         let idx = self.call_tags.len() as u32;
         self.call_tags.push(CallTagDef {
             debug_name: debug_name.to_string(),
+            signature: signature.to_string(),
             params,
             results,
             fallback,
@@ -2800,8 +3032,41 @@ impl VM {
         let Some(chunk) = self.chunks.get(chunk_index) else {
             return false;
         };
-        let (params, results) = (chunk.arity, chunk.result_arity);
-        self.call_tag_canon(params, results) == tag
+        // ⛔ `param_count`, NOT `arity`. `param_count` is documented as the
+        // function's declared WASM parameter count (user params only, no
+        // receiver) and is the half of the type SHAPE that `call_indirect`'s
+        // runtime check compares against. `arity` can include a receiver, so
+        // deriving the canonical tag from it would compute a different tag
+        // than the call site does and reject a func that does handle it.
+        let (params, results) = (chunk.param_count, chunk.result_arity);
+        // ⛔ THE FUNCTYPE, NOT THE SHAPE. An undeclared func handles the
+        // canonical tag OF ITS OWN TYPE, and `Chunk::func_sig` already carries
+        // that — the declared VALUE TYPES, in order. Falls back to the shape
+        // for any chunk that is not a wast function, which is all those can
+        // answer and exactly what they did before.
+        let sig = chunk
+            .func_sig
+            .as_ref()
+            .map(|(p, r)| format!("{p}->{r}"))
+            .unwrap_or_default();
+        // ⚠ BOTH KEYS, and the reason is a real gap rather than caution.
+        // `call_indirect` derives its canonical tag from the CALL SITE's
+        // `$functype`, but at runtime that instruction carries only
+        // `(argc, expected_results)` — counts, no types — so it can only ask
+        // for the SHAPE tag. A wast func, which does know its own functype,
+        // must therefore answer to both: its functype tag (so
+        // `call_tag.canon [i32]->[i32]` and `[f64]->[f64]` stay distinct
+        // entities) and its shape tag (so `call_indirect` still reaches it).
+        //
+        // ⛔ This is not the proposal's end state. Widening `call_indirect`'s
+        // immediate to carry the functype is what would let the call site ask
+        // for the typed tag — and that is an operand-width change, the exact
+        // class of change that desynchronised every bytecode walker past a call
+        // tag earlier today, so it wants its own step and its own gate.
+        if !sig.is_empty() && self.call_tag_canon(params, results, &sig) == tag {
+            return true;
+        }
+        self.call_tag_canon(params, results, "") == tag
     }
 
     pub fn register_host_fn(
@@ -2982,6 +3247,15 @@ impl VM {
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
         let exit_ptr = &mut self.pending_exit as *mut bool;
         let exit_code_ptr = &mut self.pending_exit_code as *mut i32;
+        let host_receiver_ptr = &mut self.host_receiver as *mut Value;
+        // The module chunk's ABI, read BEFORE the raw borrows below — it
+        // decides which receiver channel the two accessors use.
+        let module_abi = self
+            .chunks
+            .first()
+            .map_or(crate::chunk::ReceiverAbi::Ambient, |c| {
+                c.module_receiver_abi
+            });
         let globals_ptr = &mut self.globals as *mut Vec<Value>;
         let global_index_ptr = &mut self.global_index as *mut HashMap<String, u32>;
         HostContext {
@@ -2995,6 +3269,9 @@ impl VM {
             last_exception_slot: exc_ptr,
             exit_slot: exit_ptr,
             exit_code_slot: exit_code_ptr,
+            host_receiver_slot: host_receiver_ptr,
+            module_receiver_abi: module_abi,
+            call_receiver_argc: 0,
             globals_slot: globals_ptr,
             global_index_slot: global_index_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
@@ -3050,6 +3327,53 @@ impl VM {
         self.callback_invoker.as_mut().unwrap().as_mut()
     }
 
+    /// Does this callable bind argument 0 to its receiver?
+    ///
+    /// Resolves the value to its chunk and reads [`Chunk::takes_receiver`]. A
+    /// host function is never a bytecode callee and answers `false`; so does a
+    /// value that is not callable at all, which the call itself then rejects.
+    /// This module's receiver ABI, read off the module chunk.
+    /// The receiver ABI of the code making the CALL — the currently executing
+    /// frame's chunk, not `chunks[0]`.
+    ///
+    /// ⛔ ASK THE CALL SITE, NOT THE BUNDLE. Whether a receiver was pushed is
+    /// decided by the unit that emitted the call, and in a multi-language
+    /// bundle `chunks[0]` belongs to whichever unit happens to be first. With
+    /// no frame the caller is host code, which pushes no receiver of its own —
+    /// and that path is flagged `from_host` anyway.
+    pub(crate) fn module_receiver_abi(&self) -> crate::chunk::ReceiverAbi {
+        self.frames
+            .last()
+            .and_then(|f| self.chunks.get(f.chunk_index))
+            .map_or(crate::chunk::ReceiverAbi::Ambient, |c| {
+                c.module_receiver_abi
+            })
+    }
+
+    /// Is this value a host function? Asked separately from
+    /// [`Self::callee_takes_receiver`], which can only answer for callees that
+    /// resolve to a chunk.
+    fn is_host_function(func_ref: &Value) -> bool {
+        let Value::Object(obj) = func_ref else {
+            return false;
+        };
+        let Ok(o) = obj.lock() else { return false };
+        matches!(o.kind, crate::value::ObjectKind::HostFunction(_))
+    }
+
+    fn callee_takes_receiver(&self, func_ref: &Value) -> bool {
+        let Value::Object(obj) = func_ref else {
+            return false;
+        };
+        let Ok(o) = obj.lock() else { return false };
+        let crate::value::ObjectKind::Function(f) = &o.kind else {
+            return false;
+        };
+        self.chunks
+            .get(f.chunk_index)
+            .is_some_and(|c| c.takes_receiver)
+    }
+
     /// Invoke a VM function reference from host code.
     /// This is the WASM-compliant callback mechanism: host functions
     /// can call exported/internal VM functions during execution.
@@ -3064,12 +3388,67 @@ impl VM {
 
         // Push function ref + args onto stack
         self.stack.push(func_ref.clone());
+        // ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`: a callee
+        // that binds argument 0 to its RECEIVER must be handed one, and host
+        // code has none to give — `Array.prototype.map` calls its callback with
+        // the element list and nothing else. §10.2.1.1 OrdinaryCallBindThis
+        // with a non-object thisArgument is `undefined`, so that is what goes
+        // in, explicitly, rather than the argument list shifting into the
+        // receiver slot and every parameter arriving one place late.
+        //
+        // ⛔ Asked of the CALLEE, never assumed from the call site: a region
+        // that does not pass receivers leaves `takes_receiver` false and this
+        // is inert.
+        // ⛔ A HOST callee gets NO receiver here, and that is not an
+        // inconsistency with the method-call path — it is the same rule read
+        // correctly. THE RECEIVER IS A PROPERTY OF THE CALL, NOT OF THE
+        // MODULE. `d.resolve(42)` from bytecode is a JS call and carries one;
+        // the microtask drain invoking that same settler with the exact
+        // arguments it constructed is host PLUMBING and carries none.
+        //
+        // Measured, when this prepended one for host callees on the module's
+        // ABI alone: `promise_then_catch_finally_chaining` 5 → 21 regressed,
+        // `promise_rejection_propagation` 12 → 130, `promise_finally_errors`
+        // 6 → 141. Every internal settler had its arguments shifted.
+        // `call_value_inner` tells the host function which of the two it was,
+        // via `HostContext::call_receiver_argc`.
+        let receiver_argc = usize::from(self.callee_takes_receiver(func_ref));
+        if receiver_argc == 1 {
+            // WHICH receiver — not a hard-coded `undefined`.
+            //
+            // `[1,2].map(fn, thisArg)`, `f.call(o)` and `f.apply(o, …)` reach a
+            // bytecode callee through `ecma::function::invoke_with_explicit_this`,
+            // which brackets the invocation with `set_js_this(this_arg)`
+            // because under the ambient protocol that global WAS the channel.
+            // Passing `undefined` here regardless drops the caller's explicit
+            // receiver: measured, `map(fn)` worked and `map(fn, thisArg)`,
+            // `.call` and `.apply` all threw.
+            //
+            // ⛔ NOT the ambient protocol returning. Under
+            // `UniversalParameter` no EMITTED instruction reads or writes this
+            // slot — the compiler has none left. It is a host-side, always
+            // -restored parameter to this one call, read at the single boundary
+            // where the host holds a receiver and the callee declares a
+            // parameter for it. An unset slot reads as null, which becomes the
+            // `undefined` thisArgument §10.2.1.1 gives an ordinary call.
+            let this_arg = match self.global("__js_this") {
+                Some(Value::Null) | None => match &self.host_receiver {
+                    Value::Null => Value::Undefined,
+                    other => other.clone(),
+                },
+                Some(other) => other.clone(),
+            };
+            self.stack.push(this_arg);
+        }
         for arg in args {
             self.stack.push(arg.clone());
         }
 
+        // Tell the dispatch this call is host plumbing, so a host callee is not
+        // charged a receiver slot it was never given.
+        self.host_originated_call = true;
         // Call the function (pushes a new frame for compiled fns; inline for host fns)
-        if self.call_value(args.len()).is_err() {
+        if self.call_value(args.len() + receiver_argc).is_err() {
             self.stack.truncate(saved_stack_len);
             return Value::Null;
         }
@@ -3549,19 +3928,6 @@ impl VM {
             }
             table[offset..offset + values.len()].clone_from_slice(&values);
         }
-        // Passive element segments compiled from source: resolve each function
-        // chunk index to its canonical funcref and populate `elem_segments`, so
-        // `table.init`/`array.new_elem` copy real funcrefs (WASM passive elems).
-        let passive_elem_funcs = self.chunks[script_idx].passive_elem_funcs.clone();
-        for (seg_idx, funcs) in passive_elem_funcs.iter().enumerate() {
-            if funcs.is_empty() {
-                continue;
-            }
-            let vals: Vec<crate::value::Value> =
-                funcs.iter().map(|&fi| self.make_funcref(fi)).collect();
-            self.set_elem_segment(seg_idx, vals);
-        }
-
         // Resolve imports for ALL new chunks (not just script chunk).
         // Each chunk has its own import list. We build one unified import table
         // by scanning all chunks and mapping their import indices to host functions.
@@ -3638,6 +4004,38 @@ impl VM {
             }
         }
 
+        // ⚠ ELEMENT SEGMENTS INSTANTIATE **AFTER** GLOBALS AND THE TYPE TABLE.
+        //
+        // WASM 3.0 §4.5.4 fixes the order of module instantiation: globals are
+        // evaluated, THEN element segments, THEN data segments, and only then
+        // are tables filled and `start` run. This block used to sit ~90 lines
+        // earlier — before imports, before the GC type table, and before the
+        // global initializers — which was survivable only for as long as a
+        // segment could hold nothing but `ref.func`. It cannot: an element
+        // expression is a CONSTANT EXPRESSION, and `(item (array.new_default
+        // $t …))` needs the type table while `(item (global.get $g))` needs
+        // the globals. Running first is what made both of those unreachable.
+        //
+        // The rtt base is taken from the SCRIPT CHUNK rather than the executing
+        // frame, because at instantiation there is no frame yet — `resolve_gc_rtt`
+        // would fall back to base 0 and name another module's type.
+        let elem_items = self.chunks[script_idx].passive_elem_items.clone();
+        let type_base = self
+            .chunk_type_base
+            .get(script_idx)
+            .copied()
+            .unwrap_or(0);
+        for (seg_idx, items) in elem_items.iter().enumerate() {
+            if items.is_empty() {
+                continue;
+            }
+            let vals: Vec<crate::value::Value> = items
+                .iter()
+                .map(|e| self.eval_const_expr_with_type_base(e, type_base))
+                .collect();
+            self.set_elem_segment(seg_idx, vals);
+        }
+
         self.frames.push(CallFrame {
             chunk_index: script_idx,
             ip: 0,
@@ -3689,12 +4087,31 @@ impl VM {
         self.stack.clear();
         self.frames.clear();
 
+        // Same two-sided rule as `invoke_callback`, which this had drifted from:
+        // a bytecode callee that binds argument 0 to its receiver must be
+        // handed one (§10.2.1), and a HOST callee must be told this dispatch
+        // was host plumbing so it does not charge a receiver slot to the
+        // arguments the caller built. The microtask drain reaches every promise
+        // reaction through here, so a mismatch loses the reaction's value —
+        // measured as `.then(v => …)` seeing `undefined`.
+        let receiver_argc = usize::from(self.callee_takes_receiver(callee));
         self.push(callee.clone())?;
+        if receiver_argc == 1 {
+            let this_arg = match self.global("__js_this") {
+                Some(Value::Null) | None => match &self.host_receiver {
+                    Value::Null => Value::Undefined,
+                    other => other.clone(),
+                },
+                Some(other) => other.clone(),
+            };
+            self.push(this_arg)?;
+        }
         for arg in args {
             self.push(arg.clone())?;
         }
 
-        self.call_value(args.len())?;
+        self.host_originated_call = true;
+        self.call_value(args.len() + receiver_argc)?;
 
         // HostFunction calls are handled inline by call_value (no frame pushed).
         // If no frame was pushed, the result is already on the stack.
@@ -4013,9 +4430,15 @@ impl VM {
                 // two differently-named tags over one signature into a single
                 // id, so a func handling one answered calls under the other.
                 let id = if decl.canonical {
-                    self.call_tag_canon(decl.params, decl.results)
+                    self.call_tag_canon(decl.params, decl.results, &decl.signature)
                 } else {
-                    self.call_tag_new(&decl.debug_name, decl.params, decl.results, fallback)
+                    self.call_tag_new(
+                        &decl.debug_name,
+                        decl.params,
+                        decl.results,
+                        &decl.signature,
+                        fallback,
+                    )
                 };
                 self.call_tag_registry.insert(decl.debug_name, id);
                 map.push(id);
@@ -4056,7 +4479,7 @@ impl VM {
                         match self.call_tag_registry.get(t).copied() {
                             Some(id) if (id as usize) < self.call_tags.len() => id,
                             _ => {
-                                let id = self.call_tag_new(t, 2, 1, None);
+                                let id = self.call_tag_new(t, 2, 1, "", None);
                                 self.call_tag_registry.insert(t.clone(), id);
                                 id
                             }

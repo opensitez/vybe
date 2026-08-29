@@ -1763,6 +1763,35 @@ fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
         "__types".into(),
         Value::Object(vybe_runtime::heap::alloc(chain)),
     );
+    // ⛔ LINK THE PROTOTYPE. Without this the error carries the right NAME and
+    // the right `__types` chain and is still not an instance of anything:
+    // `eval("if (") ` threw an object for which `e instanceof SyntaxError` and
+    // even `e instanceof Error` were both `false`.
+    //
+    // `platforms/ecma`'s `error.rs` states the rule on `new_error_flat` —
+    // *"every throw-site constructor must use `new_error`; an unlinked error is
+    // the two-populations bug"* — and this is a throw site that had grown its
+    // own error object instead. It only looked correct because `js_instanceof`
+    // used to answer from the `__type` stamp above.
+    //
+    // Resolved the same way `link_error_prototype` does, through the per-VM
+    // `__ctor_<Kind>` anchor rather than a shared static: the error prototypes
+    // belong to the running VM, and reaching into `platforms/ecma` from the
+    // compiler would invert the layering. A language whose profile wires no
+    // error constructors simply finds nothing and keeps the stamps.
+    if let Value::Object(ctor) = ctx.get_global(&format!("__ctor_{kind}")) {
+        let proto = ctor.lock().unwrap().properties.get("prototype").cloned();
+        if let Some(proto @ Value::Object(_)) = proto {
+            obj.properties.insert("__proto__".into(), proto);
+            // §20.5.3.2: with a chain in place `name` resolves THROUGH the
+            // prototype — `new SyntaxError("x").hasOwnProperty("name")` is
+            // false in node. Leaving the own stamp made this the one throw
+            // site out of nineteen that reported `ownName=true`.
+            // Only when the link actually happened: a language that wires no
+            // error constructors keeps the stamp, or it loses its name.
+            obj.properties.shift_remove("name");
+        }
+    }
     ctx.throw_value(Value::Object(vybe_runtime::heap::alloc(obj)));
     Value::Undefined
 }

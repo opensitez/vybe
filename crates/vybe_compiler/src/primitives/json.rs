@@ -238,7 +238,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         h.emit_else(line);
         {
             // throw TypeError("Object of type <T> is not JSON serializable")
-            h.emit_struct_new(0, 0, line);
+            crate::primitives::class_slots::emit_class_alloc(&mut h, line);
             h.emit_dup(line);
             push_str(&mut h, "Object of type ", line);
             dyn_get(&mut h, value_slot, "__type", line);

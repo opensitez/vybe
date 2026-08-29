@@ -208,6 +208,266 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], out, line);
 }
 
+/// Split a whole CSV DOCUMENT into records.
+/// Stack: `[s, delimiter, enclosure]` → `[array of arrays]`.
+///
+/// # Why this is a primitive and not a line-split loop
+///
+/// **A record separator inside an enclosure is CONTENT.** RFC 4180 §2.6 allows
+/// a field to contain line breaks when quoted, so `"a\nb",c` is ONE record with
+/// two fields — and splitting the text on newlines before parsing tears it into
+/// two broken records. Only a scanner that already tracks enclosure state can
+/// tell a record boundary from a quoted newline, which is exactly the state
+/// [`emit_parse_line`] carries. A caller that could correctly pre-split the
+/// document would not need a CSV parser at all.
+///
+/// # Boundaries
+///
+/// `\n`, `\r` and `\r\n` all end a record — `\r\n` as ONE separator, so no
+/// field keeps a trailing carriage return. A here-string ends at the newline
+/// BEFORE its closing delimiter, but text read from a file usually ends with
+/// one, so a trailing separator must NOT produce a final empty record: the last
+/// record is emitted only when something was actually accumulated. An empty
+/// document is zero records, not one empty one.
+///
+/// # What is deliberately NOT here
+///
+/// Turning a header row into named records — python's `DictReader`, PowerShell's
+/// `[PSCustomObject]`, ruby's `CSV::Row` — is three different targets over the
+/// same array of arrays, so it belongs to each walker. This owns the GRAMMAR:
+/// quoting, embedded delimiters, embedded newlines, record boundaries.
+///
+/// ⛔This shares its state machine with [`emit_parse_line`] rather than
+/// generalizing it. Unifying them would pull php, python, pascal and fortran —
+/// every `csv.parse_line` consumer — into the gate for a code-shape change.
+/// Unify when a SECOND language needs the document form.
+pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(9);
+    let (enc, delim, s, out, row, cur, in_q, i, n) = (
+        base,
+        base + 1,
+        base + 2,
+        base + 3,
+        base + 4,
+        base + 5,
+        base + 6,
+        base + 7,
+        base + 8,
+    );
+
+    set(&mut chunks[current], enc, line);
+    set(&mut chunks[current], delim, line);
+    set(&mut chunks[current], s, line);
+
+    crate::primitives::collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    crate::primitives::collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], row, line);
+    chunks[current].emit_string_const("", line);
+    set(&mut chunks[current], cur, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], in_q, line);
+    chunks[current].emit_f64_const(0.0, line);
+    set(&mut chunks[current], i, line);
+    get(&mut chunks[current], s, line);
+    call(chunks, current, "wasm:js-string", "length", 1, line);
+    set(&mut chunks[current], n, line);
+
+    let c = chunks[current].alloc_scratch(1);
+    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], n, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    char_at(chunks, current, s, i, line);
+    set(&mut chunks[current], c, line);
+
+    get(&mut chunks[current], in_q, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    {
+        // ── inside an enclosure ── identical to `emit_parse_line`: a newline
+        // here is CONTENT, which is the whole point of this function.
+        get(&mut chunks[current], c, line);
+        get(&mut chunks[current], enc, line);
+        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        {
+            let next = chunks[current].alloc_scratch(1);
+            get(&mut chunks[current], i, line);
+            chunks[current].emit_f64_const(1.0, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            set(&mut chunks[current], next, line);
+
+            get(&mut chunks[current], next, line);
+            get(&mut chunks[current], n, line);
+            crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_if(line);
+            {
+                char_at(chunks, current, s, next, line);
+                get(&mut chunks[current], enc, line);
+                crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+                chunks[current].emit_if(line);
+                get(&mut chunks[current], cur, line);
+                get(&mut chunks[current], enc, line);
+                crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+                set(&mut chunks[current], cur, line);
+                get(&mut chunks[current], next, line);
+                set(&mut chunks[current], i, line);
+                chunks[current].emit_else(line);
+                chunks[current].emit_bool_const(false, line);
+                set(&mut chunks[current], in_q, line);
+                chunks[current].emit_end(line);
+            }
+            chunks[current].emit_else(line);
+            chunks[current].emit_bool_const(false, line);
+            set(&mut chunks[current], in_q, line);
+            chunks[current].emit_end(line);
+        }
+        chunks[current].emit_else(line);
+        get(&mut chunks[current], cur, line);
+        get(&mut chunks[current], c, line);
+        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+        set(&mut chunks[current], cur, line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_else(line);
+    {
+        // ── outside an enclosure ──
+        get(&mut chunks[current], c, line);
+        get(&mut chunks[current], enc, line);
+        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_bool_const(true, line);
+        set(&mut chunks[current], in_q, line);
+        chunks[current].emit_else(line);
+        {
+            get(&mut chunks[current], c, line);
+            get(&mut chunks[current], delim, line);
+            crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_if(line);
+            get(&mut chunks[current], row, line);
+            get(&mut chunks[current], cur, line);
+            crate::primitives::collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_string_const("", line);
+            set(&mut chunks[current], cur, line);
+            chunks[current].emit_else(line);
+            {
+                // `\r` or `\n` ends the record. `\r\n` is ONE separator: the
+                // `\n` is consumed with the `\r` so the next record does not
+                // start with a stray empty first field.
+                get(&mut chunks[current], c, line);
+                chunks[current].emit_string_const("\r", line);
+                crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+                chunks[current].emit_if(line);
+                {
+                    let next = chunks[current].alloc_scratch(1);
+                    get(&mut chunks[current], i, line);
+                    chunks[current].emit_f64_const(1.0, line);
+                    chunks[current].emit_op(Op::F64_ADD, line);
+                    set(&mut chunks[current], next, line);
+                    get(&mut chunks[current], next, line);
+                    get(&mut chunks[current], n, line);
+                    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+                    chunks[current].emit_if(line);
+                    {
+                        char_at(chunks, current, s, next, line);
+                        chunks[current].emit_string_const("\n", line);
+                        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+                        chunks[current].emit_if(line);
+                        get(&mut chunks[current], next, line);
+                        set(&mut chunks[current], i, line);
+                        chunks[current].emit_end(line);
+                    }
+                    chunks[current].emit_end(line);
+                    emit_end_record(chunks, current, row, cur, out, line);
+                }
+                chunks[current].emit_else(line);
+                {
+                    get(&mut chunks[current], c, line);
+                    chunks[current].emit_string_const("\n", line);
+                    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+                    chunks[current].emit_if(line);
+                    emit_end_record(chunks, current, row, cur, out, line);
+                    chunks[current].emit_else(line);
+                    get(&mut chunks[current], cur, line);
+                    get(&mut chunks[current], c, line);
+                    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+                    set(&mut chunks[current], cur, line);
+                    chunks[current].emit_end(line);
+                }
+                chunks[current].emit_end(line);
+            }
+            chunks[current].emit_end(line);
+        }
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
+
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(&mut chunks[current], i, line);
+    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+
+    // The trailing record. ⛔`emit_parse_line` ALWAYS pushes its final field,
+    // which is right for one record and wrong for a document: a text ending in
+    // a separator would gain a phantom `[""]` row, and so would an empty
+    // document. Emit it only when this record actually holds something —
+    // a non-empty field buffer, or a field already pushed by a delimiter.
+    get(&mut chunks[current], cur, line);
+    chunks[current].emit_string_const("", line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    get(&mut chunks[current], row, line);
+    crate::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_f64_const(0.0, line);
+    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    emit_end_record(chunks, current, row, cur, out, line);
+    chunks[current].emit_end(line);
+
+    get(&mut chunks[current], out, line);
+}
+
+/// Close the record under construction: the pending field joins `row`, `row`
+/// joins `out`, and a fresh `row` and empty field buffer start the next one.
+fn emit_end_record(
+    chunks: &mut [Chunk],
+    current: usize,
+    row: u16,
+    cur: u16,
+    out: u16,
+    line: u32,
+) {
+    get(&mut chunks[current], row, line);
+    get(&mut chunks[current], cur, line);
+    crate::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], row, line);
+    crate::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    crate::primitives::collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], row, line);
+    chunks[current].emit_string_const("", line);
+    set(&mut chunks[current], cur, line);
+}
+
 /// When a field must be enclosed.
 ///
 /// The delimiter, the enclosure and a line break always force it. Languages

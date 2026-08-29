@@ -220,6 +220,48 @@ impl Op {
         }
     }
 
+    /// The NATURAL alignment of a memory access, in bytes — the width the
+    /// instruction reads or writes. `None` for anything that is not a
+    /// load/store.
+    ///
+    /// WASM validation: a memarg's `align` must not exceed this
+    /// ("alignment must not be larger than natural"), which the official suite
+    /// asserts 99 times. It is a hint with no effect on semantics, so nothing
+    /// downstream needed it and nothing checked it.
+    ///
+    /// ⛔ ONE table. The writer had `default_simd_align`, keyed the same way
+    /// and covering only the v128 half, while every core load/store passed a
+    /// literal at its call site — a per-opcode fact with three homes and no
+    /// way to notice when they disagreed. Per-opcode facts belong beside
+    /// `operand_format`, which is the table the opcode set is defined by.
+    pub fn natural_align_bytes(self) -> Option<u32> {
+        match (self.group(), self.sub()) {
+            // ── core loads/stores (prefix 0x00) ──────────────────────────
+            (0x00, 0x28 | 0x2A | 0x36 | 0x38) => Some(4), // i32/f32 load/store
+            (0x00, 0x29 | 0x2B | 0x37 | 0x39) => Some(8), // i64/f64 load/store
+            (0x00, 0x2C | 0x2D | 0x30 | 0x31 | 0x3A | 0x3C) => Some(1), // 8-bit
+            (0x00, 0x2E | 0x2F | 0x32 | 0x33 | 0x3B | 0x3D) => Some(2), // 16-bit
+            (0x00, 0x34 | 0x35 | 0x3E) => Some(4),                      // i64 32-bit
+            // ── v128 loads/stores (prefix 0xFD) ──────────────────────────
+            (0xFD, 0x00 | 0x0B) => Some(16), // v128.load / v128.store
+            (0xFD, 0x01..=0x06 | 0x0A | 0x57 | 0x5B | 0x5D) => Some(8),
+            (0xFD, 0x09 | 0x56 | 0x5A | 0x5C) => Some(4),
+            (0xFD, 0x08 | 0x55 | 0x59) => Some(2),
+            (0xFD, 0x07 | 0x54 | 0x58) => Some(1),
+            // ── atomics (prefix 0xFE) ────────────────────────────────────
+            // An atomic's align must EQUAL its natural alignment, not merely
+            // not exceed it; the caller applies that stricter rule.
+            (0xFE, 0x00 | 0x01) => Some(4),  // notify, wait32
+            (0xFE, 0x02) => Some(8),         // wait64
+            (0xFE, 0x10) => Some(4),         // i32.atomic.load
+            (0xFE, 0x11) => Some(8),         // i64.atomic.load
+            (0xFE, 0x12 | 0x17) => Some(1),  // i32/i64 atomic load8_u
+            (0xFE, 0x13 | 0x18) => Some(2),  // …load16_u
+            (0xFE, 0x14) => Some(4),         // i64.atomic.load32_u
+            _ => None,
+        }
+    }
+
     /// WASM disassembly name, or None if not a valid opcode.
     pub fn wasm_name_opt(self) -> Option<&'static str> {
         match self.group() {
@@ -332,6 +374,9 @@ pub enum OperandFormat {
     U16_U8,
     /// 4 bytes: u16 + u16 (try_start: catch + finally offsets).
     U16_U16,
+    /// 5 bytes: u16 + u16 + u8 (`call_indirect_with_tag`: tableidx + tag name
+    /// index + argc).
+    U16_U16_U8,
     /// 4 bytes: u16 + i16 (br_on_cast: type index + branch offset).
     U16_I16,
     /// Unsigned LEB128 u32.
@@ -387,6 +432,7 @@ impl OperandFormat {
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U8_U8_U8 | Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
+            Self::U16_U16_U8 => 5,
             Self::RawF32 => 4,
             Self::RawF64 => 8,
             Self::V128Const | Self::Shuffle => 16,

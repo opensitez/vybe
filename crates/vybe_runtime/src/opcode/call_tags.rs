@@ -46,8 +46,26 @@ impl Op {
     pub const CALL_RETURN_WITH_TAG: Op = Op::new(0xF1, 0x02);
 }
 
+// ⛔⛔ THESE WIDTHS WERE WRONG, AND `operand_format` IS NOT JUST FOR PRINTING.
+//
+// Declared: U16 / I16 / U16. Actually emitted (and actually READ by
+// `dispatch.rs`):
+//
+//   call_with_tag          emit_op_u16(tag) + u8(argc)              = u16 + u8
+//   call_return_with_tag   same                                     = u16 + u8
+//   call_indirect_with_tag emit_op_u16(table) + u16(tag) + u8(argc) = u16+u16+u8
+//
+// So every consumer under-advanced by 1 byte (3 for the indirect form) and then
+// decoded the ARGC BYTE as the start of the next opcode. `size_in` is used by
+// the wasm writer, `globals.rs`'s global-index rewrite, `link.rs`, `polyfills`,
+// the VM's own scanners and both disassemblers — so this desynchronised every
+// bytecode walk after a call tag, not merely the `--dump` output. It is why
+// `--dump` printed `UNKNOWN(...)` followed by a fabricated `if 0 0` and why
+// every offset after a `call_with_tag` was fiction.
+//
+// The VM's dispatch arm is the authority: it reads u16 (+u16) + byte.
 opcode_category! {
-    [0x00] call_with_tag => U16, "call_with_tag";
-    [0x01] call_indirect_with_tag => I16, "call_indirect_with_tag";
-    [0x02] call_return_with_tag => U16, "call_return_with_tag";
+    [0x00] call_with_tag => U16_U8, "call_with_tag";
+    [0x01] call_indirect_with_tag => U16_U16_U8, "call_indirect_with_tag";
+    [0x02] call_return_with_tag => U16_U8, "call_return_with_tag";
 }

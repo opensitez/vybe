@@ -181,15 +181,6 @@ pub struct LanguageProfile {
     /// function and is what the language has always emitted. (Known limit: a
     /// nested call returns from its own frame rather than the program.)
 
-    /// How this language spells its global namespace — Lua `_G`, JS
-    /// `globalThis`, PHP `$GLOBALS`, Python `globals`. Empty means the language
-    /// has no such spelling. See `primitives/globals.rs`.
-    pub global_namespace: String,
-
-    /// The spelling is a zero-argument CALL (`globals()`) rather than an
-    /// identifier (`_G`).
-    pub global_namespace_is_call: bool,
-
     /// A call site supplies `undefined` for a trailing OPTIONAL dummy argument
     /// the callee declares but the call omits (Fortran `optional ::`).
     ///
@@ -222,7 +213,6 @@ pub struct LanguageProfile {
 
     /// A type/module body compiles its variable declarations before its
     /// contained procedures, so a procedure body sees them already defined.
-    pub class_body_declarations_before_procedures: bool,
 
     /// `array_bounds` on a declaration states the array's FIXED SHAPE — the
     /// declaration allocates it, including a non-zero lower bound — rather than
@@ -576,7 +566,6 @@ pub struct LanguageProfile {
     /// Stamp Python-style introspection metadata (`__name__`, `__mro__`) on each
     /// class object, so `Cls.__name__`, `Cls.__mro__`, and `type(obj).__name__`
     /// resolve. Off by default; languages with this reflection surface opt in.
-    pub class_introspection_metadata: bool,
 
     /// Stamp `__fields` / `__methods` on each class object: the class's own
     /// members as reflection member tokens, the same 8-element shape
@@ -592,13 +581,11 @@ pub struct LanguageProfile {
     ///
     /// Off by default — it is real bytecode per class, so a language pays only
     /// when its reflection surface reads it.
-    pub class_member_metadata: bool,
 
     /// Honour ALL declared bases (`NormalClass.bases`), computing a C3
     /// linearization and attaching every base's methods (multiple
     /// inheritance). Off by default: single-inheritance languages ignore
     /// `bases[1..]`, so their bytecode is unchanged. Python opts in.
-    pub class_multiple_inheritance: bool,
 
     /// The `/` operator performs integer (truncating) division when BOTH
     /// operands are integers (C#, Java, C, Go). Languages where `/` is always
@@ -1548,10 +1535,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("args_pass_by_reference")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let class_body_declarations_before_procedures = compiler
-        .get("class_body_declarations_before_procedures")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let array_bounds_declare_fixed_shape = compiler
         .get("array_bounds_declare_fixed_shape")
         .and_then(|v| v.as_bool())
@@ -1566,15 +1549,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let pads_trailing_optional_arg = compiler
         .get("pads_trailing_optional_arg")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let global_namespace = compiler
-        .get("global_namespace")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let global_namespace_is_call = compiler
-        .get("global_namespace_is_call")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let globals_may_be_undeclared = compiler
@@ -1825,18 +1799,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let for_in_object_yields_keys = compiler
         .get("for_in_object_yields_keys")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let class_introspection_metadata = compiler
-        .get("class_introspection_metadata")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let class_member_metadata = compiler
-        .get("class_member_metadata")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let class_multiple_inheritance = compiler
-        .get("class_multiple_inheritance")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let integer_division_on_slash = compiler
@@ -2537,15 +2499,12 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         commonjs_require,
         multi_value_tuple_returns,
         pointer_receiver_methods,
-        global_namespace,
-        global_namespace_is_call,
         pads_trailing_optional_arg,
         allocate_takes_dimension_list,
         slice_bounds_inclusive,
         user_types_are_value_types,
         array_assign_broadcasts_scalar,
         args_pass_by_reference,
-        class_body_declarations_before_procedures,
         array_bounds_declare_fixed_shape,
         out_params_default_initialized,
         array_arithmetic_elementwise,
@@ -2634,9 +2593,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         materialize_bool_results,
         callable_objects,
         for_in_object_yields_keys,
-        class_introspection_metadata,
-        class_member_metadata,
-        class_multiple_inheritance,
         supports_autoload,
         buffered_iterator_methods,
         uses_normalize_class,

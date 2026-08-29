@@ -27,7 +27,9 @@ use super::Compiler;
 pub fn emit_default_param_start(chunk: &mut Chunk, param_slot: u16, line: u32) -> usize {
     chunk.emit_op_u16(Op::LOCAL_GET, param_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let block = chunk.emit_block(line);
+    // `[is_null]` in, nothing out: the default expression the caller compiles
+    // is consumed by the `LOCAL_SET` in `emit_default_param_end`.
+    let block = chunk.emit_block_params(line, 1, 0);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(0, line);
     block

@@ -1461,10 +1461,14 @@ impl Compiler {
         // `Object.create(Parent.prototype)`, which the property probe gets
         // wrong today by walking the prototype chain.
         //
-        // Keyed off the resolved SLOT, never off a language: the question asked
-        // is whether some class this compiler authored holds this storage name
-        // as an indexed field.
-        if let Some(class) = self.indexed_owner_of_storage(storage_name) {
+        // Keyed off the DECLARATION, never off a language or off the storage
+        // licence: the question is whether some class this compiler authored
+        // declares this storage name. It used to ask
+        // `indexed_owner_of_storage`, which additionally required the class to
+        // hold the field in an INDEXED slot — a storage detail the brand does
+        // not depend on, and one that made the type test vanish the moment a
+        // language declared its fields to be own properties.
+        if let Some(class) = self.declaring_owner_of_storage(storage_name) {
             let line = self.line;
             // ⛔ rtt FIRST, PROBE AS FALLBACK — never rtt alone.
             //

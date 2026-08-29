@@ -121,6 +121,53 @@ fn disassemble_instruction_inner(
                 operand_start + 3,
             )
         }
+        // ⛔ THIS FORMAT IS SHARED, SO IT CANNOT SPEAK ONE INSTRUCTION'S
+        // VOCABULARY. The arm below already carried this scar once — it
+        // hardcoded the retired `try_start`'s "catch/finally" wording and
+        // mislabelled every op that later adopted the format. The same thing
+        // happened again here: `br_on_cast_desc_eq` was rendered as
+        // `table=… tag=… argc=…`, which reads like a `call_indirect_with_tag`
+        // and hides the label depth — in a disassembly being used to CHECK
+        // that instruction's immediates.
+        OperandFormat::U16_U16_U8
+            if op == Op::BR_ON_CAST_DESC_EQ || op == Op::BR_ON_CAST_DESC_EQ_FAIL =>
+        {
+            // `br_on_cast_desc_eq $l ht_1 ht_2`: the two u16s are constant
+            // indices naming ht_2 (target) then ht_1 (source), and the u8 is
+            // the label depth.
+            let to = chunk.read_u16(operand_start);
+            let from = chunk.read_u16(operand_start + 2);
+            let depth = chunk.code.get(operand_start + 4).copied().unwrap_or(0);
+            let spell = |idx: u16| match chunk.constants.get(idx as usize) {
+                Some(crate::Value::String(s)) => s.to_string(),
+                _ => idx.to_string(),
+            };
+            (
+                format!(
+                    "{} depth={} from={} to={}",
+                    name,
+                    depth,
+                    spell(from),
+                    spell(to)
+                ),
+                operand_start + 5,
+            )
+        }
+        // `call_indirect_with_tag $table $tag argc` — the tag immediate NAMES
+        // the tag (a constant-pool index), as `call_with_tag`'s does.
+        OperandFormat::U16_U16_U8 => {
+            let table = chunk.read_u16(operand_start);
+            let tag = chunk.read_u16(operand_start + 2);
+            let argc = chunk.code.get(operand_start + 4).copied().unwrap_or(0);
+            let tag_name = match chunk.constants.get(tag as usize) {
+                Some(crate::Value::String(s)) => format!(" ({s})"),
+                _ => String::new(),
+            };
+            (
+                format!("{} table={} tag={}{} argc={}", name, table, tag, tag_name, argc),
+                operand_start + 5,
+            )
+        }
         OperandFormat::U16_U16 => {
             // Every U16_U16 op is a WASM GC instruction carrying a type
             // immediate plus a second one. (This arm used to hardcode the

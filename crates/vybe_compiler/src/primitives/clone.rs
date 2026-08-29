@@ -132,7 +132,7 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     // `Object.assign({}, src)` — a fresh object carrying src's own fields. The
     // same shape `emit_inherit_statics` uses, and what C#'s `with` expression
     // hand-rolled.
-    chunks[idx].emit_struct_new(0, 0, LINE);
+    crate::primitives::class_slots::emit_class_alloc(&mut chunks[idx], LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_GET, value, LINE);
     let assign_fn = chunks[idx].add_import("ecma:object", "assign");
     chunks[idx].emit_call(assign_fn, 2, LINE);

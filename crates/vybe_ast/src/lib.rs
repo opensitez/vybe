@@ -847,6 +847,18 @@ pub enum StmtKind {
         /// Signature shape — parameter and result counts.
         params: u8,
         results: u8,
+        /// The DECLARED functype, as its source spelling (`"i32->i32"`).
+        ///
+        /// ⛔ `params`/`results` above are a SHAPE, and a shape is not a
+        /// functype. `call_tag.canon $functype` derives the canonical tag *of
+        /// that functype*, so `[i32]->[i32]` and `[f64]->[f64]` are two tags;
+        /// keyed on counts they intern to one, and an `i32`-shaped funcref
+        /// answers the `f64` canonical tag. Carried as the source spelling
+        /// because the VM erases runtime types — `Chunk` has no value types at
+        /// all — so this is the only place the functype survives. Compared,
+        /// never interpreted. Empty when the producer did not supply one, which
+        /// keeps every non-wast frontend on the old shape-only behaviour.
+        signature: String,
         /// `(canon)` — `call_tag.canon`, interned per signature. Otherwise this
         /// is `call_tag.new`: a fresh identity over that signature.
         canonical: bool,
@@ -4532,6 +4544,77 @@ pub struct Directives {
     /// that reflection does not see?
     pub static_fields_are_own_properties: Option<bool>,
 
+    /// Is a declared function a first-class OBJECT carrying properties —
+    /// `name`, `length`, `prototype`, a `__nonenum` set — or just code?
+    ///
+    /// ECMA-262 §10.2.5 / §10.2.9 / §10.2.10 say yes, and js, php, python and
+    /// ruby all want that. **wast, c, cobol, fortran and pascal do not have
+    /// function objects at all**, and stamping the metadata onto their
+    /// functions is not a harmless extra: for wast it emits a `struct.set` of
+    /// `name` / `length` / `prototype` into a module that declares no such
+    /// fields, so the module does not load on a spec engine.
+    ///
+    /// ⛔ This is NOT the "flag with one consumer" this document warns about
+    /// (§1, `args_pass_by_reference`). Half the languages in the tree answer
+    /// `false`; it reads `None` as the ECMA behaviour only because that is what
+    /// the majority of the CURRENTLY-WIRED walkers want, and every language
+    /// that states it states a fact about its own semantics.
+    ///
+    /// Why it cannot be a property of the declaration: nothing in a
+    /// `FunctionDecl` distinguishes "a wasm function" from "a JS function" —
+    /// the node is identical. The fact belongs to the UNIT being compiled,
+    /// which is exactly what `Module.directives` is.
+    pub functions_are_objects: Option<bool>,
+
+    /// Inside a SUBPROGRAM BODY, do local declarations compile before nested
+    /// procedure declarations, whatever order the flattened statement list
+    /// puts them in?
+    ///
+    /// Fortran writes a procedure's locals above `contains` and its internal
+    /// procedures below, so an internal procedure may reference a local that
+    /// follows it once the body is flattened. Compiling in list order leaves
+    /// that local undefined at the point the inner procedure binds.
+    ///
+    /// ⛔ The flag this replaces was called
+    /// `class_body_declarations_before_procedures` and the "class" in that name
+    /// was WRONG — its only reader is in `compile_function_decl`, on a FUNCTION
+    /// body. A class body never reaches it. The name is corrected here rather
+    /// than carried, because the old one sent me to the class path looking for
+    /// an effect that could not be there.
+    ///
+    /// `directives.md` §3 question 1: it governs how a REGION OF CODE is
+    /// compiled, rather than describing a declaration or travelling with a
+    /// value.
+    ///
+    /// ⚠ UNPROVEN. Ablating it moves ZERO fortran tests (537 either way, 0 by
+    /// name), and no dump differs on a derived type. Preserved verbatim because
+    /// a refactor is not the place to delete a behaviour nobody has shown to be
+    /// dead — but it is a candidate for M8's "or cease to exist" branch, and
+    /// the next person to touch it should try to KILL it rather than assume it
+    /// works.
+    pub body_declarations_first: Option<bool>,
+
+    /// The same question for a class's declared INSTANCE fields: are they own
+    /// properties of the instance — what `Object.keys`, `in`, `for…in` and
+    /// `JSON.stringify` enumerate — or a separate typed storage?
+    ///
+    /// ECMA-262 §10.2.11 settles it for js: `InitializeInstanceElements`
+    /// performs `CreateDataPropertyOrThrow`, so a declared field IS an own
+    /// enumerable property and nothing else will do. A language whose fields
+    /// are a fixed record (java, C#, pascal) states nothing and keeps the
+    /// indexed storage.
+    ///
+    /// ⛔ It is stated here rather than inferred because inferring it is how
+    /// the bug arose: `seam3_indexable` grants indexed GC-struct storage on a
+    /// fact about ALLOCATION (`published && no parent`), which has nothing to
+    /// say about whether the result must be enumerable. A parentless js class
+    /// took the licence and wrote `struct.set`, while the host's key walk
+    /// reads the `properties` map — two storage locations on one object, with
+    /// `d.a` answering 1 while `Object.keys(d)` answered `[]`. Adding a parent
+    /// withheld the licence and the same field became visible, which is the
+    /// signature of a storage split rather than a field bug.
+    pub instance_fields_are_own_properties: Option<bool>,
+
 
 
 
@@ -4837,6 +4920,28 @@ pub enum ReceiverBinding {
     ExplicitParameter,
     /// Ambient, read from the call's own `this` binding: JS, Dart.
     Ambient,
+    /// **Every** callable takes a leading receiver parameter, not just methods
+    /// — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`, where the
+    /// receiver is an argument of the call itself rather than a property of
+    /// being a method.
+    ///
+    /// ⛔ This is a THIRD fact, not a spelling of [`Self::ExplicitParameter`],
+    /// and the difference is load-bearing for M5. Under `ExplicitParameter`
+    /// (python, pascal, C#) a plain `def f(x)` takes NO receiver, so a caller
+    /// must know whether the callee is a method to know the argument count.
+    /// That is answerable in those languages because their method calls are
+    /// resolved statically. It is NOT answerable in JS: `o.m(1)` compiles to a
+    /// dynamic `call_ref` after a runtime property lookup, and `const f = o.m;
+    /// f()` reaches the identical instruction — so a receiver that only
+    /// METHODS take is a receiver the call site cannot count.
+    ///
+    /// ⇒ Uniform arity is what makes the receiver expressible as a parameter
+    /// at all in an ambient-dispatch language, which is why M5 moves js and
+    /// dart HERE rather than to `ExplicitParameter`. A plain call passes the
+    /// undefined receiver explicitly (§10.2.1.1 OrdinaryCallBindThis with a
+    /// non-object thisArgument), which is also the ECMA answer rather than a
+    /// filler value.
+    UniversalParameter,
 }
 
 /// Which `pow` contract a region wants — see [`Directives::pow_semantics`].
@@ -5000,6 +5105,31 @@ impl Directives {
         // and a `Some` wins over the enclosing frame like every other field.
         if other.spread_arguments.is_some() {
             self.spread_arguments = other.spread_arguments;
+        }
+        // A unit-level fact about the object model, not something a nested
+        // region redefines — but it gets a rule all the same, because the note
+        // above is right: a field with no rule here is dropped by any merge,
+        // and "it could never differ" is exactly the reasoning that leaves a
+        // live bug looking like an omission. Its STATIC twin
+        // (`static_fields_are_own_properties`) still has no rule, along with
+        // `method_receiver`, `missing_arg_is_undefined` and `exit_argument`;
+        // left visible rather than quietly copied.
+        if other.instance_fields_are_own_properties.is_some() {
+            self.instance_fields_are_own_properties = other.instance_fields_are_own_properties;
+        }
+        // Question 1 through and through — it governs a region of code — so a
+        // nested region stating it wins over the enclosing frame, like every
+        // other §3-Q1 field here.
+        if other.body_declarations_first.is_some() {
+            self.body_declarations_first = other.body_declarations_first;
+        }
+        // A unit-level fact about the object model, like
+        // `instance_fields_are_own_properties` above — a nested region has no
+        // business redefining whether functions are objects. It gets a rule
+        // regardless, for the reason stated there: a field with no rule here is
+        // silently dropped by any merge.
+        if other.functions_are_objects.is_some() {
+            self.functions_are_objects = other.functions_are_objects;
         }
     }
 }

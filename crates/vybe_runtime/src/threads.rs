@@ -317,7 +317,7 @@ impl VM {
         let limit = self.mem_len(memidx);
         if addr.saturating_add(size) > limit {
             return Err(VMError::new(format!(
-                "trap: atomic memory access out of bounds: addr={} size={} limit={}",
+                "trap: out of bounds memory access (atomic): addr={} size={} limit={}",
                 addr, size, limit
             )));
         }

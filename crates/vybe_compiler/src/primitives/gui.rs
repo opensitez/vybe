@@ -1461,8 +1461,18 @@ impl Compiler {
             {
                 self.emit_u16(Op::LOCAL_GET, ctrl);
                 self.emit_u16(Op::LOCAL_GET, value);
-                let key = self.str_const(field);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                let key = crate::primitives::class_slots::resolve_interned(
+                    self.chunk(),
+                    &crate::primitives::class_slots::ClassSlot::internal(field),
+                    &crate::primitives::class_slots::PlainNames,
+                );
+                crate::primitives::class_slots::emit_class_get(
+                    self.chunk(),
+                    crate::primitives::class_slots::ObjSource::Stack,
+                    &key,
+                    crate::primitives::class_slots::Dest::Stack,
+                    line,
+                );
                 self.emit_gui_property_set(component_role, line);
                 // Each write leaves the host call's result, and this function
                 // promises exactly one — so all but the last are dropped.

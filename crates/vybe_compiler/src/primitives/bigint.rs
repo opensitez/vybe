@@ -7,7 +7,9 @@
 //! shift counts mask to `width - 1` (JLS §15.19), unsigned shifts read the
 //! bits unsigned first, and narrowing keeps the low bits (JLS §5.1.3). Width
 //! is a PARAMETER here; nothing in this module belongs to a language, and the
-//! wrap operators are ECMA's own `BigInt.asIntN`/`asUintN` (§21.2.2).
+//! wrap operators are ECMA's own `BigInt.asIntN`/`asUintN` (§21.2.2), and
+//! BOTH are public here — a signed type wraps with one, an unsigned type
+//! with the other, and neither belongs to a language.
 
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -50,10 +52,7 @@ pub fn emit_wrapped_shift(chunk: &mut Chunk, width: u32, kind: ShiftKind, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, count, line);
 
     if kind == ShiftKind::Ushr {
-        let as_uint_n = chunk.add_import("ecma:bigint", "asUintN");
-        chunk.emit_f64_const(width as f64, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
-        chunk.emit_call(as_uint_n, 2, line);
+        emit_as_uint_n_slot(chunk, width, value, line);
         chunk.emit_op_u16(Op::LOCAL_SET, value, line);
     }
 
@@ -75,6 +74,26 @@ pub fn emit_as_int_n(chunk: &mut Chunk, width: u32, line: u32) {
     let t = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, t, line);
     emit_as_int_n_slot(chunk, width, t, line);
+}
+
+/// Narrow to `width` bits, UNSIGNED: `[value]` → `[bigint]`.
+/// `BigInt.asUintN(width, x)` — §21.2.2.2, exact at any input width.
+///
+/// ⛔ EVERY EXIT FROM THIS MODULE USED TO BE SIGNED. `asUintN` appeared once,
+/// inline in the `Ushr` arm above, and even that wrapped back through
+/// `asIntN` — so a type whose range is genuinely `0 ..= 2^width - 1` had no
+/// way out. `UInt128.MaxValue` came back as `-1`, and the shape of that bug is
+/// that it is EXACT and CONSISTENT, just off by a reinterpretation: every
+/// comparison against another wrapped value still agrees, so only a printed
+/// value or a comparison against zero can see it.
+///
+/// Unsigned is a property of the TYPE, not of the operation, which is why this
+/// is a peer of [`emit_as_int_n`] rather than a flag on it — a caller picks one
+/// per declared type and uses it for every result.
+pub fn emit_as_uint_n(chunk: &mut Chunk, width: u32, line: u32) {
+    let t = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, t, line);
+    emit_as_uint_n_slot(chunk, width, t, line);
 }
 
 /// Narrow to `width` bits and hand back a NUMBER: `[value]` → `[f64]`.
@@ -141,4 +160,11 @@ fn emit_as_int_n_slot(chunk: &mut Chunk, width: u32, slot: u16, line: u32) {
     chunk.emit_f64_const(width as f64, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(as_int_n, 2, line);
+}
+
+fn emit_as_uint_n_slot(chunk: &mut Chunk, width: u32, slot: u16, line: u32) {
+    let as_uint_n = chunk.add_import("ecma:bigint", "asUintN");
+    chunk.emit_f64_const(width as f64, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(as_uint_n, 2, line);
 }

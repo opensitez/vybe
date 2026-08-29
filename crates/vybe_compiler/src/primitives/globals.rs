@@ -1,14 +1,12 @@
 //! The module's global namespace as ONE object — and the logistics that go
 //! with it: which names the module OWNS, and which it merely reads.
 //!
-//! Four languages spell the same thing:
-//!
-//! | language | spelling | form |
-//! |---|---|---|
-//! | Lua | `_G` | identifier |
-//! | JS | `globalThis` | identifier |
-//! | PHP | `$GLOBALS` | identifier |
-//! | Python | `globals()` | zero-argument call |
+//! Four languages spell the same thing — Lua `_G`, JS `globalThis`, PHP
+//! `$GLOBALS`, Python `globals()` (the one spelled as a call). Those words
+//! appear NOWHERE below: each walker normalizes its own into
+//! `ExprKind::GlobalNamespace` and this module only ever sees the node. They
+//! are named here in prose, once, so a reader knows what the node stands for —
+//! not so anything can match on them.
 //!
 //! All four name the module's OBJECT environment record (ECMA-262 §9.1.1.4:
 //! a Global Environment Record is an object record plus a declarative one —
@@ -59,6 +57,16 @@
 use super::*;
 use vybe_runtime::profile::LanguageProfile;
 
+/// Where the module's one namespace object lives.
+///
+/// A hidden module global rather than a local, because the object has to be
+/// the SAME one at every site that names it — including sites in different
+/// chunks, which a local cannot reach. `declare_free_globals` declares it like
+/// any other free name, and it is invisible to
+/// `Compiler::global_namespace_members`, which reads declared bindings and
+/// module scope, so the namespace never contains itself.
+const GLOBAL_NAMESPACE_CACHE: &str = "__vybe_global_namespace";
+
 /// How a profile spells its global namespace, and which bindings belong to it.
 pub struct Options {
     /// Bindings introduced by `let`/`const`/`class` live in the DECLARATIVE
@@ -79,9 +87,6 @@ impl Options {
         }
     }
 }
-
-/// True when `name` is this profile's spelling of the global namespace, in
-/// IDENTIFIER form (`_G`, `globalThis`, `$GLOBALS`).
 
 impl Compiler {
     /// Every module-level name this namespace object exposes, in a stable
@@ -203,6 +208,80 @@ impl Compiler {
         Ok(())
     }
 
+    /// The namespace itself as an OBJECT — `globals()` passed around,
+    /// `for k in globals()`, `pairs(_G)`, `foreach ($GLOBALS as $k => $v)`.
+    ///
+    /// Built ONCE per module and cached in [`GLOBAL_NAMESPACE_CACHE`], because
+    /// the namespace is a singleton and every language here says so: lua's
+    /// `_G == _G` is true, python's `globals() is globals()` is true, and
+    /// ECMA-262 §19.3.1 requires one global object per realm. Rebuilding a
+    /// fresh dict per evaluation is not a slower way to be right — it is
+    /// wrong, and `lua/globals/g_is_same_reference_as_global_env` is the test
+    /// that says so.
+    ///
+    /// Values are re-read on EVERY evaluation, so the object tracks writes the
+    /// way a member read does — including through an alias taken earlier
+    /// (measured: `g1 = globals(); zz = 2` leaves `zz` visible in `g1`). WHERE
+    /// a name is declared does not matter either, because membership comes
+    /// from `global_namespace_members`, which the link pass has already
+    /// finished; only the values are runtime.
+    ///
+    /// The honest limit is that membership is what the module DECLARES. A name
+    /// that exists only at runtime is not a member — and cannot be made one,
+    /// since `emit_global_namespace_index_set` can only assign to a declared
+    /// name for the same reason. Closing both means backing the namespace with
+    /// the dict itself so the object IS the storage — the codegen change this
+    /// module's header already scopes out.
+    ///
+    /// ⛔ This was python's alone, keyed by the NAME `globals` in
+    /// `builtins.rs::try_compile_builtin` — a language spelling sitting in the
+    /// shared builtin table, and its own comment admitted the hazard: *"A user
+    /// function named `globals()` in another language would now reach here."*
+    /// Lua's `_G` and php's `$GLOBALS` had no object at all, so `pairs(_G)` and
+    /// `foreach ($GLOBALS ...)` enumerated NOTHING (measured 2026-08-27: 0
+    /// against real lua's and php's 2). One node, one emit, four languages.
+    pub(super) fn emit_global_namespace_object(&mut self) {
+        let line = self.line;
+        let members = self.global_namespace_members();
+
+        // Create on first evaluation only. A never-written global reads as
+        // undefined, which `emit_dyn_not` turns into the i32 the `if` wants.
+        self.emit_global_read(GLOBAL_NAMESPACE_CACHE);
+        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+        self.chunk().emit_if(line);
+        common::dict::emit_new(&mut self.chunks, self.current, line);
+        self.emit_global_write(GLOBAL_NAMESPACE_CACHE);
+        for name in &members {
+            // Same split as the computed-key path: the KEY is source text
+            // (`zz1`), while the BINDING keeps its namespace marker (`$zz1`).
+            // Keying on the marked name is what made every php lookup miss.
+            let key_text = self.variable_name_body(name).to_string();
+            self.emit_global_read(GLOBAL_NAMESPACE_CACHE);
+            self.class_get(
+                crate::primitives::class_slots::ObjSource::Stack,
+                &crate::primitives::class_slots::ClassSlot::internal("__keys"),
+            );
+            self.emit_const(Value::String(Arc::from(key_text.as_str())));
+            common::collections::emit_push(&mut self.chunks, self.current, line);
+            self.emit(Op::DROP);
+        }
+        self.chunk().emit_end(line);
+
+        // Values, every time. A dict entry set here is readable by name and,
+        // because its key went into `__keys` above, visible to iteration.
+        for name in &members {
+            let key_text = self.variable_name_body(name).to_string();
+            self.emit_global_read(GLOBAL_NAMESPACE_CACHE);
+            self.emit_var_get(name);
+            self.class_set(
+                crate::primitives::class_slots::ObjSource::Stack,
+                &crate::primitives::class_slots::ClassSlot::internal(&key_text),
+                crate::primitives::class_slots::ValueSource::Stack,
+            );
+        }
+        self.emit_global_read(GLOBAL_NAMESPACE_CACHE);
+    }
+
     /// True when `expr` names this profile's global namespace AND that
     /// namespace has no materialized object to index.
     ///
@@ -214,23 +293,25 @@ impl Compiler {
     /// own evaluates to nil today, which is why they need the chain.
     pub(super) fn expr_is_global_namespace(&self, expr: &Expression) -> bool {
         // ⛔ THE SPELLING IS GONE FROM SHARED CODE. This used to match the
-        // source text against `profile.global_namespace` (`_G` / `$GLOBALS` /
-        // `globalThis` / `globals`) plus `global_namespace_is_call` for
-        // Python's call form — a per-language spelling table consulted by the
-        // shared compiler. The walkers normalize all four into
-        // `ExprKind::GlobalNamespace`; nothing here knows how any language
-        // spells it.
+        // source text against a `global_namespace` profile row (`_G` /
+        // `$GLOBALS` / `globalThis` / `globals`) plus a
+        // `global_namespace_is_call` flag for python's call form — a
+        // per-language spelling table consulted by the shared compiler, and a
+        // second home for a fact each walker already knew. All four walkers now
+        // normalize their own word into `ExprKind::GlobalNamespace`; the rows
+        // and both predicates are gone, and nothing here knows how any language
+        // spells anything.
         //
         // ⚠ The `has_ecma_globals` early-return is the REMAINING asymmetry and
         // it is not a language difference: js has a real ECMA global object to
-        // resolve against, and lua/python/php were never given one, so they
-        // fall back to the member chain below. Now that the spelling is
-        // normalized, that gap is stated in exactly ONE place instead of being
-        // spread across four profile rows.
+        // resolve against — and must keep resolving through it, or
+        // `globalThis.Math` and the prelude's Map/Set wrappers go missing —
+        // while lua/python/php have none, so they take the member chain below.
+        // One place, not four rows.
         if self.profile.has_ecma_globals {
             return false;
         }
-        matches!(expr.kind, ExprKind::GlobalNamespace)
+        matches!(&expr.kind, ExprKind::GlobalNamespace)
     }
 }
 

@@ -752,6 +752,32 @@ impl Compiler {
         // inherited its parent's type and had to overwrite it — something WASM
         // GC cannot express, which is why it needed a 0xFF custom opcode.
         //
+        // ⛔⛔ THE PARAGRAPH BELOW IS NOT TRUE YET. MEASURED 2026-08-28.
+        //
+        // It describes the INTENDED end state as though it had landed, and it
+        // contradicts `:2402` in this same file ("the most-derived constructor
+        // does not allocate: it delegates to the base"). `:2402` is the true
+        // one. For `class Sub extends Base`, the whole module contains exactly
+        // TWO `struct.new_default`, both `typeidx 1` (Base's), both inside
+        // `__Base_ctor_0`; `__Sub_ctor_0` has NO allocation instruction at all.
+        // A `Sub` instance is allocated by the BASE and carries the BASE's rtt.
+        //
+        // ⇒ This is why `seam3_indexable` / `rtt_testable` still carry the
+        // `!has_parent` clause, and why allocation-move and widening are ONE
+        // commit: widening first would make `ref.test` authoritative over
+        // instances that do not yet carry their own rtt.
+        //
+        // ⇒ What IS already built is the mechanism: `emit_new_typed_object`
+        // allocates only when no receiver was handed in. What is missing is
+        // that nothing routes a DERIVED `new` through it — the base ctor is
+        // still the site that finds `this_slot` empty. M5 is that routing
+        // change, not new machinery.
+        //
+        // A comment describing an UNBUILT mechanism as live is worse than one
+        // describing a RETIRED mechanism as live: the retired kind is caught
+        // when someone greps for it and finds nothing, while this kind reads as
+        // completed design and gets BUILT ON. Left in place, corrected here.
+        //
         // The constructor protocol is inverted now: the most-derived class
         // allocates via `struct.new_default $T` and passes the receiver DOWN, so
         // the instance carries the right rtt from the moment it exists and there
@@ -762,6 +788,32 @@ impl Compiler {
         // constructor allocated and handed the object up, so the derived class
         // inherited its parent's type and had to overwrite it — something WASM
         // GC cannot express, which is why it needed a 0xFF custom opcode.
+        //
+        // ⛔⛔ THE PARAGRAPH BELOW IS NOT TRUE YET. MEASURED 2026-08-28.
+        //
+        // It describes the INTENDED end state as though it had landed, and it
+        // contradicts `:2402` in this same file ("the most-derived constructor
+        // does not allocate: it delegates to the base"). `:2402` is the true
+        // one. For `class Sub extends Base`, the whole module contains exactly
+        // TWO `struct.new_default`, both `typeidx 1` (Base's), both inside
+        // `__Base_ctor_0`; `__Sub_ctor_0` has NO allocation instruction at all.
+        // A `Sub` instance is allocated by the BASE and carries the BASE's rtt.
+        //
+        // ⇒ This is why `seam3_indexable` / `rtt_testable` still carry the
+        // `!has_parent` clause, and why allocation-move and widening are ONE
+        // commit: widening first would make `ref.test` authoritative over
+        // instances that do not yet carry their own rtt.
+        //
+        // ⇒ What IS already built is the mechanism: `emit_new_typed_object`
+        // allocates only when no receiver was handed in. What is missing is
+        // that nothing routes a DERIVED `new` through it — the base ctor is
+        // still the site that finds `this_slot` empty. M5 is that routing
+        // change, not new machinery.
+        //
+        // A comment describing an UNBUILT mechanism as live is worse than one
+        // describing a RETIRED mechanism as live: the retired kind is caught
+        // when someone greps for it and finds nothing, while this kind reads as
+        // completed design and gets BUILT ON. Left in place, corrected here.
         //
         // The constructor protocol is inverted now: the most-derived class
         // allocates via `struct.new_default $T` and passes the receiver DOWN, so
@@ -905,7 +957,10 @@ impl Compiler {
             .is_some_and(|pc| pc.bases.len() > 1);
         // Languages whose `super()` is COOPERATIVE keep diamond-only binding;
         // everything else walks its chain. See `super_is_cooperative`.
-        let is_multi_language_default = self.super_is_cooperative();
+        // Read from the DECLARATION (via the name-keyed set) rather than the
+        // profile: cooperative `super` is a property of the class whose method
+        // is being dispatched, not of the language the unit happens to be in.
+        let is_multi_language_default = self.classes_with_cooperative_super.contains(&canon);
         // ⛔⛔ THE SAME GATE, A THIRD TIME. `__mro__` was truncated because C3
         // ran only for `bases.len() > 1`; ancestor METHOD binding was gated the
         // same way, so under the LEVEL-KEYED model a constructor materialised
@@ -1188,7 +1243,7 @@ impl Compiler {
                 // the attach below still needs it.
                 inst!(self, core_wasm::dup);
                 let line = self.line;
-                crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                self.stamp_fn_metadata_nonenum(line);
             }
             if let Some(fixed_count) = rest_fixed_count {
                 inst!(self, core_wasm::dup);
@@ -1336,10 +1391,19 @@ impl Compiler {
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         let lowered_has_rest = has_rest || uses_js_arguments;
         let generator_control_arity = usize::from(is_generator && !lowered_has_rest);
+        // ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`: in a region
+        // where EVERY callable takes a receiver, a plain function declaration
+        // is a callable like any other and carries one too. It is not a method
+        // — nothing binds an object to it — but its ARITY has to match, because
+        // `o.m(1)` and `const f = o.m; f()` reach the same `call_ref` and the
+        // call site cannot tell the two callees apart. See
+        // `ReceiverBinding::UniversalParameter`.
+        let universal_receiver = self.universal_receiver();
+        let receiver_arity = usize::from(universal_receiver);
         let arity: u8 = if uses_js_arguments {
-            (1 + generator_control_arity) as u8
+            (1 + receiver_arity + generator_control_arity) as u8
         } else {
-            (params.len() + generator_control_arity) as u8
+            (params.len() + receiver_arity + generator_control_arity) as u8
         };
         if uses_js_arguments {
             self.rest_fixed_arities.insert(0);
@@ -1349,6 +1413,7 @@ impl Compiler {
         }
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
+        chunk.takes_receiver = universal_receiver;
         // `is_async` carries SOURCE truth (async fns AND async generators).
         // Consumers refine: the JSPI custom-section writer and the VM's
         // call_async gate both exclude generators (async generators are
@@ -1434,6 +1499,15 @@ impl Compiler {
             self.push_directive_frame();
         }
         self.js_arguments_bindings.push(None);
+
+        // ⛔ FIRST local of the frame, before `arguments` and before the
+        // parameters: the receiver is argument 0, and argument binding is
+        // POSITIONAL. Declaring it anywhere else silently shifts every
+        // parameter by one.
+        if universal_receiver {
+            let self_kw = self.profile.self_keyword.clone();
+            self.define_local(&self_kw);
+        }
 
         let js_arguments_source_slot = if uses_js_arguments {
             Some(self.define_local("__vybe_js_arguments_array"))
@@ -1676,12 +1750,21 @@ impl Compiler {
             self.frame_cf_mut().active_async_try_depth += 1;
         }
 
-        if self.ambient_this() && crate::primitives::closures_in_body_reference_this(body) {
-            self.emit_global_read("__js_this");
-            let this_local = self.define_local("__js_this");
-            self.emit_u16(Op::LOCAL_SET, this_local);
-            self.current_closure_captured_locals
-                .insert("__js_this".to_string());
+        if crate::primitives::closures_in_body_reference_this(body) {
+            if self.ambient_this() {
+                self.emit_global_read("__js_this");
+                let this_local = self.define_local("__js_this");
+                self.emit_u16(Op::LOCAL_SET, this_local);
+                self.current_closure_captured_locals
+                    .insert("__js_this".to_string());
+            } else if self.universal_receiver() {
+                // Argument 0 already holds it under the self keyword — mark it
+                // captured so an inner arrow reaches it through the shared env.
+                let self_kw = self.profile.self_keyword.clone();
+                if self.scope().resolve(&self_kw).is_some() {
+                    self.current_closure_captured_locals.insert(self_kw);
+                }
+            }
         }
 
         if !self.current_closure_captured_locals.is_empty() {
@@ -1744,7 +1827,7 @@ impl Compiler {
             }
         }
 
-        if self.profile.class_body_declarations_before_procedures {
+        if self.body_declarations_first() {
             for statement in body {
                 if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
                     self.compile_stmt(statement)?;
@@ -1943,19 +2026,14 @@ impl Compiler {
             self.emit_var_get(name);
             {
                 let line = self.line;
-                crate::primitives::prototypes::emit_stamp_function_kind_proto(
-                    self.chunk(),
-                    eff_async,
-                    eff_generator,
-                    line,
-                );
+                self.stamp_function_kind_proto(eff_async, eff_generator, line);
             }
 
             // §10.2.9/§10.2.10: name/length are non-enumerable.
             self.emit_var_get(name);
             {
                 let line = self.line;
-                crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                self.stamp_fn_metadata_nonenum(line);
             }
 
             // §27.3 / §27.7: generator and async function declarations
@@ -2280,6 +2358,33 @@ impl Compiler {
                 f.array_bounds.clone(),
             ));
         }
+
+        // ▶▶ CONSTRUCTOR-ASSIGNED FIELDS — `this.<literal> = …` IS a declared
+        // shape, and leaving it out is why an engine rejects our classes.
+        //
+        // Measured: `class A { constructor(x){ this.x = x; } }` published
+        // `TypeEntry.fields` EMPTY, so the emitted struct type had zero fields
+        // while its own code wrote `x` — V8: `invalid field index: 0`. A class
+        // that declares `a = 1` in the body was already fine (`emitted: a, b`),
+        // so this is the one shape the census was missing, not "js is dynamic".
+        //
+        // Only a LITERAL member name is added. `this[k] = v` is a computed key
+        // with no static shape and stays out — that is the genuine property-bag
+        // case, and it is far narrower than a whole language.
+        for ctor in &class.constructors {
+            let mut assigned: Vec<String> = Vec::new();
+            collect_this_assigned_fields(&ctor.body, &mut assigned);
+            for a in assigned {
+                let canon_a = self.canon(&a);
+                let stored = field_storage_names
+                    .get(&canon_a)
+                    .cloned()
+                    .unwrap_or(canon_a);
+                if !fields.contains(&stored) {
+                    fields.push(stored);
+                }
+            }
+        }
         for f in &class.static_fields {
             // The DECLARATION side of the same distinction — both ends must
             // agree on the key or the static slot is written under one name and
@@ -2420,8 +2525,38 @@ impl Compiler {
             // `struct.new_default` actually used". M5 moves allocation to the
             // most-derived constructor, at which point a parent stops
             // disqualifying anything and this becomes one condition again.
+            // 3. The language does not require the field to be an own
+            //    ENUMERABLE property.
+            //
+            // ⛔ (3) is not a third kind of caution — it is the difference
+            // between two storage locations and one. Indexed storage puts the
+            // value in the GC struct's `fields`, while every reflective
+            // surface (`Object.keys`, `in`, `for…in`, `JSON.stringify`, and
+            // the host's own key walk) reads the `properties` map. For a
+            // language whose declared fields ARE own properties — ECMA-262
+            // §10.2.11 performs `CreateDataPropertyOrThrow` — taking the
+            // licence makes the field readable (`d.a` is 1) and invisible
+            // (`Object.keys(d)` was `[]`, against node's `["a"]`).
+            //
+            // The tell was that adding a PARENT fixed it: same field, same
+            // initializer, opposite answers, switched by condition (2). Found
+            // by Kestrel, who measured 10 of 12 remaining js regressions on
+            // this one defect.
+            //
+            // ▶▶ This condition disappears when the host can enumerate a typed
+            // object's declared fields from `TypeEntry.fields` and merge them
+            // into the key walk. Then indexed storage is observable and the
+            // optimization comes back for every language at once. Withholding
+            // it is the correct answer only while enumeration cannot see it.
             let has_parent = class.parent.is_some();
+            // Conditions (1) and (2) alone are ALLOCATION IDENTITY — the
+            // class's own typeidx is what `struct.new_default` used — which is
+            // all a `ref.test` needs. Recorded separately because a storage
+            // decision must not be able to withdraw it.
             if published && !has_parent {
+                self.rtt_testable.insert(cname.clone());
+            }
+            if published && !has_parent && !self.instance_fields_are_own_properties() {
                 self.seam3_indexable.insert(cname.clone());
             }
         }
@@ -2637,6 +2772,10 @@ impl Compiler {
             let cname = self.canon(&class.name);
             self.classes_with_late_static_binding.insert(cname);
         }
+        if class.cooperative_super {
+            let cname = self.canon(&class.name);
+            self.classes_with_cooperative_super.insert(cname);
+        }
         for m in class
             .instance_methods
             .iter()
@@ -2808,7 +2947,19 @@ impl Compiler {
             let has_receiver = if is_static_init {
                 false
             } else if is_static {
-                class.late_static_binding
+                // ECMA-262 §10.2.1: a STATIC method is a callable like any
+                // other and its thisArgument is the constructor. Where every
+                // callable takes a receiver, so does this one — the call site
+                // pushes one whatever the callee is, so a static that declined
+                // it received its first real argument in the receiver's place.
+                // Measured: `static has(o){ return #tag in o }` answered false
+                // for a genuine instance.
+                //
+                // The `late_static_binding` arm below is the OTHER question —
+                // whether a static's receiver is meaningful to the language
+                // (`static::`, `get_called_class()`) — and it still answers for
+                // the languages that pass receivers only to methods.
+                class.late_static_binding || cc.universal_receiver()
             } else if ambient_this {
                 false
             } else {
@@ -2823,7 +2974,28 @@ impl Compiler {
             let ci = cc.chunks.len();
             let mut chunk = common::functions::create_function_chunk(mname, arity);
             chunk.is_method = has_receiver;
-            chunk.param_count = user_params.len() as u8;
+            // ⛔ THE RECEIVER COUNTS WHERE IT IS A REAL PARAMETER. `param_count`
+            // is the WASM type shape, and it excluded the receiver on the
+            // premise that the receiver is implicit — true under the ambient
+            // global, false once it is argument 0. `func_handles_call_tag`
+            // derives the canonical tag from this, and the CALL SITE derives
+            // the same tag from its `argc`; under `UniversalParameter` that
+            // argc includes the receiver, so both sides must shift together or
+            // every js/dart call tag is keyed one apart and a func that does
+            // handle its tag is rejected.
+            //
+            // ⚠ The corpus CANNOT see an error here — the VM executes `Chunk`s
+            // and never the emitted `.wasm`.
+            chunk.param_count = (user_params.len() + usize::from(cc.universal_receiver() && has_receiver)) as u8;
+            // ⛔ `has_receiver` ALONE IS WRONG HERE. It is true for every
+            // non-static instance method in the FOURTEEN non-ambient languages
+            // too (the `else { true }` arm above), and this flag makes
+            // `VM::invoke_callback` prepend a receiver — so ungated it silently
+            // changes every host→bytecode callback in python, pascal, C#, java,
+            // kotlin and php, none of which pass a receiver that way. A js+dart
+            // gate is structurally incapable of seeing that: under `Ambient`
+            // their methods have `has_receiver == false`.
+            chunk.takes_receiver = has_receiver && cc.universal_receiver();
             // A WASM function's type shape (params → results) is what the
             // `call_indirect` runtime check compares. WASM functions have no
             // implicit receiver, so ALL declared params count — `user_params`
@@ -2926,8 +3098,17 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_SET, slot);
                 cc.emit_u16(Op::LOCAL_GET, slot);
                 cc.chunk().emit_string_const("Arguments", 0);
-                let type_key = cc.str_const("__type");
-                cc.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
+                // `ClassSlot::TypeIdentity`, not the string "__type" — this is
+                // the slot M6 converts to a typeidx, so it must go through the
+                // owner or it is invisible to that cutover.
+                let type_key = cc.resolve_slot_interned(&class_slots::ClassSlot::TypeIdentity);
+                class_slots::emit_class_set(
+                    cc.chunk(),
+                    class_slots::ObjSource::Stack,
+                    &type_key,
+                    class_slots::ValueSource::Stack,
+                    0,
+                );
 
                 let len_slot = cc.define_local("__vybe_js_arguments_length");
                 cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
@@ -2956,11 +3137,27 @@ impl Compiler {
                     }
                 }
             }
-            if ambient_this && !is_static && cc.class_declares_private_member(&class.name, mname) {
-                let this_slot = cc.define_local("__js_private_method_this");
-                cc.emit_global_read("__js_this");
-                cc.emit_u16(Op::LOCAL_SET, this_slot);
-                cc.emit_js_private_brand_check(this_slot, &bound_name)?;
+            // §15.4.4 brand check. Gated on "is there a receiver to check",
+            // NOT on how it travels — keyed on `ambient_this` alone the check
+            // simply STOPPED being emitted once the receiver became a
+            // parameter, so a private member on a foreign object was accepted
+            // silently. Where the receiver is a parameter it is already in
+            // scope and no global read is needed; where it is ambient, load it
+            // first as before.
+            if !is_static && cc.class_declares_private_member(&class.name, mname) {
+                let this_slot = if ambient_this {
+                    let slot = cc.define_local("__js_private_method_this");
+                    cc.emit_global_read("__js_this");
+                    cc.emit_u16(Op::LOCAL_SET, slot);
+                    Some(slot)
+                } else if has_receiver {
+                    cc.scope().resolve(&self_kw)
+                } else {
+                    None
+                };
+                if let Some(this_slot) = this_slot {
+                    cc.emit_js_private_brand_check(this_slot, &bound_name)?;
+                }
             }
             if has_receiver {
                 if class.explicit_self_param {
@@ -3016,14 +3213,22 @@ impl Compiler {
                 }
             }
 
-            if ambient_this
-                && !is_static
-                && crate::primitives::closures_in_body_reference_this(&m.body)
-            {
-                cc.emit_global_read("__js_this");
-                let this_local = cc.define_source_local(&self_kw);
-                cc.emit_u16(Op::LOCAL_SET, this_local);
-                cc.current_closure_captured_locals.insert(self_kw.clone());
+            // An arrow in this body captures the method's `this` lexically
+            // (§10.2.11), and the capture works by NAME through the shared env.
+            // Under the ambient receiver the name has to be created first, from
+            // the global; where the receiver is a parameter the local already
+            // exists and only needs marking as captured — dropping the marking
+            // with the global read is what left `[1].map(x => this.v)` inside a
+            // method reading nothing.
+            if !is_static && crate::primitives::closures_in_body_reference_this(&m.body) {
+                if ambient_this {
+                    cc.emit_global_read("__js_this");
+                    let this_local = cc.define_source_local(&self_kw);
+                    cc.emit_u16(Op::LOCAL_SET, this_local);
+                    cc.current_closure_captured_locals.insert(self_kw.clone());
+                } else if has_receiver && cc.universal_receiver() {
+                    cc.current_closure_captured_locals.insert(self_kw.clone());
+                }
             }
 
             // Shared env for closures inside class methods: if the
@@ -4463,7 +4668,7 @@ impl Compiler {
                     );
                 }
 
-                if self.class_introspection_metadata() {
+                if class.introspection_metadata {
                     // Link each instance to its class object via `__class__`
                     // so `type(obj)` returns the class (and `type(obj) is Cls`
                     // / `type(obj).__name__` work). Re-stamped derived-last,
@@ -4824,6 +5029,33 @@ impl Compiler {
             self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
 
+            // ── Custom Descriptors: fill descriptor field 0 ──────────────
+            //
+            // `C.prototype` is final as an OBJECT from `object.new` above —
+            // later method installation mutates it but never replaces it — so
+            // storing `proto_local` here stores THE VERY OBJECT `C.prototype`
+            // is. That identity is the whole requirement: ECMA-262 §10.1.1
+            // `[[GetPrototypeOf]]` returns the object itself and `===` is
+            // identity, so a structurally-equal copy passes every structural
+            // check and fails both.
+            //
+            // Emitted HERE, on the class path, rather than at the descriptor's
+            // allocation, because the descriptor's field COUNT depends on the
+            // merged method list and that is only final after ALL emission —
+            // a `struct.new` cannot be written here, while a `struct.set` of
+            // field 0 needs no count. The writer turns this into
+            // `global.get $C.desc` + `struct.set $C.desc 0`.
+            //
+            // ⛔ NOT observable from this interpreter: the VM resolves
+            // prototypes through its own object model and never reads
+            // descriptor field 0, so `desc.set_proto` is a stack-consuming
+            // no-op there. Any test that runs under the VM will pass whether
+            // or not this line exists. The check is at the BINARY level.
+            self.emit_u16(Op::LOCAL_GET, proto_local);
+            let desc_name_idx = self.chunks[self.current]
+                .add_constant(Value::String(Arc::from(name)));
+            self.emit_u16(Op::DESC_SET_PROTO, desc_name_idx);
+
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
             self.class_set(
@@ -4841,7 +5073,7 @@ impl Compiler {
             );
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
-            crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+            self.stamp_fn_metadata_nonenum(line);
 
             // §15.7.5 step 7 (JS): the class constructor's own
             // [[Prototype]] — the parent constructor for derived classes
@@ -4886,12 +5118,7 @@ impl Compiler {
                     }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
-                    crate::primitives::prototypes::emit_stamp_function_kind_proto(
-                        self.chunk(),
-                        false,
-                        false,
-                        line,
-                    );
+                    self.stamp_function_kind_proto(false, false, line);
                 }
             }
 
@@ -4927,12 +5154,7 @@ impl Compiler {
                 if m_async || m_gen {
                     inst!(self, core_wasm::dup);
                     let line = self.line;
-                    crate::primitives::prototypes::emit_stamp_function_kind_proto(
-                        self.chunk(),
-                        m_async,
-                        m_gen,
-                        line,
-                    );
+                    self.stamp_function_kind_proto(m_async, m_gen, line);
                 }
                 // §10.2.9 SetFunctionName: a class method's `name` is its
                 // property key (non-enumerable, like all fn metadata).
@@ -4948,13 +5170,17 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 {
                     let line = self.line;
-                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
-                        self.chunk(),
-                        line,
-                    );
+                    self.stamp_fn_metadata_nonenum(line);
                 }
-                let key = self.str_const(mname);
-                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+                let key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(mname));
+                let line = self.line;
+                class_slots::emit_class_set(
+                    self.chunk(),
+                    class_slots::ObjSource::Stack,
+                    &key,
+                    class_slots::ValueSource::Stack,
+                    line,
+                );
                 // Publish the PROTOCOL SLOT alongside the method's own name, so
                 // a prototype-dispatch language (JS, PHP, Dart) reaches its
                 // roles through the same numeric key as a bind-dispatch one
@@ -4996,9 +5222,9 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
 
         let saved_static_js_this = if self.ambient_this() {
-            let saved = self.save_js_this("__js_prev_this_static_init");
+            let saved = self.begin_receiver_bind("__js_prev_this_static_init");
             self.emit_u16(Op::LOCAL_GET, ctor_local);
-            self.set_js_this_from_stack();
+            self.bind_receiver_from_stack(saved);
             Some(saved)
         } else {
             None
@@ -5091,7 +5317,7 @@ impl Compiler {
         }
 
         if let Some(saved) = saved_static_js_this {
-            self.restore_js_this(saved);
+            self.end_receiver_bind(saved);
         }
         self.current_class = saved_static_init_class;
         self.current_class_implicit_self = saved_static_init_implicit;
@@ -5198,8 +5424,10 @@ impl Compiler {
                 .get(mci)
                 .copied()
                 .unwrap_or((self.chunks[*mci].is_async, self.chunks[*mci].is_generator));
+            let objects = self.functions_are_objects();
             crate::primitives::classes::emit_attach_static_method_kinded(
                 self.chunk(),
+                objects,
                 ctor_local,
                 mname,
                 *mci,
@@ -5255,10 +5483,7 @@ impl Compiler {
                     // The stamp helper CONSUMES its operand — duplicate the
                     // method fn, the attach below still needs it.
                     inst!(self, core_wasm::dup);
-                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
-                        self.chunk(),
-                        line,
-                    );
+                    self.stamp_fn_metadata_nonenum(line);
                     self.class_set(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal(&bound_name),
@@ -5274,17 +5499,17 @@ impl Compiler {
             .find(|(mname, _, _, _)| mname.eq_ignore_ascii_case("__static_init__"))
         {
             let line = self.line;
-            let saved_js_this = self.save_js_this("__js_prev_static_init_this");
-            if saved_js_this.is_some() {
+            let saved_js_this = self.begin_receiver_bind("__js_prev_static_init_this");
+            if saved_js_this.is_active() {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
-                self.set_js_this_from_stack();
+                self.bind_receiver_from_stack(saved_js_this);
             }
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
             self.emit_direct_callable_invoke(0);
             let result_slot = self.define_local("__js_static_init_result");
             self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.restore_js_this(saved_js_this);
+            self.end_receiver_bind(saved_js_this);
             self.emit_u16(Op::LOCAL_GET, result_slot);
             self.emit(Op::DROP);
         }
@@ -5305,8 +5530,10 @@ impl Compiler {
                 for (sname, sci) in &parent_statics {
                     // Only inherit if child doesn't already define it
                     if !all_statics.iter().any(|(n, _)| n == sname) {
+                        let objects = self.functions_are_objects();
                         crate::primitives::classes::emit_attach_static_method(
                             self.chunk(),
+                            objects,
                             ctor_local,
                             sname,
                             *sci,
@@ -5338,8 +5565,10 @@ impl Compiler {
         // class-level method ref. Instance bindings are unchanged
         // (still per-instance for `this.method()` and override).
         for (mname, mci, _, _) in &instance_methods {
+            let objects = self.functions_are_objects();
             crate::primitives::classes::emit_attach_static_method(
                 self.chunk(),
+                objects,
                 ctor_local,
                 mname,
                 *mci,
@@ -5376,7 +5605,7 @@ impl Compiler {
 
         // The class's own member list, for languages whose reflection surface
         // reads it at runtime rather than deriving it at compile time.
-        if self.class_member_metadata() {
+        if class.member_metadata {
             let fields: Vec<(String, Option<String>, i64)> = class
                 .instance_fields
                 .iter()
@@ -5412,9 +5641,11 @@ impl Compiler {
         }
 
         // Class-introspection metadata on the class object: `__name__` (own
-        // name) and `__mro__` (self → bases → `object`). Universal — every
-        // class gets it, keyed on class construction, no language check.
-        if self.class_introspection_metadata() {
+        // name) and `__mro__` (self → bases → `object`). Keyed on class
+        // construction and on the class's own declaration — this used to say
+        // "universal, no language check" while being gated on a PROFILE flag
+        // that only python set, which is a language check wearing a denial.
+        if class.introspection_metadata {
             crate::primitives::classes::emit_stamp_class_name(
                 self.chunk(),
                 ctor_local,
@@ -5988,13 +6219,22 @@ pub fn emit_stamp_class_members(
         );
     }
     chunks[current].emit_array_new_fixed(0, fields.len() as u16, line);
-    let fields_key =
-        chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_FIELDS)));
+    let fields_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(reflection::FIELD_FIELDS),
+        &class_slots::PlainNames,
+    );
     let fields_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fields_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, fields_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &fields_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 
     for (name, param_count, return_type, param_types, modifiers) in methods {
         push_token(
@@ -6009,13 +6249,22 @@ pub fn emit_stamp_class_members(
         );
     }
     chunks[current].emit_array_new_fixed(0, methods.len() as u16, line);
-    let methods_key =
-        chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_METHODS)));
+    let methods_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(reflection::FIELD_METHODS),
+        &class_slots::PlainNames,
+    );
     let methods_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, methods_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, methods_slot, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, methods_key, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &methods_key,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Stamp `__mro__` on the class object: an array of the ancestor class objects
@@ -6337,10 +6586,15 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, obj);
-        let key = self.str_const(&vybe_ast::protocol_slot_key(
-            vybe_ast::ProtocolSlot::Destructor,
-        ));
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+        let key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Destructor));
+        class_slots::emit_class_get(
+            self.chunk(),
+            class_slots::ObjSource::Stack,
+            &key,
+            class_slots::Dest::Stack,
+            line,
+        );
         let dtor = self.define_local("__drop_dtor");
         self.emit_u16(Op::LOCAL_SET, dtor);
 
@@ -6504,10 +6758,18 @@ pub fn emit_finalize_queue_drain(chunks: &mut [Chunk], current: usize, line: u32
     // The SLOT, not a name: a `Finalize`, a `~Foo` and a `__del__` are one
     // binding here, which is the whole reason this is not per-language code.
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
-    let key = chunks[current].intern_string_constant(&vybe_ast::protocol_slot_key(
-        vybe_ast::ProtocolSlot::Destructor,
-    ));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    let key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Destructor),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_TEE, dtor, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -6662,6 +6924,7 @@ pub fn emit_super_once_guard(chunk: &mut Chunk, this_slot: u16, line: u32) {
 
 pub fn emit_attach_static_method(
     chunk: &mut Chunk,
+    objects: bool,
     ctor_local: u16,
     method_name: &str,
     method_chunk_idx: usize,
@@ -6671,6 +6934,7 @@ pub fn emit_attach_static_method(
 ) {
     emit_attach_static_method_kinded(
         chunk,
+        objects,
         ctor_local,
         method_name,
         method_chunk_idx,
@@ -6689,6 +6953,7 @@ pub fn emit_attach_static_method(
 #[allow(clippy::too_many_arguments)]
 pub fn emit_attach_static_method_kinded(
     chunk: &mut Chunk,
+    objects: bool,
     ctor_local: u16,
     method_name: &str,
     method_chunk_idx: usize,
@@ -6705,6 +6970,7 @@ pub fn emit_attach_static_method_kinded(
         chunk.emit_dup(line);
         crate::primitives::prototypes::emit_stamp_function_kind_proto(
             chunk,
+            objects,
             is_async,
             is_generator,
             line,
@@ -6746,7 +7012,7 @@ pub fn emit_attach_static_method_kinded(
     // The stamp helper CONSUMES its operand — duplicate the fn, the attach
     // below still needs it.
     chunk.emit_dup(line);
-    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(chunk, line);
+    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(chunk, objects, line);
     let key = class_slots::resolve(
         &class_slots::ClassSlot::internal(method_name),
         &class_slots::PlainNames,
@@ -6910,6 +7176,63 @@ pub fn emit_set_field_from_stack(chunk: &mut Chunk, this_slot: u16, field_name: 
 // ── Type registration ───────────────────────────────────────────────────
 
 /// Register a type entry in chunk 0's type table.
+/// Collect `this.<literal> = …` target names from a constructor body.
+///
+/// The census half of wasm-compliant classes: a constructor assignment to a
+/// LITERAL member name is a statically knowable field and belongs in the
+/// emitted struct type. Measured before writing this: a class whose fields are
+/// declared in the body already published them (`emitted: a, b`), while
+/// `constructor(x){ this.x = x }` published NOTHING — so this is the one shape
+/// the census was missing.
+///
+/// ⛔ A COMPUTED target (`this[k] = v`) is deliberately skipped. It has no
+/// static shape, and it is the only genuinely dynamic case — far narrower than
+/// "js classes are dynamic", which is what an earlier reading of
+/// `--dump-classes` wrongly concluded.
+///
+/// ⚠ UNDER-COLLECTING IS SAFE, OVER-COLLECTING IS NOT. A field this misses is
+/// simply absent from the type, which is exactly today's behaviour. A field it
+/// invents would shift every later field's INDEX and silently alias one slot
+/// onto another. That asymmetry is why this matches assignment TARGETS only and
+/// never a bare `this.x` read: a read may name an inherited or absent member.
+fn collect_this_assigned_fields(body: &[Statement], out: &mut Vec<String>) {
+    fn is_this(expr: &Expression) -> bool {
+        matches!(&expr.kind, ExprKind::This)
+            || matches!(&expr.kind, ExprKind::Ident(n)
+                if n == "this" || n == "self" || n == "Me")
+    }
+    fn note(target: &Expression, out: &mut Vec<String>) {
+        if let ExprKind::Member { object, field, .. } = &target.kind
+            && is_this(object)
+            && !out.iter().any(|f| f == field)
+        {
+            out.push(field.clone());
+        }
+    }
+    for stmt in body {
+        // Statement-level `this.x = v`.
+        if let StmtKind::Assign { targets, .. } = &stmt.kind {
+            for t in targets {
+                note(t, out);
+            }
+        }
+        if let StmtKind::CompoundAssign { target, .. } = &stmt.kind {
+            note(target, out);
+        }
+        // Expression-level `this.x = v`, at any depth — `walk_exprs_mut`
+        // recurses through nested statements, so an assignment inside an `if`
+        // or a loop is reached without this function having to enumerate every
+        // `StmtKind` container (a list that would silently rot as variants are
+        // added).
+        let mut owned = stmt.clone();
+        owned.walk_exprs_mut(&mut |e| {
+            if let ExprKind::Assign { target, .. } = &e.kind {
+                note(target, out);
+            }
+        });
+    }
+}
+
 pub fn register_type(
     chunks: &mut [Chunk],
     name: &str,
@@ -7491,9 +7814,12 @@ impl Compiler {
             // VIOLATED — the instance struct mostly is not.
             //
             // `writer/types.rs` emits each class as a PAIR: the described
-            // struct, and a descriptor struct of `1 + methods.len()` fields —
-            // one externref plus one **funcref per method** — whose supertype
-            // is the PARENT's descriptor. The method list registered for a
+            // struct, and a descriptor struct of `2 + methods.len()` fields —
+            // two externrefs (`__desc_proto`, `__desc_props`) plus one
+            // **funcref per method** — whose supertype is the PARENT's
+            // descriptor. (It emitted `1 +` until 2026-08-28, dropping
+            // `__desc_props`, which put the writer's method indices one below
+            // this table's.) The method list registered for a
             // class is its OWN declared methods, so a derived class that
             // declares fewer methods than its base emits a descriptor
             // SHORTER than the type it extends. Measured (Cairn): a base with

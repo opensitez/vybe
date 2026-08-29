@@ -607,6 +607,11 @@ pub struct Compiler {
     /// fact answered twice from a proxy; a call site that disagreed with the
     /// declaration would push a receiver the callee never bound.
     pub(crate) classes_with_late_static_binding: HashSet<String>,
+    /// `NormalClass::cooperative_super`, recorded when the class is compiled,
+    /// for the sites that hold only the class NAME. Same two-part shape as
+    /// `classes_with_late_static_binding` above: read the declaration directly
+    /// where the class is in scope, and this set where it is not.
+    pub(crate) classes_with_cooperative_super: HashSet<String>,
     /// Classes declaring an index operator (`operator []` / `__getitem__`).
     /// Indexing one of these is a method call, not a key lookup — resolved
     /// from the receiver's static type so arrays, dicts and strings keep the
@@ -734,6 +739,23 @@ pub struct Compiler {
     /// and trapped. Membership here is the ONLY licence to emit an indexed
     /// access.
     pub(crate) seam3_indexable: std::collections::HashSet<String>,
+    /// Canonical names of classes whose OWN typeidx is what `struct.new_default`
+    /// actually used, so `ref.test` against them answers "was this object
+    /// constructed by this class".
+    ///
+    /// ⛔ A SUPERSET OF [`Self::seam3_indexable`], AND NOT THE SAME QUESTION.
+    /// Indexing needs allocation identity AND a storage model that may put the
+    /// field in a GC slot; a TYPE TEST needs only the first. Deriving one from
+    /// the other is how a js private brand lost its `ref.test` the moment js
+    /// declared its fields to be own properties — a storage decision silently
+    /// withdrawing an identity guarantee.
+    ///
+    /// Membership is still `published && no parent`, because under the
+    /// base-constructor model a derived class's instance carries the BASE's
+    /// rtt: `new Sub()` allocates as `Base`, so `ref.test Sub` is `false` for
+    /// an object that plainly is one. M5 moves allocation to the most-derived
+    /// constructor, at which point the parent clause goes from both sets.
+    pub(crate) rtt_testable: std::collections::HashSet<String>,
     /// Every class NORMALIZED ONCE, during the declaration pass, keyed by
     /// canonical name. This is the single class model: computed before any
     /// body compiles, so a class's member set is knowable regardless of
@@ -1095,6 +1117,46 @@ fn is_js_builtin_ctor_value(name: &str) -> bool {
             | "BigInt"
             | "Date"
             | "RegExp"
+            // ⛔ THIS LIST AND THE HOST'S ANCHOR LIST HAD DRIFTED APART.
+            //
+            // `ecma_globals::register` publishes `__ctor_<Name>` for all of the
+            // names below; this predicate read only the ten above, so a bare
+            // `Map` / `Set` / `DataView` resolved to something that was not the
+            // canonical constructor — no `name`, no `prototype`. Invisible
+            // while `instanceof` answered from a `__type` string; the moment
+            // that stamp was deleted from the ECMA host it became
+            // `new Map() instanceof Map === false`.
+            //
+            // Two lists, one authority, and only one of them was maintained.
+            // The host is the authority: it is what actually installs the
+            // anchors. Anything added there must be added here.
+            | "Map"
+            | "Set"
+            | "ArrayBuffer"
+            | "SharedArrayBuffer"
+            | "DataView"
+            | "Int8Array"
+            | "Uint8Array"
+            | "Uint8ClampedArray"
+            | "Int16Array"
+            | "Uint16Array"
+            | "Int32Array"
+            | "Uint32Array"
+            | "Float32Array"
+            | "Float64Array"
+            | "BigInt64Array"
+            | "BigUint64Array"
+            | "Promise"
+            | "WeakMap"
+            | "WeakSet"
+            | "WeakRef"
+            | "FinalizationRegistry"
+            // WHATWG constructors, anchored by `platforms/web`'s plugin
+            // `finalize` — same contract as the ECMA ones above.
+            | "URL"
+            | "URLSearchParams"
+            | "TextEncoder"
+            | "TextDecoder"
     )
 }
 
@@ -2899,6 +2961,7 @@ impl Compiler {
             abstract_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
             classes_with_late_static_binding: HashSet::new(),
+            classes_with_cooperative_super: HashSet::new(),
             classes_with_indexer: HashSet::new(),
             classes_with_index_setter: HashSet::new(),
             program_has_getattr: false,
@@ -2921,6 +2984,7 @@ impl Compiler {
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
             seam3_indexable: std::collections::HashSet::new(),
+            rtt_testable: std::collections::HashSet::new(),
             normalized_classes: HashMap::new(),
             current_class_slot_keys: HashMap::new(),
             current_class: None,
@@ -3087,6 +3151,29 @@ impl Compiler {
                 .collect();
             fields.sort();
             println!("  fields:  {}", join_or_none(&fields));
+            // ⛔ THE LINE ABOVE IS NOT THE EMITTED TYPE. It maps over
+            // `instance_field_types` — field → TYPE HINT — so a language
+            // without type annotations (js, python) prints `(none)` even when
+            // the fields exist. That has been misread as "the emitted struct
+            // type has zero fields" by three separate readings, including the
+            // recorded "M6-pre BLOCKER MEASURED ON THE WRONG Vec".
+            //
+            // `TypeEntry.fields` is the structure the wasm writer actually
+            // consumes and the one whose LENGTH decides whether an engine
+            // accepts the module. Printing it beside the hints is what makes
+            // the difference between the two visible instead of inferred.
+            let emitted: Option<&Vec<String>> = self.chunks[0]
+                .types
+                .iter()
+                .find(|t| t.name == *name)
+                .map(|t| &t.fields);
+            match emitted {
+                Some(f) if !f.is_empty() => {
+                    println!("  emitted: {} (TypeEntry.fields, {} slot(s))", f.join(", "), f.len())
+                }
+                Some(_) => println!("  emitted: (none) — TypeEntry.fields is EMPTY"),
+                None => println!("  emitted: (no TypeEntry registered)"),
+            }
             let mut statics: Vec<String> = pc
                 .static_field_types
                 .iter()
@@ -3136,6 +3223,26 @@ impl Compiler {
         // a multi-language program is compiled on its own terms, so Pascal
         // never inherits what PHP declared.
         self.directives = vec![module.directives.clone()];
+        // Lower the receiver DIRECTIVE to the receiver ABI, once, onto the
+        // module chunk. The emitters that need this answer are free functions
+        // holding `&mut [Chunk]` or the imports chunk, never a `Compiler` — so
+        // asking each of them to carry a flag would be the "33 sites had to
+        // write it, 23 forgot" shape one more time.
+        //
+        // ⛔ THIS IS PER-BUNDLE, NOT PER-UNIT — unlike `variable_fold` above,
+        // which is genuinely per-module. `chunks[0]` is one slot for the whole
+        // bundle, so in a multi-language bundle the LAST unit compiled wins.
+        // Inert today (no language is on `UniversalParameter`) and correct for
+        // a single-language program, but mixing an ambient language with a
+        // universal one in one bundle needs this moved onto each unit's own
+        // chunks before it is trustworthy.
+        if !self.chunks.is_empty() {
+            self.chunks[0].module_receiver_abi = if self.universal_receiver() {
+                vybe_runtime::chunk::ReceiverAbi::Parameter
+            } else {
+                vybe_runtime::chunk::ReceiverAbi::Ambient
+            };
+        }
         // The canon section is module-level DATA, not policy and not code: it
         // has no execution position, so it is captured here rather than
         // emitted, and published to the chunks once compilation is done.
@@ -3461,6 +3568,24 @@ impl Compiler {
         // and rewrite the operands into it. Must follow the line above,
         // which decides the import half.
         common::globals::normalize_global_table(&mut self.chunks);
+        // Publish this UNIT's receiver ABI to every chunk it produced, on the
+        // same principle as the global index space and canon section below: a
+        // chunk that was compiled under an ABI must be able to say which one.
+        //
+        // ⛔ STAMPING ONLY `chunks[0]` WAS A REAL BUG, not a latent one.
+        // `chunks[0]` is one slot for the whole BUNDLE, so a wast unit bundled
+        // with a js entry unit inherited js's answer: measured by Fathom as
+        // `m.add(2,3) → 2` on a wast export — `0 + 2`, the receiver sitting in
+        // slot 0 and both arguments shifted one place — while js was flipped.
+        // A wast export must not move because a js directive changed.
+        let unit_abi = if self.universal_receiver() {
+            vybe_runtime::chunk::ReceiverAbi::Parameter
+        } else {
+            vybe_runtime::chunk::ReceiverAbi::Ambient
+        };
+        for chunk in &mut self.chunks {
+            chunk.module_receiver_abi = unit_abi;
+        }
         // The canon section, published to every chunk on the same principle as
         // the global index space above: a chunk carrying a canonidx must be
         // able to say what that index means.

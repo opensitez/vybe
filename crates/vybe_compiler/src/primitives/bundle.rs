@@ -169,7 +169,9 @@ pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
         // Check if global is already set: global_get + ref_is_null
         crate::primitives::globals::emit_read(script, global_name, 0);
         script.emit_op(Op::REF_IS_NULL, 0);
-        let install_block = script.emit_block(0);
+        // `[is_null]` in, nothing out: the install path pushes the funcref
+        // and `GLOBAL_SET` consumes it. One param, no result.
+        let install_block = script.emit_block_params(0, 1, 0);
         script.emit_op(Op::I32_EQZ, 0);
         script.emit_br_if(0, 0);
 

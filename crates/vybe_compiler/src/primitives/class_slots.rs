@@ -366,12 +366,41 @@ fn push_value(chunk: &mut Chunk, val: &ValueSource, line: u32) {
 
 /// Push the key for `slot` — a constant for a static slot, the runtime value
 /// for a dynamic one.
+
+/// Declare a name-keyed slot's key as a `wasm:string-constants` global import.
+///
+/// ⛔ THE WASM WRITER NEEDS THE KEY AS A VALUE, NOT A CONSTANT INDEX. A
+/// name-keyed access emits `STRUCT_GET/SET` with typeidx 0 — "no static type",
+/// a property by NAME — which the writer lowers to `ecma:object.get`/`set`,
+/// because core wasm has no by-name property access. That host call needs the
+/// name ON THE STACK, and the only way a module names a string is the
+/// js-string-builtins constant import. A key used solely as a struct immediate
+/// never got one, so the lowering had nothing to push and fell back to a typed
+/// `struct.get 0 0` — what V8 rejects as `invalid field index: 0`.
+///
+/// ⛔ AND IT HAS TO BE DECLARED HERE, NOT IN THE WRITER. Global IMPORTS precede
+/// defined globals, and the writer uses a `GLOBAL_GET`/`GLOBAL_SET` immediate
+/// directly as the wasm global index. Adding the names writer-side shifts every
+/// defined global out from under immediates the compiler already numbered —
+/// measured: V8 answered `immutable global #12 cannot be assigned`. Declared
+/// here, the name is in `global_imports` before `normalize_global_table` runs,
+/// so both numberings come from one list.
+fn declare_key_string(chunk: &mut Chunk, name: &str) {
+    chunk.add_global_import(vybe_runtime::chunk::STRING_CONSTANTS_MODULE, name);
+}
+
 fn push_key(chunk: &mut Chunk, slot: &ResolvedSlot, line: u32) -> Option<u16> {
     match slot {
         ResolvedSlot::Key(name) => {
+            declare_key_string(chunk, name);
             Some(chunk.add_constant(Value::String(Arc::from(name.as_str()))))
         }
-        ResolvedSlot::Interned(idx) => Some(*idx),
+        ResolvedSlot::Interned(idx) => {
+            if let Some(Value::String(text)) = chunk.constants.get(*idx as usize).cloned() {
+                declare_key_string(chunk, &text);
+            }
+            Some(*idx)
+        }
         // Handled by the callers, which need the typeidx as well as the index.
         ResolvedSlot::Indexed { .. } => unreachable!("indexed slots bypass push_key"),
         ResolvedSlot::Dynamic(src) => {
@@ -767,6 +796,50 @@ impl crate::Compiler {
     /// Ambiguity is answered `None` rather than by picking: two classes with
     /// the same storage name give no single type to test against, and a wrong
     /// type test is worse than falling back to the string probe.
+    /// The class this compiler DECLARED as holding `storage`, whether or not
+    /// that class also holds it as an indexed field.
+    ///
+    /// ⛔ THE LICENCE IS THE WRONG GATE FOR A TYPE TEST.
+    /// [`Self::indexed_owner_of_storage`] answers a storage question — "may I
+    /// emit `struct.get` against this field index" — and `seam3_indexable` is
+    /// exactly the right filter for that. A js private BRAND asks something
+    /// else entirely: *was this object constructed by this class*, which is
+    /// `ref.test`, and `ref.test` cares only that the type exists. Whether the
+    /// field went to an indexed slot or to the property map has no bearing on
+    /// it.
+    ///
+    /// The two were the same function, so withholding the indexing licence
+    /// silently withdrew the brand's type test too: `#tokenVal in proxy`
+    /// dropped to a property probe, which forwards through a Proxy to its
+    /// target and answered `true` where ECMA-262 §13.10.1 requires `false` — a
+    /// Proxy carries no private fields of its own and does not inherit the
+    /// target's.
+    ///
+    /// Ambiguity still yields `None`: two authored types holding one storage
+    /// name cannot pick a type to test against.
+    pub(crate) fn declaring_owner_of_storage(&self, storage: &str) -> Option<String> {
+        let mut found: Option<&str> = None;
+        for entry in &self.chunks[0].types {
+            // ⛔ NOT unfiltered. A `ref.test` is only an answer about identity
+            // where the class's own typeidx is what the allocation used —
+            // `rtt_testable`. Scanning every published type instead made
+            // `#tag in s` answer `false` for a genuine `Sub` instance, because
+            // `new Sub()` allocates with `Base`'s rtt and the test was emitted
+            // against `Sub`. Shadowed private names in a subclass are the shape
+            // that catches it.
+            if !self.rtt_testable.contains(&self.canon(&entry.name)) {
+                continue;
+            }
+            if entry.fields.iter().any(|f| f == storage) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(&entry.name);
+            }
+        }
+        found.map(str::to_string)
+    }
+
     pub(crate) fn indexed_owner_of_storage(&self, storage: &str) -> Option<String> {
         let mut found: Option<&str> = None;
         for entry in &self.chunks[0].types {

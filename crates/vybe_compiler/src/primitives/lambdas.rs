@@ -220,9 +220,15 @@ impl Compiler {
         // Capture parent's shared env info before switching scope
         let parent_shared_env_slot = self.shared_env_slot;
         let parent_shared_env_names = self.shared_env_names.clone();
-        let arity = params.len() as u8;
+        // §10.2.1: a lambda is a callable, so where EVERY callable takes a
+        // receiver it takes one too — including an arrow, which must still
+        // ACCEPT the argument to keep one uniform arity even though §10.2.11
+        // says it may not observe it.
+        let universal_receiver = self.universal_receiver();
+        let arity = params.len() as u8 + u8::from(universal_receiver);
         let ci = self.chunks.len();
-        let chunk = common::functions::create_function_chunk("<lambda>", arity);
+        let mut chunk = common::functions::create_function_chunk("<lambda>", arity);
+        chunk.takes_receiver = universal_receiver;
         self.chunks.push(chunk);
         // Record the BODY chunk — not the factory that wraps it. A caller that
         // needs to stamp a fact on the lambda (an object-literal accessor
@@ -262,6 +268,22 @@ impl Compiler {
                     &mut self.current_closure_captured_locals,
                 );
             }
+        }
+        // ⛔ BEFORE the parameters — argument binding is positional, and the
+        // receiver is argument 0.
+        //
+        // An arrow binds it to a name NOTHING resolves: §10.2.11 says `this`
+        // inside an arrow is the ENCLOSING one, reached through the existing
+        // upvalue/shared-env capture below. Giving the slot the self keyword
+        // would shadow that capture with the caller's receiver and silently
+        // invert the one rule arrows exist to state.
+        if universal_receiver {
+            let receiver_name = if is_arrow {
+                "__js_arrow_ignored_receiver".to_string()
+            } else {
+                self.profile.self_keyword.clone()
+            };
+            self.define_local(&receiver_name);
         }
         for p in params {
             self.define_source_local_typed(&p.name, p.type_hint.clone());
@@ -575,12 +597,7 @@ impl Compiler {
                     _ => (is_async, is_generator),
                 };
                 let line = self.line;
-                crate::primitives::prototypes::emit_stamp_function_kind_proto(
-                    self.chunk(),
-                    eff_async,
-                    eff_generator,
-                    line,
-                );
+                self.stamp_function_kind_proto(eff_async, eff_generator, line);
             }
 
             // §7.2.4 IsConstructor: arrows (and the other Lambda-lowered
@@ -599,7 +616,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             {
                 let line = self.line;
-                crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                self.stamp_fn_metadata_nonenum(line);
             }
 
             // §10.2.11: arrows carry a marker — the host uses it for
