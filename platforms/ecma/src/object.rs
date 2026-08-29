@@ -61,6 +61,10 @@ const FROZEN_MARK: &str = "__vybe_frozen";
 const SEALED_MARK: &str = "__vybe_sealed";
 const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible
 const PROTO_KEY: &str = "__proto__";
+/// The custom-descriptor slot a GC struct carries (set by the VM in
+/// `dispatch.rs`). Named here rather than imported because the runtime keeps
+/// it private.
+const DESCRIPTOR_SLOT: &str = "__descriptor";
 const NULL_PROTO_MARK: &str = "__vybe_null_proto";
 const ACCESSOR_SETTER_ACTIVE_MARK: &str = "__vybe_accessor_setter_active";
 const PROXY_TARGET_KEY: &str = "__vybe_proxy_target";
@@ -107,6 +111,54 @@ pub fn js_prototype_of(value: &Value) -> Value {
             }
             if let Some(explicit) = o.properties.get(PROTO_KEY) {
                 return explicit.clone();
+            }
+            // ── Custom Descriptors: "JS Prototypes" ──────────────────────
+            //
+            // ⛔⛔ THE JS-API SPEC TEXT CONTRADICTS THIS, AND THE SPEC TEXT IS
+            // THE ONE THAT IS STALE. `proposals/custom-descriptors/document/
+            // js-api/index.bs` §1585 still defines `[[GetPrototypeOf]]` of an
+            // Exported GC Object as a bare "Return null." The descriptor
+            // algorithm below is from the same proposal's `Overview.md`
+            // §"JS Prototypes", which flags itself as *"will be made more
+            // precise in the final spec"* — i.e. the formal IDL lags the
+            // design. Read `index.bs` alone and this code looks simply wrong.
+            // Do not "correct" it to return null.
+            //
+            // ⚠ AND THIS IS NOT YET REACHED IN PRACTICE. The spec builds an
+            // Exported GC Object as an EXOTIC object — `MakeBasicObject(«
+            // [[ObjectAddress]] »)` with its own `[[Get]]`,
+            // `[[GetOwnProperty]]`, `[[OwnPropertyKeys]]`, `[[IsExtensible]]`
+            // → false, and the rest (index.bs §1582+). We hand JS an ORDINARY
+            // `Object` instead, so a wasm GC reference crossing the boundary
+            // arrives without its descriptor slot and this branch never fires.
+            // Symptom trio, all one cause: `hasOwnProperty(o,"__descriptor")`
+            // false while `o.__descriptor` is an object; `Object.keys(o)`
+            // empty; and `ref.test` answering 1 inside wasm but 0 after a JS
+            // round trip. ⛔ Bolting the slot onto a plain `Object` is the
+            // NON-COMPLIANT option wearing a fix's clothes — the fix is the
+            // exotic object a stock engine implements.
+            //
+            // `[[GetPrototypeOf]]` on an exported GC struct reads its
+            // prototype out of the FIRST FIELD of its custom descriptor:
+            // "Get the value `v` of the first field … if `u` is a JS object,
+            // return `u`", otherwise null.
+            //
+            // Placed AFTER the explicit `__proto__` check on purpose — an
+            // object that carries one has already been reflected and the two
+            // agree — so this only answers for a wasm object whose prototype
+            // lives solely in its descriptor. Ordinary JS objects have no
+            // descriptor slot and never reach it.
+            if let Some(Value::Object(desc)) = o.properties.get(DESCRIPTOR_SLOT) {
+                // ⛔ A descriptor may describe itself (the meta-descriptor
+                // chains in the proposal's own fixtures), and `o` is already
+                // locked — re-locking the same object would deadlock.
+                if !Arc::ptr_eq(obj, desc) {
+                    if let Ok(d) = desc.try_lock() {
+                        if let Some(p @ Value::Object(_)) = d.fields.first() {
+                            return p.clone();
+                        }
+                    }
+                }
             }
             match &o.kind {
                 ObjectKind::Array(_) => crate::array::shared_array_prototype(),

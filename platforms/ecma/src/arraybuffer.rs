@@ -25,7 +25,7 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::VM;
 use vybe_runtime::value::{ArrayBufferState, Object, ObjectKind, Value};
 
@@ -33,6 +33,55 @@ pub const DV_TAG: &str = "__vybe_js_dataview";
 const DV_BUFFER_PROP: &str = "__vybe_dv_buffer";
 const DV_OFFSET_PROP: &str = "__vybe_dv_offset";
 const DV_LENGTH_PROP: &str = "__vybe_dv_length";
+
+// ── ArrayBuffer / SharedArrayBuffer / DataView prototypes ─────────────
+//
+// ⛔ A CONSTRUCTOR HAVING A `prototype` IS NOT THE SAME AS ITS INSTANCES
+// REACHING IT. `ecma_globals` already built a prototype object for each of
+// these and hung it off the constructor — `typeof DataView.prototype` was
+// `"object"` — but it allocated a FRESH object there while the instances were
+// created with no `__proto__` at all. Nothing connected the two, so
+// `Object.getPrototypeOf(dv) === DataView.prototype` was `false` and
+// `dv instanceof DataView` could only ever be answered by the `__type` stamp.
+//
+// These singletons are the object BOTH sides use: `ecma_globals` hangs this on
+// the constructor, and construction links to it. They must be primed in
+// `lib::prime_shared_prototypes`.
+
+static ARRAYBUFFER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static SHAREDARRAYBUFFER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static DATAVIEW_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static str) -> Value {
+    let proto = cell.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
+/// %ArrayBuffer.prototype% — ECMA-262 §25.1.5.
+pub fn shared_arraybuffer_prototype() -> Value {
+    named_prototype(&ARRAYBUFFER_PROTOTYPE, "ArrayBuffer")
+}
+
+/// %SharedArrayBuffer.prototype% — ECMA-262 §25.2.4.
+pub fn shared_sharedarraybuffer_prototype() -> Value {
+    named_prototype(&SHAREDARRAYBUFFER_PROTOTYPE, "SharedArrayBuffer")
+}
+
+/// %DataView.prototype% — ECMA-262 §25.3.4.
+pub fn shared_dataview_prototype() -> Value {
+    named_prototype(&DATAVIEW_PROTOTYPE, "DataView")
+}
 
 // ── ArrayBuffer / SharedArrayBuffer construction ──────────────────────
 
@@ -61,6 +110,16 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
     } else {
         "ArrayBuffer"
     };
+    // §25.1.3.1 / §25.2.2.1 — OrdinaryCreateFromConstructor links the instance
+    // to %ArrayBuffer.prototype% / %SharedArrayBuffer.prototype%.
+    obj.properties.insert(
+        "__proto__".into(),
+        if shared {
+            shared_sharedarraybuffer_prototype()
+        } else {
+            shared_arraybuffer_prototype()
+        },
+    );
     obj.properties
         .insert("__type".into(), Value::String(Arc::from(type_name)));
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -656,6 +715,9 @@ pub fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value 
         .insert("byteOffset".into(), Value::I32(byte_offset.max(0)));
     obj.properties
         .insert("byteLength".into(), Value::I32(byte_length.max(0)));
+    // §25.3.2.1 step 16 — the DataView links to %DataView.prototype%.
+    obj.properties
+        .insert("__proto__".into(), shared_dataview_prototype());
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("DataView")));
     Value::Object(vybe_runtime::heap::alloc(obj))

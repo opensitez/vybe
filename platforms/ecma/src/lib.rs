@@ -146,6 +146,17 @@ pub fn prime_shared_prototypes() {
     let _ = regexp::shared_regexp_prototype();
     let _ = map::shared_map_prototype();
     let _ = set::shared_set_prototype();
+    let _ = promise::shared_promise_prototype();
+    let _ = weakmap::shared_weakmap_prototype();
+    let _ = weakmap::shared_weakset_prototype();
+    let _ = weakref::shared_weakref_prototype();
+    let _ = weakref::shared_finalization_registry_prototype();
+    let _ = arraybuffer::shared_arraybuffer_prototype();
+    let _ = arraybuffer::shared_sharedarraybuffer_prototype();
+    let _ = arraybuffer::shared_dataview_prototype();
+    for name in typedarray::TYPED_ARRAY_NAMES {
+        let _ = typedarray::shared_typedarray_prototype(name);
+    }
     let _ = intl::shared_collator_prototype();
     let _ = intl::shared_number_format_prototype();
     let _ = intl::shared_date_time_format_prototype();

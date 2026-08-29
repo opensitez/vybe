@@ -37,7 +37,61 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The eleven `%<Type>Array.prototype%` singletons — ECMA-262 §23.2.
+///
+/// A FAMILY, so one keyed registry rather than eleven statics: the spec models
+/// them the same way (each per-type prototype inherits from
+/// `%TypedArray%.prototype`). Keyed by the constructor name
+/// (`"Int32Array"`, …).
+///
+/// ⛔ Same defect these fix elsewhere: `ecma_globals` built a prototype for
+/// each constructor while construction linked instances to nothing, so
+/// `Object.getPrototypeOf(ta) === Int32Array.prototype` was `false` and
+/// `ta instanceof Int32Array` fell through to a `__type` string. Both sides now
+/// use THIS object. Primed in `lib::prime_shared_prototypes`.
+static TYPEDARRAY_PROTOTYPES: OnceLock<Mutex<std::collections::HashMap<String, Arc<Mutex<Object>>>>> =
+    OnceLock::new();
+
+pub fn shared_typedarray_prototype(name: &str) -> Value {
+    let map = TYPEDARRAY_PROTOTYPES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    let proto = guard
+        .entry(name.to_string())
+        .or_insert_with(|| {
+            let mut obj = Object::new();
+            obj.properties
+                .insert("__proto__".into(), crate::object::shared_object_prototype());
+            // §23.2.3.34 — `%TypedArray%.prototype[@@toStringTag]` is an
+            // accessor returning the constructor name.
+            obj.properties
+                .insert("@@toStringTag".into(), Value::String(Arc::from(name)));
+            vybe_runtime::heap::alloc(obj)
+        })
+        .clone();
+    drop(guard);
+    let value = Value::Object(proto);
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
+/// Every typed-array constructor name, for priming and for wiring.
+pub const TYPED_ARRAY_NAMES: &[&str] = &[
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+];
 use vybe_runtime::VM;
 use vybe_runtime::value::{
     ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value,
@@ -390,6 +444,10 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     obj.properties.insert("byteOffset".into(), Value::I32(0));
     obj.properties
         .insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
+    // §23.2.5.1 — AllocateTypedArray links the instance to its
+    // `%<Type>Array.prototype%`.
+    obj.properties
+        .insert("__proto__".into(), shared_typedarray_prototype(typed_array_name(elem)));
     obj.properties.insert(
         "__type".into(),
         Value::String(Arc::from(typed_array_name(elem))),
@@ -436,6 +494,10 @@ pub fn new_view_over_buffer(
         .insert("byteOffset".into(), Value::I32(byte_offset as i32));
     obj.properties
         .insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
+    // §23.2.5.1 — AllocateTypedArray links the instance to its
+    // `%<Type>Array.prototype%`.
+    obj.properties
+        .insert("__proto__".into(), shared_typedarray_prototype(typed_array_name(elem)));
     obj.properties.insert(
         "__type".into(),
         Value::String(Arc::from(typed_array_name(elem))),
@@ -517,6 +579,35 @@ fn split_static_typed_array_receiver(args: &[Value]) -> (Value, &[Value]) {
 }
 
 // ── Public registration ───────────────────────────────────────────────
+
+/// ECMA-262's **RelativeIndex** conversion, shared by every `%TypedArray%`
+/// method that takes a start/end/target position.
+///
+/// A NEGATIVE index counts from the end (§23.2.3: *"if relativeStart < 0, let
+/// k be max(len + relativeStart, 0)"*); a non-negative one is clamped to the
+/// length. It is one rule, and it was open-coded correctly in `slice` and
+/// `subarray` while `copyWithin` and `fill` clamped with a bare `.max(0)` —
+/// so `arr.copyWithin(-2, 0, 2)` targeted index 0 and copied nothing anywhere
+/// near where the caller asked (`[10,20,30,40]` came back unchanged, against
+/// node's `[10,20,10,20]`).
+///
+/// ⛔ That bug sat GREEN in the corpus. Its test defers its assertion through
+/// `__checkLater`, a `setTimeout(..., 0)`, which fired before the check could
+/// observe anything — the same vacuous-pass this file's timer clamp
+/// (`platforms/web/src/timers.rs::clamp_timeout`) exposed. A wrong answer that
+/// nothing asserts is indistinguishable from a right one, which is why the
+/// rule lives in one function now instead of four copies, two of them wrong.
+/// `pub(crate)` because `value.rs`'s typed-array dispatch arms had the SAME
+/// rule open-coded four more times. Two independent implementations that
+/// happened to agree is not one rule — it is a divergence waiting for whoever
+/// next fixes only the copy they can see, which is exactly the history above.
+///
+/// ⛔ NOT for `at` (§23.2.3.1): `at` returns `undefined` out of range where
+/// these CLAMP. Same-looking arithmetic, different contract — do not unify it in.
+pub(crate) fn relative_index(index: i32, len: i32) -> usize {
+    let resolved = if index < 0 { len + index } else { index };
+    resolved.max(0).min(len) as usize
+}
 
 pub fn register(vm: &mut VM) {
     for (elem, module) in VARIANTS {
@@ -1262,6 +1353,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         }),
     );
 
+
     // ── Mutators that don't change length ───────────────────────────
 
     vm.register_host_fn(
@@ -1275,9 +1367,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta) as i32;
-                    let t = target.max(0).min(live) as usize;
-                    let s = start.max(0).min(live) as usize;
-                    let e = end.max(0).min(live) as usize;
+                    let t = relative_index(target, live);
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
                     // Snapshot the source window before writing so
                     // overlapping copies (memmove semantics) work.
                     let snapshot: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
@@ -1302,8 +1394,8 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta) as i32;
-                    let s = start.max(0).min(live) as usize;
-                    let e = end.max(0).min(live) as usize;
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
                     for i in s..e {
                         write_element(ta, i, &val);
                     }
@@ -1432,10 +1524,8 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta) as i32;
-                    let s = (if start < 0 { live + start } else { start })
-                        .max(0)
-                        .min(live) as usize;
-                    let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
                     let values: Vec<Value> = if s < e {
                         (s..e).map(|i| read_element(ta, i)).collect()
                     } else {
@@ -1469,10 +1559,8 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta) as i32;
-                    let s = (if start < 0 { live + start } else { start })
-                        .max(0)
-                        .min(live) as usize;
-                    let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
                     let sub_len = if s < e { e - s } else { 0 };
                     let buffer_obj = ta.buffer_obj.clone();
                     let bpe = ta.elem.bytes_per_element();

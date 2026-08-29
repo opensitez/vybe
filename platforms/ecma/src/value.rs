@@ -27,6 +27,7 @@
 //! — we return undefined rather than trap so polyfill-backed code keeps
 //! running).
 
+use crate::typedarray::relative_index;
 use crate::typedarray::{
     new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element,
 };
@@ -260,7 +261,28 @@ pub fn register(vm: &mut VM) {
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            lookup_method_for_call(ctx, &receiver, &method)
+            // Argument 2 — OPTIONAL, defaults to binding, so every existing
+            // two-argument caller is unchanged.
+            //
+            // Whether a host-function method should be handed back with the
+            // receiver already bound into it. It always was, because under the
+            // ambient receiver protocol the CALL SITE passed no receiver at all
+            // and this was the only way a builtin could get one. Where the call
+            // site does pass one (ECMA §10.2.1
+            // `[[Call]](thisArgument, argumentsList)`), binding here duplicates
+            // it: `[1,2,3].map(fn)` reached `ecma:array.map` as
+            // `[arr, arr, callback]`, so `callback` bound to `arr` and threw
+            // "not callable".
+            //
+            // ⛔ Not a workaround for the duplicate — the DUPLICATE is the
+            // anomaly. Every host builtin already reads its receiver as
+            // argument 0 (`ecma:array.map` opens with `array_of(args, 0)`),
+            // which is exactly what a passed receiver lands as. The binding
+            // exists only to stand in for a protocol that did not pass one.
+            let bind_receiver = args
+                .get(2)
+                .map_or(true, |v| !matches!(v, Value::Bool(false)));
+            lookup_method_for_call(ctx, &receiver, &method, bind_receiver)
         }),
     );
 
@@ -2344,6 +2366,35 @@ fn dispatch_typed_array(
             }
             Value::I32(0)
         }
+        // §23.2.3.1 `%TypedArray%.prototype.at`. ⛔ THIS ARM WAS MISSING, and
+        // the failure was silent: `dispatch_typed_array` has no fallthrough to
+        // the Array dispatcher, whose own `at` arm (`value.rs`, the
+        // `ObjectKind::Array` guard) returns `Undefined` for anything that is
+        // not a plain Array. So `ta.at(0)` — POSITIVE index, nothing to do with
+        // negative indexing — answered `undefined`, while
+        // `Uint8Array.prototype.at.call(ta, 0)` answered correctly, because THAT
+        // route reaches the host fn in `typedarray.rs`, which has always been
+        // right.
+        //
+        // Same shape as the `copyWithin` defect recorded in the plan: three
+        // implementations of one method, and the direct member call landing on
+        // the one that cannot see a typed array. `at` was the last consumer of
+        // that gap still open.
+        "at" => {
+            let raw = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let o = obj.lock().unwrap();
+            if let ObjectKind::TypedArray(ta) = &o.kind {
+                let live = ta_live_length(ta) as i32;
+                // A negative index counts from the end; out of range is
+                // `undefined`, NOT a clamp.
+                let idx = if raw < 0 { live + raw } else { raw };
+                if idx < 0 || idx >= live {
+                    return Value::Undefined;
+                }
+                return read_element(ta, idx as usize);
+            }
+            Value::Undefined
+        }
         "indexOf" => {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let o = obj.lock().unwrap();
@@ -2451,10 +2502,8 @@ fn dispatch_typed_array(
                 let live = ta_live_length(ta) as i32;
                 let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(1).map(|v| v.as_i32()).unwrap_or(live);
-                let s = (if start < 0 { live + start } else { start })
-                    .max(0)
-                    .min(live) as usize;
-                let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                let s = relative_index(start, live);
+                let e = relative_index(end, live);
                 let values: Vec<Value> = if s < e {
                     (s..e).map(|i| read_element(ta, i)).collect()
                 } else {
@@ -2707,10 +2756,8 @@ fn dispatch_typed_array(
                 let live = ta_live_length(ta) as i32;
                 let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(1).map(|v| v.as_i32()).unwrap_or(live);
-                let s = (if start < 0 { live + start } else { start })
-                    .max(0)
-                    .min(live) as usize;
-                let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                let s = relative_index(start, live);
+                let e = relative_index(end, live);
                 let sub_len = if s < e { e - s } else { 0 };
                 let buffer_obj = ta.buffer_obj.clone();
                 let elem = ta.elem;
@@ -2729,13 +2776,9 @@ fn dispatch_typed_array(
                     let target = args.first().map(|v| v.as_i32()).unwrap_or(0);
                     let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let end = args.get(2).map(|v| v.as_i32()).unwrap_or(live);
-                    let t = (if target < 0 { live + target } else { target })
-                        .max(0)
-                        .min(live) as usize;
-                    let s = (if start < 0 { live + start } else { start })
-                        .max(0)
-                        .min(live) as usize;
-                    let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                    let t = relative_index(target, live);
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
                     let snapshot: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
                     let max_copy = (live as usize - t).min(snapshot.len());
                     for (i, v) in snapshot[..max_copy].iter().enumerate() {
@@ -3079,12 +3122,17 @@ fn is_error_like_object(obj: &Arc<Mutex<Object>>) -> bool {
 /// `Object.getPrototypeOf(5)` returns), so no wrapper is allocated and no host
 /// function is added — this is the existing `ecma:value` surface behaving as
 /// the spec step it already implements.
-fn lookup_method_for_call(ctx: &mut HostContext, receiver: &Value, method: &str) -> Value {
+fn lookup_method_for_call(
+    ctx: &mut HostContext,
+    receiver: &Value,
+    method: &str,
+    bind_receiver: bool,
+) -> Value {
     if crate::proxy::is_proxy(receiver).is_some() {
         let key = Value::String(Arc::from(method));
         let value = crate::proxy::get_dispatch(ctx, receiver, &key);
         return match receiver {
-            Value::Object(obj) => bind_method_receiver(obj.clone(), value),
+            Value::Object(obj) => bind_method_receiver(obj.clone(), value, bind_receiver),
             _ => value,
         };
     }
@@ -3112,7 +3160,7 @@ fn lookup_method_for_call(ctx: &mut HostContext, receiver: &Value, method: &str)
 
         if let Some(value) = found {
             if !matches!(value, Value::Null | Value::Undefined) {
-                return bind_method_receiver(receiver_obj.clone(), value);
+                return bind_method_receiver(receiver_obj.clone(), value, bind_receiver);
             }
         }
 
@@ -3179,7 +3227,16 @@ fn is_receiver_host_fn(value: &Value) -> bool {
         && o.properties.contains_key("__vybe_method_receiver")
 }
 
-fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
+fn bind_method_receiver(
+    receiver: Arc<Mutex<Object>>,
+    method: Value,
+    bind_receiver: bool,
+) -> Value {
+    // The caller passes the receiver itself — see `getMethodForCall`. Binding
+    // it here as well would hand the builtin two.
+    if !bind_receiver {
+        return method;
+    }
     let Value::Object(target) = method else {
         return method;
     };
@@ -3253,32 +3310,26 @@ fn js_instanceof(ctx: &mut HostContext, receiver: &Value, ctor: &Value) -> bool 
         }
     }
 
-    if let Some(name) = ctor_name.as_deref() {
-        let matched_stamp = {
-            let o = obj.lock().unwrap();
-            if matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == name)
-            {
-                true
-            } else {
-                match o.properties.get("__types") {
-                    Some(Value::Object(arr)) => {
-                        let arr_lock = arr.lock().unwrap();
-                        if let ObjectKind::Array(ref elems) = arr_lock.kind {
-                            elems.iter().any(
-                                |value| matches!(value, Value::String(tag) if tag.as_ref() == name),
-                            )
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }
-            }
-        };
-        if matched_stamp {
-            return true;
-        }
-    }
+    // ⛔ A `__type` / `__types` SHORT-CIRCUIT STOOD HERE AND IS DELETED.
+    //
+    // It answered `true` whenever the object carried a string property naming
+    // the constructor, BEFORE the prototype chain was ever walked. Two things
+    // were wrong with it, and the second is why it is gone rather than fixed:
+    //
+    //  * it is a forgery — `__type` is an ordinary writable property, so
+    //    `({ __type: "A" }) instanceof A` was `true`, and `u.__type = "Admin"`
+    //    made `u instanceof Admin` true;
+    //  * `__type` / `__types` are **vybe stamps, not ECMA**. This is the ECMA
+    //    host; it implements ECMA-262 and nothing else. A vybe-internal
+    //    representation leaking in here is a layering violation, and a layering
+    //    violation has no schedule on which it is allowed to remain.
+    //
+    // What follows is OrdinaryHasInstance (ECMA-262 §7.3.22) as written: take
+    // `ctor.prototype`, walk the receiver's `[[GetPrototypeOf]]` chain, compare
+    // by identity. That walk already answers for any properly linked object —
+    // `Object.create(A.prototype) instanceof A` was `true` with no stamp
+    // present at all, which is what made this block removable rather than
+    // load-bearing.
 
     let Value::Object(ctor_obj) = ctor else {
         return false;

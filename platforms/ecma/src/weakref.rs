@@ -35,7 +35,7 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 
@@ -50,10 +50,50 @@ const REGISTRY_TAG: &str = "__vybe_js_finreg";
 const REGISTRY_CALLBACK_PROP: &str = "__vybe_fr_cb";
 const REGISTRY_ENTRIES_PROP: &str = "__vybe_fr_entries";
 
+// ── Prototypes ────────────────────────────────────────────────────
+//
+// `WeakRef` and `FinalizationRegistry` had NO constructor object at all: the
+// bare name resolved to a namespace placeholder (`typeof WeakRef === "object"`,
+// no `name`, no `prototype`), and `new WeakRef(x)` worked only through the
+// compiler's known-types path. `wr instanceof WeakRef` therefore had nothing to
+// walk and was answered by the `__type` stamp. §26.1.3 / §26.2.3.
+
+static WEAKREF_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static FINALIZATION_REGISTRY_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static str) -> Value {
+    let proto = cell.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
+/// %WeakRef.prototype% — ECMA-262 §26.1.3.
+pub fn shared_weakref_prototype() -> Value {
+    named_prototype(&WEAKREF_PROTOTYPE, "WeakRef")
+}
+
+/// %FinalizationRegistry.prototype% — ECMA-262 §26.2.3.
+pub fn shared_finalization_registry_prototype() -> Value {
+    named_prototype(&FINALIZATION_REGISTRY_PROTOTYPE, "FinalizationRegistry")
+}
+
 // ── Constructors ──────────────────────────────────────────────────
 
 fn new_weakref(target: Value) -> Value {
     let mut obj = Object::new();
+    // §26.1.1.1 step 4 — link to %WeakRef.prototype%.
+    obj.properties
+        .insert("__proto__".into(), shared_weakref_prototype());
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakRef")));
     obj.properties.insert(WEAKREF_TAG.into(), Value::I32(1));
@@ -63,6 +103,9 @@ fn new_weakref(target: Value) -> Value {
 
 fn new_finalization_registry(callback: Value) -> Value {
     let mut obj = Object::new();
+    // §26.2.1.1 step 3 — link to %FinalizationRegistry.prototype%.
+    obj.properties
+        .insert("__proto__".into(), shared_finalization_registry_prototype());
     obj.properties.insert(
         "__type".into(),
         Value::String(Arc::from("FinalizationRegistry")),

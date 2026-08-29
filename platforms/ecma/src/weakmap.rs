@@ -20,7 +20,7 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{HostContext, VM};
 
@@ -30,6 +30,51 @@ pub const WM_KEYS_PROP: &str = "__vybe_wm_keys";
 // Values live in the backing Array (ObjectKind::Array); keys live in a
 // parallel Array in the properties bag.
 
+static WEAKMAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static WEAKSET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+/// %WeakMap.prototype% — ECMA-262 §24.3.3.
+///
+/// A process-global singleton for the same reason `%Map.prototype%` is one:
+/// instances link to it at creation, so `Object.getPrototypeOf(wm) ===
+/// WeakMap.prototype` and `wm instanceof WeakMap` both hold by OBJECT
+/// IDENTITY. It must be primed in `lib::prime_shared_prototypes` so it is in
+/// the snapshot baseline.
+pub fn shared_weakmap_prototype() -> Value {
+    let proto = WEAKMAP_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §24.3.3.5 — `WeakMap.prototype[@@toStringTag]` is "WeakMap".
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from("WeakMap")));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
+/// %WeakSet.prototype% — ECMA-262 §24.4.3. See [`shared_weakmap_prototype`].
+pub fn shared_weakset_prototype() -> Value {
+    let proto = WEAKSET_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §24.4.3.4 — `WeakSet.prototype[@@toStringTag]` is "WeakSet".
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from("WeakSet")));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
 fn new_weakmap() -> Value {
     let mut obj = Object::new_array(Vec::new());
     obj.properties.insert(WEAKMAP_TAG.into(), Value::I32(1));
@@ -37,6 +82,12 @@ fn new_weakmap() -> Value {
         WM_KEYS_PROP.into(),
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
     );
+    // §24.3.1.1 step 2 — OrdinaryCreateFromConstructor(…, "%WeakMap.prototype%").
+    // Without this link the instance has NO [[Prototype]], and
+    // `wm instanceof WeakMap` can only be answered by a `__type` string —
+    // which is a vybe stamp, not ECMA, and is forgeable.
+    obj.properties
+        .insert("__proto__".into(), shared_weakmap_prototype());
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakMap")));
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -45,6 +96,9 @@ fn new_weakmap() -> Value {
 fn new_weakset() -> Value {
     let mut obj = Object::new_array(Vec::new());
     obj.properties.insert(WEAKSET_TAG.into(), Value::I32(1));
+    // §24.4.1.1 step 2 — see `new_weakmap`.
+    obj.properties
+        .insert("__proto__".into(), shared_weakset_prototype());
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakSet")));
     Value::Object(vybe_runtime::heap::alloc(obj))

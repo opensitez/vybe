@@ -48,7 +48,9 @@ pub fn register(vm: &mut VM) {
         "ecma:promise",
         "__settle_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            settle_and_drain(ctx, args, "fulfilled");
+            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            settle_and_drain(ctx, &[promise, value], "fulfilled");
             Value::Undefined
         }),
     );
@@ -56,7 +58,9 @@ pub fn register(vm: &mut VM) {
         "ecma:promise",
         "__settle_rejected",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            settle_and_drain(ctx, args, "rejected");
+            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            settle_and_drain(ctx, &[promise, reason], "rejected");
             Value::Undefined
         }),
     );
@@ -70,7 +74,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
             let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            let value = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete = aggregate_record_element(&aggregate, index, value);
             if let Some(results) = complete {
                 settle_and_drain(ctx, &[aggregate, results], "fulfilled");
@@ -87,7 +91,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
             let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            let value = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("fulfilled", value));
             if let Some(results) = complete {
@@ -102,7 +106,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
             let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            let reason = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("rejected", reason));
             if let Some(results) = complete {
@@ -118,7 +122,7 @@ pub fn register(vm: &mut VM) {
         "__aggregate_reject",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let reason = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, reason], "rejected");
             Value::Undefined
         }),
@@ -131,7 +135,7 @@ pub fn register(vm: &mut VM) {
         "__any_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, value], "fulfilled");
             Value::Undefined
         }),
@@ -142,8 +146,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
             let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            let reason = args.get(2).cloned().unwrap_or(Value::Undefined);
-            if let Some(error) = any_record_rejection(&aggregate, index, reason) {
+            let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
+            if let Some(error) = any_record_rejection(ctx, &aggregate, index, reason) {
                 settle_and_drain(ctx, &[aggregate, error], "rejected");
             }
             Value::Undefined
@@ -160,7 +164,7 @@ pub fn register(vm: &mut VM) {
                 .unwrap_or_else(|| "fulfilled".to_string());
             let on_fulfilled = args.get(2).cloned().unwrap_or(Value::Undefined);
             let on_rejected = args.get(3).cloned().unwrap_or(Value::Undefined);
-            let value = args.get(4).cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 4).first().cloned().unwrap_or(Value::Undefined);
             run_reaction(
                 ctx,
                 result_promise,
@@ -196,7 +200,7 @@ pub fn register(vm: &mut VM) {
         "__resolve",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let promise = args.first().cloned().unwrap_or(Value::Undefined);
-            let value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             resolve_promise_with_value(ctx, &promise, value);
             Value::Undefined
         }),
@@ -556,7 +560,7 @@ pub fn register(vm: &mut VM) {
             if n == 0 {
                 settle_and_drain(
                     ctx,
-                    &[aggregate.clone(), aggregate_error(vec![])],
+                    &[aggregate.clone(), aggregate_error(ctx, vec![])],
                     "rejected",
                 );
                 return aggregate;
@@ -568,7 +572,7 @@ pub fn register(vm: &mut VM) {
                     settle_and_drain(ctx, &[aggregate.clone(), value], "fulfilled");
                     return aggregate;
                 } else if state == "rejected" {
-                    if let Some(error) = any_record_rejection(&aggregate, i, value) {
+                    if let Some(error) = any_record_rejection(ctx, &aggregate, i, value) {
                         settle_and_drain(ctx, &[aggregate.clone(), error], "rejected");
                     }
                 } else {
@@ -1321,24 +1325,35 @@ fn settled_descriptor(state: &str, value: Value) -> Value {
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
-fn aggregate_error(errors: Vec<Value>) -> Value {
-    let mut agg = Object::new();
-    agg.properties
-        .insert("__type".into(), Value::String(Arc::from("AggregateError")));
-    agg.properties
-        .insert("name".into(), Value::String(Arc::from("AggregateError")));
-    agg.properties.insert(
-        "message".into(),
-        Value::String(Arc::from("All promises were rejected")),
-    );
-    agg.properties.insert(
-        "errors".into(),
-        Value::Object(vybe_runtime::heap::alloc(Object::new_array(errors))),
-    );
-    Value::Object(vybe_runtime::heap::alloc(agg))
+/// The `AggregateError` `Promise.any` rejects with — §27.2.4.3.
+///
+/// ⛔ Built through `error::new_error`, NOT by hand. `error.rs` states the rule
+/// on `new_error_flat`: *"Every throw-site constructor must use `new_error` —
+/// an unlinked error is the two-populations bug."* This function was hand-
+/// stamping `__type` / `name` / `message` and skipping the prototype link, so
+/// `Promise.any`'s rejection was an error object that no `instanceof` could
+/// recognise. It survived only because `js_instanceof` used to answer from the
+/// `__type` stamp; deleting that stamp turned it into eight failing tests.
+///
+/// `ctx` is required for exactly that reason — the error prototypes are per-VM
+/// (`__ctor_<Kind>`), not process-global.
+fn aggregate_error(ctx: &HostContext, errors: Vec<Value>) -> Value {
+    let agg = crate::error::new_error(ctx, "AggregateError", "All promises were rejected");
+    if let Value::Object(ref o) = agg {
+        o.lock().unwrap().properties.insert(
+            "errors".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(errors))),
+        );
+    }
+    agg
 }
 
-fn any_record_rejection(aggregate: &Value, index: usize, reason: Value) -> Option<Value> {
+fn any_record_rejection(
+    ctx: &HostContext,
+    aggregate: &Value,
+    index: usize,
+    reason: Value,
+) -> Option<Value> {
     let Value::Object(obj) = aggregate else {
         return None;
     };
@@ -1365,9 +1380,9 @@ fn any_record_rejection(aggregate: &Value, index: usize, reason: Value) -> Optio
                 ObjectKind::Array(elems) => elems.clone(),
                 _ => vec![],
             };
-            Some(aggregate_error(values))
+            Some(aggregate_error(ctx, values))
         } else {
-            Some(aggregate_error(vec![]))
+            Some(aggregate_error(ctx, vec![]))
         }
     } else {
         None
@@ -1398,8 +1413,40 @@ fn is_callable(v: &Value) -> bool {
             ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
 }
 
+static PROMISE_PROTOTYPE: OnceLock<Arc<std::sync::Mutex<Object>>> = OnceLock::new();
+
+/// %Promise.prototype% — ECMA-262 §27.2.4.
+///
+/// Every promise links to this singleton at creation, so
+/// `Object.getPrototypeOf(p) === Promise.prototype` and `p instanceof Promise`
+/// hold by OBJECT IDENTITY rather than by reading a `__type` string. Must be
+/// primed in `lib::prime_shared_prototypes` so it lands in the snapshot
+/// baseline.
+pub fn shared_promise_prototype() -> Value {
+    let proto = PROMISE_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §27.2.4.5 — `Promise.prototype[@@toStringTag]` is "Promise".
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from("Promise")));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
+
 pub fn make_promise(state: &str, value: Value) -> Value {
     let mut obj = Object::new();
+    // §27.2.3.1 step 5 — OrdinaryCreateFromConstructor(…, "%Promise.prototype%").
+    // This is the link `instanceof` walks; without it the only available answer
+    // was the `__type` stamp below, which is a vybe representation and not
+    // something the ECMA host is allowed to decide identity from.
+    obj.properties
+        .insert("__proto__".into(), shared_promise_prototype());
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Promise")));
     obj.properties

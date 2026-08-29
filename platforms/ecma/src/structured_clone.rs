@@ -408,7 +408,19 @@ fn clone_map(
 ) -> Result<Value, Value> {
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Map(indexmap::IndexMap::new());
-    target_obj.properties.insert("size".into(), Value::I32(0));
+    // ⛔ NO own `size`. §24.1.3.10 makes `size` an accessor on
+    // %Map.prototype%, and `new_map_value` builds real Maps that way. An own
+    // `size` data property here SHADOWS that accessor, so the clone reported
+    // the size it had at clone time for ever: `clone.set("c", 3)` inserted
+    // into `ObjectKind::Map` correctly and `clone.size` still answered 2.
+    // Invisible while the clone had no prototype to shadow.
+    // HTML structured clone creates the clone with the target realm's
+    // %Map.prototype%. Without the link the clone answered `false` to
+    // `instanceof Map` while still having working `get`/`set` — a working
+    // object that is an instance of nothing.
+    target_obj
+        .properties
+        .insert("__proto__".into(), crate::map::shared_map_prototype());
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Map")));
@@ -426,7 +438,7 @@ fn clone_map(
     };
     {
         let mut t = target_arc.lock().unwrap();
-        let new_size = {
+        {
             if let ObjectKind::Map(ref mut m) = t.kind {
                 for (k, v) in entries {
                     // Per spec: Map keys are cloned too (unlike JSON).
@@ -435,13 +447,8 @@ fn clone_map(
                         deep_clone(ctx, &v, seen, active)?,
                     );
                 }
-                m.len()
-            } else {
-                0
             }
-        };
-        t.properties
-            .insert("size".into(), Value::I32(new_size as i32));
+        }
     }
     Ok(target_val)
 }
@@ -455,7 +462,11 @@ fn clone_set(
 ) -> Result<Value, Value> {
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Set(indexmap::IndexSet::new());
-    target_obj.properties.insert("size".into(), Value::I32(0));
+    // ⛔ NO own `size` — see the Map clone above (§24.2.3.9 accessor).
+    // See the Map clone above — %Set.prototype%.
+    target_obj
+        .properties
+        .insert("__proto__".into(), crate::set::shared_set_prototype());
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Set")));
@@ -473,18 +484,13 @@ fn clone_set(
     };
     {
         let mut t = target_arc.lock().unwrap();
-        let new_size = {
+        {
             if let ObjectKind::Set(ref mut set) = t.kind {
                 for v in elements {
                     set.insert(deep_clone(ctx, &v, seen, active)?);
                 }
-                set.len()
-            } else {
-                0
             }
-        };
-        t.properties
-            .insert("size".into(), Value::I32(new_size as i32));
+        }
     }
     Ok(target_val)
 }
@@ -536,6 +542,10 @@ fn clone_arraybuffer(
         .insert("byteLength".into(), Value::I32(byte_len as i32));
     obj.properties
         .insert("maxByteLength".into(), Value::I32(max_byte_length as i32));
+    obj.properties.insert(
+        "__proto__".into(),
+        crate::arraybuffer::shared_arraybuffer_prototype(),
+    );
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
     let out = Value::Object(vybe_runtime::heap::alloc(obj));
@@ -690,6 +700,10 @@ fn clone_dataview(
         .insert("byteLength".into(), Value::I32(byte_length as i32));
     obj.properties
         .insert("maxByteLength".into(), Value::I32(byte_length as i32));
+    obj.properties.insert(
+        "__proto__".into(),
+        crate::arraybuffer::shared_arraybuffer_prototype(),
+    );
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
     let buffer_value = Value::Object(vybe_runtime::heap::alloc(obj));
@@ -762,6 +776,17 @@ fn clone_error_like(
     {
         let mut t = target_arc.lock().unwrap();
         stamp_error_clone(&mut t, clone_kind, &display_name, &message);
+        // ⛔ And LINK it. `stamp_error_clone` writes `__type` / `name` /
+        // `__types` — none of which makes the clone an instance of anything.
+        // `structuredClone(new Error("x")) instanceof Error` was `false`.
+        // Same per-VM `__ctor_<Kind>` anchor `error.rs::link_error_prototype`
+        // uses; a realm with no wired error constructors keeps the stamps.
+        if let Value::Object(ctor) = ctx.get_global(&format!("__ctor_{clone_kind}")) {
+            let proto = ctor.lock().unwrap().properties.get("prototype").cloned();
+            if let Some(proto @ Value::Object(_)) = proto {
+                t.properties.insert("__proto__".into(), proto);
+            }
+        }
     }
     for (k, v) in entries {
         let cloned = deep_clone(ctx, &v, seen, active)?;

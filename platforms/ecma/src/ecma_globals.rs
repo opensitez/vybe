@@ -580,6 +580,91 @@ pub fn register(vm: &mut VM) {
         }
     }
 
+    // ── Promise / WeakMap / WeakSet — constructor ↔ prototype ──────────
+    //
+    // These three had NO constructor↔prototype wiring at all: no `prototype`
+    // on the constructor, no `constructor` on the prototype, no
+    // `__ctor_<Name>` anchor. `p instanceof Promise` therefore had nothing to
+    // walk, and was answered instead by a `__type` string compare inside
+    // `js_instanceof` — a vybe stamp deciding identity inside the ECMA host.
+    // Deleting that stamp is what exposed this gap; wiring the spec-required
+    // links is what closes it. §27.2.4 / §24.3.3 / §24.4.3: every constructor
+    // has a `prototype`, and instances link to it.
+    for (global_name, module, methods) in [
+        ("Promise", "ecma:promise", &["then", "catch", "finally"][..]),
+        ("WeakRef", "ecma:weakref", &["deref"][..]),
+        (
+            "FinalizationRegistry",
+            "ecma:finalizationregistry",
+            &["register", "unregister"][..],
+        ),
+        (
+            "WeakMap",
+            "ecma:weakmap",
+            &["get", "set", "has", "delete", "getOrInsert"][..],
+        ),
+        ("WeakSet", "ecma:weakset", &["add", "has", "delete"][..]),
+    ] {
+        let ctor = host_fn_ref(vm, module, "new");
+        if !matches!(ctor, Value::Null) {
+            set_prop(&ctor, "name", Value::String(Arc::from(global_name)));
+            set_prop(
+                &ctor,
+                "__proto__",
+                crate::function::shared_function_prototype(),
+            );
+            // The SHARED singleton the instances are linked to, never a fresh
+            // object — identity is the whole point.
+            let proto = match global_name {
+                "Promise" => crate::promise::shared_promise_prototype(),
+                "WeakMap" => crate::weakmap::shared_weakmap_prototype(),
+                "WeakSet" => crate::weakmap::shared_weakset_prototype(),
+                "WeakRef" => crate::weakref::shared_weakref_prototype(),
+                _ => crate::weakref::shared_finalization_registry_prototype(),
+            };
+            set_prop(&proto, "__proto__", object_proto.clone());
+            set_constructor_once(&proto, ctor.clone());
+            if let Value::Object(ref pobj) = proto {
+                crate::object::track_nonenum(pobj, "constructor");
+            }
+            for method in methods {
+                if let Some(&idx) = vm
+                    .host_registry
+                    .get(&(module.to_string(), (*method).to_string()))
+                {
+                    set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
+                    if let Value::Object(ref pobj) = proto {
+                        crate::object::track_nonenum(pobj, method);
+                    }
+                }
+            }
+            // Promise's static combinators live on the CONSTRUCTOR, not the
+            // prototype (§27.2.4.1-.7).
+            if global_name == "Promise" {
+                for stat in [
+                    "resolve",
+                    "reject",
+                    "all",
+                    "allSettled",
+                    "any",
+                    "race",
+                    "try",
+                    "withResolvers",
+                ] {
+                    if let Some(&idx) = vm
+                        .host_registry
+                        .get(&(module.to_string(), stat.to_string()))
+                    {
+                        let _ = idx;
+                        set_prop(&ctor, stat, host_fn_ref(vm, module, stat));
+                    }
+                }
+            }
+            set_ctor_prototype(&ctor, proto);
+            vm.set_global_owned(global_name.to_string(), ctor);
+        }
+    }
+
     let date = host_fn_ref(vm, "ecma:date", "new");
     if !matches!(date, Value::Null) {
         set_prop(&date, "name", Value::String(Arc::from("Date")));
@@ -824,7 +909,10 @@ pub fn register(vm: &mut VM) {
             }
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
             set_prop(&ctor, "__vybe_typed_array_ctor", Value::Bool(true));
-            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+            // The shared `%<Type>Array.prototype%` singleton — the same object
+            // `typedarray.rs` links every instance to. A fresh object here left
+            // `ta instanceof Int32Array` with nothing to walk.
+            let proto = crate::typedarray::shared_typedarray_prototype(global_name);
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in [
                 "at",
@@ -891,7 +979,18 @@ pub fn register(vm: &mut VM) {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
             set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
-            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+            // ⛔ THE SHARED SINGLETON, NOT A FRESH OBJECT. A fresh object here
+            // gives the constructor a `prototype` that nothing is an instance
+            // of: `typeof DataView.prototype` was `"object"` while
+            // `Object.getPrototypeOf(dv) === DataView.prototype` was `false`.
+            // Construction links to these same objects (`arraybuffer.rs`).
+            let proto = match *global_name {
+                "ArrayBuffer" => crate::arraybuffer::shared_arraybuffer_prototype(),
+                "SharedArrayBuffer" => {
+                    crate::arraybuffer::shared_sharedarraybuffer_prototype()
+                }
+                _ => crate::arraybuffer::shared_dataview_prototype(),
+            };
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in ["slice", "resize", "transfer", "transferToFixedLength"] {
                 if let Some(&idx) = vm
@@ -993,6 +1092,15 @@ pub fn register(vm: &mut VM) {
         "RegExp",
         "Map",
         "Set",
+        // ⛔ An anchor published here MUST also be listed in the compiler's
+        // `is_js_builtin_ctor_value`, or a bare read of the name resolves to
+        // something that is not this constructor — no `name`, no `prototype`.
+        // The two lists had already drifted by ten names once.
+        "Promise",
+        "WeakMap",
+        "WeakSet",
+        "WeakRef",
+        "FinalizationRegistry",
         "ArrayBuffer",
         "SharedArrayBuffer",
         "DataView",
@@ -1027,6 +1135,16 @@ pub fn register(vm: &mut VM) {
         "URIError",
         "EvalError",
         "AggregateError",
+        // ⛔ `SuppressedError` was MISSING while the compiler already emitted
+        // `GLOBAL_GET __ctor_SuppressedError` for it (§20.5.5.5 — it is an
+        // NativeError-shaped constructor like the rest). The anchor resolved
+        // to nothing, so the JS prelude's
+        // `__vybe_wire_error_proto(SuppressedError, …)` wired a prototype onto
+        // `undefined` and every `new SuppressedError(...)` came back an
+        // instance of nothing: `se instanceof SuppressedError` false and
+        // `SuppressedError.name` a TypeError. Verified with `--dump`: the read
+        // is emitted, the write never was.
+        "SuppressedError",
     ] {
         let ctor = crate::value::error_constructor_for(name);
         vm.set_global_owned(format!("__ctor_{name}"), ctor);
