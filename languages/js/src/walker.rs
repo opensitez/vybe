@@ -3,6 +3,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::HashMap;
 use vybe_ast::*;
+use vybe_compiler::primitives::class_slots;
 
 // Monotonically increasing counter — unique template object slot per call site.
 /// Every counter the js walk keeps, owned by one `parse` call.
@@ -111,10 +112,56 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::JavaScript,
         body,
         imports,
-        // `this` is ambient — ECMA §10.2.1.1 binds it from the call, and a
-        // method's declared parameters never include it.
+        // `this` is an ARGUMENT of the call — ECMA §10.2.1
+        // `[[Call]](thisArgument, argumentsList)`, for every callable and not
+        // only for methods. `o.m(1)` and `const f = o.m; f()` reach the same
+        // dynamic `call_ref`, so a receiver that only METHODS carried would be
+        // a receiver the call site could not count; uniform arity is what makes
+        // it expressible as a parameter at all. (Was `Ambient`, a mutable
+        // module global with a hand-rolled save/restore around every call —
+        // not a WASM concept, and M5 is its removal.)
         directives: vybe_ast::Directives {
+            // ⛔ STILL `Ambient` — the flip to `UniversalParameter` is this one
+            // line and everything it needs is built and inert. Measured on the
+            // flip: 250 js tests regressed (down from 287), dart 0, vb 0.
+            //
+            // What it is waiting on is the HOST-FUNCTION callee, which is a
+            // design decision and not a defect. `getMethodForCall` no longer
+            // binds a host receiver under `Parameter` (it takes a
+            // `bind_receiver` argument now), which is what exposes the real
+            // question: `d.resolve(42)` on a promise capability pushes `d` as
+            // argument 0, and a host function reads `args[0]` as its VALUE, so
+            // every real argument shifts one place. ~50 of the 250, the whole
+            // promise cluster.
+            //
+            // Three fixes are open — drop the leading receiver in the VM's
+            // `HostFunction` arm, keep `getMethodForCall` binding it under
+            // `Parameter`, or give host functions the receiver as a real first
+            // parameter — touching the VM, `platforms/ecma` and every host
+            // signature respectively. ⛔ They are NOT interchangeable: the VM
+            // arm cannot drop unconditionally, because `invoke_callback`
+            // prepends NO receiver for a host callee and the drop would eat a
+            // real argument there. See flexclassplan.md, M5.
             receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            // A method call takes its receiver from PROTOTYPE dispatch: the
+            // callable rides `__js_this` plus a bound-receiver marker, rather
+            // than the call site passing it (php) or the READ binding it in
+            // (python). Stated here so shared code reads a property of this
+            // UNIT instead of the profile string `class_method_dispatch`.
+            method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
+            // ECMA-262 §10.2.1.1: an argument the caller omitted binds
+            // `undefined`, it is not an arity error.
+            missing_arg_is_undefined: Some(true),
+            // §10.2.4: a static field is an OWN property of the constructor,
+            // not an entry on a shared class object.
+            static_fields_are_own_properties: Some(true),
+            // §10.2.11 `InitializeInstanceElements` defines a declared field
+            // with `CreateDataPropertyOrThrow`, so it is an own ENUMERABLE
+            // property — `Object.keys`, `in`, `for…in` and `JSON.stringify`
+            // all have to see it. Stated because the shared class machinery
+            // otherwise grants indexed GC-struct storage to a parentless
+            // class, which no reflective surface reads.
+            instance_fields_are_own_properties: Some(true),
             // §6.1.6.1.3: `1 ** ±∞` and `1 ** NaN` are NaN, which the standard
             // itself flags as a deliberate divergence from IEEE 754-2019 kept
             // "for compatibility reasons". Every other language in the tree
@@ -423,6 +470,9 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
 
 fn validate_private_expr(expr: &Expression) -> Result<(), String> {
     match &expr.kind {
+        // A leaf, like `This` / `Super`: the global namespace object has no
+        // sub-expressions to validate.
+        ExprKind::GlobalNamespace => Ok(()),
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             validate_private_expr(callee)?;
             for a in args {
@@ -812,6 +862,7 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
 
 fn expr_contains_await(expr: &Expression) -> bool {
     match &expr.kind {
+        ExprKind::GlobalNamespace => false,
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             expr_contains_await(callee) || args.iter().any(expr_contains_await)
         }
@@ -1480,7 +1531,7 @@ fn fold_const_computed_names(body: &mut [Statement]) {
         if let StmtKind::VarDecl { declarations, kind } = &stmt.kind {
             if matches!(
                 kind,
-                VarDeclKind::Const | VarDeclKind::Let | VarDeclKind::Var
+                VarDeclKind::Const | VarDeclKind::Let | VarDeclKind::FunctionScoped
             ) {
                 for d in declarations {
                     if let (BindingPattern::Ident(name), Some(init)) = (&d.pattern, &d.init) {
@@ -1727,6 +1778,8 @@ fn rewrite_expression_keys(
     consts: &std::collections::HashMap<String, String>,
 ) {
     match &mut expr.kind {
+        // A leaf: no keys inside it to rewrite.
+        ExprKind::GlobalNamespace => {}
         ExprKind::WasmCallWithTag { callee, args, .. } => {
             rewrite_expression_keys(callee, consts);
             for a in args {
@@ -1869,11 +1922,11 @@ fn rewrite_expression_keys(
                         if let ExprKind::Lit(Literal::Str(s)) = &mut key.kind {
                             if let Some(name) = s.strip_prefix("__get_") {
                                 if let Some(resolved) = consts.get(name) {
-                                    *s = format!("__get_{}", resolved);
+                                    *s = class_slots::getter_name(resolved);
                                 }
                             } else if let Some(name) = s.strip_prefix("__set_") {
                                 if let Some(resolved) = consts.get(name) {
-                                    *s = format!("__set_{}", resolved);
+                                    *s = class_slots::setter_name(resolved);
                                 }
                             }
                         }
@@ -2077,7 +2130,7 @@ fn walk_var_decl(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<StmtKind, Strin
     let mut inner = pair.into_inner();
     let kind_pair = next_rule(&mut inner, Rule::var_kind)?;
     let var_kind = match kind_pair.as_str() {
-        "var" => VarDeclKind::Var,
+        "var" => VarDeclKind::FunctionScoped,
         "let" => VarDeclKind::Let,
         "const" => VarDeclKind::Const,
         _ => VarDeclKind::Let,
@@ -2643,7 +2696,7 @@ fn walk_class_decl(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<StmtKind, Str
                             array_bounds: None,
                             with_events: false,
                         }],
-                        kind: VarDeclKind::Var,
+                        kind: VarDeclKind::FunctionScoped,
                     }));
                     parents.push(synth);
                 }
@@ -3116,7 +3169,7 @@ fn walk_for(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 let mut vi = inner.into_inner();
                                 let kind_pair = next_rule(&mut vi, Rule::var_kind)?;
                                 let var_kind = match kind_pair.as_str() {
-                                    "var" => VarDeclKind::Var,
+                                    "var" => VarDeclKind::FunctionScoped,
                                     "let" => VarDeclKind::Let,
                                     "const" => VarDeclKind::Const,
                                     _ => VarDeclKind::Let,
@@ -4044,6 +4097,19 @@ fn walk_expr_kind(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                 "undefined" => Ok(ExprKind::Lit(Literal::Undefined)),
                 "this" => Ok(ExprKind::This),
                 "super" => Ok(ExprKind::Super),
+                // SPELLING -> VOCABULARY, beside `this` and `super` because it
+                // is the same kind of fact: a source word naming a thing the
+                // shared compiler already models. `ExprKind::GlobalNamespace`
+                // is that model; `globalThis` is js's word for it, and no
+                // shared code knows the word any more.
+                //
+                // Known limit, shared with `this`: a rewrite keyed on the NAME
+                // cannot see scope, so a binding that shadows the word
+                // (`let globalThis = 1`) still normalizes. The old shared
+                // profile-row comparison had exactly the same hole; making the
+                // spelling a real BINDING is what closes it, for all four
+                // languages at once.
+                "globalThis" => Ok(ExprKind::GlobalNamespace),
                 _ => Ok(ExprKind::Ident(name.to_string())),
             }
         }
@@ -5554,7 +5620,7 @@ fn extract_for_target(__w: &mut JsWalker, parts: &[Pair<Rule>]) -> Result<(Strin
         match p.as_rule() {
             Rule::var_kind => {
                 var_kind = match p.as_str() {
-                    "var" => VarDeclKind::Var,
+                    "var" => VarDeclKind::FunctionScoped,
                     "const" => VarDeclKind::Const,
                     _ => VarDeclKind::Let,
                 };
@@ -5666,9 +5732,9 @@ fn walk_object_accessor(__w: &mut JsWalker,
     }];
     full_params.extend(params);
     let storage_key = if is_getter {
-        format!("__get_{}", prop_name)
+        class_slots::getter_name(&prop_name)
     } else {
-        format!("__set_{}", prop_name)
+        class_slots::setter_name(&prop_name)
     };
     Ok(ObjectProperty::KeyValue {
         key: Expression::string(&storage_key),

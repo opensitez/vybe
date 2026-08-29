@@ -8,8 +8,6 @@ name = "js"
 extensions = ["js", "mjs"]
 
 [compiler]
-# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
-global_namespace = "globalThis"
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
@@ -55,7 +53,6 @@ enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
 # JS-specific: `var` declarations are hoisted to function scope
-hoist_var = true
 # JS-specific: `+` is overloaded for string concatenation (dyn_add handles it)
 dynamic_add = true
 # JS values can be Number or BigInt at runtime; -,*,/,% dispatch
