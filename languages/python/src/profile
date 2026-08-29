@@ -21,9 +21,6 @@ coerces_value_to_type_hint = false
 #   unresolved_reference_throws = true
 #   unresolved_reference_error = "NameError"
 #   unresolved_reference_message = "name '{}' is not defined"
-# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
-global_namespace = "globals"
-global_namespace_is_call = true
 # `|`/`&`/`-`/`^` on sets are set algebra (Pascal spells the same algebra
 # `+`/`*`/`-`, declared as set_arithmetic_operators).
 set_bitwise_operators = true
@@ -63,8 +60,6 @@ for_in_object_yields_keys = true
 # NOTE: dict literals are no longer a profile flag. `{k: v}` is `ExprKind::Map`
 # in the AST — the walker declares it, so int/tuple keys keeping their type is a
 # property of the NODE, not of "this file happens to be python".
-class_introspection_metadata = true
-class_multiple_inheritance = true
 # NOTE: Python's `a[-1]` (offset-from-end) is NOT handled by the shared
 # `negative_index_wraps` compiler flag — that flag blindly emits `key < 0`
 # on every subscript and traps on string dict keys (`d['a']`). Instead the
@@ -1351,7 +1346,10 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 
 [namespace_constants]
 __debug__ = true
-__name__ = "__main__"
+# `__name__` moved OUT of this table. A namespace constant resolves the NAME
+# but creates no member, so `globals()` had to seed it back by hand — two homes
+# for one fact. It is now a real module binding (`MODULE_DUNDER_PRELUDE` in the
+# walker), which is what CPython has.
 "math.pi"       = 3.141592653589793
 "math.e"        = 2.718281828459045
 "math.tau"      = 6.283185307179586

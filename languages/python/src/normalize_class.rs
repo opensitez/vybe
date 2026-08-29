@@ -256,6 +256,15 @@ pub fn normalize_class(
             Vec::new()
         },
         explicit_self_param: true,
+        // `super()` walks the instance's C3 MRO from the class the call
+        // textually belongs to, so `B.f`'s `super().f()` reaches C rather than
+        // B's static parent A when self is a D. Was the
+        // `class_multiple_inheritance` profile flag.
+        cooperative_super: true,
+        // `type(obj)` returns the class, and the class answers `__name__`,
+        // `__mro__` and `__bases__`. Was the `class_introspection_metadata`
+        // profile flag — the only language that set it.
+        introspection_metadata: true,
         ..Default::default()
     }
     .with_members(out)

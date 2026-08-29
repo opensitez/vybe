@@ -302,6 +302,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
     prelude.append(&mut body);
     body = prelude;
 
+    // The module dunders, as real module BINDINGS.
+    //
+    // `__name__` used to be a `[namespace_constants]` row, which resolves the
+    // NAME but never creates a member — so it was absent from the module's
+    // globals, and `globals()` had to seed it back by hand in the shared
+    // builtin table. CPython has no such split: `__name__` is an attribute of
+    // the module, `globals()['__name__']` reads it, and `'__name__' in
+    // globals()` is True because it is genuinely there. Binding it makes all
+    // three agree from one fact instead of two.
+    let mut prelude = parse_python_prelude(__w, MODULE_DUNDER_PRELUDE);
+    prelude.append(&mut body);
+    body = prelude;
+
     // Prepend the bytes-repr source helper when the program uses bytes, so
     // `b'…'` display resolves to a real `__vybe_bytes_repr` function.
     if source_uses_bytes(source) {
@@ -743,6 +756,15 @@ class slice:
         b = repr(self.stop)
         c = repr(self.step)
         return "slice(" + a + ", " + b + ", " + c + ")"
+"#;
+
+/// Module-scope dunders CPython binds in every module's namespace.
+///
+/// Kept to what is actually a MODULE attribute. `__debug__` is a builtin, not
+/// a module member (`'__debug__' in globals()` is False in CPython), so it
+/// stays a namespace constant.
+const MODULE_DUNDER_PRELUDE: &str = r#"
+__name__ = "__main__"
 "#;
 
 const ITER_PROTOCOL_PRELUDE: &str = r#"
@@ -22065,6 +22087,21 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                 // existing super.method() dispatch takes over.
                 if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
                     expr = Expression::new(ExprKind::Super);
+                } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "globals") {
+                    // SPELLING -> VOCABULARY, exactly as `super()` above: the
+                    // shared compiler models the module's global namespace as
+                    // `ExprKind::GlobalNamespace`, and `globals()` is python's
+                    // word for it. Python is the one language that spells it as
+                    // a CALL, which is why the normalization happens here in
+                    // the no-argument call branch rather than at an identifier.
+                    //
+                    // This replaces two homes at once: a `global_namespace` /
+                    // `global_namespace_is_call` profile pair the shared
+                    // compiler compared source text against, and a `name ==
+                    // "globals"` arm in `builtins.rs::try_compile_builtin`
+                    // whose own comment flagged that a user function of that
+                    // name in ANY language would reach it.
+                    expr = Expression::new(ExprKind::GlobalNamespace);
                 } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "print") {
                     // Bare `print()` still needs the [sep, end] convention so
                     // the emitter prints the default line terminator.
