@@ -118,6 +118,17 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // override never fired, and eight tests printed an empty string. The
     // exceptions never noticed because no exception body calls another method.
     body.splice(0..0, dotnet_interop::synthesize_interop_classes(source));
+    // `System.Numerics` and the 128-bit integers, on the same terms and in the
+    // same position — the classes' own members call each other (`Plane.Transform`
+    // calls `Vector3.Transform`), so they have to reach
+    // `normalize_vb_implicit_method_self_classes` like any declared class, for
+    // exactly the reason the comment above gives for the interop hierarchy.
+    body.splice(
+        0..0,
+        vybe_platform_dotnet::emitter::core::numerics_classes::synthesize_numerics_classes(
+            source, &body,
+        ),
+    );
 
     normalize_vb_object_initializer_member_names(&mut body);
     normalize_vb_implicit_method_self_classes(&mut body);
@@ -1148,30 +1159,41 @@ fn collect_vb_interface_inheritance_info(
 ) {
     for stmt in body {
         match &stmt.kind {
-            _ if vb_stmt_as_interface(stmt).is_some() => {
-                let (name, parents, members) =
-                    vb_stmt_as_interface(stmt).expect("guard just matched");
-                let key = vb_interface_type_key(name);
-                if !info.interfaces.iter().any(|item| item == &key) {
-                    info.interfaces.push(key.clone());
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                modifiers,
+                ..
+            } => {
+                // An interface IS a `ClassDecl` — one arm, and the KIND is the
+                // only thing that differs.
+                if modifiers.kind == ClassKind::Interface {
+                    let key = vb_interface_type_key(name);
+                    if !info.interfaces.iter().any(|item| item == &key) {
+                        info.interfaces.push(key.clone());
+                    }
+                    info.parents.insert(
+                        key.clone(),
+                        parents
+                            .iter()
+                            .map(|parent| vb_interface_type_key(parent))
+                            .collect(),
+                    );
+                    let entry = info.members.entry(key).or_default();
+                    for member in members {
+                        if let Some(member_name) = vb_class_member_declared_name(member) {
+                            entry.insert(member_name.to_ascii_lowercase());
+                        }
+                    }
                 }
-                info.parents.insert(
-                    key.clone(),
-                    parents
-                        .iter()
-                        .map(|parent| vb_interface_type_key(parent))
-                        .collect(),
-                );
-                let entry = info.members.entry(key).or_default();
                 for member in members {
-                    if let Some(member_name) = vb_class_member_declared_name(member) {
-                        entry.insert(member_name.to_ascii_lowercase());
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_vb_interface_inheritance_info(std::slice::from_ref(nested), info);
                     }
                 }
             }
-            StmtKind::ClassDecl { members, .. }
-            | StmtKind::StructDecl { members, .. }
-            | StmtKind::ModuleDecl { members, .. } => {
+            StmtKind::StructDecl { members, .. } | StmtKind::ModuleDecl { members, .. } => {
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
                         collect_vb_interface_inheritance_info(std::slice::from_ref(nested), info);
@@ -5408,40 +5430,52 @@ fn collect_vb_interface_member_owners(
 ) {
     for stmt in body {
         match &stmt.kind {
-            _ if vb_stmt_as_interface(stmt).is_some() => {
-                let (name, _, interface_members) =
-                    vb_stmt_as_interface(stmt).expect("guard just matched");
-                let interface = vb_interface_type_key(name);
-                let interface_key = interface.to_ascii_lowercase();
-                for member in interface_members {
-                    let Some(member_name) = vb_class_member_declared_name(member) else {
-                        continue;
-                    };
-                    let entry = members.entry(member_name.to_ascii_lowercase()).or_default();
-                    if !entry.iter().any(|item| item == &interface_key) {
-                        entry.push(interface_key.clone());
-                    }
-                    // ⛔ ARITY IS PART OF THE KEY. `Implements IFoo.Bar` picks
-                    // ONE overload, so the mapping is `name#argc` as well as
-                    // `name` — dropping it maps every `Implements` to whichever
-                    // overload was seen last.
-                    if let ClassMember::Method(stmt) = member {
-                        if let StmtKind::FunctionDecl { params, .. } = &stmt.kind {
-                            let arity_key =
-                                format!("{}#{}", member_name.to_ascii_lowercase(), params.len());
-                            let entry = members.entry(arity_key).or_default();
-                            if !entry.iter().any(|item| item == &interface_key) {
-                                entry.push(interface_key.clone());
+            StmtKind::ClassDecl {
+                name,
+                members: class_members,
+                modifiers,
+                ..
+            } => {
+                // One arm for both. An interface contributes its members to the
+                // `Implements IFoo.Bar` map; a class only recurses into nested
+                // types. The KIND is the only branch.
+                if modifiers.kind == ClassKind::Interface {
+                    let interface = vb_interface_type_key(name);
+                    let interface_key = interface.to_ascii_lowercase();
+                    for member in class_members {
+                        let Some(member_name) = vb_class_member_declared_name(member) else {
+                            continue;
+                        };
+                        let entry = members.entry(member_name.to_ascii_lowercase()).or_default();
+                        if !entry.iter().any(|item| item == &interface_key) {
+                            entry.push(interface_key.clone());
+                        }
+                        // ⛔ ARITY IS PART OF THE KEY. `Implements IFoo.Bar`
+                        // picks ONE overload, so the mapping is `name#argc` as
+                        // well as `name` — dropping it maps every `Implements`
+                        // to whichever overload was seen last.
+                        if let ClassMember::Method(m) = member {
+                            if let StmtKind::FunctionDecl { params, .. } = &m.kind {
+                                let arity_key = format!(
+                                    "{}#{}",
+                                    member_name.to_ascii_lowercase(),
+                                    params.len()
+                                );
+                                let entry = members.entry(arity_key).or_default();
+                                if !entry.iter().any(|item| item == &interface_key) {
+                                    entry.push(interface_key.clone());
+                                }
                             }
                         }
                     }
                 }
+                for member in class_members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_vb_interface_member_owners(std::slice::from_ref(nested), members);
+                    }
+                }
             }
-            StmtKind::ClassDecl {
-                members: class_members,
-                ..
-            }
-            | StmtKind::StructDecl {
+            StmtKind::StructDecl {
                 members: class_members,
                 ..
             }
@@ -5899,34 +5933,51 @@ fn collect_vb_interface_names(
 ) {
     for stmt in body {
         match &stmt.kind {
-            _ if vb_stmt_as_interface(stmt).is_some() => {
-                let (name, _, members) = vb_stmt_as_interface(stmt).expect("guard just matched");
-                let key = vb_interface_type_key(name).to_ascii_lowercase();
-                interfaces.insert(key.clone());
-                let mut seen = std::collections::HashSet::new();
-                for member in members {
-                    // `Shadows` rode `signature_source` on the interface node;
-                    // on a class member it is `Modifiers::is_hiding`, the field
-                    // that already means exactly this.
-                    if let ClassMember::Method(m) = member {
-                        if let StmtKind::FunctionDecl { modifiers, .. } = &m.kind {
-                            if modifiers.is_hiding {
-                                shadowing_interfaces.insert(key.clone());
-                            }
-                        }
-                    }
-                    let Some(member_name) = vb_class_member_declared_name(member) else {
-                        continue;
-                    };
-                    if !seen.insert(member_name.to_ascii_lowercase()) {
-                        shadowing_interfaces.insert(key.clone());
-                    }
-                }
-            }
             StmtKind::ClassDecl {
+                name,
                 interfaces: implemented,
                 members,
+                modifiers,
                 ..
+            } => {
+                // One arm. An interface DECLARES itself and its members here;
+                // a class records what it IMPLEMENTS. The kind is the branch.
+                if modifiers.kind == ClassKind::Interface {
+                    let key = vb_interface_type_key(name).to_ascii_lowercase();
+                    interfaces.insert(key.clone());
+                    let mut seen = std::collections::HashSet::new();
+                    for member in members {
+                        // `Shadows` rode `InterfaceMember::signature_source` as
+                        // the string "shadows"; on a class member it is
+                        // `Modifiers::is_hiding`, the field that already means
+                        // exactly this.
+                        if let ClassMember::Method(m) = member {
+                            if let StmtKind::FunctionDecl { modifiers, .. } = &m.kind {
+                                if modifiers.is_hiding {
+                                    shadowing_interfaces.insert(key.clone());
+                                }
+                            }
+                        }
+                        let Some(member_name) = vb_class_member_declared_name(member) else {
+                            continue;
+                        };
+                        if !seen.insert(member_name.to_ascii_lowercase()) {
+                            shadowing_interfaces.insert(key.clone());
+                        }
+                    }
+                }
+                for interface in implemented {
+                    interfaces.insert(vb_interface_type_key(interface).to_ascii_lowercase());
+                }
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_vb_interface_names(
+                            std::slice::from_ref(nested),
+                            interfaces,
+                            shadowing_interfaces,
+                        );
+                    }
+                }
             }
             | StmtKind::StructDecl {
                 interfaces: implemented,
@@ -5984,20 +6035,6 @@ fn vb_class_member_declared_name(member: &ClassMember) -> Option<&str> {
         | ClassMember::Event { name, .. }
         | ClassMember::Field { name, .. }
         | ClassMember::Const { name, .. } => Some(name.as_str()),
-        _ => None,
-    }
-}
-
-/// Whether this declaration is an interface, whatever node carries it.
-fn vb_stmt_as_interface(stmt: &Statement) -> Option<(&String, &Vec<String>, &Vec<ClassMember>)> {
-    match &stmt.kind {
-        StmtKind::ClassDecl {
-            name,
-            parents,
-            members,
-            modifiers,
-            ..
-        } if modifiers.kind == ClassKind::Interface => Some((name, parents, members)),
         _ => None,
     }
 }
@@ -25572,9 +25609,22 @@ fn collect_vb_default_indexer_types(body: &[Statement], types: &mut HashMap<Stri
                 name,
                 parents,
                 members,
+                modifiers,
                 ..
             } => {
-                if members.iter().any(|member| {
+                // An interface declares its default indexer as a `Property`
+                // named `Item`; a class lowers it to `__getitem__`. Same arm,
+                // one branch on the KIND, because that is the only difference.
+                if modifiers.kind == ClassKind::Interface {
+                    if members.iter().any(|member| {
+                        matches!(
+                            member,
+                            ClassMember::Property { name, .. } if name.eq_ignore_ascii_case("Item")
+                        )
+                    }) {
+                        types.insert(vb_canonical_type_name(name).to_ascii_lowercase(), true);
+                    }
+                } else if members.iter().any(|member| {
                     matches!(
                         member,
                         ClassMember::Method(method)
@@ -25623,17 +25673,6 @@ fn collect_vb_default_indexer_types(body: &[Statement], types: &mut HashMap<Stri
                     if let ClassMember::NestedType(nested) = member {
                         collect_vb_default_indexer_types(std::slice::from_ref(nested), types);
                     }
-                }
-            }
-            _ if vb_stmt_as_interface(stmt).is_some() => {
-                let (name, _, members) = vb_stmt_as_interface(stmt).expect("guard just matched");
-                if members.iter().any(|member| {
-                    matches!(
-                        member,
-                        ClassMember::Property { name, .. } if name.eq_ignore_ascii_case("Item")
-                    )
-                }) {
-                    types.insert(vb_canonical_type_name(name).to_ascii_lowercase(), true);
                 }
             }
             StmtKind::ModuleDecl { members, .. } => {

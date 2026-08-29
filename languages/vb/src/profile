@@ -188,6 +188,36 @@ sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
 # One arg only, like C#'s: the two-arg `Round(x, digits)` form never reaches this
 # row — the walker intercepts `"round" if arguments.len() >= 2` first.
 round         = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
+# `System.Numerics` / `Int128` width discipline — the same rows the C# profile
+# carries. The emitters they name live in `platforms/dotnet`, which VB already
+# runs on, so this is a binding, not a second implementation.
+"__vybe_bi_is_num" = { emit = "common:dotnet.i128_is_numeric", min_args = 1, max_args = 1 }
+"__vybe_bi_str"     = { emit = "common:dotnet.i128_str",     min_args = 1, max_args = 1 }
+"__vybe_bi_sign"    = { emit = "common:dotnet.i128_sign",    min_args = 1, max_args = 1 }
+"__vybe_bi_abs"     = { emit = "common:dotnet.i128_abs",     min_args = 1, max_args = 1 }
+"__vybe_bi_is_even" = { emit = "common:dotnet.i128_is_even", min_args = 1, max_args = 1 }
+"__vybe_bi_cmp"     = { emit = "common:dotnet.i128_cmp",     min_args = 2, max_args = 2 }
+"__vybe_bi_clamp"   = { emit = "common:dotnet.i128_clamp",   min_args = 3, max_args = 3 }
+"__vybe_bi_min"     = { emit = "common:dotnet.i128_min",     min_args = 2, max_args = 2 }
+"__vybe_bi_max"     = { emit = "common:dotnet.i128_max",     min_args = 2, max_args = 2 }
+"__vybe_bi_add"  = { emit = "common:dotnet.i128_add",  min_args = 2, max_args = 2 }
+"__vybe_bi_sub"  = { emit = "common:dotnet.i128_sub",  min_args = 2, max_args = 2 }
+"__vybe_bi_mul"  = { emit = "common:dotnet.i128_mul",  min_args = 2, max_args = 2 }
+"__vybe_bi_div"  = { emit = "common:dotnet.i128_div",  min_args = 2, max_args = 2 }
+"__vybe_bi_rem"  = { emit = "common:dotnet.i128_rem",  min_args = 2, max_args = 2 }
+"__vybe_bi_and"  = { emit = "common:dotnet.i128_and",  min_args = 2, max_args = 2 }
+"__vybe_bi_or"   = { emit = "common:dotnet.i128_or",   min_args = 2, max_args = 2 }
+"__vybe_bi_xor"  = { emit = "common:dotnet.i128_xor",  min_args = 2, max_args = 2 }
+"__vybe_bi_eq"   = { emit = "common:dotnet.i128_eq",   min_args = 2, max_args = 2 }
+"__vybe_bi_ne"   = { emit = "common:dotnet.i128_ne",   min_args = 2, max_args = 2 }
+"__vybe_bi_lt"   = { emit = "common:dotnet.i128_lt",   min_args = 2, max_args = 2 }
+"__vybe_bi_le"   = { emit = "common:dotnet.i128_le",   min_args = 2, max_args = 2 }
+"__vybe_bi_gt"   = { emit = "common:dotnet.i128_gt",   min_args = 2, max_args = 2 }
+"__vybe_bi_ge"   = { emit = "common:dotnet.i128_ge",   min_args = 2, max_args = 2 }
+"__vybe_int128_wrap"  = { emit = "common:dotnet.int128_wrap",  min_args = 1, max_args = 1 }
+"__vybe_uint128_wrap" = { emit = "common:dotnet.uint128_wrap", min_args = 1, max_args = 1 }
+"__vybe_int128_shl"   = { emit = "common:dotnet.int128_shl",   min_args = 2, max_args = 2 }
+"__vybe_int128_shr"   = { emit = "common:dotnet.int128_shr",   min_args = 2, max_args = 2 }
 "Math.Round"  = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────

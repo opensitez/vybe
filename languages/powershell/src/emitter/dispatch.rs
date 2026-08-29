@@ -16,6 +16,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Routes to `primitives::json`, which has no `common:json.*` dispatch
         // key — go and pascal reach it the same way.
         // `[builtin_slots.string] to_string` — the interpolation/concat slot.
+        "powershell.get_enumerator" => super::operators::emit_get_enumerator(chunks, current, line),
+        "powershell.divide" => super::operators::emit_divide(chunks, current, line),
+        "powershell.splat_arg" => super::operators::emit_splat_arg(chunks, current, line),
+        "powershell.unwrap_single" => super::operators::emit_unwrap_single(chunks, current, line),
+        "powershell.out_null" => super::operators::emit_out_null(chunks, current, line),
+        "powershell.index_get" => super::operators::emit_index_get(chunks, current, line),
+        "powershell.index_set" => super::operators::emit_index_set(chunks, current, line),
+        "powershell.member_dyn" => super::operators::emit_member_dyn(chunks, current, line),
+        "powershell.to_int" => super::operators::emit_to_int(chunks, current, line),
+        "powershell.to_char" => super::operators::emit_to_char(chunks, current, line),
+        "powershell.compare_to" => super::operators::emit_compare_to(chunks, current, line),
         "powershell.to_display" => super::display::emit_to_display(chunks, current, line),
         "powershell.to_json" => super::json::emit_to_json(chunks, current, argc, line),
         "powershell.from_json" => super::json::emit_from_json(chunks, current, argc, line),

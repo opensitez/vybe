@@ -59,6 +59,35 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "operatorOr" | "operatoror" => Some(("or", Or)),
         "operatorXor" | "operatorxor" => Some(("xor", Xor)),
         "operatorNot" | "operatornot" => Some(("not", Not)),
+        // ⛔ THE ECMA-335 METADATA SPELLINGS ARE THE SAME OPERATORS. A VB
+        // program can consume a type whose operators were authored elsewhere,
+        // and .NET records them as `op_Addition`, `op_LessThan`, … — that is
+        // the name in the assembly, not a C#-ism. Without these rows a member
+        // called `op_Addition` filled NO slot, so `a + b` fell through to the
+        // dynamic add and CONCATENATED two objects: `Int128.Parse("1e20") +
+        // Int128.Parse("2e20")` answered the two decimal strings glued
+        // together, which is wrong and looks like a formatting bug.
+        //
+        // ⚠ C# reaches the same operators by a different road — a static
+        // rewrite in its walker (`rewrite_user_defined_operator_expr`) that
+        // dispatches on the operand's inferred TYPE — so it never needed the
+        // slot. VB has no such pass; the slot IS its road.
+        "op_Addition" => Some(("add", Add)),
+        "op_Subtraction" => Some(("sub", Sub)),
+        "op_Multiply" => Some(("mul", Mul)),
+        "op_Division" => Some(("div", Div)),
+        "op_Modulus" => Some(("mod", Mod)),
+        "op_UnaryNegation" => Some(("neg", Neg)),
+        "op_Equality" => Some(("eq", Eq)),
+        "op_Inequality" => Some(("ne", Ne)),
+        "op_LessThan" => Some(("lt", Lt)),
+        "op_LessThanOrEqual" => Some(("le", Le)),
+        "op_GreaterThan" => Some(("gt", Gt)),
+        "op_GreaterThanOrEqual" => Some(("ge", Ge)),
+        "op_BitwiseAnd" => Some(("and", And)),
+        "op_BitwiseOr" => Some(("or", Or)),
+        "op_ExclusiveOr" => Some(("xor", Xor)),
+        "op_OnesComplement" => Some(("not", Not)),
         _ => None,
     };
     if let Some((canonical, kind)) = sigil {

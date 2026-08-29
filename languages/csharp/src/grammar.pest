@@ -996,8 +996,16 @@ argument_list = { argument ~ ("," ~ argument)* ~ ","? }
 
 argument = {
     // C# `out var x` — declares a fresh local from the call site.
-    "out" ~ (var_kw | type_name) ~ ident_name
-    | ("ref" | "out") ~ expression
+    //
+    // ⛔ THESE NEED THEIR BOUNDARY TOO. As bare strings `"ref"` and `"out"`
+    // matched the first three characters of an ARGUMENT named `refVector` or
+    // `outValue` and read the rest as the expression, so `__P(refVector)`
+    // passed a by-reference `Vector` that does not exist and printed `NaN`.
+    // A mis-parse, not an error — the same pitfall `param_modifier` documents
+    // below and was already fixed for, two screens away. One definition per
+    // word is the point, so these are `ref_kw`/`out_kw`, not new strings.
+    out_kw ~ (var_kw | type_name) ~ ident_name
+    | (ref_kw | out_kw) ~ expression
     // Named argument: `name: expr`. The leading ident is reified as
     // `ident_name` so the walker can extract it; the colon disambiguates
     // from the bare-expression alternative below.

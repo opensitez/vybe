@@ -116,7 +116,14 @@ class_decl = { kw_class ~ IDENT ~ class_heritage? ~ class_body }
 // previous one plus one, which the walker fills in.
 enum_decl   = { kw_enum ~ IDENT ~ eat_separators ~ "{" ~ eat_separators ~ (enum_member ~ eat_separators ~ (("," | ";") ~ eat_separators)?)* ~ "}" }
 enum_member = { IDENT ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
-class_heritage = { ":" ~ ws* ~ DOTTED_NAME ~ (ws* ~ "," ~ ws* ~ DOTTED_NAME)* }
+// A base or interface may be GENERIC —
+// `class C : System.Collections.Generic.IComparer[string]`. `DOTTED_NAME`
+// stops at the `[`, so the heritage list ended mid-name and the class body
+// never matched. The bracketed run is part of the name here (PowerShell
+// spells type arguments in brackets); the walker drops it, since the
+// argument does not change WHICH interface is being implemented.
+class_heritage = { ":" ~ ws* ~ heritage_name ~ (ws* ~ "," ~ ws* ~ heritage_name)* }
+heritage_name  = @{ DOTTED_NAME ~ ("[" ~ type_body ~ "]")? }
 class_body = { "{" ~ eat_separators ~ (class_member_decl ~ eat_separators)* ~ "}" }
 
 // PowerShell class members. A METHOD declares a return type (`[string] Speak()`);
@@ -127,7 +134,19 @@ class_modifier = @{ (^"static" | ^"hidden") ~ !(ASCII_ALPHANUMERIC | "_") }
 ps_method = { (class_modifier ~ eat_separators)* ~ type_literal ~ eat_separators ~ member_name ~ eat_separators ~ function_params ~ eat_separators ~ block }
 ps_constructor = { (class_modifier ~ eat_separators)* ~ IDENT ~ eat_separators ~ function_params ~ eat_separators ~ ctor_base? ~ eat_separators ~ block }
 ctor_base = { ":" ~ eat_separators ~ kw_base ~ eat_separators ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
-ps_property = { (class_modifier ~ eat_separators)* ~ type_literal? ~ eat_separators ~ var_ref ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
+// A property may carry ATTRIBUTES before its type constraint —
+// `[ValidateSet("Active","Inactive")][string]$Status`, and PowerShell also
+// allows them on their own lines. A single `type_literal?` accepted exactly
+// one bracketed run, so the second one had nothing to match and the parse
+// died at the attribute's closing paren with `expected var_ref or
+// member_name`. They are all `type_literal` shapes (balanced brackets), so
+// the run is simply repeatable; `parse_ps_property` already lets the LAST
+// one win, which is the type constraint.
+// ⛔Attributes and modifiers INTERLEAVE — `[ValidateRange(1,100)] static
+// [int]$Limit` puts the attribute first. Two separate runs forced
+// modifiers-then-attributes and could not parse that, so the two kinds
+// share one repetition and `parse_ps_property` sorts them out by rule.
+ps_property = { ((class_modifier | type_literal) ~ eat_separators)* ~ var_ref ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
 class_function_decl = { kw_function ~ function_name ~ function_params? ~ block }
 constructor_decl = { ^"constructor" ~ function_params? ~ block }
 
@@ -177,7 +196,12 @@ rhs_value = _{
 // instead of failing where the gap is.
 value_stmt = { switch_stmt | if_stmt | try_stmt }
 increment_stmt = { lvalue ~ ws* ~ increment_op }
-lvalue = { type_literal? ~ var_ref ~ (member_get | index_get)* }
+// ⛔A STATIC MEMBER IS AN ASSIGNMENT TARGET TOO. `[Singleton]::Instance = …`
+// requires a leading `var_ref` under the old rule, so it never matched
+// `assignment_stmt` and was parsed as a COMMAND — `[S]::N = 7` walked to a CALL
+// of `S.N` with argument `7`, which is why a static constructor could not
+// populate its own static field.
+lvalue = { (type_literal ~ static_member ~ (member_get | index_get)*) | (type_literal? ~ var_ref ~ (member_get | index_get)*) }
 assignment_op = { "??=" | "||=" | "&&=" | "<<=" | ">>=" | "**=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "=" }
 increment_op = { "++" | "--" }
 
@@ -330,7 +354,13 @@ mul_op      = @{ "*" ~ !"*" | "/" | "%" }
 power       = { unary ~ (ws* ~ pow_op ~ ws* ~ unary)* }
 pow_op      = @{ "**" }
 
-unary       = { unary_op ~ ws* ~ unary | cast_expr | postfix }
+// ⛔`,$x` IS AN OPERATOR — the unary comma, which wraps its operand in a
+// ONE-ELEMENT array. `return ,(1,2,3)` returns an array whose single element is
+// the inner array, and it is the idiom for returning an array from a function
+// without the pipeline unrolling it. Without a rule for it the leading comma
+// was read as a token and the program died with `string is not callable`.
+unary       = { array_wrap | unary_op ~ ws* ~ unary | cast_expr | postfix }
+array_wrap  = { "," ~ ws* ~ unary }
 unary_op    = @{
     "++"
   | "--"
@@ -380,7 +410,16 @@ sub_expr     = { "$(" ~ eat_separators ~ sub_body ~ eat_separators ~ ")" }
 // It reuses the branch-value lowering `$x = if (…) { … }` already goes through.
 sub_body     = _{ (expression ~ &(eat_separators ~ ")")) | (value_stmt ~ &(eat_separators ~ ")")) | (statement ~ eat_separators)* }
 // Elements may be commands too: `@(Get-ChildItem)`.
-array_expr   = { "@(" ~ eat_separators ~ (array_element ~ eat_separators ~ (("," | ";") ~ eat_separators ~ array_element ~ eat_separators)*)? ~ ")" }
+array_expr   = { "@(" ~ eat_separators ~ array_body? ~ eat_separators ~ ")" }
+// \u26d4`,` BINDS TIGHTER THAN `|`. `@(1, 2, 3 | Double-Stream)` is ONE pipeline
+// whose first segment is the array `1, 2, 3` — not three elements the last of
+// which is piped. Splitting on commas first read it as `@(1, 2, (3 | …))` and
+// answered `1|2|6`, silently passing the unpiped head straight through.
+// The lookahead keeps this branch off every ordinary array literal: it demands
+// a `|` before the closing paren, so `@(1, 2, 3)` still takes the element list.
+array_body   = _{ (&piped_ahead ~ command_pipeline ~ &(eat_separators ~ ")")) | array_items }
+array_items  = _{ array_element ~ eat_separators ~ (("," | ";") ~ eat_separators ~ array_element ~ eat_separators)* }
+piped_ahead  = _{ (!(")" | "|" | NEWLINE | ";") ~ ANY)* ~ "|" ~ !"|" }
 array_element = _{ (ternary_expr ~ &(eat_separators ~ ("," | ")"))) | command_pipeline }
 hash_literal = { "@{" ~ eat_separators ~ (hash_entry ~ eat_separators ~ (("," | ";")? ~ eat_separators ~ hash_entry ~ eat_separators)*)? ~ ")"? ~ "}" }
 hash_entry   = { hash_key ~ ws* ~ "=" ~ ws* ~ ternary_expr }

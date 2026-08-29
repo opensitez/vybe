@@ -165,6 +165,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // documents: their bodies call their own methods, so they have to reach a
     // frontend's implicit-self pass like any other declared class.
     body.splice(0..0, dotnet_interop::synthesize_interop_classes(&source));
+    body.splice(
+        0..0,
+        vybe_platform_dotnet::emitter::core::threading_classes::synthesize_threading_classes(&source),
+    );
+    body.splice(
+        0..0,
+        vybe_platform_dotnet::emitter::core::numerics_classes::synthesize_numerics_classes(
+            &source, &body,
+        ),
+    );
 
     let mut synthesized = dotnet_exceptions::synthesize_exception_classes();
     synthesized.extend(synthesize_checked_numeric_helpers());
@@ -212,7 +222,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_csharp_span_locals(&mut module);
     normalize_csharp_predefined_new(&mut module);
     normalize_task_surface(&mut module);
-    inject_interface_defaults(__w, &mut module.body);
+    // ⛔ `inject_interface_defaults` IS GONE. Default interface methods are
+    // declared as an `Augmentation` in `normalize_class.rs` and applied by the
+    // shared `apply_augmentations`, so this frontend no longer copies members
+    // around behind the compiler's back.
     lower_csharp_using_declarations(&mut module.body);
     rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_explicit_interface_accesses(&mut module);
@@ -5029,6 +5042,23 @@ impl UsingStaticScope {
         if self.declared.contains(name) {
             return None;
         }
+        // ⛔ A COMPILER-PROVIDED HELPER IS NOT A `using static` MEMBER.
+        //
+        // The walker lowers surface syntax onto its own builtins — `d.ToString(c)`
+        // becomes a bare call to `__csharp_to_string`, `a with {…}` used to become
+        // `__csharp_object_assign` — and every one of those is declared in the C#
+        // profile's `[builtins]`, NOT by any user type. Qualifying them produced
+        // `System.Math.__csharp_to_string`, which resolves to nothing: any file
+        // combining `using static` with a lowered construct died at runtime.
+        //
+        // These three prefixes are compiler-internal and no user type can supply
+        // them. The harness names in the corpus (`__P`, `__Check`, `__buf`) are
+        // ordinary user members that DO come from a `using static` type, which is
+        // why this cannot key on a bare `__` prefix.
+        if name.starts_with("__csharp_") || name.starts_with("__dotnet_") || name.starts_with("__vybe_")
+        {
+            return None;
+        }
         if let Some(owner) = self.local_statics.get(name) {
             return Some(format!("{owner}.{name}"));
         }
@@ -5224,8 +5254,65 @@ fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallabl
                 collect_declared_callables(default, out);
             }
         }
+        // A LOCAL HOLDING A DELEGATE IS A CALLABLE THE UNIT DECLARES.
+        //
+        // `Func<int> f = () => 1; f();` — `f()` is a bare call, so without this
+        // arm `qualification_for` fell through to the first-path guess and
+        // rewrote it to `H.f`, which resolves to nothing: every `using static`
+        // file containing a lambda died on "undefined is not callable". The
+        // unit DOES declare `f`; it just declares it as a variable rather than
+        // a method, and §13.5.4 asks whether the name is declared, not how.
+        //
+        // Deliberately narrow — only a lambda initialiser or a delegate-typed
+        // declaration counts, not every local. A local named `Abs` that holds
+        // an int must NOT stop `Abs(x)` resolving to `System.Math.Abs`
+        // elsewhere in the unit, and `declared` is unit-wide with no scope
+        // tracking, so widening this to all locals would trade one wrong
+        // qualification for another.
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                let BindingPattern::Ident(name) = &decl.pattern else {
+                    continue;
+                };
+                let is_lambda = matches!(
+                    decl.init.as_ref().map(|e| &e.kind),
+                    Some(ExprKind::Lambda { .. })
+                );
+                let is_delegate_typed = decl
+                    .type_hint
+                    .as_ref()
+                    .is_some_and(|hint| is_csharp_delegate_type(hint.spelling()));
+                if is_lambda || is_delegate_typed {
+                    out.names.insert(name.clone());
+                }
+            }
+        }
         _ => {}
     }
+}
+
+/// Whether a declared type spelling names a delegate — something a bare call on
+/// the variable would INVOKE.
+///
+/// The BCL delegate families plus any `SomethingHandler`/`SomethingCallback`
+/// spelling, which is the .NET naming convention for user delegates. A generic
+/// spelling carries its arguments (`Func<int, string>`), so the head is what is
+/// compared.
+fn is_csharp_delegate_type(spelling: &str) -> bool {
+    let head = spelling
+        .split('<')
+        .next()
+        .unwrap_or(spelling)
+        .rsplit('.')
+        .next()
+        .unwrap_or(spelling)
+        .trim();
+    matches!(
+        head,
+        "Func" | "Action" | "Predicate" | "Comparison" | "Converter" | "EventHandler"
+    ) || head.ends_with("Handler")
+        || head.ends_with("Callback")
+        || head.ends_with("Delegate")
 }
 
 fn rewrite_using_imports(module: &mut Module) {
@@ -9251,8 +9338,45 @@ fn collect_csharp_operator_methods_in_members(
                                 return_type: return_type.clone(),
                             },
                         );
+                    } else if modifiers.is_static && return_type.is_some() {
+                        // A static FACTORY is an operand too — `Matrix4x4
+                        // .CreateScale(2f) * …` needs the call's type for the
+                        // same rewrite. `method:` prefixed for the same reason
+                        // `field:` is: one table, no key can collide with an
+                        // `op_` name.
+                        operators
+                            .entry(type_key.clone())
+                            .or_default()
+                            .entry(format!("method:{name}"))
+                            .or_insert(CSharpOperatorInfo {
+                                return_type: return_type.clone(),
+                            });
                     }
                 }
+            }
+            // ⛔ A STATIC CONSTANT IS AN OPERAND, AND ITS TYPE HAD NO SOURCE.
+            // `Quaternion.Identity * q` never rewrote to `op_Multiply` because
+            // the rewrite dispatches on an operand's inferred type and a static
+            // FIELD read inferred nothing — so the multiply fell through to
+            // numeric `*` and answered `NaN`. One `new` on either side hid it,
+            // which is why the constructor-shaped tests passed.
+            //
+            // Recorded in THIS table rather than a second one: a parallel map
+            // of "types the operator rewrite knows about" is exactly the
+            // two-tables-one-authority shape that drifts. The `field:` prefix
+            // cannot collide — every other key here starts `op_`.
+            ClassMember::Field {
+                name,
+                type_hint: Some(hint),
+                modifiers,
+                ..
+            } if modifiers.is_static || modifiers.is_shared => {
+                operators.entry(type_key.clone()).or_default().insert(
+                    format!("field:{name}"),
+                    CSharpOperatorInfo {
+                        return_type: Some(hint.clone()),
+                    },
+                );
             }
             ClassMember::NestedType(stmt) => {
                 collect_csharp_operator_methods_in_statement(stmt, operators)
@@ -10205,6 +10329,15 @@ fn infer_csharp_expr_type(
             .find_map(|scope| scope.get(name).cloned()),
         ExprKind::Call { callee, .. } => {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let ExprKind::Ident(type_name) = &object.kind {
+                    if let Some(info) =
+                        csharp_operator_info(operators, type_name, &format!("method:{field}"))
+                    {
+                        if let Some(declared) = info.return_type.clone() {
+                            return Some(declared);
+                        }
+                    }
+                }
                 if field.starts_with("op_") {
                     if let Some(type_name) = infer_csharp_expr_type(object, operators, scopes) {
                         return csharp_operator_info(operators, &type_name, field)
@@ -10219,6 +10352,24 @@ fn infer_csharp_expr_type(
             infer_csharp_type_from_expr(expr)
         }
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        // `Vector3.UnitX` / `Quaternion.Identity` — a static field read on a
+        // named type, whose declared type the table above now carries.
+        ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } => {
+            if let ExprKind::Ident(type_name) = &object.kind {
+                if let Some(info) =
+                    csharp_operator_info(operators, type_name, &format!("field:{field}"))
+                {
+                    if let Some(declared) = info.return_type.clone() {
+                        return Some(declared);
+                    }
+                }
+            }
+            infer_csharp_type_from_expr(expr)
+        }
         _ => infer_csharp_type_from_expr(expr),
     }
 }
@@ -13632,13 +13783,19 @@ fn interface_member_as_class_member(
     let mut mname = String::new();
     let mut params = Vec::new();
     let mut body: Option<Vec<Statement>> = None;
-    let mut is_method = false;
+    // ⛔ THE PARAMETER LIST IS OPTIONAL, so its presence cannot say "this is a
+    // method": `string Hi();` and `string Hi() => "hi";` have empty parens and
+    // no `param_list` pair at all. Keying on it made every ZERO-ARGUMENT
+    // interface method vanish — the interface registered with no members, which
+    // is precisely what an augmentation would need to resolve. The parens
+    // themselves are what the grammar uses to separate a method from a
+    // property, so that is what to ask.
+    let is_method = member.as_str().contains('(');
     for p in member.into_inner() {
         match p.as_rule() {
             Rule::type_name => ret_type = Some(p.as_str().to_string()),
             Rule::ident_name => mname = p.as_str().to_string(),
             Rule::param_list => {
-                is_method = true;
                 params = walk_params(__w, p)?;
             }
             Rule::expression_body => {
@@ -13731,38 +13888,6 @@ fn class_member_method_name(m: &ClassMember) -> Option<String> {
 /// Copy each interface's default methods into implementing classes that don't
 /// already declare them (override wins) — C# 8 default interface methods as
 /// pure walker normalization onto the existing class-method machinery.
-fn inject_interface_defaults(__w: &mut CsWalker, statements: &mut [Statement]) {
-    let defaults = __w.interface_defaults.clone();
-    if defaults.is_empty() {
-        return;
-    }
-    for stmt in statements.iter_mut() {
-        if let StmtKind::ClassDecl {
-            interfaces,
-            members,
-            ..
-        } = &mut stmt.kind
-        {
-            let existing: std::collections::HashSet<String> = members
-                .iter()
-                .filter_map(class_member_method_name)
-                .collect();
-            for iface in interfaces.iter() {
-                let leaf = iface.rsplit('.').next().unwrap_or(iface);
-                if let Some(dms) = defaults.get(leaf) {
-                    for dm in dms {
-                        if let Some(n) = class_member_method_name(dm) {
-                            if !existing.contains(&n) {
-                                members.push(dm.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn walk_interface_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
@@ -14324,6 +14449,60 @@ fn walk_record_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expressi
                 params: Vec::new(),
                 body,
                 return_type: Some("string".into()),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers {
+                    is_override: true,
+                    ..Default::default()
+                },
+            },
+        ))));
+    }
+
+    // Synthetic GetHashCode — ECMA-334 §15.15.5: a record's hash is derived
+    // from the same members its `Equals` compares, so equal records hash
+    // equally. Skip if the user already defined one.
+    //
+    // ⚠ This is the FIRST consumer of `System.HashCode` outside a user program
+    // — the type had to be registered before a record could be given a hash
+    // expressible in one call. `Combine` is declared at eight arities in .NET
+    // and this can emit more; the adapter folds any count, and a record with
+    // nine positional parameters is exactly the case .NET makes the caller
+    // chain by hand.
+    let has_user_hash = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Method(stmt) if matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "GetHashCode"
+            )
+        )
+    });
+    if !has_user_hash && !params.is_empty() {
+        let args = params
+            .iter()
+            .map(|p| {
+                Argument::positional(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: p.name.clone(),
+                    null_safe: false,
+                }))
+            })
+            .collect();
+        let call = Expression::new(ExprKind::Call {
+            callee: Box::new(build_dotted_expr("System.HashCode.Combine")),
+            args,
+            optional: false,
+        });
+        let body = vec![Statement::new(StmtKind::Return(Some(call)))];
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "GetHashCode".into(),
+                params: Vec::new(),
+                body,
+                return_type: Some("int".into()),
                 is_async: false,
                 is_generator: false,
                 is_sub: false,
@@ -16069,6 +16248,22 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
             } else {
                 operand
             };
+            // `(Int128)0xFF00` — a cast to a SYNTHESIZED class constructs one.
+            //
+            // ⛔ A CAST TO A CLASS PASSES THE VALUE THROUGH UNTOUCHED. Measured
+            // on a plain user class: `(Box)5000` answers `5000`, not a `Box` —
+            // so `(Int128)(-5000)` handed the 128-bit members a bare number
+            // with no payload field, and `Abs` would have been debugged as the
+            // broken thing. .NET declares these as `explicit operator`
+            // conversions and they genuinely construct.
+            if vybe_platform_dotnet::emitter::core::numerics_classes::
+                is_synthesized_numerics_class(&type_name)
+            {
+                return Ok(ExprKind::New {
+                    class: Box::new(Expression::ident(&type_name)),
+                    args: vec![Argument::positional(operand)],
+                });
+            }
             Ok(ExprKind::Cast {
                 expr: Box::new(operand),
                 type_name,
@@ -16695,6 +16890,24 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
             // Member access — normalize known property accessors to canonical builtins
             strip_static_receiver_type_args(__w, &mut expr);
             let name = strip_csharp_terminal_type_args(chain_src[1..].trim());
+            // `System.Numerics.Vector3.UnitX` — collapse the NAMESPACE prefix
+            // so the chain continues from the synthesized class itself.
+            //
+            // ⛔ `new System.Numerics.Vector3(…)` already resolved, because the
+            // `New` path takes the last segment of the class expression. A
+            // STATIC member does not: `System.Numerics.Vector3.UnitX` is a
+            // four-deep `Member` chain whose head means a namespace, and
+            // nothing collapsed it — so the constructor tests passed while
+            // every static one answered `undefined is not callable`. Collapsing
+            // here rather than registering the name in the .NET tree as well:
+            // two homes for one type is how one of them silently loses.
+            if vybe_platform_dotnet::emitter::core::numerics_classes::
+                is_synthesized_numerics_class(&name)
+                && dotted_path_of(&expr).as_deref() == Some("System.Numerics")
+            {
+                expr = Expression::ident(&name);
+                continue;
+            }
             // C# tuple ItemN accessor: `(1, 2, 3).Item1` → `t[0]`,
             // `Item2` → `t[1]`, etc. Tuples compile to Arrays so the
             // ItemN names need to lower to indexed access. Pattern is
@@ -17522,6 +17735,21 @@ fn emit_object_init_iife(
 }
 
 /// Convert a dotted name like "MyApp.Foo.Bar" into a Member chain expression.
+/// The dotted spelling of a chain made only of `Ident` and `Member`, or `None`
+/// when any other node appears in it. Used to recognise a NAMESPACE prefix,
+/// which is the one kind of receiver that names no value.
+fn dotted_path_of(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } => Some(format!("{}.{}", dotted_path_of(object)?, field)),
+        _ => None,
+    }
+}
+
 fn build_dotted_expr(name: &str) -> Expression {
     let normalized = strip_global_namespace_qualifier(name);
     let parts: Vec<&str> = normalized.split('.').collect();
@@ -17707,76 +17935,30 @@ fn walk_with_expr(__w: &mut CsWalker, receiver: Expression, postfix: Pair<Rule>)
         }
     }
 
-    // Lower to an IIFE:
-    //   ((src) => {
-    //       var __o = __csharp_object_assign({}, src);
-    //       __o.Prop = val;
-    //       ...
-    //       return __o;
-    //   })(receiver)
+    // `a with { P = v }` is a NON-DESTRUCTIVE copy: a fresh instance carrying
+    // every member of the receiver, with the listed members replaced.
     //
-    // Use the shared reflection assign primitive through a walker-private
-    // helper, not an ECMA namespace mount in the C# profile.
-    let mut body: Vec<Statement> = Vec::new();
-    let assign_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__csharp_object_assign")),
-        args: vec![
-            Argument::positional(Expression::new(ExprKind::Object(Vec::new()))),
-            Argument::positional(Expression::ident("__src")),
-        ],
-        optional: false,
-    });
-    body.push(Statement::with_span(
-        StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident("__o".into()),
-                type_hint: None,
-                init: Some(assign_call),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Var,
-        },
-        Span::default(),
-    ));
+    // That is an object literal whose first element spreads the receiver —
+    // `{ ...a, P = v }` — which the AST already expresses (`ObjectProperty::
+    // Spread`), so this needs no helper and no new primitive. The previous
+    // lowering built an IIFE around `__csharp_object_assign`, a name that was
+    // REFERENCED HERE AND DEFINED NOWHERE (one producer, zero definitions
+    // tree-wide), so every `with` expression compiled to a call to `undefined`.
+    //
+    // Order matters: the spread goes FIRST so the explicit members win, which
+    // is C#'s rule. The property VALUES still see the original binding —
+    // `a with { V = a.V + 1 }` reads the old `a` — because the literal is
+    // evaluated in the enclosing scope rather than inside a lambda whose
+    // parameter shadowed it.
+    let mut members: Vec<ObjectProperty> = Vec::with_capacity(props.len() + 1);
+    members.push(ObjectProperty::Spread(receiver));
     for (name, value) in props {
-        let assign = Expression::new(ExprKind::Assign {
-            target: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident("__o")),
-                field: name,
-                null_safe: false,
-            })),
-            value: Box::new(value),
+        members.push(ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str(name))),
+            value,
         });
-        body.push(Statement::with_span(
-            StmtKind::Expr(assign),
-            Span::default(),
-        ));
     }
-    body.push(Statement::with_span(
-        StmtKind::Return(Some(Expression::ident("__o"))),
-        Span::default(),
-    ));
-    let lambda = Expression::new(ExprKind::Lambda {
-        params: vec![Param {
-            name: "__src".into(),
-            type_hint: None,
-            default: None,
-            pass_by: PassBy::Value,
-            is_rest: false,
-            is_kwargs: false,
-            is_optional: false,
-            is_nullable: false,
-        }],
-        body: LambdaBody::Block(body),
-        is_async: false,
-        captures: Vec::new(),
-    });
-    Ok(Expression::new(ExprKind::Call {
-        callee: Box::new(lambda),
-        args: vec![Argument::positional(receiver)],
-        optional: false,
-    }))
+    Ok(Expression::new(ExprKind::Object(members)))
 }
 
 /// Lower a C# 8 switch expression `subject switch { arm, ... }` into
@@ -19404,14 +19586,25 @@ fn walk_arguments(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Argument>,
     pair.into_inner()
         .filter(|p| p.as_rule() == Rule::argument)
         .map(|p| {
-            let src = p.as_str().trim();
-            let by_ref = src.starts_with("ref ") || src.starts_with("out ");
+            // ⛔ THE MODIFIER IS A PAIR NOW, AND IT COMES FIRST. Giving
+            // `ref`/`out` their word boundary in the grammar (so an argument
+            // named `refVector` stops parsing as `ref Vector`) also reified
+            // them as `ref_kw`/`out_kw` children, and the positional path below
+            // takes `inner_pairs[0]` as the value — which became the KEYWORD.
+            // Filtered here, and `by_ref` now reads the pair rather than a
+            // string prefix, which is the same boundary bug one layer up.
             let inner_pairs: Vec<Pair<Rule>> = p.into_inner().collect();
+            let is_out = inner_pairs.iter().any(|q| q.as_rule() == Rule::out_kw);
+            let by_ref = is_out || inner_pairs.iter().any(|q| q.as_rule() == Rule::ref_kw);
+            let inner_pairs: Vec<Pair<Rule>> = inner_pairs
+                .into_iter()
+                .filter(|q| !matches!(q.as_rule(), Rule::ref_kw | Rule::out_kw))
+                .collect();
 
             // `out var x` / `out int x` — desugar to a synthetic var
             // declaration prepended elsewhere (TODO). For now, we
             // extract the ident as a write-target reference.
-            if src.starts_with("out ") {
+            if is_out {
                 let name_pair = inner_pairs
                     .iter()
                     .find(|part| part.as_rule() == Rule::ident_name)

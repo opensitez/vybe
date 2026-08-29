@@ -3,8 +3,10 @@
 //! The walker already lowered class syntax into `ClassDecl` + `ClassMember`.
 //! This normalizer only maps members into the shared `NormalMembers` shape.
 
-use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
-use vybe_ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind};
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
+use vybe_ast::{
+    ClassMember, ClassModifiers, ConstructorInitializerTarget, PropertySetter, Span, StmtKind,
+};
 
 pub fn normalize_class(
     span: Span,
@@ -107,8 +109,70 @@ pub fn normalize_class(
                     named_name: None,
                 });
             }
-            ClassMember::Property { .. }
-            | ClassMember::Event { .. }
+            // A property reaches here ONLY when the walker built one for a
+            // validated field (`[ValidateRange(1,100)][int]$Score`): PowerShell
+            // has no `get`/`set` block syntax, so an ordinary member is a
+            // `Field`. Both accessors are fully implemented — `auto_field` stays
+            // `None`, because the backing field is a separate member under its
+            // own name and an auto field would collide with the accessor.
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                modifiers: m,
+                ..
+            } => {
+                let access = Access::from(m.visibility);
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        pname,
+                        pname,
+                        vec![],
+                        None,
+                        body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        m.clone(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|st: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        pname,
+                        pname,
+                        vec![st.param.clone()],
+                        None,
+                        st.body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        m.clone(),
+                    )
+                });
+                // ⛔The canonical name is LOWERCASED, unlike C#'s, and that is
+                // load-bearing. PowerShell is case-insensitive, so member access
+                // folds `$b.Score` to `score` — but the accessor chunk is named
+                // from `canonical_name`, so passing the declared spelling
+                // emitted `__get_Score` while every read looked up
+                // `__get_score`. Both accessors existed and neither ever fired:
+                // the read fell through to the property's own field slot, which
+                // no initializer had written, so a validated property answered
+                // empty and accepted any assignment.
+                out.properties.push(NormalProperty {
+                    span: span.clone(),
+                    canonical_name: pname.to_lowercase(),
+                    source_name: pname.clone(),
+                    is_static: m.is_static,
+                    getter: getter_method,
+                    setter: setter_method,
+                    auto_field: None,
+                });
+            }
+            ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)
             | ClassMember::Augment(_) => {

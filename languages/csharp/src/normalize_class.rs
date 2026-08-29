@@ -33,7 +33,7 @@ pub fn normalize_class(
     span: Span,
     _name: &str,
     parents: &[String],
-    _interfaces: &[String],
+    interfaces: &[String],
     members: &[ClassMember],
     _modifiers: &ClassModifiers,
 ) -> NormalClass {
@@ -205,9 +205,53 @@ pub fn normalize_class(
 
     NormalClass {
         implicit_self_fields: true, // C#: bare field names resolve to this.field
+        // ⛔ DEFAULT INTERFACE METHODS ARE AN AUGMENTATION, DECLARED.
+        //
+        // The walker used to carry a `HashMap<String, Vec<ClassMember>>` of
+        // every interface's default bodies and an `inject_interface_defaults`
+        // pass that copied them into implementers, skipping names the class
+        // already declared. That IS `Copy` + `AfterOwn` — written out by hand,
+        // in one frontend, where no other language could see it and where a php
+        // class implementing the same interface got nothing.
+        //
+        // ⚠ `Copy`, NOT `Chain`. The plan gives Java's interface defaults as
+        // `Chain` + `RequireExplicit` because Java's diamond rule differs; C#
+        // requires an explicit interface cast to call a default member and a
+        // class's own member always wins, which is exactly `AfterOwn` with
+        // `LastWins`. Two languages, two rules, one model — which is the point
+        // of declaring rather than implementing.
+        augmentations: interfaces
+            .iter()
+            .map(|iface| csharp_interface_defaults(iface))
+            .collect(),
         ..Default::default()
     }
     .with_members(out)
+}
+
+/// `class C : IFoo` — IFoo's default members join C, and C's own win.
+fn csharp_interface_defaults(interface_name: &str) -> Augmentation {
+    Augmentation {
+        from: interface_name.to_string(),
+        via_field: None,
+        mode: AugmentationMode::Copy,
+        position: AugmentationPosition::AfterOwn,
+        conflict: AugmentationConflict::LastWins,
+        super_target: AugmentationSuper::OwnParent,
+        adjustments: Vec::new(),
+        contributes: AugmentationContributes {
+            // Only members with BODIES cross. An interface's abstract members
+            // are a requirement on the implementer, not a gift to it — copying
+            // them would give every class a body-less method that shadows the
+            // one it actually declared.
+            methods: true,
+            fields: false,
+            statics: false,
+            constructors: false,
+            abstract_members: false,
+        },
+        depth: 0,
+    }
 }
 
 #[cfg(test)]

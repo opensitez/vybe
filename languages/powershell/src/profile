@@ -23,6 +23,15 @@ uses_common_resolver = true
 # consulted, so constructors are never wired.
 uses_normalize_class = true
 
+# PowerShell exceptions ARE .NET exceptions and this compiler models those on
+# the ECMA `Error` shape — non-enumerable `Message`/`InnerException` fields plus
+# the `instanceof` chain. Without the flag, `class E : System.Exception` got
+# NONE of it: `$e.Message` was empty and `$e -is [System.Exception]` was false,
+# because both branches in `classes.rs` that give a user class its parent's
+# exception shape are gated on this. Declared rather than hand-rolled — the
+# shape already exists, PowerShell simply never asked for it.
+ecma_error_object_shape = true
+
 # `(5 -eq 5)` is the boolean $true, not 1 — comparisons must materialize as real
 # booleans or every `$result -ne $true` check compares a number to a bool.
 materialize_bool_results = true
@@ -49,6 +58,40 @@ negative_index_wraps = true
 echo = { emit = "print", min_args = 0, max_args = 255 }
 "get-date" = { emit = "common:dotnet.datetime_now", min_args = 0, max_args = 0 }
 exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+# `[System.Array]::Sort($arr)` after the walker attaches the `CompareTo`
+# comparator. In place, like .NET's.
+__ps_sort_with = { emit = "common:collections.sort_func", min_args = 2, max_args = 2 }
+# `[char]::IsUpper($c)` etc. A PowerShell `[char]` is a one-character string,
+# which is exactly what these shared primitives take.
+__ps_char_is_upper  = { emit = "common:str_is_upper",     min_args = 1, max_args = 1 }
+__ps_char_is_lower  = { emit = "common:str_is_lower",     min_args = 1, max_args = 1 }
+__ps_char_is_digit  = { emit = "common:str_is_digit",     min_args = 1, max_args = 1 }
+__ps_char_is_letter = { emit = "common:str_is_alpha",     min_args = 1, max_args = 1 }
+__ps_char_is_alnum  = { emit = "common:str_is_alnum",     min_args = 1, max_args = 1 }
+__ps_char_is_space  = { emit = "common:str_is_space",     min_args = 1, max_args = 1 }
+__ps_char_to_upper  = { emit = "common:strings.to_upper", min_args = 1, max_args = 1 }
+__ps_char_to_lower  = { emit = "common:strings.to_lower", min_args = 1, max_args = 1 }
+# `[int]$x` — see `emit_to_int`: banker's rounding, a numeric parse, or a code
+# point, decided by the runtime value.
+__ps_to_int = { emit = "common:powershell.to_int", min_args = 1, max_args = 1 }
+# `$obj.$name` — a COMPUTED member read. `ExprKind::Index` was the obvious node
+# and it is the wrong one: indexing an OBJECT with a non-literal key falls
+# through to array indexing, so `$h[$k]` answered EMPTY where `$h['A']` worked.
+# `dict.get_dynamic` is the shared primitive for a by-value key.
+__ps_member_dyn = { emit = "common:powershell.member_dyn", min_args = 2, max_args = 2 }
+__ps_index_set  = { emit = "common:powershell.index_set",  min_args = 3, max_args = 3 }
+__ps_index_get  = { emit = "common:powershell.index_get",  min_args = 2, max_args = 2 }
+__ps_out_null   = { emit = "common:powershell.out_null",   min_args = 1, max_args = 1 }
+# A pipeline whose stream holds ONE item is that item — see `emit_unwrap_single`.
+__ps_unwrap_single = { emit = "common:powershell.unwrap_single", min_args = 1, max_args = 1 }
+__ps_splat_arg  = { emit = "common:powershell.splat_arg",  min_args = 3, max_args = 3 }
+# `1 / 0` THROWS in PowerShell rather than answering infinity — see
+# `emit_divide`. ⛔A `[builtin_slots.int] div` row does NOT reach a plain
+# numeric divide: `emit_rich_binop` consults only a USER operator method before
+# falling back to `F64_DIV`.
+__ps_divide     = { emit = "common:powershell.divide",    min_args = 2, max_args = 2 }
+# `$env:X = 5` stores the STRING "5" — the environment is string→string.
+__ps_to_string  = { emit = "common:powershell.to_display", min_args = 1, max_args = 1 }
 
 # The other output streams. They are real writes in PowerShell, and the tests
 # only require that they emit rather than fail, so they share `print`.
@@ -76,6 +119,27 @@ exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 # shape of the array literal.
 __ps_array     = { emit = "common:powershell.ensure_array", min_args = 0, max_args = 255 }
 
+# `Select-Object -First n` / `-Skip n`. The shared slice primitive takes
+# [array, start, end] — all three, always: `Clone` binds the same emitter with
+# `max_args = 0` and answers an EMPTY array for exactly that reason, so the
+# walker passes explicit bounds rather than relying on defaults that do not
+# exist. Synthesized by the walker, never written by a user.
+__ps_slice     = { emit = "common:collections.slice", min_args = 3, max_args = 3 }
+
+# `Measure-Object`. The cmdlet answers an OBJECT of statistics, so the walker
+# builds the object literal and reaches each statistic through one of these.
+# Synthesized by the walker, never written by a user.
+__ps_count     = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+
+# `ConvertFrom-Csv`. `csv.parse_document` is the SHARED CSV grammar — a newline
+# inside a quoted field is content, so the document cannot be pre-split into
+# lines. Naming the columns is this language's job and stays in the walker.
+__ps_csv_rows     = { emit = "common:csv.parse_document",       min_args = 3, max_args = 3 }
+__ps_from_entries = { emit = "host:ecma:object:fromEntries",    min_args = 1, max_args = 1 }
+__ps_sum       = { emit = "common:collections.sum",    min_args = 1, max_args = 1 }
+__ps_max       = { emit = "common:collections.max",    min_args = 1, max_args = 1 }
+__ps_min       = { emit = "common:collections.min",    min_args = 1, max_args = 1 }
+
 # `Out-Null` discards its input. As a pipeline stage the walker drops the value
 # outright; reached as a plain command there is nothing to emit.
 "out-null"     = { emit = "noop", min_args = 0, max_args = 255 }
@@ -93,6 +157,16 @@ tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1
 # tree (`component_classes_system.rs`, class `String`), and a `[value_methods]`
 # row SHADOWS the leaf rather than backing it up.
 Equals        = { emit = "common:object.equals",       min_args = 1, max_args = 2 }
+# `CompareTo` and `GetHashCode` are `System.Object` members, so EVERY value has
+# them — `(5).CompareTo(3)`, `$str.CompareTo($other)`, `$obj.GetHashCode()`.
+# Both answered `undefined is not callable`, and the shared primitives that
+# implement them already existed; nothing was missing but the binding.
+#
+# ⛔A user class that DECLARES `CompareTo`/`GetHashCode` still wins: a declared
+# member is resolved before `[value_methods]` is consulted, which is what makes
+# these safe as a universal fallback rather than an override.
+CompareTo     = { emit = "common:powershell.compare_to", min_args = 1, max_args = 1 }
+GetHashCode   = { emit = "common:object.hash_code",    min_args = 0, max_args = 0 }
 # NO `Insert` / `Remove`. `str_insert` does not exist, and `str_splice` — the
 # nearest primitive — takes FOUR operands (string, index, count, insert), so a
 # two-argument mapping compiles and then fails at runtime inside the splice.
@@ -110,8 +184,11 @@ Equals        = { emit = "common:object.equals",       min_args = 1, max_args = 
 # friends do NOT — the runtime collection registry claims those names first (see
 # the `[namespaces] runtime_collection_scope` note) and they are rewritten in the
 # walker instead.
-GetEnumerator = { emit = "host:ecma:object:entries",   min_args = 0, max_args = 0 }
-getenumerator = { emit = "host:ecma:object:entries",   min_args = 0, max_args = 0 }
+# ⛔An ARRAY enumerates its VALUES and a hashtable its KEY/VALUE PAIRS — one row
+# cannot say both, and `object:entries` said the hashtable answer for both. See
+# `emit_get_enumerator`.
+GetEnumerator = { emit = "common:powershell.get_enumerator", min_args = 0, max_args = 0 }
+getenumerator = { emit = "common:powershell.get_enumerator", min_args = 0, max_args = 0 }
 Keys          = { emit = "host:ecma:object:keys",      min_args = 0, max_args = 0 }
 keys          = { emit = "host:ecma:object:keys",      min_args = 0, max_args = 0 }
 Values        = { emit = "host:ecma:object:values",    min_args = 0, max_args = 0 }
@@ -126,6 +203,8 @@ __ps_ht_delkey   = { emit = "host:ecma:object:delete", min_args = 1, max_args = 
 __ps_ht_add      = { emit = "host:ecma:object:set",    min_args = 2, max_args = 2 }
 __ps_ht_keys     = { emit = "host:ecma:object:keys",   min_args = 0, max_args = 0 }
 __ps_ht_values   = { emit = "host:ecma:object:values", min_args = 0, max_args = 0 }
+# `$a -join ','`. See the `Join` note in the collection surface below.
+__ps_join        = { emit = "common:collections.join", min_args = 0, max_args = 1 }
 
 # DateTime instance surface. Every one of these already exists in
 # `platforms/dotnet` — the same emitters C# and VB reach — so `(Get-Date).AddDays(1)`
@@ -134,10 +213,23 @@ __ps_ht_values   = { emit = "host:ecma:object:values", min_args = 0, max_args = 
 # Collection surface.
 Add           = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
 Clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
-Clone         = { emit = "common:collections.slice",   min_args = 0, max_args = 0 }
+# `collections.slice` wants [array, start, end]; a 0-arg `Clone` pushed only the
+# receiver, so the host call read two garbage operands and answered an EMPTY
+# array. `collections.clone` IS that emitter with `0`/`i32::MAX` supplied.
+Clone         = { emit = "common:collections.clone",   min_args = 0, max_args = 0 }
 Reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-Sort          = { emit = "common:collections.sorted",  min_args = 0, max_args = 1 }
-Join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
+# PowerShell's `.Sort()` sorts IN PLACE (verified against `/usr/local/bin/pwsh`:
+# `$a.Sort()` leaves `$a` sorted and evaluates to nothing). `collections.sorted`
+# returns a NEW array and leaves the receiver untouched, so every in-place caller
+# read the original order back.
+Sort          = { emit = "common:collections.sort",    min_args = 0, max_args = 0 }
+# ⛔NO `Join` ROW. The name is claimed shared-side before `[value_methods]` is
+# consulted — `join` never reaches value-method dispatch at all (proven with
+# `VYBE_SLOT_AUDIT=1`: `Sort`/`Clone`/`Add` print a census line, `join` does
+# not), and the call answered the EMPTY STRING. `-join` is lowered to the
+# PowerShell-private `__ps_join` below for exactly the reason the hashtable
+# rewrites exist. Arrays have no `.Join()` method in PowerShell, so the private
+# spelling costs no user-visible surface.
 Concat        = { emit = "common:collections.concat",  min_args = 1, max_args = 1 }
 concat        = { emit = "common:collections.concat",  min_args = 1, max_args = 1 }
 
@@ -195,9 +287,10 @@ add = "common:powershell.add"
 
 [builtin_slots.int]
 to_string = "common:dotnet.tostring_runtime"
+
 # The MIRROR of `[builtin_slots.char] int`: `[char]65` is "A". Both directions
 # are declared so a cast cannot resolve one way and not the other.
-char = "common:strings.from_char_code"
+char = "common:powershell.to_char"
 
 [builtin_slots.double]
 to_string = "common:dotnet.tostring_runtime"
@@ -209,7 +302,7 @@ to_string = "common:dotnet.tostring_runtime"
 # That is the char/int COERCION SLOT (builtinslotplan.md §2a) and it is declared
 # here rather than decided by a language check in the shared compiler.
 [builtin_slots.char]
-int = "common:strings.char_code"
+int = "common:powershell.to_int"
 
 # ────────────────────────────────────────────────────────────────────────────
 # .NET NAMESPACE RESOLUTION
