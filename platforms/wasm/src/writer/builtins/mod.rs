@@ -3,6 +3,7 @@
 //! WeakMap / WeakSet / ArrayBuffer / DataView / 11 typed-arrays).
 //! Marshaling contract pinned in `JS_BUILTIN_CONVENTIONS.md`.
 
+pub mod canon_builtins;
 pub mod js_array_builtins;
 pub mod js_arraybuffer_builtins;
 pub mod js_fixedarray_builtins;

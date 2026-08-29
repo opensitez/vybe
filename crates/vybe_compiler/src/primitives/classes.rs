@@ -1155,7 +1155,10 @@ impl Compiler {
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
-        self.chunks[self.current].emit_if(line);
+        // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+        // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+        // WASM block does not. Both arms leave one value — `(1, 1)`.
+        self.chunks[self.current].emit_if_params(line, 1, 1);
         self.emit(Op::DROP);
         self.emit_global_read(class_name);
         self.chunks[self.current].emit_end(line);
@@ -1211,7 +1214,10 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
-                self.chunk().emit_if(line);
+                // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+                // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+                // WASM block does not. Both arms leave one value — `(1, 1)`.
+                self.chunk().emit_if_params(line, 1, 1);
                 self.emit(Op::DROP);
                 self.emit_ref_func_with_captures(method_chunk_idx, capture_names, no_intern)?;
                 self.chunks[self.current].emit_end(line);
@@ -3951,6 +3957,21 @@ impl Compiler {
                     }
                 }
                 for (mname, mci, _, _) in &instance_methods {
+                    // ⛔ ACCESSORS WERE THE ONLY MEMBER STILL BOUND PER INSTANCE.
+                    // Methods already skip below under `class_prototype_dispatch`,
+                    // and the class definition ALREADY writes `__get_`/`__set_`
+                    // onto the prototype — verified reachable through the chain:
+                    // `Object.create(A.prototype).g` returns 7, identically to
+                    // node. So this bind was a pure duplicate, and it is the one
+                    // that made `hasOwnProperty(a,"g")` true, put `g` in
+                    // `Object.keys(a)`, and walked `for-in` into the class.
+                    // ECMA-262 §15.7: a class body's members are properties of
+                    // `C.prototype`, shared, never own to the instance.
+                    if self.members_on_prototype()
+                        && (mname.starts_with("__get_") || mname.starts_with("__set_"))
+                    {
+                        continue;
+                    }
                     if mname.starts_with("__get_") {
                         let prop = mname.strip_prefix("__get_").unwrap_or(mname);
                         crate::primitives::object::emit_bind_getter(
@@ -4376,6 +4397,13 @@ impl Compiler {
                         // for single-inheritance classes / non-MI languages.
                         self.emit_mi_ancestor_methods(name, this_slot, line);
                         for (mname, mci, _, _) in &instance_methods {
+                            // §15.7 — see the matching skip in the
+                            // `ctor_this_args` branch above.
+                            if self.members_on_prototype()
+                                && (mname.starts_with("__get_") || mname.starts_with("__set_"))
+                            {
+                                continue;
+                            }
                             if mname.starts_with("__get_") {
                                 let prop = mname.strip_prefix("__get_").unwrap_or(mname);
                                 crate::primitives::object::emit_bind_getter(
@@ -4554,6 +4582,13 @@ impl Compiler {
                         )?;
                     }
                     for (mname, mci, _, _) in &instance_methods {
+                        // §15.7 — see the matching skip in the `ctor_this_args`
+                        // branch above.
+                        if self.members_on_prototype()
+                            && (mname.starts_with("__get_") || mname.starts_with("__set_"))
+                        {
+                            continue;
+                        }
                         if mname.starts_with("__get_") {
                             let prop = mname.strip_prefix("__get_").unwrap_or(mname);
                             crate::primitives::object::emit_bind_getter(
@@ -5204,6 +5239,42 @@ impl Compiler {
                         class_slots::ValueSource::Stack,
                     );
                 }
+            }
+
+            // ECMA-262 §15.7: EVERY class-body member — methods and accessors
+            // alike — is a NON-ENUMERABLE property of `C.prototype`, and so is
+            // `constructor`. Measured against node, `Object.keys(A.prototype)`
+            // is `[]` and `getOwnPropertyDescriptor(A.prototype,"m").enumerable`
+            // is `false`; ours listed every member and reported `true`, which
+            // also walked `for-in` over an instance into the whole class body.
+            //
+            // The `__nonenum` set is the existing host convention that
+            // `Object.keys` and `propertyIsEnumerable` already filter against —
+            // the same one §10.2.9 uses for `name`/`length`/`prototype`. Nothing
+            // new is invented here; class members were simply never added to it.
+            if self.members_on_prototype() {
+                let mut nonenum: Vec<String> = vec!["constructor".to_string()];
+                for (mname, _, _, _) in &instance_methods {
+                    let prop = mname
+                        .strip_prefix("__get_")
+                        .or_else(|| mname.strip_prefix("__set_"))
+                        .unwrap_or(mname);
+                    if !nonenum.iter().any(|n| n == prop) {
+                        nonenum.push(prop.to_string());
+                    }
+                }
+                self.emit_u16(Op::LOCAL_GET, proto_local);
+                for n in &nonenum {
+                    self.emit_const(Value::String(Arc::from(n.as_str())));
+                }
+                let count = nonenum.len() as u16;
+                let line = self.line;
+                self.chunks[self.current].emit_array_new_fixed(0, count, line);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__nonenum"),
+                    class_slots::ValueSource::Stack,
+                );
             }
         }
 
@@ -6392,7 +6463,10 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_call(obj_get, 2, line);
     c.emit_dup(line);
     c.emit_op(Op::REF_IS_NULL, line);
-    c.emit_if(line);
+    // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+    // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+    // WASM block does not. Both arms leave one value — `(1, 1)`.
+    c.emit_if_params(line, 1, 1);
     c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
@@ -6402,7 +6476,10 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_call(obj_get, 2, line);
     c.emit_dup(line);
     c.emit_op(Op::REF_IS_NULL, line);
-    c.emit_if(line);
+    // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+    // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+    // WASM block does not. Both arms leave one value — `(1, 1)`.
+    c.emit_if_params(line, 1, 1);
     c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);

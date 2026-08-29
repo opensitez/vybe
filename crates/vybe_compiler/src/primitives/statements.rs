@@ -50,6 +50,16 @@ impl Compiler {
         self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::UniversalParameter)
     }
 
+    /// Do this region's class members live ONLY on the prototype (ECMA §15.7),
+    /// rather than being bound onto every instance at construction?
+    ///
+    /// See [`vybe_ast::Directives::members_on_prototype`]. Defaults to false —
+    /// python's C3 flatten and kotlin's `super` slots depend on the per-instance
+    /// binding, so each language opts in on its own terms.
+    pub(crate) fn members_on_prototype(&self) -> bool {
+        self.directives().members_on_prototype == Some(true)
+    }
+
     /// Does this region decide truth by asking the OBJECT — `ProtocolSlot::Bool`
     /// then `ProtocolSlot::Len` — rather than by ECMA ToBoolean?
     ///
@@ -148,8 +158,8 @@ impl Compiler {
     ///     covers the slot, and only the old never-reclaim behaviour was
     ///     keeping it alive. The closure env array lives in one of these.
     ///
-    /// `dup_slot` and `capture_locals` are the complete set of slots cached
-    /// beyond the scope that declared them — everything else either lives
+    /// `dup_slot`, `capture_locals` and `i64_scratch_slot` are the complete set
+    /// of slots cached beyond the scope that declared them — everything else either lives
     /// below `scope.next_slot` or is allocated and consumed inside one
     /// statement.
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
@@ -166,6 +176,14 @@ impl Compiler {
         }
         if let Some(&max_capture) = self.capture_locals.values().max() {
             restore = restore.max(max_capture + 1);
+        }
+        // ⛔ THE i64 SCRATCH SLOT IS DECLARED `i64` IN THE EMITTED MODULE, so
+        // handing it to the next statement as an ordinary externref temp is not
+        // a stale-value bug — it is a TYPE error the reclaim would introduce.
+        // Same policy as `dup_slot` directly above, for the same reason: a slot
+        // cached on the chunk outlives the scope that allocated it.
+        if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
+            restore = restore.max(i64_slot + 1);
         }
         // `local_count` is TWO facts in one field: the bump pointer for the
         // next allocation, AND the peak the frame must be sized to. Only the
@@ -5803,6 +5821,9 @@ impl Compiler {
                     } else {
                         self.chunk().emit_call(set_idx, 3, line);
                     }
+                    // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN; the
+                    // assignment's own value is `V` (§13.15.2), so the flag is
+                    // discarded here.
                     self.emit(Op::DROP);
                     self.end_receiver_bind(saved_this);
                 } else {

@@ -439,7 +439,10 @@ impl Compiler {
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
-        self.chunk().emit_if(line);
+        // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+        // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+        // WASM block does not. Both arms leave one value — `(1, 1)`.
+        self.chunk().emit_if_params(line, 1, 1);
 
         self.emit(Op::DROP);
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -549,7 +552,10 @@ impl Compiler {
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
-        self.chunk().emit_if(line);
+        // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+        // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+        // WASM block does not. Both arms leave one value — `(1, 1)`.
+        self.chunk().emit_if_params(line, 1, 1);
 
         self.emit(Op::DROP);
         common::collections::emit_map_new(&mut self.chunks, self.current, line);

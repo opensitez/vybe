@@ -93,12 +93,20 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             out.push(TYPE_EXTERNREF);
         }
         "set" => {
-            // (obj, key, value) -> ()
+            // ⛔ `[[Set]]` RETURNS A BOOLEAN (ECMA-262 §10.1.9 OrdinarySet), and
+            // this declared `-> ()`. The VM pushes the flag like any other host
+            // result, so the two disagreed: compiler-emitted call sites drop it
+            // (correctly), while THIS writer's own `struct.set` lowering did
+            // not — one import, two contradictory contracts. Declaring the
+            // truthful signature makes the VM, the spec and V8 agree; the
+            // writer drops the flag at its own emission sites.
+            // (obj, key, value) -> boolean
             write_leb128_u32(out, 3);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 0);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
         }
         "has" | "hasOwn" | "delete" => {
             write_leb128_u32(out, 2);

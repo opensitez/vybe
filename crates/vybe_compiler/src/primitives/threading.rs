@@ -191,7 +191,11 @@ pub fn emit_object_monitor_addr(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_string_const("__vybe_monitor_addr", line);
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
+    // pushed a result it should not have; the VM was fixed and the other
     chunk.emit_call(set_idx, 3, line);
+    // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN, so this call leaves a
+    // value and the assignment's own result is `V` (§13.15.2), not it.
+    // Removing this `DROP` made `++o.x` evaluate to null.
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);

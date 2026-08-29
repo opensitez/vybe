@@ -1015,7 +1015,21 @@ impl VM {
                 let type_id = ob.type_id;
                 drop(ob); // release borrow before accessing self
 
-                if type_id > 0 {
+                // ⛔ THE VTABLE IS A THIRD MECHANISM, beside `properties` and
+                // `__proto__`, with its own inheritance walk — and under ECMA
+                // semantics it must not answer a member read that the prototype
+                // chain already declined. Measured: after `delete
+                // A.prototype.m`, `"m" in a`, `Reflect.ownKeys(a)` and
+                // `getOwnPropertyDescriptor(a,"m")` ALL agreed with node that
+                // the member was gone, while `a.m` still returned a function.
+                // Every predicate right, only the read wrong — because the read
+                // fell through to here.
+                //
+                // Gated on the module: languages whose class model IS the
+                // vtable keep it, and js (where members are real prototype
+                // properties) does not. Builtin receivers are unaffected — an
+                // array's methods are reached through its own prototype.
+                if type_id > 0 && !self.calling_module_members_on_prototype() {
                     if let Some(method) = self.type_registry.resolve_method(type_id, name) {
                         return Ok(self.method_to_value(method));
                     }
@@ -1023,6 +1037,14 @@ impl VM {
 
                 // Also try inferring type from ObjectKind or __type property
                 let ob = o.lock().unwrap();
+                // ⛔ Whether the type was STAMPED or INFERRED decides whether
+                // the vtable may answer. A user class carries an explicit
+                // `__type`, and under ECMA its members are prototype
+                // properties the chain has already declined — so the vtable
+                // must stay silent. An ARRAY has no `__type`; `"list"` is
+                // inferred from its kind, and its methods legitimately live
+                // here. Gating both would take `[].map` with it.
+                let explicit_type = ob.properties.contains_key("__type");
                 let inferred_type = ob
                     .properties
                     .get("__type")
@@ -1033,7 +1055,9 @@ impl VM {
                     });
                 drop(ob);
 
-                if !inferred_type.is_empty() {
+                let class_vtable_silenced =
+                    explicit_type && self.calling_module_members_on_prototype();
+                if !inferred_type.is_empty() && !class_vtable_silenced {
                     if let Some(tid) = self.type_registry.get_id(&inferred_type) {
                         if let Some(method) = self.type_registry.resolve_method(tid, name) {
                             return Ok(self.method_to_value(method));

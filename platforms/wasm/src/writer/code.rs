@@ -43,25 +43,61 @@ fn leb128_u32_size(v: u32) -> u32 {
     }
 }
 
+/// The locals declaration for a chunk, as `(count, valtype)` groups in index
+/// order — THE single source of truth for both the bytes and their size.
+///
+/// ⛔ THE EMITTER AND `locals_prefix_size` MUST NOT COMPUTE THIS TWICE. The
+/// spec makes branch-hint offsets relative to the end of this prefix, so a
+/// disagreement of one byte silently misplaces every hint in the function.
+/// They were two constants agreeing by luck while every local was externref;
+/// `i64_locals` makes the shape depend on the chunk, and two readers of one
+/// fact is the exact split that has cost this session all day.
+fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
+    let wasm_params = chunk.arity as u32;
+    let extra_locals = (chunk.local_count as u32).saturating_sub(wasm_params);
+    let temp_count = count_temp_locals(chunk);
+    let mut groups: Vec<(u32, u8)> = Vec::new();
+    let mut push = |ty: u8, groups: &mut Vec<(u32, u8)>| match groups.last_mut() {
+        Some((n, t)) if *t == ty => *n += 1,
+        _ => groups.push((1, ty)),
+    };
+    // Declared locals are indices `wasm_params .. wasm_params+extra_locals`,
+    // and slot k IS local index k (slots below arity are the params).
+    for i in 0..extra_locals {
+        let slot = wasm_params + i;
+        let ty = if u16::try_from(slot).is_ok_and(|s| chunk.i64_locals.contains(&s)) {
+            TYPE_I64
+        } else {
+            TYPE_EXTERNREF
+        };
+        push(ty, &mut groups);
+    }
+    for _ in 0..temp_count {
+        push(TYPE_EXTERNREF, &mut groups);
+    }
+    groups
+}
+
+/// Write the locals prefix from [`locals_groups`].
+fn write_locals_prefix(body: &mut Vec<u8>, chunk: &Chunk) {
+    let groups = locals_groups(chunk);
+    write_leb128_u32(body, groups.len() as u32);
+    for (count, ty) in groups {
+        write_leb128_u32(body, count);
+        body.push(ty);
+    }
+}
+
 /// Size in bytes of the locals declaration prefix written at the start of a
 /// function body. The spec says branch hint offsets are relative to this
 /// position, so the hint scanner adds this value to every `chunk.code` offset.
 pub(crate) fn locals_prefix_size(chunk: &Chunk) -> u32 {
-    let wasm_params = chunk.arity as u32;
-    let extra_locals = if chunk.local_count as u32 > wasm_params {
-        chunk.local_count as u32 - wasm_params
-    } else {
-        0
-    };
-    let temp_count = count_temp_locals(chunk);
-    let declared_locals = extra_locals + temp_count;
-    if declared_locals > 0 {
-        // 1 group count (1 byte) + leb128(declared_locals) + 1 type byte
-        1 + leb128_u32_size(declared_locals) + 1
-    } else {
-        // vec-count of 0 (1 byte for LEB128 encoding of 0)
-        1
-    }
+    let groups = locals_groups(chunk);
+    leb128_u32_size(groups.len() as u32)
+        + groups
+            .iter()
+            .map(|&(count, _)| leb128_u32_size(count) + 1)
+            .sum::<u32>()
 }
 
 /// Count how many temp locals a chunk needs for stack manipulation.
@@ -104,11 +140,11 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // One temp to lift the value off the address underneath it.
                 need = need.max(1);
             } else if op == Op::CALL {
-                // One spill temp for `emit_unbox_raw_params` — an import with
+                // Spill temps for `emit_unbox_raw_params` — an import with
                 // a raw param under another argument. Reserved for every
                 // static call because the import tables are not built yet
-                // here; one externref local is cheaper than threading them in.
-                need = need.max(1);
+                // here; two externref locals are cheaper than threading them in.
+                need = need.max(2);
             } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET {
                 need = need.max(2); // need 2 temps for 3-operand reorder
             } else if op == Op::DESC_SET_PROTO {
@@ -119,6 +155,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 || op == Op::ARRAY_GET
                 || op == Op::ARRAY_LENGTH
                 || op == Op::REF_IS_NULL
+                || op == Op::REF_EQ
             {
                 need = need.max(1);
             }
@@ -413,15 +450,9 @@ pub fn encode_code_section(
         };
         let temp_local_idx = wasm_params + extra_locals;
 
-        // Locals declaration (only declare locals beyond params)
-        let declared_locals = extra_locals + temp_count;
-        if declared_locals > 0 {
-            write_leb128_u32(&mut body, 1); // 1 local type group
-            write_leb128_u32(&mut body, declared_locals);
-            body.push(TYPE_EXTERNREF);
-        } else {
-            write_leb128_u32(&mut body, 0);
-        }
+        // Locals declaration (only declare locals beyond params) — grouped by
+        // type, because `i64_locals` makes them heterogeneous.
+        write_locals_prefix(&mut body, chunk);
 
         // Structured control flow: the compiler now emits BLOCK/LOOP/END/BR/BR_IF.
         // The WASM emitter just passes them through — no relooper needed.
@@ -896,6 +927,13 @@ fn emit_core_op(
         _ if op == Op::ELSE => {
             body.push(0x05); // else
         }
+        // `i32.wrap_i64` is the ONLY way an i64 leaves the raw world here, and
+        // its i32 result goes straight into an externref local. It had no arm,
+        // so it fell to the default and stayed raw.
+        _ if op == Op::I32_WRAP_I64 => {
+            body.push(op.sub() as u8);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
             // `memory.grow` takes a raw i32 delta and both answer a raw i32.
             if op == Op::MEMORY_GROW {
@@ -1057,8 +1095,23 @@ fn emit_core_op(
             body.push(0xD1); // ref.is_null → i32
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
-        // GC proposal (core prefix): ref.eq produces i32 — rebox as externref.
+        // GC proposal (core prefix): `ref.eq` compares two references in the
+        // ANY hierarchy and produces i32.
+        //
+        // ⛔ IT CANNOT SEE AN `externref`. `eqref` bottoms out in ANY; our
+        // value ABI is EXTERN. V8: `ref.eq[0] expected either eqref or
+        // (ref null shared eq), found local.get of type externref`. Both
+        // operands have to be internalised, and the second one sits ON TOP of
+        // the first — the same temp dance `ARRAY_SET` uses to reach under.
         _ if op == Op::REF_EQ => {
+            body.push(0x21); // local.set $temp (save b)
+            write_leb128_u32(body, temp_idx);
+            emit_internalize(body); // a: externref → anyref
+            emit_ref_cast_eq(body); // anyref → eqref
+            body.push(0x20); // local.get $temp (restore b)
+            write_leb128_u32(body, temp_idx);
+            emit_internalize(body); // b: externref → anyref
+            emit_ref_cast_eq(body); // anyref → eqref
             body.push(0xD3);
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
@@ -1598,8 +1651,9 @@ fn emit_dynamic_object_new(
             body.push(0x20); // local.get
             write_leb128_u32(body, slot);
         }
-        body.push(0x10); // call ecma:object.set(obj, key, val) -> ()
+        body.push(0x10); // call ecma:object.set(obj, key, val) -> boolean
         write_leb128_u32(body, set_idx as u32);
+        body.push(0x1A); // drop the §10.1.9 success flag
     }
     body.push(0x20); // local.get $obj
     write_leb128_u32(body, obj);
@@ -1726,7 +1780,13 @@ fn emit_unbox_raw_params(
         return;
     };
     let spill = params.len() - 1 - deepest_raw;
-    if spill > 1 {
+    // ⛔ THIS LIMIT MUST COVER EVERY TABLE THE WRITER CONSULTS, or it silently
+    // declines to reconcile a call it was written for. `canon stream.read` and
+    // `stream.write` are `(i32 i32 i32)` — deepest raw param at index 0, so two
+    // arguments sit above it. Two is now the deepest any consulted signature
+    // needs; a `return` here is invisible, so raising it is not optional when a
+    // table grows.
+    if spill > 2 {
         return;
     }
     let unbox = |body: &mut Vec<u8>, vt: u8| match vt {
@@ -1935,9 +1995,10 @@ fn emit_gc_op(
                 write_leb128_u32(body, temp_idx);
                 body.push(0x10); // call ecma:object.set(obj, name, val)
                 write_leb128_u32(body, fidx as u32);
-                // ⛔ NO DROP. `ecma:object.set` is declared `(externref × 3) ->
-                // ()` by `js_object_builtins`, so there is nothing to drop —
-                // dropping here ate the caller's operand instead.
+                // `[[Set]]` answers a Boolean (§10.1.9) and this lowering is a
+                // STATEMENT — discard the flag. Declared `-> boolean` now, so
+                // omitting this leaves a value the enclosing block never took.
+                body.push(0x1A); // drop
                 return;
             }
             let (typeidx, fieldidx) =
@@ -2629,6 +2690,20 @@ fn read_heaptype_operand(chunk: &Chunk, ip: &mut usize, type_ctx: &WasmTypeConte
         }
     }
     buf
+}
+
+/// Emit `ref.cast null eq` — narrows `anyref` to `eqref`.
+///
+/// ⚠ `any.convert_extern` yields `anyref`, which is a SUPERtype of `eqref`, so
+/// internalising alone does not satisfy `ref.eq`. Everything our value ABI puts
+/// on the ANY side is a struct, array, i31 or null — all of them eq — so the
+/// cast is total for values this writer produces. A non-eq reference reaching
+/// it would trap, which is the spec's answer for a reference that cannot be
+/// compared rather than a silent `false`.
+fn emit_ref_cast_eq(body: &mut Vec<u8>) {
+    body.push(0xFB);
+    write_leb128_u32(body, 0x17); // ref.cast null
+    body.push(HT_EQ);
 }
 
 /// Emit `any.convert_extern` (0xFB 0x1A): externref → anyref

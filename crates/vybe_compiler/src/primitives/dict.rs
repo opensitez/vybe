@@ -431,7 +431,10 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     // If __keys doesn't exist (legacy dict without tracking), fall back to host
     chunks[current].emit_dup(line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
+    // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
+    // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
+    // WASM block does not. Both arms leave one value — `(1, 1)`.
+    chunks[current].emit_if_params(line, 1, 1);
     // Null — return an empty array for legacy dicts without key tracking.
     chunks[current].emit_op(Op::DROP, line); // drop null
     // We need the dict back — but it was consumed by struct_get.

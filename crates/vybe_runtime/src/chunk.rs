@@ -514,6 +514,37 @@ pub struct Chunk {
     /// by opcode offset touches the writer only: no VM change, no walker
     /// change, no width change.
     pub block_i32_results: std::collections::HashSet<usize>,
+
+    /// Local SLOTS that hold a raw `i64` for their whole life.
+    ///
+    /// ⛔ THE VALUE ABI CANNOT CARRY AN i64. Every local this writer declares
+    /// is `externref`, and there is no i64 box — our value ABI is externref and
+    /// js-primitive-builtins exposes only `wasm:js-bigint.test`, the i64
+    /// conversions having been removed from the proposal. So a slot that really
+    /// holds an i64 has to be DECLARED one; nothing else can express it.
+    ///
+    /// ⚠ FOR ITS WHOLE LIFE is the load-bearing part. `canon stream.new`'s
+    /// packed handle used to be stored into `rd_slot`, which was then
+    /// overwritten with the 32-bit readable end — one slot holding an i64 and
+    /// later an i32, which no per-slot type could ever describe. That is what
+    /// made this look like it needed general typed-local inference. Give the
+    /// packed value its own slot and the whole mechanism is this set.
+    ///
+    /// Same shape as `block_i32_results` above: the compiler states the fact,
+    /// the writer reads it. Empty for every chunk that has no i64 local, which
+    /// is nearly all of them.
+    pub i64_locals: std::collections::HashSet<u16>,
+
+    /// The one slot handed out by [`Self::i64_scratch`], cached for the chunk.
+    ///
+    /// ⛔ MUST NEVER FALL INSIDE THE RECLAIMABLE RANGE — exactly like
+    /// `dup_slot`. `compile_stmt` restores `local_count` to the pre-statement
+    /// mark at every statement boundary, so an ordinary `alloc_scratch` slot is
+    /// handed out again to the next statement. That is harmless while every
+    /// local is externref and fatal the moment one is DECLARED `i64`: the next
+    /// statement would `local.set` a value into a slot typed for something
+    /// else. `statements.rs` carries the matching floor.
+    pub i64_scratch_slot: Option<u16>,
     /// `call_indirect` / `return_call_indirect` bytecode offset → the DECLARED
     /// functype at that call site, as its source spelling (`"i32,f64->i32"`).
     ///
@@ -626,6 +657,19 @@ pub struct Chunk {
     /// Threading a bool through their ten signatures would have put the same
     /// fact in ten places; a module property belongs on the module.
     pub module_receiver_abi: ReceiverAbi,
+    /// Do this module's class members live ONLY on the prototype, so a member
+    /// READ must be answered by own properties + the prototype chain and NOT
+    /// by the `TypeRegistry` vtable?
+    ///
+    /// ⛔ The vtable is a THIRD mechanism beside `Object::properties` and
+    /// `__proto__`, with its own inheritance walk. It is why `delete
+    /// A.prototype.m` left `a.m` callable while `"m" in a`, `Reflect.ownKeys`
+    /// and `getOwnPropertyDescriptor` all correctly said the member was gone:
+    /// every PREDICATE agreed with node, only the READ diverged.
+    ///
+    /// Module-level, so only meaningful on `chunks[0]` — same as
+    /// `module_receiver_abi`.
+    pub module_members_on_prototype: bool,
     /// Number of results this function returns. Default 1 (single
     /// externref) matches the pre-multi-value ABI. A chunk that wants
     /// to take advantage of the multi-value proposal sets this >1; the
@@ -813,7 +857,10 @@ impl Chunk {
             handled_call_tags: Vec::new(),
             takes_receiver: false,
             module_receiver_abi: ReceiverAbi::Ambient,
+            module_members_on_prototype: false,
             block_i32_results: std::collections::HashSet::new(),
+            i64_locals: std::collections::HashSet::new(),
+            i64_scratch_slot: None,
             call_indirect_sigs: std::collections::HashMap::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
@@ -1406,6 +1453,24 @@ impl Chunk {
     /// Allocate scratch locals for emitter helpers. Returns the base slot.
     /// Updates both `local_count` and `scratch_high_water` so the compiler
     /// always sees the correct total at finalization.
+    /// A slot reserved for a raw `i64`, allocated ONCE per chunk and never
+    /// reclaimed. See [`Self::i64_locals`] for why an i64 cannot live in an
+    /// ordinary local, and [`Self::i64_scratch_slot`] for why it cannot live in
+    /// ordinary scratch.
+    ///
+    /// One is enough: the only producer is `canon stream.new`'s packed handle,
+    /// which is unpacked into two i32 slots within four instructions and never
+    /// nests with another.
+    pub fn i64_scratch(&mut self) -> u16 {
+        if let Some(slot) = self.i64_scratch_slot {
+            return slot;
+        }
+        let slot = self.alloc_scratch(1);
+        self.i64_scratch_slot = Some(slot);
+        self.i64_locals.insert(slot);
+        slot
+    }
+
     pub fn alloc_scratch(&mut self, n: u16) -> u16 {
         let base = self.local_count;
         self.local_count += n;

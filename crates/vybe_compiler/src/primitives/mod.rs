@@ -3583,8 +3583,10 @@ impl Compiler {
         } else {
             vybe_runtime::chunk::ReceiverAbi::Ambient
         };
+        let unit_members_on_prototype = self.members_on_prototype();
         for chunk in &mut self.chunks {
             chunk.module_receiver_abi = unit_abi;
+            chunk.module_members_on_prototype = unit_members_on_prototype;
         }
         // The canon section, published to every chunk on the same principle as
         // the global index space above: a chunk carrying a canonidx must be

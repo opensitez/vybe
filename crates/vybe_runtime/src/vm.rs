@@ -1411,6 +1411,26 @@ pub struct VM {
     /// `test_type` early-returns on `type_id > 0`, a WRONG rtt is worse than
     /// none: it suppresses every fallback.
     pub(crate) chunk_type_base: Vec<usize>,
+    /// Which chunk owns the IMPORT TABLE each chunk's `CALL <idx>` operands
+    /// index — parallel to `chunks`, same shape as `chunk_type_base`.
+    ///
+    /// ⛔ AN IMPORT INDEX IS MODULE-RELATIVE, AND ONLY ONE CHUNK KEPT THE
+    /// TABLE. `link.rs` unifies a module's imports into `chunks[0].imports`
+    /// and CLEARS every other chunk's, so `resolve_chunk_import` found nothing
+    /// for a function body and fell through to the VM-wide positional
+    /// `import_table` — which `run_linked_impl` CLEARS AND REBUILDS per
+    /// program unit. A linked unit's baked `CALL 38` therefore indexed a LATER
+    /// unit's table and silently called a DIFFERENT host function
+    /// (`js-prototypes:configureAll` arriving at `js-string:compare`, returning
+    /// a plausible number rather than an error).
+    ///
+    /// This restores the invariant `merge_global_table` already states for its
+    /// own table: "`chunk.globals` describes `chunk.code`'s operands. Anything
+    /// that rewrites those operands owns re-stating it here." Nothing rewrites
+    /// import operands across units, so each chunk records the module whose
+    /// table its operands were remapped into, and resolution goes back to
+    /// module+NAME rather than a shared position.
+    pub(crate) chunk_import_owner: Vec<usize>,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -1774,6 +1794,7 @@ pub struct VmSnapshot {
     module_type_names: Vec<String>,
     module_type_ids: Vec<usize>,
     chunk_type_base: Vec<usize>,
+    chunk_import_owner: Vec<usize>,
     // Coupled with `tag_entities` (maps imported-tag name → index into it). Must
     // restore together: truncating tag_entities without this would leave a
     // dangling index a later lookup could read out of bounds.
@@ -1895,6 +1916,7 @@ impl VM {
             module_type_names: Vec::new(),
             module_type_ids: Vec::new(),
             chunk_type_base: Vec::new(),
+            chunk_import_owner: Vec::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -2015,6 +2037,7 @@ impl VM {
             module_type_names: self.module_type_names.clone(),
             module_type_ids: self.module_type_ids.clone(),
             chunk_type_base: self.chunk_type_base.clone(),
+            chunk_import_owner: self.chunk_import_owner.clone(),
             imported_tag_registry: self.imported_tag_registry.clone(),
         }
     }
@@ -2131,6 +2154,7 @@ impl VM {
         self.module_type_names = snap.module_type_names.clone();
         self.module_type_ids = snap.module_type_ids.clone();
         self.chunk_type_base = snap.chunk_type_base.clone();
+        self.chunk_import_owner = snap.chunk_import_owner.clone();
         self.imported_tag_registry = snap.imported_tag_registry.clone();
         // 5. Transient execution state — always empty between top-level runs.
         self.stack.clear();
@@ -3332,6 +3356,20 @@ impl VM {
     /// Resolves the value to its chunk and reads [`Chunk::takes_receiver`]. A
     /// host function is never a bytecode callee and answers `false`; so does a
     /// value that is not callable at all, which the call itself then rejects.
+    /// Does the code making this call keep its class members on the prototype
+    /// (so a member read must not fall through to the `TypeRegistry` vtable)?
+    ///
+    /// Asks the CALLING frame's chunk, not `chunks[0]`, for the same reason
+    /// [`Self::module_receiver_abi`] does: in a multi-language bundle
+    /// `chunks[0]` belongs to whichever unit happens to be first. With no frame
+    /// the caller is host code, which keeps the existing behaviour.
+    pub(crate) fn calling_module_members_on_prototype(&self) -> bool {
+        self.frames
+            .last()
+            .and_then(|f| self.chunks.get(f.chunk_index))
+            .is_some_and(|c| c.module_members_on_prototype)
+    }
+
     /// This module's receiver ABI, read off the module chunk.
     /// The receiver ABI of the code making the CALL — the currently executing
     /// frame's chunk, not `chunks[0]`.
@@ -3631,6 +3669,14 @@ impl VM {
         self.merge_canon_section(&adjusted)?;
         self.merge_canon_types(&adjusted)?;
         self.chunks.extend(adjusted);
+        // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
+        // remapped their `CALL` operands into `chunks[script_idx].imports`, so
+        // that is the ONLY table those indices mean anything against — and the
+        // VM-wide one is about to be replaced by the next unit's.
+        self.chunk_import_owner.resize(self.chunks.len(), script_idx);
+        for owner in self.chunk_import_owner[script_idx..].iter_mut() {
+            *owner = script_idx;
+        }
         self.bind_imported_globals();
 
         // Use pre-resolved import table, adjusting ChunkFn indices by offset.
@@ -3829,6 +3875,14 @@ impl VM {
         self.merge_canon_section(&adjusted)?;
         self.merge_canon_types(&adjusted)?;
         self.chunks.extend(adjusted);
+        // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
+        // remapped their `CALL` operands into `chunks[script_idx].imports`, so
+        // that is the ONLY table those indices mean anything against — and the
+        // VM-wide one is about to be replaced by the next unit's.
+        self.chunk_import_owner.resize(self.chunks.len(), script_idx);
+        for owner in self.chunk_import_owner[script_idx..].iter_mut() {
+            *owner = script_idx;
+        }
         // Resolve call-tag declarations EAGERLY, as soon as the chunks that
         // carry them are installed.
         //
@@ -5005,10 +5059,22 @@ impl VM {
         chunk_index: usize,
         import_idx: usize,
     ) -> Result<Option<ImportTarget>, VMError> {
+        // The chunk's own table when it has one; otherwise its MODULE's —
+        // `link.rs` keeps the unified table on the module's first chunk only.
+        let owner = self
+            .chunk_import_owner
+            .get(chunk_index)
+            .copied()
+            .unwrap_or(chunk_index);
         let Some(import) = self
             .chunks
             .get(chunk_index)
             .and_then(|chunk| chunk.imports.get(import_idx))
+            .or_else(|| {
+                self.chunks
+                    .get(owner)
+                    .and_then(|chunk| chunk.imports.get(import_idx))
+            })
         else {
             return Ok(None);
         };

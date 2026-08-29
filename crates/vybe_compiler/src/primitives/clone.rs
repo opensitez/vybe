@@ -172,7 +172,10 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     chunks[idx].emit_op_u16(Op::LOCAL_GET, copied, LINE);
     let set_fn = chunks[idx].add_import("ecma:object", "set");
     chunks[idx].emit_call(set_fn, 3, LINE);
-    chunks[idx].emit_op(Op::DROP, LINE);
+        // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN, so this call leaves a
+        // value and the assignment's own result is `V` (§13.15.2), not it.
+        // Removing this `DROP` made `++o.x` evaluate to null.
+        chunks[idx].emit_op(Op::DROP, LINE);
     loops::emit_for_in_end(chunks, idx, i_slot, state, LINE);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, out, LINE);

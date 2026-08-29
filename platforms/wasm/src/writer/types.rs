@@ -279,7 +279,9 @@ fn val_type_byte(spelling: &str) -> u8 {
 /// it arrives as a host import or a runtime import; typing one table by arity
 /// and the other by signature makes the SAME callee two different types.
 fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool {
-    if module == crate::writer::builtins::js_string_builtins::MODULE {
+    if module == crate::writer::builtins::canon_builtins::MODULE {
+        crate::writer::builtins::canon_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_string_builtins::MODULE {
         crate::writer::builtins::js_string_builtins::write_signature(out, name)
     } else if module == crate::writer::builtins::js_object_builtins::MODULE {
         crate::writer::builtins::js_object_builtins::write_signature(out, name)

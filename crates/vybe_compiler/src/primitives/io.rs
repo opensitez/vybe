@@ -132,16 +132,25 @@ pub fn emit_payload_via_stream(
     // {stream,future}.new — `$f` is given type `(func (result i64))`).
     // This used to take two stack values, which no conforming module could
     // have produced.
+    // ⛔ THE PACKED HANDLE NEEDS ITS OWN SLOT. This parked the i64 in
+    // `rd_slot` and then OVERWROTE that same slot with the 32-bit readable
+    // end — one slot holding an i64 and later an i32. Our VM does not care;
+    // WASM does, because a local has ONE declared type, and `rd_slot` is an
+    // `externref` like every other. V8: `i64.shr_u[0] expected type i64, found
+    // local.get of type externref`. It is also what made this look like it
+    // needed general typed-local inference: no per-slot type could ever have
+    // described a slot that changes type halfway through.
+    let packed = chunk.i64_scratch();
     chunk.emit_call(stream_new, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
     // writable = high 32
-    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
     chunk.emit_i64_const(32, line);
     chunk.emit_op(Op::I64_SHR_U, line);
     chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
     // readable = low 32
-    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
     chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
     // canon stream.write(handle, ptr, n) — `CanonicalABI.md` §canon
@@ -505,14 +514,16 @@ pub fn emit_bytes_to_stream(chunk: &mut Chunk, line: u32) {
 
     // canon stream.new → ONE i64: `ri | (wi << 32)` (`CanonicalABI.md` §canon
     // {stream,future}.new). Same unpacking as `emit_payload_via_stream`.
+    // Own slot for the packed i64 — see `emit_payload_via_stream`.
+    let packed = chunk.i64_scratch();
     chunk.emit_call(stream_new, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, rd, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, rd, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
     chunk.emit_i64_const(32, line);
     chunk.emit_op(Op::I64_SHR_U, line);
     chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, wr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, rd, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
     chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, rd, line);
 

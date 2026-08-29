@@ -3229,7 +3229,11 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     // null / Nothing → Empty (0)
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    let is_null = c.emit_block(0);
+    // ⛔ THE CONDITION IS PUSHED OUTSIDE AND CONSUMED INSIDE. A VM block
+    // shares one operand stack so `(0,0)` worked; a WASM block ISOLATES
+    // its stack and cannot see a value left below it — V8/wasm-tools:
+    // `expected externref but nothing on stack`. It takes one param.
+    let is_null = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     crate::primitives::expressions::emit_const_index(&mut c, v0, 0);
@@ -3241,7 +3245,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     // arrays are a distinct VM kind, not "object"
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     emit_is_array(&mut c, 0);
-    let is_array = c.emit_block(0);
+    let is_array = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     crate::primitives::expressions::emit_const_index(&mut c, v8194, 0);
@@ -3264,7 +3268,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
             crate::primitives::strings::emit_str_equals(&mut c, 0);
             c.emit_dup(0);
             // [is_match, is_match]
-            let _block = c.emit_block(0);
+            let _block = c.emit_block_params(0, 1, 0);
             crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
             c.emit_br_if(0, 0);
             // matched: set result and exit outer block
@@ -3284,7 +3288,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, tag, 0);
     crate::primitives::expressions::emit_const_index(&mut c, num_str, 0);
     crate::primitives::strings::emit_str_equals(&mut c, 0);
-    let is_number = c.emit_block(0);
+    let is_number = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
 
@@ -3292,7 +3296,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::F64_TRUNC, 0);
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    let is_integral = c.emit_block(0);
+    let is_integral = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     crate::primitives::expressions::emit_const_index(&mut c, v2, 0);
@@ -3325,7 +3329,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     );
     crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
     crate::primitives::strings::emit_str_equals(&mut c, 0);
-    let _is_dt = c.emit_block(0);
+    let _is_dt = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     crate::primitives::expressions::emit_const_index(&mut c, v7, 0);

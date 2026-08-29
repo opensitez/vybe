@@ -4566,6 +4566,33 @@ pub struct Directives {
     /// which is exactly what `Module.directives` is.
     pub functions_are_objects: Option<bool>,
 
+    /// Do a class's methods and accessors live ONLY on the prototype, reached
+    /// through the chain — rather than being bound onto every instance at
+    /// construction?
+    ///
+    /// ECMA-262 §15.7 says yes for JS: a class body's members are properties of
+    /// `C.prototype`, non-enumerable, shared by every instance. Measured against
+    /// node, binding them per-instance gives four wrong answers —
+    /// `hasOwnProperty(a,"g")` true, `Object.keys(a)` listing members, `for-in`
+    /// walking the class, and `delete C.prototype.m` leaving `a.m` callable
+    /// because the instance keeps its own copy.
+    ///
+    /// ⛔ NOT A STYLE CHOICE — IT IS WHAT LETS A CLASS CROSS INTO AN ENGINE.
+    /// Measured in V8 (node 26, `--experimental-wasm-custom-descriptors`): a
+    /// member resident in the object's own struct is INVISIBLE to JS —
+    /// `getOwnPropertyNames` is `[]` and reading the field gives `undefined` —
+    /// while a member on a property-bearing prototype reached through the
+    /// descriptor's field 0 IS callable. Per-instance binding is unshippable to
+    /// a stock engine by construction.
+    ///
+    /// ⛔ Defaults to `None` = bind per instance, because several languages
+    /// DEPEND on that: python flattens its C3 MRO onto the instance (a
+    /// `class D(B, C)` diamond broke when the ancestor binding moved) and
+    /// kotlin's `super` reads base-method slots from it. Those need their own
+    /// answer before they can opt in; this is stated per UNIT, one language at
+    /// a time, exactly like `receiver_binding`.
+    pub members_on_prototype: Option<bool>,
+
     /// Inside a SUBPROGRAM BODY, do local declarations compile before nested
     /// procedure declarations, whatever order the flattened statement list
     /// puts them in?
