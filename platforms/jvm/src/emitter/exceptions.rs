@@ -27,7 +27,7 @@ pub(crate) fn emit_jvm_exception_throw_msg(
     message: &str,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
     errors::emit_exception_new_finalize(&mut chunks[current], name, line);

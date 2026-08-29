@@ -16742,20 +16742,37 @@ fn kt_builtin_interface(name: &str, parents: Vec<&str>, members: Vec<ClassMember
 /// So: declare the interface when something implements it, and not otherwise.
 /// The scan is RECURSIVE because Kotlin allows a local class — every test that
 /// implements one of these writes `class R : Iterable<Int>` inside `fun main`.
+/// The builtin collection family a type name belongs to, read-only and mutable
+/// spellings collapsed — `MutableList` and `List` are one declaration.
+///
+/// ⛔ ONE LIST. `kotlin_implemented_builtin_interfaces` decides WHICH builtin
+/// interfaces get declared, and the `by`-delegation sites carried their own
+/// copy of the same names to decide which delegations to record. Two lists for
+/// one fact drift: the delegation copy listed eight spellings and omitted
+/// `MutableIterable` and `MutableCollection`, so `class W(d: MutableCollection<Int>)
+/// : MutableCollection<Int> by d` was simply not recognised.
+fn kotlin_builtin_collection_family(name: &str) -> Option<&'static str> {
+    let name = name.split('<').next().unwrap_or(name).trim();
+    let name = name.rsplit('.').next().unwrap_or(name);
+    Some(match name {
+        "Iterable" | "MutableIterable" => "Iterable",
+        "Collection" | "MutableCollection" => "Collection",
+        "List" | "MutableList" => "List",
+        "Set" | "MutableSet" => "Set",
+        "Map" | "MutableMap" => "Map",
+        _ => return None,
+    })
+}
+
 fn kotlin_implemented_builtin_interfaces(stmts: &[Statement]) -> HashSet<String> {
     fn bare(name: &str) -> String {
-        let name = name.split('<').next().unwrap_or(name).trim();
-        let name = name.rsplit('.').next().unwrap_or(name);
         // The read-only and mutable spellings share one declaration.
-        match name {
-            "MutableIterable" => "Iterable",
-            "MutableCollection" => "Collection",
-            "MutableList" => "List",
-            "MutableSet" => "Set",
-            "MutableMap" => "Map",
-            other => other,
-        }
-        .to_string()
+        kotlin_builtin_collection_family(name)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let name = name.split('<').next().unwrap_or(name).trim();
+                name.rsplit('.').next().unwrap_or(name).to_string()
+            })
     }
 
     fn visit(stmt: &Statement, out: &mut HashSet<String>) {
@@ -18711,17 +18728,10 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         };
     }
     for (interface_name, delegate_field) in &delegations {
-        if matches!(
-            interface_name.rsplit('.').next().unwrap_or(interface_name),
-            "List"
-                | "MutableList"
-                | "Set"
-                | "MutableSet"
-                | "Map"
-                | "MutableMap"
-                | "Collection"
-                | "Iterable"
-        ) {
+        // ⛔ NOT A NAME LIST. `kotlin_builtin_collection_family` is the one
+        // place that knows this family, and it is the same one that decides
+        // which builtin interfaces get declared — so the two cannot drift.
+        if kotlin_builtin_collection_family(interface_name).is_some() {
             {
                 __w.kotlin_delegated_collections
                     .insert(name.clone(), interface_name.clone());
@@ -19243,17 +19253,10 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         };
     }
     for (interface_name, delegate_field) in &delegations {
-        if matches!(
-            interface_name.rsplit('.').next().unwrap_or(interface_name),
-            "List"
-                | "MutableList"
-                | "Set"
-                | "MutableSet"
-                | "Map"
-                | "MutableMap"
-                | "Collection"
-                | "Iterable"
-        ) {
+        // ⛔ NOT A NAME LIST. `kotlin_builtin_collection_family` is the one
+        // place that knows this family, and it is the same one that decides
+        // which builtin interfaces get declared — so the two cannot drift.
+        if kotlin_builtin_collection_family(interface_name).is_some() {
             {
                 __w.kotlin_delegated_collections
                     .insert(name.clone(), interface_name.clone());

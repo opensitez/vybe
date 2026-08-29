@@ -15,6 +15,27 @@
 use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
 use vybe_ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind};
 
+/// `class C implements I` — I's DEFAULT methods join C, and C's own win.
+///
+/// Abstract members do not cross: an interface's body-less members are a
+/// requirement ON the implementer, not a gift TO it, and copying them would
+/// shadow the implementation the class actually declared.
+fn java_interface_defaults() -> AugmentationPolicy {
+    AugmentationPolicy {
+        mode: AugmentationMode::Copy,
+        position: AugmentationPosition::AfterOwn,
+        conflict: AugmentationConflict::RequireExplicit,
+        super_target: AugmentationSuper::OwnParent,
+        contributes: AugmentationContributes {
+            methods: true,
+            fields: false,
+            statics: false,
+            constructors: false,
+            abstract_members: false,
+        },
+    }
+}
+
 pub fn normalize_class(
     span: Span,
     _name: &str,
@@ -60,9 +81,13 @@ pub fn normalize_class(
 
                 let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
                 let access = Access::from(m.visibility);
-                if m.is_abstract {
-                    continue;
-                }
+                // ⚠ NO `is_abstract` FILTER HERE, AND NONE IS NEEDED. There
+                // used to be a `continue` on it; removing it changed nothing,
+                // because java's WALKER never emits a body-less
+                // `method_declaration` as a `ClassMember` at all —
+                // `--dump-ast` on `abstract class Base { abstract int foo(); }`
+                // contains no `foo`. The contract is dropped a layer earlier
+                // than this file, so a filter here can never fire.
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
                 };
@@ -111,11 +136,27 @@ pub fn normalize_class(
                 };
                 out.push_constructor(normalized);
             }
-            // Java's augmentation is interface `default` methods, declared
-            // through `implements` in the class HEADER rather than as a body
-            // member. Migrating them is flexclassplan.md §4c-R step R7, and it
-            // needs `Chain` first.
-            ClassMember::Augment(_) => {}
+            // ⛔ JAVA'S AUGMENTATION IS INTERFACE `default` METHODS, and this
+            // was a no-op arm waiting for a node the walker never emitted.
+            //
+            // ⚠ IT DOES NOT NEED `Chain`. The note here said it did, and the
+            // plan's table said `Chain` + `RequireExplicit` — but `Chain` is
+            // Ruby `prepend`, where the augmented member WRAPS the class's own
+            // and `super` must reach through it. Java has no such rule:
+            //
+            //   - a class's own method always wins            → `AfterOwn`
+            //   - two interfaces supplying one default, with
+            //     no override, is a COMPILE ERROR             → `RequireExplicit`
+            //   - `Interface.super.m()` is an EXPLICIT qualified call, not
+            //     implicit chaining
+            //
+            // Measured: `AugmentationMode::Chain` has ONE site — its own
+            // declaration, zero readers — while `RequireExplicit` has six and
+            // already does exactly this. Kotlin picks `Copy` for the same
+            // construct.
+            ClassMember::Augment(decl) => {
+                out.push_augment_decl(decl, java_interface_defaults());
+            }
             other @ (ClassMember::Property { .. }
             | ClassMember::Event { .. }
             | ClassMember::Const { .. }

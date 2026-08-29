@@ -30,18 +30,25 @@ fn key(chunk: &mut Chunk, name: &str) -> u16 {
 }
 
 fn field_get(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
-    get(chunk, obj, line);
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(name),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 fn field_set_from_stack(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
     let value = chunk.alloc_scratch(1);
     set(chunk, value, line);
-    get(chunk, obj, line);
-    get(chunk, value, line);
-    let k = key(chunk, name);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(name),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
 }
 
 fn object_get(chunks: &mut [Chunk], current: usize, obj: u16, name: &str, line: u32) {
@@ -133,7 +140,7 @@ fn emit_file_object_from_path_record(
     line: u32,
 ) {
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
 
     get(&mut chunks[current], path, line);
@@ -256,7 +263,7 @@ pub fn emit_file_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     set(&mut chunks[current], path, line);
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], path, line);
     field_set_from_stack(&mut chunks[current], obj, DATA, line);
@@ -265,7 +272,7 @@ pub fn emit_file_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
 fn new_object_with_data(chunks: &mut [Chunk], current: usize, data_slot: u16, line: u32) {
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], data_slot, line);
     field_set_from_stack(&mut chunks[current], obj, DATA, line);
@@ -383,7 +390,7 @@ pub fn emit_print_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunks[current].emit_op(Op::DROP, line);
     }
     set(&mut chunks[current], target, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let obj = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], target, line);
@@ -1044,7 +1051,7 @@ pub fn emit_file_output_stream(chunks: &mut [Chunk], current: usize, append: boo
     let path = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], path, line);
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], path, line);
     field_set_from_stack(&mut chunks[current], obj, TARGET, line);
@@ -2073,10 +2080,14 @@ fn path_string_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: 
     chunks[current].emit_else(line);
     // Not a File/Path object — `Paths.get(uri)` hands a `java.net.URI`,
     // whose raw spec sits in `__spec`; strip the scheme prefix back off.
-    get(&mut chunks[current], slot, line);
     {
-        let k = chunks[current].add_constant(vybe_runtime::Value::String("__spec".into()));
-        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+        vybe_compiler::primitives::class_slots::emit_class_get(
+            &mut chunks[current],
+            vybe_compiler::primitives::class_slots::ObjSource::Local(slot),
+            &super::object_fields::field_slot("__spec"),
+            vybe_compiler::primitives::class_slots::Dest::Stack,
+            line,
+        );
     }
     chunks[current].emit_string_const("file://", line);
     chunks[current].emit_string_const("", line);
@@ -2892,7 +2903,7 @@ pub fn emit_nio_files_new_output_stream(chunks: &mut [Chunk], current: usize, ar
     let p = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], p, line);
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], p, line);
     field_set_from_stack(&mut chunks[current], obj, TARGET, line);

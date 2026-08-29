@@ -346,7 +346,7 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
         chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
         callable::emit_direct_invoke(chunks, current, 0, line);
     } else {
-        chunks[current].emit_struct_new(0, 0, line);
+        vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(

@@ -218,7 +218,7 @@ pub fn emit_copy_of_range(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("fromIndex > toIndex", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -242,7 +242,7 @@ pub fn emit_copy_of_range(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("fromIndex out of range", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(

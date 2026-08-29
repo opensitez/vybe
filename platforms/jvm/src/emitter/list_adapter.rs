@@ -17,7 +17,6 @@
 //!
 //! So the code moves now, and the reconciliation becomes a platform-internal
 //! question instead of a cross-crate one.
-use std::sync::Arc;
 use vybe_compiler::primitives::{
     callable, collections,
     functions::create_function_chunk,
@@ -26,7 +25,6 @@ use vybe_compiler::primitives::{
     ops, sets, sorted_collection,
 };
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 /// A set VIEW's backing map — `keySet()` / `entrySet()` keep it in step.
@@ -79,7 +77,7 @@ fn get_object_prop(chunks: &mut [Chunk], current: usize, object: u16, key: &str,
 pub fn emit_atomic_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let cell = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], cell, line);
     set_object_prop_from_local(chunks, current, cell, "value", value, line);
@@ -256,7 +254,7 @@ fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: 
 }
 
 fn emit_java_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -532,7 +530,7 @@ pub fn emit_sub_list(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], from, line);
     set(&mut chunks[current], parent, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let view = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], view, line);
     get(&mut chunks[current], view, line);
@@ -1592,12 +1590,12 @@ pub fn emit_semaphore_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
             set(&mut chunks[current], permits, line);
         }
     }
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let sem = chunks[current].alloc_scratch(1);
     let cells = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], sem, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], cells, line);
     get(&mut chunks[current], cells, line);
     chunks[current].emit_string_const("__shared_int32_len", line);
@@ -1838,7 +1836,6 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     chunks[current].emit_op(Op::DROP, line);
 
     let mut worker = create_function_chunk("__java_thread_worker", 1);
-    let target_key = worker.add_constant(Value::String(Arc::from("__target")));
     // Slot 0 arrives as the thread object's TABLE INDEX (the wasi-threads
     // record's user_arg is an i32; objects cross via funcref table 0).
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -1847,8 +1844,13 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     vybe_compiler::primitives::globals::emit_write(&mut worker, "__j_current_thread", line);
     vybe_compiler::primitives::globals::emit_read(&mut worker, "__j_runnable_run", line);
-    worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_struct_field_op(Op::STRUCT_GET, 0, target_key, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut worker,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(0),
+        &super::object_fields::field_slot("__target"),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
     callable::emit_direct_invoke_chunk(&mut worker, 1, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;
@@ -2195,7 +2197,7 @@ pub fn emit_list_iterator(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     }
     set(&mut chunks[current], list, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let iterator = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], iterator, line);
     get(&mut chunks[current], iterator, line);
@@ -2578,7 +2580,7 @@ pub fn emit_enumeration_from_array(chunks: &mut [Chunk], current: usize, line: u
     let items = chunks[current].alloc_scratch(1);
     let enumeration = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], items, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], enumeration, line);
     set_object_prop_from_local(chunks, current, enumeration, ENUM_ITEMS_KEY, items, line);
     set_object_prop_i32(chunks, current, enumeration, ENUM_INDEX_KEY, 0, line);

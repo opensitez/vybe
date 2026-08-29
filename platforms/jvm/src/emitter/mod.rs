@@ -1,6 +1,7 @@
 //! Compiler-side surface for the JVM platform.
 
 pub mod arrays_adapter;
+pub mod object_fields;
 pub mod base64_adapter;
 pub mod biginteger_adapter;
 pub mod bitset_adapter;

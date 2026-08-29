@@ -14,6 +14,21 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+
+/// The `__buffer` slot, through the class-slot owner.
+fn buffer_slot() -> vybe_compiler::primitives::class_slots::ResolvedSlot {
+    super::object_fields::field_slot(BUFFER_KEY)
+}
+
+fn buf_get(chunk: &mut Chunk, obj: ObjSource, line: u32) {
+    class_slots::emit_class_get(chunk, obj, &buffer_slot(), Dest::Stack, line);
+}
+
+fn buf_set(chunk: &mut Chunk, obj: ObjSource, val: ValueSource, line: u32) {
+    class_slots::emit_class_set(chunk, obj, &buffer_slot(), val, line);
+}
+
 pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let initial = chunks[current].alloc_scratch(1);
     if argc > 0 {
@@ -26,11 +41,10 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         set(&mut chunks[current], initial, line);
     }
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
     get(&mut chunks[current], initial, line);
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    buf_set(&mut chunks[current], ObjSource::Stack, ValueSource::Stack, line);
 }
 
 pub fn emit_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -72,7 +86,6 @@ fn append_slot(
     newline: bool,
     line: u32,
 ) {
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
     // Appending a CHAR ARRAY appends its characters, not "x,y,z".
     get(&mut chunks[current], value, line);
     let is_arr = chunks[current].add_import("ecma:array", "isArray");
@@ -92,8 +105,7 @@ fn append_slot(
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    get(&mut chunks[current], value, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    buf_get(&mut chunks[current], ObjSource::Local(value), line);
     let other = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], other, line);
     get(&mut chunks[current], other, line);
@@ -105,15 +117,14 @@ fn append_slot(
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], sb, line);
-    get(&mut chunks[current], sb, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    buf_get(&mut chunks[current], ObjSource::Local(sb), line);
     get(&mut chunks[current], value, line);
     strings::emit_str_concat_coercing(&mut chunks[current], line);
     if newline {
         chunks[current].emit_string_const("\n", line);
         strings::emit_str_concat(&mut chunks[current], line);
     }
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    buf_set(&mut chunks[current], ObjSource::Stack, ValueSource::Stack, line);
     get(&mut chunks[current], sb, line);
 }
 
@@ -123,8 +134,7 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
             chunks[current].emit_op(Op::DROP, line);
         }
     }
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    buf_get(&mut chunks[current], ObjSource::Stack, line);
 }
 
 // ── The rest of the `java.lang.StringBuilder` surface ───────────────────────
@@ -133,19 +143,19 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 // primitives and `ecma:string` host fns — no new host surface.
 
 fn buffer_get(chunks: &mut [Chunk], current: usize, sb: u16, line: u32) {
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
-    get(&mut chunks[current], sb, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    buf_get(&mut chunks[current], ObjSource::Local(sb), line);
 }
 
 /// `[new_buffer]` → stores it, leaves the BUILDER (for chaining).
 fn buffer_set(chunks: &mut [Chunk], current: usize, sb: u16, line: u32) {
     let tmp = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], tmp, line);
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
-    get(&mut chunks[current], sb, line);
-    get(&mut chunks[current], tmp, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    buf_set(
+        &mut chunks[current],
+        ObjSource::Local(sb),
+        ValueSource::Local(tmp),
+        line,
+    );
     get(&mut chunks[current], sb, line);
 }
 
@@ -175,8 +185,7 @@ fn buffer_slice(
 
 /// `sb.length()` / `sb.capacity()` — the buffer's length.
 pub fn emit_length(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    buf_get(&mut chunks[current], ObjSource::Stack, line);
     strings::emit_length(&mut chunks[current], line);
 }
 

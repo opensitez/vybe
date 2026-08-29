@@ -30,10 +30,9 @@
 //! none of. WHATWG and python both say `""`. That is language-shaped
 //! behaviour over a shared component read, which is what an adapter is for.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::url::{self, ParseOptions, PercentOptions, UrlField};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 // ── local emit helpers ──────────────────────────────────────────────────────
 
@@ -51,14 +50,24 @@ fn lset(chunks: &mut [Chunk], c: usize, s: u16, line: u32) {
 
 /// Stack: `[obj]` → `[value]`.
 fn sget(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
-    let k = chunks[c].add_constant(Value::String(Arc::from(key)));
-    chunks[c].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[c],
+        vybe_compiler::primitives::class_slots::ObjSource::Stack,
+        &super::object_fields::field_slot(key),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// Stack: `[obj, value]` → `[]`.
 fn sset(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
-    let k = chunks[c].add_constant(Value::String(Arc::from(key)));
-    chunks[c].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        &mut chunks[c],
+        vybe_compiler::primitives::class_slots::ObjSource::Stack,
+        &super::object_fields::field_slot(key),
+        vybe_compiler::primitives::class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 fn call(chunks: &mut [Chunk], c: usize, module: &str, name: &str, argc: u8, line: u32) {

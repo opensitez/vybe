@@ -632,7 +632,7 @@ pub fn emit_list_iterator(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     }
     set(&mut chunks[current], list, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let iterator = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], iterator, line);
     get(&mut chunks[current], iterator, line);

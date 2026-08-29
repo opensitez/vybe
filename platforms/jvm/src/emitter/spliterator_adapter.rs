@@ -8,7 +8,6 @@
 
 use vybe_compiler::primitives::{callable, collections, instructions::host, ops};
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 const ARR: &str = "__spl_arr";
@@ -27,18 +26,25 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn field_get(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
-    get(chunk, obj, line);
-    let k = chunk.add_constant(Value::String(name.into()));
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(name),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 fn field_set_from_stack(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
     let value = chunk.alloc_scratch(1);
     set(chunk, value, line);
-    get(chunk, obj, line);
-    get(chunk, value, line);
-    let k = chunk.add_constant(Value::String(name.into()));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(name),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
 }
 
 /// `list.spliterator()` — `[array] -> [spliterator]`.
@@ -46,7 +52,7 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], arr, line);
     let obj = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], obj, line);
     get(&mut chunks[current], arr, line);
     field_set_from_stack(&mut chunks[current], obj, ARR, line);

@@ -8,7 +8,6 @@
 //! is an execution the `ExecutorService` contract permits and the only
 //! honest one when the host thread pool IS the OS scheduler.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::{
     callable, collections,
     functions::create_function_chunk,
@@ -17,7 +16,6 @@ use vybe_compiler::primitives::{
     ops, threading,
 };
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 const SHUTDOWN: &str = "__exec_shutdown";
@@ -78,8 +76,6 @@ pub fn emit_executor_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 /// the worker has exactly one job.
 fn task_worker_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut worker = create_function_chunk("__java_executor_worker", 1);
-    let invoke_key = worker.add_constant(Value::String(Arc::from(REC_INVOKE)));
-    let result_key = worker.add_constant(Value::String(Arc::from(REC_RESULT)));
     let record = 0u16;
     let value = 1u16;
     worker.emit_op_u16(Op::LOCAL_GET, record, line);
@@ -87,13 +83,22 @@ fn task_worker_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     worker.emit_op_u16(Op::LOCAL_SET, record, line);
     worker.emit_op_u16(Op::LOCAL_GET, record, line);
     globals::emit_write(&mut worker, "__j_current_thread", line);
-    worker.emit_op_u16(Op::LOCAL_GET, record, line);
-    worker.emit_struct_field_op(Op::STRUCT_GET, 0, invoke_key, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut worker,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(record),
+        &super::object_fields::field_slot(REC_INVOKE),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
     callable::emit_direct_invoke_chunk(&mut worker, 0, line);
     worker.emit_op_u16(Op::LOCAL_SET, value, line);
-    worker.emit_op_u16(Op::LOCAL_GET, record, line);
-    worker.emit_op_u16(Op::LOCAL_GET, value, line);
-    worker.emit_struct_field_op(Op::STRUCT_SET, 0, result_key, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        &mut worker,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(record),
+        &super::object_fields::field_slot(REC_RESULT),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
     worker.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 2;
@@ -138,14 +143,15 @@ pub fn emit_submit(chunks: &mut Vec<Chunk>, current: usize, returns_future: bool
 
     // The record that crosses the thread boundary via table 0.
     let record = chunks[current].alloc_scratch(1);
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     set(&mut chunks[current], record, line);
-    get(&mut chunks[current], record, line);
-    get(&mut chunks[current], invoke, line);
-    {
-        let k = chunks[current].add_constant(Value::String(Arc::from(REC_INVOKE)));
-        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    }
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(record),
+        &super::object_fields::field_slot(REC_INVOKE),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(invoke),
+        line,
+    );
 
     let worker_idx = task_worker_chunk(chunks, line);
     get(&mut chunks[current], record, line);
@@ -207,11 +213,13 @@ pub fn emit_future_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     prop_get(chunks, current, fut, FUT_RECORD, line);
     let record = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], record, line);
-    get(&mut chunks[current], record, line);
-    {
-        let k = chunks[current].add_constant(Value::String(Arc::from(REC_RESULT)));
-        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
-    }
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(record),
+        &super::object_fields::field_slot(REC_RESULT),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
     let value = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], value, line);

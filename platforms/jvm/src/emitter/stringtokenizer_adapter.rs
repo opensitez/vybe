@@ -16,16 +16,23 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn prop_get(chunk: &mut Chunk, obj: u16, key_name: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(key_name.into()));
-    get(chunk, obj, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(key_name),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 fn prop_set_from_slot(chunk: &mut Chunk, obj: u16, key_name: &str, value: u16, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(key_name.into()));
-    get(chunk, obj, line);
-    get(chunk, value, line);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &super::object_fields::field_slot(key_name),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
 }
 
 pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -55,7 +62,7 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let tokens = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], tokens, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let tokenizer = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], tokenizer, line);
     prop_set_from_slot(&mut chunks[current], tokenizer, TOKENS_KEY, tokens, line);

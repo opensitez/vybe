@@ -73,9 +73,13 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     // `toString()` as the path string, which is exactly the DATA field the
     // io adapters store. Probed here because these are platform-built
     // structs with no ToString slot to fill.
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    let io_data = chunks[current].add_constant(vybe_runtime::Value::String("__java_io_data".into()));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, io_data, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(value),
+        &super::object_fields::field_slot("__java_io_data"),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
     let io_path = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, io_path, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, io_path, line);

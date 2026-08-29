@@ -41,18 +41,25 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn field_get(chunk: &mut Chunk, slot: u16, field: &str, line: u32) {
-    get(chunk, slot, line);
-    let k = key(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(slot),
+        &super::object_fields::field_slot(field),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 fn field_set_from_stack(chunk: &mut Chunk, slot: u16, field: &str, line: u32) {
     let value = chunk.alloc_scratch(1);
     set(chunk, value, line);
-    get(chunk, slot, line);
-    get(chunk, value, line);
-    let k = key(chunk, field);
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(slot),
+        &super::object_fields::field_slot(field),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
 }
 
 fn array_get_const(chunk: &mut Chunk, slot: u16, idx: f64, line: u32) {
@@ -72,7 +79,7 @@ fn null(chunk: &mut Chunk, line: u32) {
 }
 
 fn emit_clone_matcher_from_slot(chunks: &mut [Chunk], current: usize, matcher: u16, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     let copy = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], copy, line);
     for field in [RE_KEY, INPUT_KEY, MATCH_KEY, CURSOR_KEY, START_KEY, END_KEY] {
@@ -96,7 +103,7 @@ fn emit_clone_matcher_from_slot(chunks: &mut [Chunk], current: usize, matcher: u
 
 fn emit_match_range_object_from_slot(chunks: &mut [Chunk], current: usize, matcher: u16, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let range = chunk.alloc_scratch(1);
     set(chunk, range, line);
     field_get(chunk, matcher, START_KEY, line);
@@ -129,7 +136,7 @@ pub fn emit_pattern_compile(chunks: &mut [Chunk], current: usize, argc: u8, line
     let re = chunk.alloc_scratch(1);
     set(chunk, re, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let pat = chunk.alloc_scratch(1);
     set(chunk, pat, line);
     get(chunk, source, line);
@@ -159,7 +166,7 @@ pub fn emit_pattern_compile_flags(chunks: &mut [Chunk], current: usize, argc: u8
     let re = chunk.alloc_scratch(1);
     set(chunk, re, line);
 
-    chunk.emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let pat = chunk.alloc_scratch(1);
     set(chunk, pat, line);
     get(chunk, source, line);
@@ -191,7 +198,7 @@ pub fn emit_pattern_matcher(chunks: &mut [Chunk], current: usize, line: u32) {
     let pattern = chunk.alloc_scratch(1);
     set(chunk, input, line);
     set(chunk, pattern, line);
-    chunk.emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let matcher = chunk.alloc_scratch(1);
     set(chunk, matcher, line);
     field_get(chunk, pattern, RE_KEY, line);
@@ -290,7 +297,7 @@ pub fn emit_matcher_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_f64_const(1.0, line);
     host::emit(chunk, "ecma:array", "slice", 2, line);
     field_set_from_stack(chunk, matcher, DESTRUCTURED_KEY, line);
-    chunk.emit_struct_new(0, 0, line);
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let range = chunk.alloc_scratch(1);
     set(chunk, range, line);
     field_get(chunk, matcher, START_KEY, line);

@@ -387,7 +387,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body
     };
     normalize_java_class_tree(__w, &mut body);
-    strip_java_abstract_method_declarations(&mut body);
+    // Abstract declarations are KEPT — see the note on the function.
+
     lower_java_abstract_runtime_modifiers(&mut body);
     inject_java_static_initializer_calls(&mut body);
 
@@ -1451,6 +1452,22 @@ fn walk_class(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, String
         }
     }
 
+    // ⛔ `implements I` IS AN AUGMENTATION, DECLARED. Java's interface default
+    // methods reached implementers through `collect_java_interface_default_
+    // methods` — a private walker pass — while `normalize_class.rs` carried a
+    // `ClassMember::Augment(_) => {}` arm for a node this walker never emitted.
+    //
+    // The policy is stated in the normalizer, as data, exactly as kotlin and
+    // C# do. `via_field: None` is what marks this the copy-the-defaults form;
+    // kotlin's `: I by d` sets it and gets `Promote` instead, off the same node.
+    for interface_name in &interfaces {
+        members.push(ClassMember::Augment(AugmentDecl {
+            from: interface_name.clone(),
+            via_field: None,
+            adjustments: Vec::new(),
+        }));
+    }
+
     let extends_thread = parents
         .iter()
         .any(|parent| java_type_simple_name(parent) == "Thread");
@@ -1971,12 +1988,24 @@ fn walk_interface(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, St
         };
     }
 
+    // ⛔ SAY THAT IT IS AN INTERFACE. This emitted a bare `ClassDecl`, so java's
+    // interfaces reached `classes.rs` — which is why they normalize at all —
+    // but with `ClassKind::Class`: the model could not tell `interface IGreet`
+    // from `class IGreet`. That is exactly what `declared_kind` exists to
+    // prevent, per its own doc: "without this the compiler cannot tell them
+    // apart — which is why languages kept walker-thread-local side tables".
+    //
+    // php states the kind; C# and VB now do too. Reaching the shared machinery
+    // must not cost the declaration its identity.
     Ok(StmtKind::ClassDecl {
         name,
         parents,
         interfaces: vec![],
         members,
-        modifiers: into_class_modifiers(pm),
+        modifiers: ClassModifiers {
+            kind: ClassKind::Interface,
+            ..into_class_modifiers(pm)
+        },
         decorators: vec![],
     })
 }
@@ -9454,6 +9483,26 @@ fn erase_java_interface_params(__w: &mut JavaWalker, params: &mut [Param]) {
     }
 }
 
+/// ⛔ AN ABSTRACT METHOD IS A DECLARED MEMBER AND MUST SURVIVE.
+///
+/// This dropped every body-less non-static method from every class, so a java
+/// declaration's CONTRACT never reached the AST at all:
+///
+///     abstract class Base { public abstract int foo(); int bar(){…} }
+///     interface Shape   { double area(); default String label(){…} }
+///
+/// `--dump-ast` contained no `foo` and no `area` — `Base.members` began at
+/// `bar`. Every "does this type declare that member" question therefore
+/// answered NO for an abstract member, and since interfaces became `ClassDecl`s
+/// an interface registered only its DEFAULT methods and none of the ones it
+/// REQUIRES. C# keeps them (`members: Bar, Foo`) through the same shared
+/// pipeline, which is what made the difference visible.
+///
+/// ⚠ The predicate did not even ask `is_abstract` — `body.is_empty() &&
+/// !is_static` strips a legitimately empty method body too.
+///
+/// Keeping them is safe because the class model already knows what an abstract
+/// member is: `classes.rs` treats `is_abstract` as virtual and binds no body.
 fn strip_java_abstract_method_declarations(body: &mut [Statement]) {
     for stmt in body {
         match &mut stmt.kind {
@@ -15872,19 +15921,38 @@ fn install_java_interface_default_methods(__w: &mut JavaWalker,
                 members,
                 ..
             } => {
+                // ⛔ THE PLAIN DEFAULT MEMBERS COME FROM THE AUGMENTATION NOW.
+                // This copied them in here first, which left `apply_
+                // augmentations` looking at a class that already owned the
+                // name — `AfterOwn` then skipped it and `RequireExplicit` never
+                // saw a conflict. Measured: two interfaces supplying `who()`
+                // with no override printed `A` instead of being the compile
+                // ERROR javac reports. The declaration was inert while this ran.
+                //
+                // What still belongs here is ONLY the `__java_default_<Iface>_
+                // <method>` alias, which is java's spelling for
+                // `Interface.super.m()` and not a member the augmentation
+                // supplies.
                 let is_interface = __w.java_interface_names.contains(name);
                 if !is_interface {
                     let mut implemented = parents.clone();
                     implemented.extend(interfaces.iter().cloned());
-                    let mut defaults = Vec::new();
+                    let mut aliases = Vec::new();
                     collect_java_interface_default_methods(__w, 
                         &implemented,
                         class_members,
                         class_parents,
                         &mut std::collections::HashSet::new(),
-                        &mut defaults,
+                        &mut aliases,
                     );
-                    append_missing_java_interface_defaults(members, defaults);
+                    aliases.retain(|member| {
+                        java_function_decl_name(match member {
+                            ClassMember::Method(stmt) => stmt,
+                            _ => return false,
+                        })
+                        .is_some_and(|n| n.starts_with("__java_default_"))
+                    });
+                    append_missing_java_interface_defaults(members, aliases);
                 }
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
