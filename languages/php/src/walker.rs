@@ -10888,7 +10888,7 @@ fn walk_expression(__php_w: &mut PhpWalker, mut pair: Pair<Rule>) -> Result<Expr
         Rule::string_lit => return Ok(Expression::with_span(walk_string(__php_w, &pair).kind, span)),
 
         Rule::variable => return walk_php_variable_expr(__php_w, pair, span),
-        Rule::simple_variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
+        Rule::simple_variable => php_variable_expr_kind(strip_dollar(pair.as_str())),
         Rule::identifier | Rule::method_ident => {
             let name = pair.as_str();
             // Bare PHP global constants get rewritten to their JS-shaped
@@ -14115,10 +14115,27 @@ fn walk_php_variable_expr(__php_w: &mut PhpWalker, pair: Pair<Rule>, span: Span)
         }
     }
 
-    Ok(Expression::with_span(
-        ExprKind::Ident(strip_dollar(raw).to_string()),
-        span,
-    ))
+    Ok(Expression::with_span(php_variable_expr_kind(strip_dollar(raw)), span))
+}
+
+/// A php variable NAME as the expression it denotes.
+///
+/// `$GLOBALS` is php's spelling of the module's global namespace, and the
+/// shared compiler models that as `ExprKind::GlobalNamespace` — the same
+/// vocabulary lua's `_G`, js's `globalThis` and python's `globals()` normalize
+/// into. It used to survive as an ordinary `Ident` all the way into the shared
+/// compiler, which compared it against a `global_namespace` profile row; the
+/// row is gone and so is the comparison, so the spelling has to end HERE, in
+/// the walker that owns php's spellings.
+///
+/// Known limit, and it is php's mildest: `$GLOBALS` is a superglobal, so unlike
+/// lua's `_G` it cannot be shadowed by a local — the name-keyed rewrite has no
+/// hole to fall into here.
+fn php_variable_expr_kind(name: &str) -> ExprKind {
+    if name == "$GLOBALS" {
+        return ExprKind::GlobalNamespace;
+    }
+    ExprKind::Ident(name.to_string())
 }
 
 /// One `$` applied to an inner form that yields the NAME to read.
@@ -14178,7 +14195,7 @@ fn php_computed_variable_from_key(
     Ok(Expression::with_span(
         ExprKind::Index {
             object: Box::new(Expression::with_span(
-                ExprKind::Ident("$GLOBALS".to_string()),
+                ExprKind::GlobalNamespace,
                 span.clone(),
             )),
             index: Box::new(key),
@@ -16922,7 +16939,7 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             } else {
                 Expression::null()
             };
-            if matches!(&receiver.kind, ExprKind::Ident(name) if name == "$GLOBALS") {
+            if matches!(&receiver.kind, ExprKind::GlobalNamespace) {
                 if let Some(key) = literal_string_key(&index) {
                     return Ok(Expression::with_span(
                         ExprKind::Ident(format!("${key}")),
@@ -16953,7 +16970,7 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             // became a `__php_offset_obj_N` temp, so `$GLOBALS` was no longer
             // visible and the read came back blank.
             if matches!(&indexed.kind, ExprKind::Index { object, .. }
-                if matches!(&object.kind, ExprKind::Ident(n) if n == "$GLOBALS"))
+                if matches!(&object.kind, ExprKind::GlobalNamespace))
             {
                 return Ok(indexed);
             }
@@ -21902,12 +21919,17 @@ fn php_called_class_expr(span: &Span) -> Expression {
 
 /// The superglobals, which are readable in EVERY scope without `global`.
 ///
-/// The same seven [`SUPERGLOBALS_PRELUDE`] binds, plus `$GLOBALS` and
-/// `$_SESSION`. The data behind them is shared (`primitives/http_request_env`,
-/// `http_form`, `http_cookie`, `wasi:cli/environment`); all PHP contributes is
-/// the spelling, which is why this is a list of names and not a mechanism.
-const PHP_SUPERGLOBAL_NAMES: [&str; 9] = [
-    "$GLOBALS",
+/// The same seven [`SUPERGLOBALS_PRELUDE`] binds, plus `$_SESSION`. The data
+/// behind them is shared (`primitives/http_request_env`, `http_form`,
+/// `http_cookie`, `wasi:cli/environment`); all PHP contributes is the spelling,
+/// which is why this is a list of names and not a mechanism.
+///
+/// `$GLOBALS` is NOT among them any more, and its absence is the point: it is
+/// no longer a NAME. `php_variable_expr_kind` turns it into
+/// `ExprKind::GlobalNamespace` at the parse path, so no scope decision can ever
+/// be asked about it — an entry here would have been a spelling that nothing
+/// could match.
+const PHP_SUPERGLOBAL_NAMES: [&str; 8] = [
     "$_SERVER",
     "$_GET",
     "$_POST",

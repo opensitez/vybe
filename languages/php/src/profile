@@ -14,8 +14,6 @@ extensions = ["php", "phtml"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
-# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
-global_namespace = "$GLOBALS"
 separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (method) coexist
 # namespaceplan.md (PHP phase): namespace-shaped entry points (package-root
 # `\Vybe\...` chains, wildcard namespace member access) resolve through the
