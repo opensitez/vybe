@@ -177,6 +177,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
         directives: vybe_ast::Directives {
+            // A procedure puts its locals above `contains` and its internal
+            // procedures below, so an inner procedure may reference a local
+            // that follows it once the body is flattened. Was the
+            // `class_body_declarations_before_procedures` profile flag — whose
+            // "class" was a misnomer; its only reader is in
+            // `compile_function_decl`. Fortran was the only language that set it.
+            
+            body_declarations_first: Some(true),
             // `ISHFT`/`SHIFTL`/`SHIFTR` yield ZERO once the count reaches
             // BIT_SIZE — every bit has been shifted out. wasm instead MASKS the
             // count, so the bare instruction answers `ishft(1, 32)` with 1

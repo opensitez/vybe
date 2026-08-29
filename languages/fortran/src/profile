@@ -31,7 +31,6 @@ array_assign_broadcasts_scalar = true
 # Arguments alias the caller's object.
 args_pass_by_reference = true
 # Module variables compile before contained procedures.
-class_body_declarations_before_procedures = true
 # `real :: a(3,4)` declares the shape; the declaration allocates it.
 array_bounds_declare_fixed_shape = true
 # `a + b` on arrays is elementwise.
