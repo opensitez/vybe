@@ -16,6 +16,9 @@ use vybe_compiler::primitives::sets;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
 fn call_import(
@@ -108,8 +111,8 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
@@ -120,8 +123,8 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     call_import(chunks, current, "ecma:string", "String", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let msg_key = chunks[current].add_constant(Value::String(Arc::from("message")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, msg_key, line);
+    let msg_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("message"), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &msg_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -505,12 +508,12 @@ fn emit_ruby_exception_inspect(chunks: &mut [Chunk], current: usize, argc: u8, l
     let type_s = chunks[current].alloc_scratch(1);
     let msg_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let msg_key = chunks[current].add_constant(Value::String(Arc::from("message")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, msg_key, line);
+    let msg_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("message"), &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &msg_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -1047,8 +1050,8 @@ fn emit_ruby_is_wrapped_string_slot(chunks: &mut [Chunk], current: usize, slot: 
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     chunks[current].emit_string_const("String", line);
@@ -2061,7 +2064,7 @@ fn emit_ruby_enumerator_from_items_slot_with_type(
     type_name: &'static str,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(type_name, line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -2088,7 +2091,7 @@ fn emit_ruby_enumerator_from_cont_slot(
     cont_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Enumerator", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -2110,7 +2113,7 @@ fn emit_ruby_yielder_from_items_slot(
     items_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Yielder", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3458,8 +3461,8 @@ fn emit_ruby_time_utc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 }
 
 fn emit_time_set_const(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+    let key_idx = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(key), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key_idx, ValueSource::Stack, line);
 }
 
 fn emit_time_object_from_ms(
@@ -3471,7 +3474,7 @@ fn emit_time_object_from_ms(
 ) {
     let ms_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Time", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3489,7 +3492,7 @@ fn emit_time_object_from_ms(
 fn emit_date_object_from_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     let ms_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Date", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3535,7 +3538,7 @@ fn emit_ruby_env(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__ruby_env", line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__ruby_env", line);
     chunks[current].emit_else(line);
@@ -3545,7 +3548,7 @@ fn emit_ruby_env(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_ruby_random_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Random", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3610,7 +3613,7 @@ fn emit_ruby_dir_children(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 fn emit_ruby_dir_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Dir", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3678,7 +3681,7 @@ fn emit_ruby_dir_each(
 }
 
 fn emit_ruby_io_pipe(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("IO", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3691,7 +3694,7 @@ fn emit_ruby_io_pipe(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_ruby_io_popen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("IO", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4001,7 +4004,7 @@ fn emit_ruby_join(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 fn emit_ruby_thread_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Thread", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4018,7 +4021,7 @@ fn emit_ruby_thread_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 }
 
 fn emit_ruby_thread_current(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Thread", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4080,7 +4083,7 @@ fn emit_ruby_thread_status(chunks: &mut [Chunk], current: usize, argc: u8, line:
 }
 
 fn emit_ruby_mutex_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Mutex", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4126,7 +4129,7 @@ fn emit_ruby_synchronize(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 }
 
 fn emit_ruby_threadgroup_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("ThreadGroup", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4472,7 +4475,7 @@ fn emit_ruby_threadgroup_list(chunks: &mut [Chunk], current: usize, argc: u8, li
 }
 
 fn emit_ruby_regexp_marker(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Regexp", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4737,7 +4740,7 @@ fn emit_ruby_substring_from_slots(
 
 fn emit_ruby_b(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4783,7 +4786,7 @@ fn emit_ruby_encoded_string_from_slots(
     encoding_s: Option<u16>,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4806,7 +4809,7 @@ fn emit_ruby_freeze(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -6995,7 +6998,7 @@ fn emit_ruby_gsub_like(
 }
 
 fn emit_ruby_process_times(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Process::Tms", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7006,7 +7009,7 @@ fn emit_ruby_process_wait2(chunks: &mut [Chunk], current: usize, argc: u8, line:
         chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_string_const("pid", line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     core_wasm::i32_const(&mut chunks[current], line, 42);
     emit_time_set_const(chunks, current, "exitstatus", line);
@@ -7282,7 +7285,7 @@ fn emit_ruby_is_callable_wrapper_slot(chunks: &mut [Chunk], current: usize, slot
 
 fn emit_ruby_proc_new(chunks: &mut [Chunk], current: usize, argc: u8, is_lambda: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7329,7 +7332,7 @@ fn emit_ruby_proc_compose_from_slots(
     reverse: bool,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7419,7 +7422,7 @@ fn emit_ruby_proc_curry_object(
     value_s: Option<u16>,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7726,7 +7729,7 @@ fn emit_ruby_proc_binding(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Binding", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7734,7 +7737,7 @@ fn emit_ruby_proc_binding(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Method", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7803,7 +7806,7 @@ fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line:
 }
 
 fn emit_ruby_type_marker(chunks: &mut [Chunk], current: usize, ty: &str, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(ty, line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7821,7 +7824,7 @@ fn emit_ruby_method_receiver(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_s, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     emit_time_prop_from_slot(chunks, current, slots[0], "__receiver_class", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7845,7 +7848,7 @@ fn emit_ruby_method_unbind(chunks: &mut [Chunk], current: usize, argc: u8, line:
         emit_ruby_type_marker(chunks, current, "UnboundMethod", line);
         return;
     }
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("UnboundMethod", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7870,7 +7873,7 @@ fn emit_ruby_method_super_method(chunks: &mut [Chunk], current: usize, argc: u8,
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Method", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7923,7 +7926,7 @@ fn emit_ruby_error(
     message: &str,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
     errors::emit_exception_new_finalize(&mut chunks[current], ty, line);
@@ -7939,7 +7942,7 @@ fn emit_ruby_exception_object_const(
     msg_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
     errors::emit_exception_new_finalize(&mut chunks[current], ty, line);
@@ -7990,21 +7993,21 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
         chunk.emit_string_const(name, line);
     }
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__types")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve_interned(chunk, &ClassSlot::repr("__types"), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &key, ValueSource::Stack, line);
 }
 
 fn emit_ruby_exception_backtrace_default(chunk: &mut Chunk, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_array_new_fixed(0, 0, line);
-    let key = chunk.add_constant(Value::String(Arc::from("backtrace")));
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve_interned(chunk, &ClassSlot::internal("backtrace"), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &key, ValueSource::Stack, line);
 }
 
 fn emit_ruby_exception_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let Some(ty_s) = slots.first().copied() else {
-        chunks[current].emit_struct_new(0, 0, line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
         return;
     };
     let msg_s = slots.get(1).copied().unwrap_or(ty_s);
@@ -8114,7 +8117,7 @@ fn emit_ruby_exception_object_fixed(
     line: u32,
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     if let Some(msg_s) = slots.first().copied() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
@@ -8134,8 +8137,8 @@ fn emit_ruby_exception_set_backtrace(chunks: &mut [Chunk], current: usize, argc:
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
-    let key = chunks[current].add_constant(Value::String(Arc::from("backtrace")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("backtrace"), &PlainNames);
+    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key, ValueSource::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
 }
 
@@ -8146,8 +8149,8 @@ fn emit_ruby_exception_with_message(chunks: &mut [Chunk], current: usize, argc: 
         return;
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
-    let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
     emit_ruby_exception_object(chunks, current, 2, line);
 }
@@ -8618,7 +8621,7 @@ fn emit_ruby_rational(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
 fn emit_ruby_complex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Complex", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -8669,7 +8672,7 @@ fn emit_ruby_is_rational_slot(chunks: &mut [Chunk], current: usize, slot: u16, l
 fn emit_ruby_float_object(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Float", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -8873,7 +8876,7 @@ fn emit_rational_object_from_numbers(chunks: &mut [Chunk], current: usize, line:
     math::emit_trunc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, den_s, line);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Rational", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -10308,7 +10311,7 @@ fn emit_ruby_arithmetic_sequence(chunks: &mut [Chunk], current: usize, argc: u8,
     chunks[current].emit_end(line);
     chunks[current].patch_block(block);
 
-    chunks[current].emit_struct_new(0, 0, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Enumerator::ArithmeticSequence", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -11560,8 +11563,8 @@ fn emit_ruby_class_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let obj_type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, obj_type_key, line);
+    let obj_type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &obj_type_key, Dest::Stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_slot, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
