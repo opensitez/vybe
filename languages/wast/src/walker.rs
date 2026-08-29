@@ -77,9 +77,28 @@ struct WastWalker {
     /// is what `ref.test`/`ref.cast` against a concrete `(ref $t)` compares —
     /// arities alone would conflate `(param i32)` with `(param f64)`.
     type_func_sigs: HashMap<String, (Vec<String>, Vec<String>)>,
+    /// Declared SUPERTYPE of a function type — `(type $sub (sub $super (func …)))`.
+    /// Needed because two func types can share a signature and still be
+    /// distinct: the subtype declaration is part of their identity.
+    type_func_parent: HashMap<String, String>,
     type_func_results: HashMap<String, usize>,
     table_name_index: HashMap<String, usize>,
     memory_name_index: HashMap<String, usize>,
+    /// THIS module's memory index space, mapped onto the script's: entry `i` is
+    /// the script slot that module-relative memidx `i` names. An IMPORTED
+    /// memory occupies an index here while pointing back at the exporter's
+    /// slot, which is the whole reason a scalar base could not do the job.
+    /// Declared type name → the name of the type it is CANONICALLY equal to.
+    /// WASM 3.0 type identity is structural; see the note where this is built.
+    type_canonical: HashMap<String, String>,
+    memory_slots: Vec<usize>,
+    /// One entry per `(memory …)` FIELD, in order: the script slot it owns and
+    /// whether it merely aliases an imported memory. `walk_memory_field` counts
+    /// fields, not index-space entries, so it cannot read `memory_slots`.
+    memory_field_info: Vec<(usize, bool)>,
+    /// Per module class: exported memory name → script slot, so a later
+    /// module's `(memory (import "M" "mem"))` can find what it is aliasing.
+    module_memory_exports: HashMap<String, HashMap<String, usize>>,
     table_index_base: usize,
     memory_index_base: usize,
     /// Data segments share ONE list across the whole script (the compiler
@@ -98,6 +117,10 @@ struct WastWalker {
     elem_name_index: HashMap<String, usize>,
     module_seq: usize,
     current_module_seq: usize,
+    /// Set by `walk_assert_trap`, so `parse` prepends the `__wast_check_trap`
+    /// helper. Emitted only when something calls it — a wast script with no
+    /// `assert_trap` at all gets no extra top-level function.
+    needs_trap_contains: bool,
     func_index_name: Vec<String>,
     module_exports: HashMap<String, HashMap<String, String>>,
     export_global_map: HashMap<String, String>,
@@ -108,6 +131,13 @@ struct WastWalker {
     /// rather than a copy.
     global_import_alias: HashMap<String, String>,
     global_index_name: Vec<String>,
+    /// THIS function's local index space, in order: params first, then locals.
+    /// A WAT local may be addressed by INDEX whatever it is called, so
+    /// `local.get 0` has to find a `(param $a i32)` — the synthetic `p<i>`
+    /// naming only ever worked for the UNNAMED case, and a named param made
+    /// the numeric spelling read a binding that did not exist. Rebuilt per
+    /// function, exactly as `current_fn_results` is.
+    local_index_name: Vec<String>,
     array_elem_type: HashMap<String, String>,
     elem_seg_counter: usize,
     module_class_name: String,
@@ -430,7 +460,7 @@ fn peek_block_result_count(__w: &mut WastWalker, pair: &Pair<Rule>) -> usize {
             // declared result count (looked up from the pre-scan).
             if let Some(idx) = bt.into_inner().find(|p| p.as_rule() == Rule::index) {
                 let name = idx.as_str().trim_start_matches('$').to_string();
-                count += __w.type_func_results.get(&name).copied()
+                count += __w.type_func_results.get(&qualify_type_name(__w, &name)).copied()
                     .unwrap_or(0);
             }
         }
@@ -1423,7 +1453,14 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
     stack: &mut Vec<Expression>,
 ) {
     let target = br_target_of(args.first());
-    let to_ht = args.get(2).cloned().unwrap_or(Expression::null());
+    // The target reftype is module-qualified like every other type reference.
+    // In the FOLDED spelling it arrives as a `ref(…)` call that
+    // `walk_instr_arg_pair` already qualified; in the PLAIN one it is a bare
+    // `$id` and needs it here.
+    let to_ht = match args.get(2).map(|e| &e.kind) {
+        Some(ExprKind::Ident(n)) => Expression::ident(&qualify_type_name(__w, n)),
+        _ => args.get(2).cloned().unwrap_or(Expression::null()),
+    };
     // Consume the ref into a temp: on branch it becomes the block result; on
     // fall-through it is pushed back so the continuation (e.g. `drop`) consumes
     // it. Binding once avoids re-evaluating and keeps the stack balanced on
@@ -1453,18 +1490,49 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
     let mut then_body: Vec<Statement> = Vec::new();
     match labels.resolve(&target) {
         Some(entry) => {
-            // The cast ref is the target block's topmost result.
-            if let Some(rt) = entry.result_temps.last() {
+            // ⚠ THE BRANCH CARRIES EVERY RESULT, NOT JUST THE REFERENCE.
+            //
+            // The typing rule is `t* rt_1 -> t* (rt_1 \ rt_2)`, and that
+            // leading `t*` is real: a `(block (result i32 i64 anyref) …)`
+            // branched out of by `br_on_cast` must deliver the two numbers
+            // sitting BELOW the reference as well. Assigning only the topmost
+            // result left them unwritten, so the block delivered garbage —
+            // a WRONG VALUE, never a validation error, which is why nothing
+            // upstream caught it.
+            //
+            // The reference is the top result; the values below it come off
+            // the stack, untouched and NOT consumed, because the fall-through
+            // path still needs them. Identical to `br_on_cast_desc_eq`, which
+            // got this treatment when the descriptor suite's "Sent values"
+            // section exercised it. ⛔The plain form could not be caught the
+            // same way: every block in the GC `br_on_cast` fixtures is
+            // single-result, so `t*` is empty throughout and the drop is
+            // invisible there.
+            let temps = &entry.result_temps;
+            if let Some((ref_temp, below)) = temps.split_last() {
+                carry_stack_into_temps(below, stack, false, &mut then_body);
                 then_body.push(Statement::new(StmtKind::Expr(Expression::new(
                     ExprKind::Assign {
-                        target: Box::new(Expression::ident(rt)),
+                        target: Box::new(Expression::ident(ref_temp)),
                         value: Box::new(Expression::ident(&tmp)),
                     },
                 ))));
             }
             then_body.push(br_stmt_for(&entry, span));
         }
-        None => then_body.push(make_br_stmt_opt(None, labels, span)),
+        // ⚠ THE FUNCTION-LEVEL LABEL IS A RETURN, NOT A BARE BREAK.
+        //
+        // `br_on_cast 0` written directly in a function body targets the
+        // function's implicit block, and branching to it RETURNS carrying the
+        // reference. Emitting `Break(Implicit)` left the value behind and fell
+        // through to whatever followed — in the spec fixtures, an
+        // `(unreachable)` placed there precisely because the branch should have
+        // jumped over it. The same instruction inside an explicit `(block …)`
+        // resolved to a real label and worked, so the two spellings disagreed.
+        None => then_body.push(Statement::with_span(
+            StmtKind::Return(Some(Expression::ident(&tmp))),
+            span,
+        )),
     }
     statements.push(Statement::with_span(
         StmtKind::If {
@@ -1516,6 +1584,10 @@ fn reftype_heap_name(arg: Option<&Expression>) -> String {
                 .unwrap_or_default()
         }
         Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
+        // The PLAIN spelling hands the reftype over as a bare `$id` rather than
+        // a `ref(…)` call. Returning "" here meant `ref.get_desc` was resolved
+        // against no type at all for `br_on_cast_desc_eq $l anyref $a`.
+        Some(ExprKind::Ident(n)) => n.clone(),
         _ => String::new(),
     }
 }
@@ -1562,6 +1634,35 @@ fn emit_br_on_cast_desc_eq_stmt(
     let target_nullable = reftype_is_nullable(to_rt);
     let to_name = reftype_heap_name(to_rt);
 
+    // ── The real instruction, whenever the target is a block ──────────────
+    //
+    // Everything below this point is a LOWERING — `ref.is_null` + `if`/`else`
+    // computing the match by hand. It exists because the VM's own
+    // `BR_ON_CAST_DESC_EQ` used to answer a null reference wrongly (it read
+    // `matched = !val.is_null_ref() && …`, so a null never matched even a
+    // NULLABLE target). That is fixed, so the instruction can be emitted as
+    // itself and the lowering kept only for the shapes it still covers:
+    //
+    //   * a LOOP target, where a branch is a `continue` carrying the loop's
+    //     params rather than a block's results, and
+    //   * the function-level implicit label, where a branch is a `return`.
+    //
+    // ⚠ THE LANDING PAD IS NOT DECORATION. This walker models the wasm
+    // operand stack as AST TEMPORARIES, so a block's results are read out of
+    // `result_temps` — but a VM-level branch jumps without ever running the
+    // assignments that fill them. Branching first to a private inner block
+    // gives the taken path somewhere to write the temps before it continues
+    // to the real target. The wrapper is ordinary structured control flow;
+    // the descriptor instruction itself is emitted exactly as spelled.
+    if let Some(entry) = labels.resolve(&target) {
+        if matches!(entry.kind, LabelKind::Block) {
+            emit_br_on_cast_desc_eq_native(
+                __w, args, is_fail, span, &entry, statements, stack,
+            );
+            return;
+        }
+    }
+
     // The descriptor is the TOPMOST operand, so it pops first.
     let desc_val = stack.pop().unwrap_or_else(Expression::null);
     let ref_val = stack.pop().unwrap_or_else(Expression::null);
@@ -1581,10 +1682,34 @@ fn emit_br_on_cast_desc_eq_stmt(
     }
 
     // 1. Null descriptor → trap, whatever the reference is.
+    //
+    // Routed through `ref.cast_desc_eq` rather than a bare `unreachable`.
+    // The VM already traps "null descriptor reference" for a null descriptor,
+    // unconditionally and before the reference is looked at
+    // (`dispatch.rs`, `Op::REF_CAST_DESC_EQ`), which is exactly this case —
+    // and it is the MESSAGE the spec fixtures assert. `unreachable` trapped
+    // too, so the semantics were right, but it reported "unreachable
+    // executed"; that went unnoticed for as long as `assert_trap` parsed the
+    // expected message and threw it away.
+    let null_desc_trap = match to_rt {
+        Some(rt) => Statement::with_span(
+            StmtKind::Expr(make_call(
+                "ref_cast_desc_eq",
+                vec![
+                    rt.clone(),
+                    Expression::ident(&rtmp),
+                    Expression::ident(&dtmp),
+                ],
+                span,
+            )),
+            span,
+        ),
+        None => Statement::with_span(StmtKind::Expr(trap_expr()), span),
+    };
     statements.push(Statement::with_span(
         StmtKind::If {
             cond: make_call("ref_is_null", vec![Expression::ident(&dtmp)], span),
-            then_body: vec![Statement::with_span(StmtKind::Expr(trap_expr()), span)],
+            then_body: vec![null_desc_trap],
             else_body: None,
             elifs: Vec::new(),
         },
@@ -1680,7 +1805,19 @@ fn emit_br_on_cast_desc_eq_stmt(
             }
             then_body.push(br_stmt_for(&entry, span));
         }
-        None => then_body.push(make_br_stmt_opt(None, labels, span)),
+        // ⚠ THE FUNCTION-LEVEL LABEL IS A RETURN, NOT A BARE BREAK.
+        //
+        // `br_on_cast 0` written directly in a function body targets the
+        // function's implicit block, and branching to it RETURNS carrying the
+        // reference. Emitting `Break(Implicit)` left the value behind and fell
+        // through to whatever followed — in the spec fixtures, an
+        // `(unreachable)` placed there precisely because the branch should have
+        // jumped over it. The same instruction inside an explicit `(block …)`
+        // resolved to a real label and worked, so the two spellings disagreed.
+        None => then_body.push(Statement::with_span(
+            StmtKind::Return(Some(Expression::ident(&rtmp))),
+            span,
+        )),
     }
     statements.push(Statement::with_span(
         StmtKind::If {
@@ -1688,6 +1825,116 @@ fn emit_br_on_cast_desc_eq_stmt(
             then_body,
             else_body: None,
             elifs: Vec::new(),
+        },
+        span,
+    ));
+    // Fall-through: the reference stays for the continuation.
+    stack.push(Expression::ident(&rtmp));
+}
+
+/// `br_on_cast_desc_eq` / `_fail` emitted as the real instruction.
+///
+/// Shape, in wasm terms:
+///
+/// ```text
+/// block $outer                       ;; void
+///   block $inner                     ;; void
+///     local.get $ref  local.get $desc
+///     br_on_cast_desc_eq $inner ht_1 ht_2   ;; matched -> leaves $inner
+///     br $outer                              ;; no match -> skip the pad
+///   end
+///   ;; landing pad: fill the target block's result temps, then branch on
+///   <result temps> = <stack values> , <ref>
+///   br $target
+/// end
+/// ```
+///
+/// The null-descriptor trap is NOT emitted here: the instruction traps on it
+/// itself, before it looks at the reference, and with the message the suite
+/// asserts (`"null descriptor reference"`). The lowering had to route that
+/// through `ref.cast_desc_eq` to borrow the wording.
+fn emit_br_on_cast_desc_eq_native(
+    __w: &mut WastWalker,
+    args: &[Expression],
+    is_fail: bool,
+    span: Span,
+    entry: &LabelEntry,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    // The descriptor is the TOPMOST operand, so it pops first. Both are
+    // materialised into locals before the branch: the landing pad needs the
+    // reference AFTER a branch has already discarded the operand stack, and
+    // a local is the only place it survives.
+    let desc_val = stack.pop().unwrap_or_else(Expression::null);
+    let ref_val = stack.pop().unwrap_or_else(Expression::null);
+    let dtmp = fresh_result_temp(__w);
+    let rtmp = fresh_result_temp(__w);
+    for (name, init) in [(&dtmp, desc_val), (&rtmp, ref_val)] {
+        statements.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: None,
+                init: Some(init),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+    }
+
+    let outer = fresh_block_label(__w);
+    let inner = fresh_block_label(__w);
+    let head = if is_fail {
+        "br_on_cast_desc_eq_fail"
+    } else {
+        "br_on_cast_desc_eq"
+    };
+    // Immediates in the order the compiler reads them: label, ht_1 (source),
+    // ht_2 (target); then the two stack operands.
+    let instr = make_call(
+        head,
+        vec![
+            Expression::string(&inner),
+            args.get(1).cloned().unwrap_or_else(Expression::null),
+            args.get(2).cloned().unwrap_or_else(Expression::null),
+            Expression::ident(&rtmp),
+            Expression::ident(&dtmp),
+        ],
+        span,
+    );
+    let inner_body = vec![
+        Statement::with_span(StmtKind::Expr(instr), span),
+        Statement::with_span(
+            StmtKind::Break(BreakTarget::Label(outer.clone())),
+            span,
+        ),
+    ];
+    let mut outer_body = vec![Statement::with_span(
+        StmtKind::Labeled {
+            label: inner,
+            body: Box::new(Statement::with_span(StmtKind::Block(inner_body), span)),
+        },
+        span,
+    )];
+    // The landing pad. The branch carries every result, not just the
+    // reference: the typing rule's leading `t*` is real, and the values below
+    // the reference are NOT consumed because the fall-through still needs
+    // them.
+    if let Some((ref_temp, below)) = entry.result_temps.split_last() {
+        carry_stack_into_temps(below, stack, false, &mut outer_body);
+        outer_body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Assign {
+                target: Box::new(Expression::ident(ref_temp)),
+                value: Box::new(Expression::ident(&rtmp)),
+            },
+        ))));
+    }
+    outer_body.push(br_stmt_for(entry, span));
+    statements.push(Statement::with_span(
+        StmtKind::Labeled {
+            label: outer,
+            body: Box::new(Statement::with_span(StmtKind::Block(outer_body), span)),
         },
         span,
     ));
@@ -1752,10 +1999,16 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
         // the folded form fell to the expression walk, which produced a plain
         // call to an UNQUALIFIED callee — "null is not callable".
         "return_call" | "return_call_ref" => {
+            // ⛔ `return_call_ref` does NOT share `return_call`'s lowering.
+            // `__wasm_return_call` takes a QUALIFIED CALLEE NAME — it is how a
+            // `return_call $f` names the module method to tail-call — while
+            // `return_call_ref` has a funcref VALUE and its own opcode. Feeding
+            // the value in where the name belongs is what made
+            // `return_call_ref.wast` report "null is not callable".
             let inner_name = if head == "return_call" {
                 "call"
             } else {
-                "call_ref"
+                "return_call_ref"
             };
             let arity = get_instruction_arity(__w, inner_name, &immediate_args);
             let mut args = immediate_args;
@@ -1764,7 +2017,9 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             let popped: Vec<Expression> = stack.drain(drain_start..).collect();
             args.extend(popped);
             let call = map_instr_to_ast(__w, inner_name.to_string(), args, span)?;
-            if let ExprKind::Call {
+            if inner_name == "return_call_ref" {
+                statements.push(Statement::with_span(StmtKind::Expr(call), span));
+            } else if let ExprKind::Call {
                 callee,
                 args: call_args,
                 ..
@@ -1910,33 +2165,32 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
                 .unwrap_or_else(|| __w.table_index_base);
             let n = (argc + 1).min(stack.len());
             let operands: Vec<Expression> = stack.split_off(stack.len() - n);
+            // The DECLARED functype rides along as a fourth immediate. The
+            // instruction's own three are counts, and a count cannot pick
+            // between two same-arity types — see `Chunk::call_indirect_sigs`.
+            // `U8_U8_U8` is used by exactly two opcodes, both of them this one,
+            // so widening the arg list here reaches nothing else.
+            let signature = typeuse_signature(__w, &inner);
             let mut call_args = vec![
                 Expression::int(argc as i64),
                 Expression::int(tableidx as i64),
                 Expression::int(expected_results as i64),
+                Expression::string(&signature),
             ];
             call_args.extend(operands);
             if head == "return_call_indirect" {
                 let call = make_call("return_call_indirect", call_args, span);
                 statements.push(Statement::with_span(StmtKind::Expr(call), span));
             } else {
-                // A multi-result callee lands the same way a direct `call` to
-                // one does — destructured into fresh temps that go on the stack
-                // individually (`land_instr_value`). Pushing the packed tuple as
-                // ONE stack entry left `(func (result i32 i32) (call_indirect
-                // (type $tr) …))` with a single tail statement, so
-                // `apply_multi_value_return` (which wants N contiguous
-                // value-statements) declined and the function returned nothing.
-                let call = make_call("call_indirect", call_args, span);
-                land_instr_value(
-                    __w,
-                    call,
-                    expected_results.max(1),
-                    true,
-                    span,
-                    statements,
-                    stack,
-                );
+                // ⚠ NOT `land_instr_value`. A direct `call` to a multi-result
+                // function destructures into N temps there, and doing the same
+                // here looks right but is not: the compiler only recognises the
+                // multi-value shape for a DIRECT call, so the destructure reads
+                // the packed result as an array and every consumer gets the
+                // wrong values. Returning a pair out of `(result i32 i32)` needs
+                // that compiler half; until it exists the packed push is the
+                // shape everything else in the pipeline expects.
+                stack.push(make_call("call_indirect", call_args, span));
             }
         }
         _ => {
@@ -2247,6 +2501,63 @@ fn emit_br_table_stmt(__w: &mut WastWalker,
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
+/// The `spectest` module every wast script may import from. The reference
+/// interpreter predefines it (`interpreter/host/spectest.ml`,
+/// `interpreter/README.md` §"Spectest host module"), and 15 of the suite's
+/// files import from it — declaring an import of it always worked, but CALLING
+/// one was an "Unresolved import" because nothing implemented it.
+///
+/// ⛔ It is a synthesized MODULE, not a set of host functions. The spec defines
+/// it as a module type, the script runner's own `(register …)` machinery
+/// already resolves module-to-module imports, and a host function would put
+/// test-harness scaffolding into the runtime's product surface for no gain.
+///
+/// The `print*` functions are observable only as stdout in the reference
+/// interpreter; no assertion in the suite reads that, so the bodies are empty
+/// and what matters is that a call SUCCEEDS. The global values are the
+/// interpreter's exactly — 666 for the integers, **666.6** for the floats
+/// (`Num (F32 (F32.of_float 666.6))`), which `global.wast` reads back.
+const SPECTEST_MODULE: &str = r#"
+(module
+  (global (export "global_i32") i32 (i32.const 666))
+  (global (export "global_i64") i64 (i64.const 666))
+  (global (export "global_f32") f32 (f32.const 666.6))
+  (global (export "global_f64") f64 (f64.const 666.6))
+  (table (export "table") 10 20 funcref)
+  (table (export "table64") i64 10 20 funcref)
+  (memory (export "memory") 1 2)
+  (func (export "print"))
+  (func (export "print_i32") (param i32))
+  (func (export "print_i64") (param i64))
+  (func (export "print_f32") (param f32))
+  (func (export "print_f64") (param f64))
+  (func (export "print_i32_f32") (param i32 f32))
+  (func (export "print_f64_f64") (param f64 f64))
+)
+(register "spectest")
+"#;
+
+/// Walk `SPECTEST_MODULE` into `body` ahead of the script's own commands, so
+/// its module class exists and is registered before anything can import it.
+fn prepend_spectest_module(__w: &mut WastWalker, body: &mut Vec<Statement>) -> Result<(), String> {
+    let pairs = WastParser::parse(Rule::program, SPECTEST_MODULE)
+        .map_err(|e| format!("internal: the spectest module does not parse: {e}"))?;
+    for top in pairs {
+        match top.as_rule() {
+            Rule::program => {
+                for cmd in top.into_inner() {
+                    if cmd.as_rule() != Rule::EOI {
+                        walk_script_cmd(__w, cmd, body)?;
+                    }
+                }
+            }
+            Rule::EOI => {}
+            _ => walk_script_cmd(__w, top, body)?,
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
     let pairs =
         WastParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
@@ -2258,6 +2569,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut __w_owned = WastWalker::default();
     let __w = &mut __w_owned;
     let mut body = Vec::new();
+    // The `spectest` host module the script runner predefines — ONLY when this
+    // script actually names it.
+    //
+    // ⛔ It is a real module, so it TAKES INDEX SPACE: its `(memory …)` becomes
+    // memory 0 and every later module's base shifts by one. Prepending it
+    // unconditionally moved slot 0 out from under every script that never
+    // mentions spectest — 48 corpus tests (all the v128 load/store and
+    // stringref files, which read and write memory 0) went red at once. The
+    // 15 files that import it get it; nothing else is touched.
+    if source.contains("spectest") {
+        prepend_spectest_module(__w, &mut body)?;
+    }
     for top in pairs {
         match top.as_rule() {
             Rule::program => {
@@ -2270,6 +2593,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
             Rule::EOI => {}
             _ => walk_script_cmd(__w, top, &mut body)?,
         }
+    }
+
+    // Prepend the `assert_trap` helper when this script has any. Prepended,
+    // not appended: the asserts that call it run at top level in source order.
+    if __w_owned.needs_trap_contains {
+        body.insert(0, build_trap_check_helper(Span::default()));
     }
 
     Ok(Module {
@@ -2287,7 +2616,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Unknown,
         body,
         imports: Vec::new(),
-        directives: Default::default(),
+        // ⛔ A WAST FUNCTION IS NOT A JAVASCRIPT FUNCTION OBJECT.
+        //
+        // The walker expresses a `(module …)` as a `ClassDecl` whose members
+        // are its funcs — a container, so that a script's several modules keep
+        // separate index spaces (`__wasm_module`, `__wasm_module_1`, …) and
+        // passive elem segments can resolve `ref.func` through the right one.
+        //
+        // Shared class emission then did the only thing a class full of methods
+        // means in the ECMA object model: stamped `name` / `length` /
+        // `prototype` and a `__nonenum` set onto every one of them. In a
+        // module that declares no such fields, that is a `struct.set` against
+        // nothing — and it is why NO wast module we emitted would load on a
+        // spec engine. wast maps to INSTRUCTIONS; it has no function objects.
+        directives: vybe_ast::Directives {
+            functions_are_objects: Some(false),
+            ..Default::default()
+        },
     })
 }
 
@@ -2361,14 +2706,26 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
             body.push(walk_assert_malformed(__w, pair)?);
             Ok(())
         }
-        // Validity and linkability, unlike malformedness, are properties of a
-        // module that PARSES: they need typed validation and link-time
-        // resolution, neither of which this front end has. They are skipped,
-        // NOT passed — the conformance scoreboard counts them as unenforced.
-        // Do not route them to a runtime call: nothing implements it, and one
-        // unresolved import fails the whole file, masking every semantic
-        // assert around it.
-        Rule::assert_invalid | Rule::assert_unlinkable => {
+        // `assert_invalid` asserts the module PARSES and fails VALIDATION.
+        //
+        // ⛔ THIS USED TO BE `Empty` — 2720 assertions that examined nothing,
+        // 2053 of them inside files the scoreboard counted as PASSING. An
+        // assertion discharged without looking is the same disease as a
+        // checker that cannot parse its input reporting `0 problems`.
+        //
+        // `module_invalid_reason` implements the STRUCTURAL subset (alignment,
+        // lane index, duplicate export). The 2297 "type mismatch" assertions
+        // need the stack-typing pass and will FAIL here until it exists —
+        // deliberately. A validator that has not been written must report as
+        // absent, not as satisfied.
+        Rule::assert_invalid => {
+            body.push(walk_assert_invalid(__w, pair)?);
+            Ok(())
+        }
+        // Linkability is a different property: it is settled when two modules
+        // are joined, not by looking at one. Still unenforced, and still
+        // counted as such — 200 assertions.
+        Rule::assert_unlinkable => {
             body.push(Statement::with_span(StmtKind::Empty, to_span(&pair)));
             Ok(())
         }
@@ -4259,6 +4616,7 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
     let mut func_count: usize = 0;
     let mut immut_globals: HashSet<String> = HashSet::new();
     let mut start_target: Option<String> = None;
+    let mut start_count = 0usize;
     // WASM 3.0 §6.4: imports occupy the low end of each index space, so the text
     // format requires every import to precede all non-import definitions. An
     // `(import …)` (or an inline `(func (import …))` etc.) after a real func/
@@ -4368,12 +4726,21 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
                 }
             }
             Rule::start_field => {
+                start_count += 1;
                 if let Some(idx) = inner.into_inner().find(|c| c.as_rule() == Rule::index) {
                     start_target = Some(idx.as_str().to_string());
                 }
             }
             _ => {}
         }
+    }
+
+    // A module has AT MOST ONE start section (`start.wast`: "multiple start
+    // sections"). A single `start_target` Option hid this — the second field
+    // simply overwrote the first — and the spec calls the text malformed, not
+    // invalid, so it has to be caught here rather than by a validator.
+    if start_count > 1 {
+        return Err("multiple start sections".to_string());
     }
 
     if let Some(t) = start_target {
@@ -4649,11 +5016,14 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // type name → (param val types, result val types) — the structural
     // identity `ref.test (ref $t)` on a function reference matches against.
     let mut func_sigs: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+    let mut func_parents: HashMap<String, String> = HashMap::new();
     let mut func_result_counts: HashMap<String, usize> = HashMap::new();
     let mut array_elem_types: HashMap<String, String> = HashMap::new();
     // Every declared type's name, in order, so a numeric parent index resolves
     // to a name. GC structs collected here (name, raw parent ref, field count).
     let mut type_order: Vec<String> = Vec::new();
+    // (qualified name, raw parent ref, composite text) in declaration order.
+    let mut type_shapes: Vec<(String, Option<String>, String)> = Vec::new();
     let mut struct_types_raw: Vec<(String, Option<String>, usize)> = Vec::new();
     let mut struct_field_types_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut struct_field_ids_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -4661,6 +5031,14 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::type_field {
+                    // The composite type's own TEXT, for canonicalisation
+                    // below. Taken verbatim (whitespace-normalised) rather than
+                    // rebuilt from the parsed shape, because the parsed shape
+                    // drops FIELD MUTABILITY — `array_elem_type` descends
+                    // through `(mut i32)` and answers "i32" — and merging a
+                    // mutable type with an immutable one would be a wrong
+                    // answer, not a missed optimisation.
+                    let comp_text = composite_type_text(&inner);
                     let mut type_name: Option<String> = None;
                     let mut field_count = 0usize;
                     let mut field_types: Vec<String> = Vec::new();
@@ -4826,6 +5204,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                             .unwrap_or_else(|| format!("__wast_type_{}", type_order.len())),
                     );
                     type_order.push(name.clone());
+                    type_shapes.push((name.clone(), parent_ref.clone(), comp_text));
                     if is_struct {
                         struct_counts.insert(name.clone(), field_count);
                         struct_types_raw.push((name.clone(), parent_ref.clone(), field_count));
@@ -4840,6 +5219,13 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     }
                     if let Some(sig) = func_sig {
                         func_sigs.insert(name.clone(), sig);
+                        // A func type's supertype was dropped here: only
+                        // `is_struct` rows reached `struct_types_raw`, so
+                        // `(type $sub (sub $super (func …)))` registered with no
+                        // parent and became indistinguishable from `$super`.
+                        if let Some(p) = parent_ref.clone() {
+                            func_parents.insert(name.clone(), qualify_type_name(__w, &p));
+                        }
                     }
                     if let Some(e) = array_elem {
                         array_elem_types.insert(name.clone(), e);
@@ -4855,9 +5241,16 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         .map(|(name, parent_ref, fields)| {
             let parent = parent_ref.and_then(|p| {
                 if let Ok(i) = p.parse::<usize>() {
+                    // `type_order` already holds QUALIFIED names.
                     type_order.get(i).cloned()
                 } else {
-                    Some(p)
+                    // ⚠ A NAMED parent needs the same module qualifier its
+                    // declaration got. Qualifying the child and leaving
+                    // `$Base` bare pointed the subtype edge at a row that does
+                    // not exist, so `(type $Sub (struct_subtype … $Base))` lost
+                    // its supertype and `ref.cast` to `$Sub` failed on a value
+                    // that really was one.
+                    Some(qualify_type_name(__w, &p))
                 }
             });
             (name, parent, fields)
@@ -4866,7 +5259,54 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     __w.struct_types = struct_types;
     __w.struct_field_types = struct_field_types_map;
     __w.struct_field_ids = struct_field_ids_map;
-    __w.type_index_name = type_order.clone();
+
+    // ── Type CANONICALISATION ────────────────────────────────────────────
+    //
+    // ⚠ WASM 3.0 type identity is STRUCTURAL, not nominal. Two separately
+    // declared types with the same supertype and the same composite shape are
+    // THE SAME TYPE, so a value made with one casts to the other:
+    //
+    //     (type $t1  (sub $t0 (struct (field i32))))
+    //     (type $t1' (sub $t0 (struct (field i32))))
+    //     (ref.cast (ref $t1') (… a $t1 …))     ;; must SUCCEED
+    //
+    // We compared names, through a nominal subtype graph in which `$t1'` is
+    // neither a subtype nor a supertype of `$t1`, so the cast trapped with
+    // "value is not m#1#t1'" — a message that reads as a correct rejection.
+    // That is `gc/ref_cast`, `gc/ref_test`, `gc/type-subtyping` and
+    // `gc/br_on_cast_fail`, every one of them in its `test-canon` function.
+    //
+    // The key is the CANONICALISED parent plus the composite text, so a chain
+    // canonicalises from the root down; declaration order is enough for the
+    // non-recursive case, which is what the suite's `test-canon` exercises.
+    // ⛔Scoped to ONE MODULE on purpose. The spec canonicalises across the
+    // whole store, but our type names are module-qualified precisely so one
+    // module cannot disturb another's rows, and merging across that boundary
+    // would undo it for a case the suite does not test.
+    {
+        let mut canonical: HashMap<String, String> = HashMap::new();
+        let mut by_shape: HashMap<String, String> = HashMap::new();
+        for (name, parent_ref, comp_text) in &type_shapes {
+            let parent = parent_ref.as_ref().map(|p| {
+                let resolved = match p.parse::<usize>() {
+                    Ok(i) => type_order.get(i).cloned().unwrap_or_else(|| p.clone()),
+                    Err(_) => qualify_type_name(__w, p),
+                };
+                canonical.get(&resolved).cloned().unwrap_or(resolved)
+            });
+            let key = format!("{}|{}", parent.unwrap_or_default(), comp_text);
+            let winner = by_shape.entry(key).or_insert_with(|| name.clone()).clone();
+            canonical.insert(name.clone(), winner);
+        }
+        // A numeric type reference resolves through `type_index_name`, so that
+        // list has to carry the canonical names too — otherwise `(type 3)` and
+        // `(type $t3)` would name different rows for the same declaration.
+        __w.type_index_name = type_order
+            .iter()
+            .map(|n| canonical.get(n).cloned().unwrap_or_else(|| n.clone()))
+            .collect();
+        __w.type_canonical = canonical;
+    }
     __w.struct_field_counts = struct_counts;
     __w.type_func_params = func_param_counts;
 
@@ -4948,22 +5388,46 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     }
     __w.type_func_results = func_result_counts;
     __w.type_func_sigs = func_sigs;
+    __w.type_func_parent = func_parents;
     // Each DEFINED function's own signature, collected here because `pair` is
     // consumed before the directives are emitted. Resolving a `(type $t)`
     // reference needs `type_func_sigs` above, so this must come after it.
-    let defined_func_sigs: Vec<(String, (Vec<String>, Vec<String>))> = pair
+    let defined_func_sigs: Vec<(String, (Vec<String>, Vec<String>), Option<String>)> = pair
         .clone()
         .into_inner()
         .filter(|c| c.as_rule() == Rule::module_field)
         .filter_map(|c| c.into_inner().next())
         .filter(|f| f.as_rule() == Rule::func_field)
-        .filter_map(|f| {
+        .enumerate()
+        .filter_map(|(fi, f)| {
+            // ⚠ AN ANONYMOUS FUNCTION STILL HAS A SIGNATURE.
+            //
+            // This used to `?` out when there was no `$id`, so
+            // `(func (export "f") (type $f))` registered NOTHING — no
+            // structural signature and no declared type — and `ref.test`
+            // against a concrete `(ref $t)` on it answered 0. The naming site
+            // falls back to the first EXPORT name and then to the declaration
+            // ordinal; this mirrors that, or the two disagree about which
+            // function is which.
             let name = f
                 .clone()
                 .into_inner()
                 .find(|c| c.as_rule() == Rule::id)
-                .map(|c| c.as_str()[1..].to_string())?;
-            Some((name, func_field_signature(__w, &f)))
+                .map(|c| c.as_str()[1..].to_string())
+                .or_else(|| {
+                    f.clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::export_inline)
+                        .filter_map(|c| c.into_inner().find(|p| p.as_rule() == Rule::string))
+                        .map(|s| unquote(s.as_str()))
+                        .next()
+                })
+                .unwrap_or_else(|| format!("__wasm_func_{fi}"));
+            Some((
+                name,
+                func_field_signature(__w, &f),
+                func_field_declared_type(__w, &f),
+            ))
         })
         .collect();
     __w.array_elem_type = array_elem_types;
@@ -5015,27 +5479,178 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // end of this function); record the count here.
     let module_table_count = table_idx;
 
-    // 3a'. Pre-scan memories so named memories (`$m2`) resolve to their
-    //      declaration index for multi-memory load/store/size and data segments.
+    // 3a'. Pre-scan memories.
+    //
+    // ⚠ A memidx is MODULE-RELATIVE and a memory is not always NEW. An
+    // IMPORTED memory occupies an index in this module while BEING the
+    // exporter's memory, so a per-module base cannot express it — `memory_slots`
+    // maps this module's index space onto the script's, one entry per declared
+    // memory, and an import's entry points back at the memory it aliases.
+    //
+    // Before this, `import_inline` was in the grammar and read NOWHERE: the
+    // import was silently dropped and a fresh empty memory declared in its
+    // place. Both modules then had their own bytes, which is why
+    // `multi-memory/load1`, `data0`, `linking1`, `imports1` and friends wrote
+    // through the import and read nothing back through the exporter, and why
+    // `memory_size_import` answered the IMPORT's declared minimum instead of
+    // the exporter's actual size.
+    //
+    // ⚠ An import's limits are a LINK-TIME CONSTRAINT, not a sizing fact —
+    // `memory_size_import` imports `1 5` from a memory that has `2 4` and must
+    // answer 2. Aliasing therefore carries no limits at all.
+    //
+    // Two spellings declare the same thing and both count: the abbreviated
+    // `(memory $m (import "M" "mem") …)` and the standalone
+    // `(import "M" "mem" (memory …))`. Missing either one would misalign every
+    // later numeric memidx in the module — strictly worse than a duplicate
+    // memory, since it would silently name a DIFFERENT existing one.
     let mut memory_names: HashMap<String, usize> = HashMap::new();
-    let mut memory_idx = 0usize;
+    let mut memory_slots: Vec<usize> = Vec::new();
+    let mut memory_field_info: Vec<(usize, bool)> = Vec::new();
+    let mut memory_exports: HashMap<String, usize> = HashMap::new();
+    let mut defined_memories = 0usize;
     let memory_base = __w.memory_index_base;
     for child in pair.clone().into_inner() {
-        if child.as_rule() == Rule::module_field {
-            if let Some(inner) = child.into_inner().next() {
-                if inner.as_rule() == Rule::memory_field {
-                    if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
-                        memory_names.insert(id.as_str()[1..].to_string(), memory_base + memory_idx);
-                    }
-                    memory_idx += 1;
+        if child.as_rule() != Rule::module_field {
+            continue;
+        }
+        let Some(inner) = child.into_inner().next() else {
+            continue;
+        };
+        let inner_rule = inner.as_rule();
+        // `(memory …)`, or an `(import … (memory …))` whose descriptor is one.
+        let (decl, import_pair) = match inner_rule {
+            Rule::memory_field => {
+                let imp = inner
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::import_inline);
+                (Some(inner.clone()), imp)
+            }
+            Rule::import_field => {
+                let desc = inner
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::import_desc)
+                    .filter(|d| {
+                        d.as_str()
+                            .trim_start_matches('(')
+                            .trim_start()
+                            .starts_with("memory")
+                    });
+                match desc {
+                    Some(d) => (Some(d), Some(inner.clone())),
+                    None => (None, None),
                 }
+            }
+            _ => (None, None),
+        };
+        let Some(decl) = decl else { continue };
+        // The two module/name strings sit on `import_inline` directly, and on
+        // `import_field` ahead of its descriptor.
+        let aliased = import_pair.and_then(|imp| {
+            let strings: Vec<String> = imp
+                .into_inner()
+                .filter(|c| c.as_rule() == Rule::string)
+                .map(|s| unquote(s.as_str()))
+                .take(2)
+                .collect();
+            let (m, n) = (strings.first()?, strings.get(1)?);
+            let class = __w.registered_module_class.get(m)?;
+            __w.module_memory_exports.get(class)?.get(n).copied()
+        });
+        // An import we cannot resolve — `"spectest"`'s host memory, or a module
+        // that was never registered — has no memory to alias.
+        //
+        // ⚠ In the STANDALONE `(import … (memory …))` spelling such an import
+        // declares nothing at all today (`walk_import_field` emits a noop), so
+        // giving it an index here would put a slot in the space with no memory
+        // behind it and shift every later module's base. It is skipped, which
+        // leaves those modules numbered exactly as they were — a known
+        // deviation from the spec's "imports occupy the low indices", recorded
+        // rather than half-fixed. The INLINE `(memory $m (import …) 1)`
+        // spelling does declare a memory, so it takes a real slot.
+        let is_standalone = matches!(inner_rule, Rule::import_field);
+        let slot = match aliased {
+            Some(s) => s,
+            None if is_standalone => continue,
+            None => {
+                let s = memory_base + defined_memories;
+                defined_memories += 1;
+                s
+            }
+        };
+        if let Some(id) = decl
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+        {
+            memory_names.insert(id.as_str()[1..].to_string(), slot);
+        }
+        for e in decl
+            .clone()
+            .into_inner()
+            .filter(|c| c.as_rule() == Rule::export_inline)
+        {
+            if let Some(s) = e.into_inner().find(|c| c.as_rule() == Rule::string) {
+                memory_exports.insert(unquote(s.as_str()), slot);
+            }
+        }
+        memory_slots.push(slot);
+        // `walk_memory_field` is driven by a counter over `memory_field`s only,
+        // so it needs its own parallel record: which slot each one owns, and
+        // whether it ALIASES (in which case it must declare nothing).
+        if matches!(inner_rule, Rule::memory_field) {
+            memory_field_info.push((slot, aliased.is_some()));
+        }
+    }
+    // `(export "name" (memory $m))` names an already-declared memory.
+    for child in pair.clone().into_inner() {
+        if child.as_rule() != Rule::module_field {
+            continue;
+        }
+        let Some(inner) = child.into_inner().next() else {
+            continue;
+        };
+        if inner.as_rule() != Rule::export_field {
+            continue;
+        }
+        let name = inner
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::string)
+            .map(|s| unquote(s.as_str()));
+        let target = inner
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::export_desc)
+            .filter(|d| {
+                d.as_str()
+                    .trim_start_matches('(')
+                    .trim_start()
+                    .starts_with("memory")
+            })
+            .and_then(|d| d.into_inner().find(|c| c.as_rule() == Rule::index));
+        if let (Some(name), Some(idx)) = (name, target) {
+            let t = idx.as_str().trim();
+            let slot = match t.strip_prefix('$') {
+                Some(id) => memory_names.get(id).copied(),
+                None => t.parse::<usize>().ok().and_then(|n| memory_slots.get(n).copied()),
+            };
+            if let Some(slot) = slot {
+                memory_exports.insert(name, slot);
             }
         }
     }
     __w.memory_name_index = memory_names;
+    __w.memory_slots = memory_slots;
+    __w.memory_field_info = memory_field_info;
+    __w.module_memory_exports
+        .insert(prescan_class_name.clone(), memory_exports);
     // Advance the base for the NEXT module only after this one is fully
     // walked (deferred to the end of this function); record the count here.
-    let module_memory_count = memory_idx;
+    // ⚠ DEFINED memories only — an aliased import allocates nothing.
+    let module_memory_count = defined_memories;
 
     // 3a'''. Pre-scan data segments, for the same reason and in the same index
     //        space discipline as memories: `memory.init`/`data.drop` name a
@@ -5293,6 +5908,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     //     functions. Two spellings again: `(func $f (import "m" "e") …)` and
     //     `(import "m" "e" (func $f …))`.
     let mut import_alias: HashMap<String, (String, String)> = HashMap::new();
+    // Counts function imports in declaration order, matching the index
+    // pre-scan's counter so an unnamed import gets the same synthetic binding.
+    let mut alias_func_import_ordinal = 0usize;
     for child in pair.clone().into_inner() {
         if child.as_rule() != Rule::module_field {
             continue;
@@ -5316,13 +5934,25 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             }
             Rule::import_field => {
                 let target = scan_import_names(&inner);
-                let local = inner
+                let desc = inner
                     .clone()
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::import_desc)
-                    .filter(|d| d.as_str().trim_start().starts_with("(func"))
-                    .and_then(|d| d.into_inner().find(|c| c.as_rule() == Rule::id))
-                    .map(|c| c.as_str()[1..].to_string());
+                    .filter(|d| d.as_str().trim_start().starts_with("(func"));
+                // An UNNAMED function import still occupies an index, and the
+                // index pre-scan names it by ordinal — bind the same name here
+                // so `call 0` reaches the exporter's method exactly as
+                // `call $named` does.
+                let local = desc.map(|d| {
+                    let named = d
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::id)
+                        .map(|c| c.as_str()[1..].to_string());
+                    let name = named
+                        .unwrap_or_else(|| imported_func_binding_name(alias_func_import_ordinal));
+                    alias_func_import_ordinal += 1;
+                    name
+                });
                 (local, target)
             }
             _ => (None, None),
@@ -5368,14 +5998,21 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         };
         match inner.as_rule() {
             Rule::start_field => {
-                // Capture the start function's `$id` so it can be invoked as a
-                // static method of the module class at instantiation.
+                // Capture the start function so it can be invoked as a static
+                // method of the module class at instantiation.
+                //
+                // ⛔ `(start 2)` is a NUMERIC function index and `start.wast`
+                // writes it that way. Reading only `Rule::id` here left
+                // `start_fn_name` None ⇒ no start function was invoked at all
+                // ⇒ the module's initialisation silently never ran. Resolve
+                // through `resolve_func_index_name`, which is the SHARED answer
+                // to "which function does this index name" and already takes
+                // both spellings — a private half-answer beside it is how the
+                // two disagreed.
                 start_fn_name = inner
                     .into_inner()
-                    .next()
-                    .and_then(|idx| idx.into_inner().next())
-                    .filter(|c| c.as_rule() == Rule::id)
-                    .map(|c| c.as_str()[1..].to_string());
+                    .find(|c| c.as_rule() == Rule::index)
+                    .and_then(|idx| resolve_func_index_name(&idx, &__w.func_index_name));
             }
             Rule::func_field => {
                 let mut id: Option<String> = None;
@@ -5640,6 +6277,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     callee: Box::new(Expression::ident("__wast_register_func_type")),
                     args: vec![
                         Argument::positional(Expression::string(name)),
+                        Argument::positional(Expression::string(
+                            __w.type_func_parent.get(name).map(|s| s.as_str()).unwrap_or(""),
+                        )),
                         Argument::positional(Expression::string(&params.join(","))),
                         Argument::positional(Expression::string(&results.join(","))),
                     ],
@@ -5672,16 +6312,28 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // Each defined function's own signature, recorded AFTER the class: the
     // directive resolves the function's method chunk, which does not exist
     // until the class has been compiled.
+    let module_class = __w.module_class_name.clone();
     result.extend({
         defined_func_sigs
             .into_iter()
-            .map(|(name, (params, results))| {
+            .map(|(name, (params, results), declared)| {
                 Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__wast_register_func_sig")),
                     args: vec![
                         Argument::positional(Expression::string(&name)),
                         Argument::positional(Expression::string(&params.join(","))),
                         Argument::positional(Expression::string(&results.join(","))),
+                        // ⚠ WHICH MODULE'S CLASS. The compiler resolved the
+                        // function against a hardcoded `__wasm_module`, but the
+                        // second module's class is `__wasm_module_1` — so every
+                        // module after the first registered NO signatures, and
+                        // `ref.test (ref $t)` on a function reference there
+                        // compared against an empty signature and answered 0.
+                        Argument::positional(Expression::string(&module_class)),
+                        // The DECLARED type name, for nominal (exact) matching.
+                        Argument::positional(Expression::string(
+                            declared.as_deref().unwrap_or(""),
+                        )),
                     ],
                     optional: false,
                 })))
@@ -5767,6 +6419,7 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
     let mut export_names: Vec<String> = Vec::new();
     let mut labels = LabelStack::new();
     let mut locals_seen: usize = 0;
+    let mut local_names: Vec<String> = Vec::new();
 
     let mut instr_pairs = Vec::new();
 
@@ -5837,9 +6490,9 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
                         .find(|c| c.as_rule() == Rule::index)
                         .map(|i| i.as_str().trim_start_matches('$').to_string())
                     {
-                        let pc = __w.type_func_params.get(&sig).copied()
+                        let pc = __w.type_func_params.get(&qualify_type_name(__w, &sig)).copied()
                             .unwrap_or(0);
-                        result_count = __w.type_func_results.get(&sig).copied()
+                        result_count = __w.type_func_results.get(&qualify_type_name(__w, &sig)).copied()
                             .unwrap_or(0);
                         params = (0..pc)
                             .map(|i| Param {
@@ -5857,8 +6510,9 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
                 }
             }
             Rule::local => {
-                let decls = walk_local(child, params.len() + locals_seen)?;
+                let (decls, names) = walk_local(child, params.len() + locals_seen)?;
                 locals_seen += decls.len();
+                local_names.extend(names);
                 body.extend(decls);
             }
             Rule::instr => {
@@ -5871,7 +6525,15 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
     // Expose the function's result count so a `return` inside a multi-value
     // function reraises the top N values as a uniform tuple (multi-value ABI).
     __w.current_fn_results = result_count;
+    // Params first, then locals — one index space, and the ONLY thing that can
+    // answer `local.get 0` when the param is named.
+    __w.local_index_name = params
+        .iter()
+        .map(|p| p.name.clone())
+        .chain(local_names.iter().cloned())
+        .collect();
     body.extend(fold_instructions(__w, instr_pairs, &mut labels)?);
+    __w.local_index_name.clear();
     __w.current_fn_results = 0;
 
     if func_name.is_empty() {
@@ -6029,7 +6691,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
         .collect())
 }
 
-fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<Vec<Statement>, String> {
+fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<(Vec<Statement>, Vec<String>), String> {
     let mut name: Option<String> = None;
     let mut types: Vec<String> = Vec::new();
     for child in pair.into_inner() {
@@ -6039,16 +6701,19 @@ fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<Vec<Statement>, Str
             _ => {}
         }
     }
-    Ok(types
+    let mut minted: Vec<String> = Vec::with_capacity(types.len());
+    let decls: Vec<Statement> = types
         .iter()
         .enumerate()
         .map(|(i, t)| {
             // An anonymous local is addressed by INDEX, in the same index
-            // space as the params (`local.get N` lowers to `p<N>`), so its
-            // name is `p<params + locals-so-far>` — never a per-group count.
+            // space as the params, so its name is `p<params + locals-so-far>`
+            // — never a per-group count. A NAMED one keeps its `$id`, and the
+            // index spelling reaches it through `local_index_name`.
             let var_name = name
                 .clone()
                 .unwrap_or_else(|| format!("p{}", index_base + i));
+            minted.push(var_name.clone());
             let init = match t.as_str() {
                 "i32" => Expression::int(0),
                 // An i64 zero is a BigInt — the exact-integer shape every
@@ -6087,7 +6752,8 @@ fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<Vec<Statement>, Str
                 kind: VarDeclKind::Let,
             })
         })
-        .collect())
+        .collect();
+    Ok((decls, minted))
 }
 
 // ── Instructions ──────────────────────────────────────────────────────────────
@@ -6588,24 +7254,33 @@ fn wat_float_format(x: Expression) -> Expression {
 
 // ── map_instr_to_ast — WAT instruction name → common AST expression ───────────
 
-/// Strip `offset=`/`align=` memarg string-args from a load/store's operand list
-/// and fold a non-zero `offset=N` into the address: `i32.load offset=5` over
-/// base `a` becomes a load of `a + 5`.
+/// Strip the `offset=`/`align=` memarg string-args off a load/store's operand
+/// list, returning the remaining operands and the `offset=` value.
 ///
-/// ⚠ The address is NOT always the first remaining operand. A `v128.loadN_lane`
-/// / `v128.storeN_lane` carries a LANE INDEX immediate ahead of it, and the
-/// walker keeps immediates first, so its operand list is `[lane, addr, vec]`.
-/// Folding into slot 0 added the offset to the LANE — `offset=1 1` wrote byte 0
-/// into lane 2 instead of byte 1 into lane 1 — which is why all eight lane files
-/// failed on their `_offset_` exports while their plain exports passed.
-/// `addr_index` names the slot; every other load/store still uses 0.
-fn fold_memarg_offset(args: Vec<Expression>, addr_index: usize, span: Span) -> Vec<Expression> {
-    let mut offset: i64 = 0;
+/// ⛔ The offset is NOT folded into the address. WASM computes the effective
+/// address in UNBOUNDED arithmetic over the address read as UNSIGNED
+/// (§4.4.7): `i32.load offset=25` at address `-1` is `4294967295 + 25`, which
+/// is out of bounds and TRAPS. A folded AST `addr + 25` is a SIGNED add, so it
+/// computed 24, stayed in bounds and returned a byte — `address.wast`'s whole
+/// `-1` block. The offset therefore rides in the instruction's MEMARG, where
+/// the VM's `effective_addr` already does the unsigned widen and a saturating
+/// add. It is carried across as an `@@off<N>` name suffix, the same channel
+/// `@@mem<N>` uses, because an extra AST argument would shift every
+/// immediate-position index in the emitter's `OperandFormat` match.
+///
+/// Folding was also blind in the PLAIN spelling, where the address is not an
+/// argument at all — it is on the enclosing block's stack — so there was no
+/// slot to fold into and the offset was silently dropped.
+///
+/// `align=` is a pure hint (WASM validates it but the semantics do not depend
+/// on it) and is dropped.
+fn strip_memarg(args: Vec<Expression>) -> (Vec<Expression>, u64) {
+    let mut offset: u64 = 0;
     let mut rest: Vec<Expression> = Vec::new();
     for a in args {
         if let ExprKind::Lit(Literal::Str(s)) = &a.kind {
             if let Some(n) = s.strip_prefix("offset=") {
-                offset += n.parse::<i64>().unwrap_or(0);
+                offset = offset.saturating_add(parse_memarg_number(n));
                 continue;
             }
             if s.starts_with("align=") {
@@ -6614,19 +7289,18 @@ fn fold_memarg_offset(args: Vec<Expression>, addr_index: usize, span: Span) -> V
         }
         rest.push(a);
     }
-    if offset != 0 {
-        if let Some(addr) = rest.get(addr_index).cloned() {
-            rest[addr_index] = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(addr),
-                    right: Box::new(Expression::int(offset)),
-                },
-                span,
-            );
-        }
+    (rest, offset)
+}
+
+/// A memarg field is a WAT `uN`: decimal or `0x`-hex, either with `_` digit
+/// separators. `parse::<u64>()` alone read `offset=0x008` as 0 — silently, and
+/// the whole of `align.wast` writes its offsets in hex.
+fn parse_memarg_number(text: &str) -> u64 {
+    let t = text.replace('_', "");
+    match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16).unwrap_or(0),
+        None => t.parse::<u64>().unwrap_or(0),
     }
-    rest
 }
 
 /// The binding name a numeric `local.get`/`global.get` (and set) index lowers
@@ -6638,22 +7312,48 @@ fn index_binding_name(__w: &mut WastWalker, i: i64, is_global: bool) -> String {
         __w.global_index_name.get(i as usize).cloned()
             .unwrap_or_else(|| format!("__wasm_global_{i}"))
     } else {
-        format!("p{i}")
+        local_index_binding_name(__w, i)
     }
 }
 
+/// The binding a numeric local/param index names. WAT lets ANY local be
+/// addressed by index — `(param $a i32)` is still local 0 — so the declared
+/// spelling has to be looked up. `p<i>` is the fallback for an index the
+/// declaration walk never saw (and is what an UNNAMED local is called anyway).
+fn local_index_binding_name(__w: &WastWalker, i: i64) -> String {
+    usize::try_from(i)
+        .ok()
+        .and_then(|i| __w.local_index_name.get(i).cloned())
+        .unwrap_or_else(|| format!("p{i}"))
+}
+
 /// Resolve a memory-index immediate: a literal integer, or a `$name` looked up
-/// in the declaration-order `MEMORY_NAME_INDEX`. Anything else defaults to 0.
+/// in the declaration-order `MEMORY_NAME_INDEX`. Anything else is memidx 0.
+///
+/// A numeric memidx is MODULE-RELATIVE, and `memory_slots` is what it is
+/// relative to — a plain `base + n` was only ever right while every memory was
+/// freshly declared, because an imported one occupies an index without
+/// allocating a slot. Named memories were registered already resolved.
 fn resolve_wat_memidx(__w: &mut WastWalker, e: &Expression) -> usize {
-    let base = __w.memory_index_base;
+    let default = default_memory_slot(__w);
     match &e.kind {
-        // A numeric memidx is module-relative; shift into the script's
-        // accumulated index space. Named memories were registered shifted.
-        ExprKind::Lit(Literal::Int(n)) => base + *n as usize,
-        ExprKind::Ident(nm) => __w.memory_name_index.get(nm).copied()
-            .unwrap_or(base),
-        _ => base,
+        ExprKind::Lit(Literal::Int(n)) => __w
+            .memory_slots
+            .get(*n as usize)
+            .copied()
+            .unwrap_or(__w.memory_index_base + *n as usize),
+        ExprKind::Ident(nm) => __w.memory_name_index.get(nm).copied().unwrap_or(default),
+        _ => default,
     }
+}
+
+/// The script slot this module's memidx 0 names — its own first memory, which
+/// may be one it IMPORTED rather than one it declared.
+fn default_memory_slot(__w: &WastWalker) -> usize {
+    __w.memory_slots
+        .first()
+        .copied()
+        .unwrap_or(__w.memory_index_base)
 }
 
 /// Number of leading memory-index immediates a memory op may carry: `memory.copy`
@@ -6676,7 +7376,7 @@ fn mem_op_immediate_count(name: &str) -> usize {
 /// `@@mem` suffix is already on the name by the time this is asked, so match on
 /// the head rather than the whole string.
 fn dataidx_arg_position(name: &str) -> Option<usize> {
-    let base = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+    let base = name.split_once("@@").map(|(b, _)| b).unwrap_or(name);
     match base {
         "memory.init" | "data.drop" => Some(0),
         // `array.new_data $T $d` / `array.init_data $T $d` — typeidx first.
@@ -6879,40 +7579,158 @@ fn describe_const_operand(v: &Expression) -> String {
     }
 }
 
+/// `call_ref $sig` / `return_call_ref $sig` → the WASM instruction's own
+/// opcode, with the `[funcref, operand*]` stack layout `call_value` expects —
+/// the same shape `emit_call` has always emitted.
+///
+/// ⛔ These used to lower to a generic `ExprKind::Call` whose callee was an
+/// EXPRESSION, which sends the compiler down its dynamic-callee ladder. That
+/// ladder opens by reading `__vybe_method_receiver` OFF the callee — a
+/// `struct.get` — so `call_ref` on a null funcref trapped "null structure
+/// reference (struct.get)" before anything reached a call path at all
+/// (`call_ref.wast`). The message was honest: it was not a call. The tail form
+/// went through `__wasm_return_call`, which wants a QUALIFIED callee name and
+/// got a value, and reported "null is not callable"
+/// (`return_call_ref.wast`).
+///
+/// ⛔ Both were also blind in the PLAIN spelling, where the operands are on the
+/// enclosing block's stack and never appear as arguments: popping the funcref
+/// off an empty argument list produced a call to null. There the argument count
+/// has to come from `$sig`, which is the only thing that knows it.
+fn build_call_ref_opcode(
+    __w: &mut WastWalker,
+    name: &str,
+    args: Vec<Expression>,
+    span: Span,
+) -> Result<Expression, String> {
+    // ⛔ `resolve_wast_type_name` is THE answer to "which type is `$sig`" — it
+    // takes the NAMED and the POSITIONAL spelling both (`call_ref 0`, which the
+    // spec writes wherever it writes numeric type indices). Matching only
+    // `ExprKind::Ident` here would have been a fourth private answer to a
+    // question this already answers, and it would have missed silently: a
+    // numeric `$sig` would resolve to 0 params.
+    let type_name = resolve_wast_type_name(__w, args.first());
+    let sig_params = __w.type_func_params.get(&type_name).copied();
+    let sig_results = __w.type_func_results.get(&type_name).copied();
+
+    let mut rest = args;
+    if !rest.is_empty() {
+        rest.remove(0); // the `$sig` type immediate is not a stack value
+    }
+    // FOLDED: `[operand*, funcref]` — the funcref is written LAST and the
+    // opcode wants it FIRST, below its arguments. Its count is what was
+    // actually written, not what `$sig` declares, so an unresolved `$sig`
+    // cannot silently change the folded call's arity.
+    // FLAT: nothing was folded in, the operands are already on the stack in
+    // the right order, and only the count is needed.
+    let callee = rest.pop();
+    let argc = match (&callee, sig_params) {
+        (Some(_), _) => rest.len(),
+        (None, Some(n)) => n,
+        // ⛔ NOT a silent 0. Nothing was folded in AND `$sig` did not resolve,
+        // so neither source of the arity is available and any number here is a
+        // guess that would mis-slice the stack at run time.
+        (None, None) => {
+            return Err(format!(
+                "{name}: cannot determine the argument count — `{type_name}` is not a \
+                 declared function type and no operands were folded in"
+            ))
+        }
+    };
+    // The result count rides along for the WASM writer, which picks the
+    // call_indirect functype from the `(argc, results)` pair — so a wrong value
+    // here writes a wrong binary even though the VM ignores it (the callee
+    // chunk's own arity drives execution). Default to the declared type's
+    // result count; fall back to 1 only when `$sig` gave us nothing, which the
+    // arity check above has already made unreachable for the flat spelling.
+    let sig_results = sig_results.unwrap_or(1);
+    let mut operands = vec![
+        Expression::int(argc as i64),
+        Expression::int(sig_results as i64),
+    ];
+    if let Some(callee) = callee {
+        operands.push(callee);
+        operands.extend(rest);
+    }
+    Ok(make_call(name, operands, span))
+}
+
 fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
     // A memory op with NO explicit selector targets ITS module's memory 0 —
     // which, in a multi-module script, is program memory <base>. Explicit
     // selectors were already `@@mem`-mangled (shifted) at the parse sites.
-    let name = if __w.memory_index_base > 0
-        && !name.contains("@@mem")
-        && mem_op_immediate_count(&name) > 0
-    {
-        let base = __w.memory_index_base;
+    // ⚠ THE PLAIN AND FOLDED SPELLINGS MUST NAME THE SAME TYPE.
+    //
+    // `(ref.cast (ref $T) …)` reaches the walker through `ref_type_arg`, which
+    // qualifies. The unfolded `ref.cast $T` carries its type as a bare `id`
+    // instr_arg instead, so it arrived UNQUALIFIED and looked up a name the
+    // registration no longer uses — `trap: ref.cast failed: value is not Sub`,
+    // with the bare `Sub` in the message as the tell.
+    //
+    // Only the leading TYPE operand is rewritten, and only when it is an
+    // `Ident` (a `$id`): abstract spellings arrive as strings, and
+    // `qualify_type_name` is idempotent, so a folded arg that came in already
+    // qualified passes through untouched.
+    let args = if matches!(
+        name.as_str(),
+        "ref.test" | "ref.test_null" | "ref.cast" | "ref.cast_null" | "ref.cast_desc_eq"
+            // The ARRAY family all lead with a typeidx. Several of their arms
+            // pass that argument through VERBATIM rather than via
+            // `resolve_wast_type_name` — `array.new_default` hands it straight
+            // to `array_new` — so the registration was qualified while the
+            // reference stayed bare and the element width was looked up under a
+            // name that no longer existed. Wrong width, wrong bounds:
+            // `array.init_data: source out of bounds` on an array that fits.
+            | "array.new"
+            | "array.new_default"
+            | "array.new_fixed"
+            | "array.new_data"
+            | "array.new_elem"
+            | "array.init_data"
+            | "array.init_elem"
+            | "array.get"
+            | "array.get_s"
+            | "array.get_u"
+            | "array.set"
+            | "array.fill"
+    ) {
+        let mut a = args;
+        if let Some(first) = a.first_mut() {
+            if let ExprKind::Ident(n) = &first.kind {
+                let q = qualify_type_name(__w, n);
+                *first = Expression::ident(&q);
+            }
+        }
+        a
+    } else {
+        args
+    };
+    let default_mem = default_memory_slot(__w);
+    let name = if default_mem > 0 && !name.contains("@@mem") && mem_op_immediate_count(&name) > 0 {
         if name == "memory.copy" {
-            format!("memory.copy@@mem{base}@@mem{base}")
+            format!("memory.copy@@mem{default_mem}@@mem{default_mem}")
         } else {
-            format!("{name}@@mem{base}")
+            format!("{name}@@mem{default_mem}")
         }
     } else {
         name
     };
-    // A constant `offset=N` memarg on a load/store folds into the address
-    // (WASM effective address = base + offset). The VM's load/store opcode
-    // stream can't unambiguously carry a memarg — its optional-memarg peek
-    // can't tell offset bytes from the next opcode — and a static offset needs
-    // no runtime immediate. `align=` memargs are pure hints and are dropped.
-    //
-    // The lane ops (`v128.load8_lane`, `v128.store64_lane`, …) put their LANE
-    // immediate ahead of the address, so the address they fold into is slot 1.
-    // None of the other v128 memory ops (`load8x8_s`, `load32_splat`,
-    // `load64_zero`, plain `v128.load`/`v128.store`) name a lane, so the
-    // `_lane` suffix is the whole discriminator — and it survives the `@@mem`
-    // mangling above, which only ever appends.
-    let args = if name.contains(".load") || name.contains(".store") {
-        let addr_index = usize::from(name.contains("_lane"));
-        fold_memarg_offset(args, addr_index, span)
+    // A constant `offset=N` memarg on a load/store rides across as an
+    // `@@off<N>` name suffix and is emitted IN the instruction's memarg — see
+    // `strip_memarg` for why folding it into the address was wrong. The
+    // suffixes only ever APPEND, and every reader takes the base name as
+    // everything before the first `@@`, so `@@off` and `@@mem` compose in
+    // either order.
+    let (name, args) = if name.contains(".load") || name.contains(".store") {
+        let (rest, offset) = strip_memarg(args);
+        let name = if offset != 0 {
+            format!("{name}@@off{offset}")
+        } else {
+            name
+        };
+        (name, rest)
     } else {
-        args
+        (name, args)
     };
     // A DATAIDX immediate is module-relative over a script-wide segment list,
     // the same split the memidx/tableidx bases exist for. `memory.init` and
@@ -7030,7 +7848,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         "array.get_s" | "array.get_u" => {
             let signed = name == "array.get_s";
             let elem = args.first().and_then(|a| match &a.kind {
-                ExprKind::Ident(n) => __w.array_elem_type.get(n).cloned(),
+                ExprKind::Ident(n) => __w.array_elem_type.get(&qualify_type_name(__w, n)).cloned(),
                 _ => None,
             });
             let rest: Vec<Expression> = args.into_iter().skip(1).collect();
@@ -7160,7 +7978,9 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let value = it.next().unwrap_or(Expression::null());
             let target_name = match &target_raw.kind {
                 ExprKind::Ident(n) => n.clone(),
-                ExprKind::Lit(Literal::Int(i)) => format!("p{}", i),
+                // Same index space, same lookup — a `local.tee 0` into a NAMED
+                // param wrote to a binding called `p0` that nothing reads.
+                ExprKind::Lit(Literal::Int(i)) => local_index_binding_name(__w, *i),
                 _ => "__tee_tmp".to_string(),
             };
             Ok(Expression::with_span(
@@ -7354,7 +8174,40 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // per spec), distinct from a plain null. Lowered to the compiler builtin
         // `__wast_typed_null` which emits `ref.null` (Op::NULL) with a non-zero
         // heap-type immediate so the VM produces a `TypedNull`.
-        "ref.null" => Ok(make_call("__wast_typed_null", vec![], span)),
+        // ⛔ THE HEAPTYPE IS THE INSTRUCTION. This passed `vec![]` — the
+        // immediate was parsed and then THROWN AWAY, so every `ref.null`
+        // spelling collapsed to one intrinsic that emits `HT_NONE`. In the
+        // VM that is invisible (one null), but `none` bottoms the ANY
+        // hierarchy and `noextern` bottoms the EXTERN one, so `nullref` is
+        // NOT a subtype of `externref`: `(ref.null extern)` stored into an
+        // externref global came out `ref.null none` and V8 answered
+        // `global.set[0] expected type externref, found ref.null of type
+        // nullref`. Found by Fathom's 10-line descriptor module.
+        //
+        // ⚠ `parse_vt` (the stack-typing path, `"ref.null"` below) reads this
+        // same immediate CORRECTLY. So the checker believed `externref` while
+        // the emitter wrote `none` — the two halves of this walker disagreed,
+        // which is exactly why no fixture could catch it.
+        //
+        // Concrete `$T` keeps the old lowering: `ref.null $T` is in the ANY
+        // hierarchy either way, and resolving the index needs the compiler's
+        // type table, which this arm does not have.
+        "ref.null" => {
+            // ⚠ THE IMMEDIATE ARRIVES AS A STRING, NOT AN IDENT.
+            // `instr_arg_inner_to_expr` maps `Rule::bare_heap_type` to
+            // `Expression::string(..)`; only `$id` becomes an `Ident`. Reading
+            // just one shape is how this looked fixed and stayed broken.
+            let spelling = args.first().and_then(|e| match &e.kind {
+                ExprKind::Lit(Literal::Str(t)) => abs_heap(t.trim()),
+                ExprKind::Ident(n) => abs_heap(n),
+                _ => None,
+            });
+            let arg = match spelling {
+                Some(ht) => vec![Expression::string(ht)],
+                None => vec![],
+            };
+            Ok(make_call("__wast_typed_null", arg, span))
+        }
         // ref.func $f → a first-class reference to module function `$f`. Module
         // functions are static methods of the module class, so this is the
         // static method referenced as a value (the compiler tears it off into a
@@ -7368,7 +8221,22 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                 },
                 None => return Ok(Expression::null()),
             };
-            let class = __w.module_class_name.clone();
+            // ⚠ AN IMPORTED FUNCTION IS NOT A METHOD OF THIS MODULE'S CLASS.
+            //
+            // This always qualified with the CURRENT module's class, so
+            // `ref.func $1` where `$1` is `(import "A" "f" (func $1 …))`
+            // produced `<ThisModule>.$1` — a member that does not exist —
+            // and the reference came out `undefined`. `call $1` worked the
+            // whole time because the CALL path resolves through
+            // `import_alias`; only the reference-taking path did not, so the
+            // two spellings of "use this imported function" disagreed.
+            //
+            // `import_alias` already holds the EXPORTER's (class, method),
+            // resolved through `(register …)` or a component instantiation.
+            let (class, field) = match __w.import_alias.get(&field) {
+                Some((exporter_class, method)) => (exporter_class.clone(), method.clone()),
+                None => (__w.module_class_name.clone(), field),
+            };
             Ok(Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(Expression::ident(&class)),
@@ -7448,21 +8316,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             ))
         }
 
-        "call_ref" => {
-            let mut rest = args;
-            if !rest.is_empty() {
-                rest.remove(0); // drop the $sig type immediate
-            }
-            let callee = rest.pop().unwrap_or_else(Expression::null);
-            Ok(Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(callee),
-                    args: rest.into_iter().map(Argument::positional).collect(),
-                    optional: false,
-                },
-                span,
-            ))
-        }
+        "call_ref" | "return_call_ref" => build_call_ref_opcode(__w, &name, args, span),
 
         // ── GC / WasmGC struct ops ────────────────────────────────────────
         // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ..., "__type": "T"}
@@ -7577,7 +8431,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // null-fill via `array_new_default`. args: [typeidx, length].
         "array.new_default" => {
             let elem = args.first().and_then(|a| match &a.kind {
-                ExprKind::Ident(n) => __w.array_elem_type.get(n).cloned(),
+                ExprKind::Ident(n) => __w.array_elem_type.get(&qualify_type_name(__w, n)).cloned(),
                 _ => None,
             });
             // Numeric OR concrete `(ref null $t)` elements have a known default
@@ -7912,6 +8766,14 @@ fn walk_global_field(__w: &mut WastWalker, pair: Pair<Rule>, idx: usize) -> Resu
 /// both), and the bytes land at offset 0.
 fn walk_memory_field(__w: &mut WastWalker, pair: Pair<Rule>, memory_idx: usize) -> Result<Vec<Statement>, String> {
     let span = to_span(&pair);
+    // An IMPORTED memory that resolved to an exporter's memory declares
+    // NOTHING: it is that memory, and its own written limits are a link-time
+    // constraint rather than a size. Declaring one anyway is what gave the two
+    // modules separate bytes — and what made `memory_size_import` answer the
+    // import's minimum (1) instead of the exporter's actual size (2).
+    if let Some((_, true)) = __w.memory_field_info.get(memory_idx).copied() {
+        return Ok(Vec::new());
+    }
     let mut min_pages: u64 = 0;
     let mut max_pages: Option<u64> = None;
     let mut inline_bytes: Option<Vec<u8>> = None;
@@ -7959,7 +8821,13 @@ fn walk_memory_field(__w: &mut WastWalker, pair: Pair<Rule>, memory_idx: usize) 
 
     const PAGE: u64 = 65536;
     let pages = (bytes.len() as u64).div_ceil(PAGE);
-    let mem_base = __w.memory_index_base as u32;
+    // `(memory (data …))` declares THIS field's own memory, so the segment
+    // targets whatever slot this module's memidx `memory_idx` resolved to.
+    let own_slot = __w
+        .memory_field_info
+        .get(memory_idx)
+        .map(|(s, _)| *s)
+        .unwrap_or(__w.memory_index_base + memory_idx) as u32;
     Ok(vec![
         Statement::with_span(
             StmtKind::MemoryDecl {
@@ -7971,7 +8839,7 @@ fn walk_memory_field(__w: &mut WastWalker, pair: Pair<Rule>, memory_idx: usize) 
         ),
         Statement::with_span(
             StmtKind::DataSegment {
-                memory_index: mem_base + memory_idx as u32,
+                memory_index: own_slot,
                 offset: Some(Expression::int(0)),
                 bytes,
             },
@@ -7983,6 +8851,59 @@ fn walk_memory_field(__w: &mut WastWalker, pair: Pair<Rule>, memory_idx: usize) 
 /// The method name a function `index` (`$id` or a positional integer) refers
 /// to, given the module's index→name map. `None` when a positional index is out
 /// of range (a malformed module, caught by validation, not by silent fallback).
+/// The funcref an element-segment item denotes.
+///
+/// ⚠ TWO resolutions, both of which were missing. An item written as a NUMBER
+/// (`(elem (table $t) (i32.const 2) func 3 1 4 1)`) names a function INDEX, not
+/// a method called "3" — left verbatim it built a member access on a name no
+/// class has, and the slot silently stayed null. And an index in the imported
+/// range denotes another module's function, which is not a member of THIS
+/// module's class at all; it resolves through `import_alias` exactly as a
+/// direct call to the same import does.
+///
+/// `bulk-memory/table_init.wast` needs both at once: five imported functions
+/// followed by an element list written entirely in numbers.
+fn elem_item_funcref(__w: &WastWalker, item: &str, class: &str) -> Expression {
+    match elem_item_owner(__w, item, class) {
+        Some((owner, method)) => Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&owner)),
+            field: method,
+            null_safe: false,
+        }),
+        None => Expression::null(),
+    }
+}
+
+/// The `(owner class, method)` an element-segment item resolves to, shared by
+/// the active path (which builds a member access) and the passive one (which
+/// hands the pair to the compile-time registration).
+fn elem_item_owner(__w: &WastWalker, item: &str, class: &str) -> Option<(String, String)> {
+    if item.is_empty() {
+        return None;
+    }
+    let name = match item.parse::<usize>() {
+        Ok(i) => __w.func_index_name.get(i).cloned()?,
+        Err(_) => item.to_string(),
+    };
+    Some(match __w.import_alias.get(&name) {
+        Some((cls, m)) => (cls.clone(), m.clone()),
+        None => (class.to_string(), name),
+    })
+}
+
+/// The binding an UNNAMED standalone `(import "m" "e" (func …))` is reached by.
+///
+/// The index pre-scan ALREADY gives such an import a slot under this name — it
+/// has occupied the leading function indices all along. What was missing is the
+/// other half: `import_alias` is keyed by LOCAL ID, an unnamed import has none,
+/// so nothing ever bound the name to the exporter's method and a numeric
+/// reference resolved to an undefined identifier. Imports precede definitions
+/// (WASM 3.0 §6.4), so an import's ordinal among function imports IS its
+/// function index, and the two pre-scans agree without either seeing the other.
+fn imported_func_binding_name(func_index: usize) -> String {
+    format!("__wasm_import_{func_index}")
+}
+
 fn resolve_func_index_name(idx: &Pair<Rule>, index_names: &[String]) -> Option<String> {
     let inner = idx.clone().into_inner().next()?;
     match inner.as_rule() {
@@ -8024,6 +8945,7 @@ fn walk_call_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
     let mut name: Option<String> = None;
     let mut params = 0usize;
     let mut results = 0usize;
+    let mut signature = String::new();
     let mut fallback: Option<String> = None;
     let mut canonical = false;
     let mut imported: Option<String> = None;
@@ -8039,6 +8961,7 @@ fn walk_call_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
                 let (p, r) = count_typeuse_params_results(__w, &child);
                 params = p;
                 results = r;
+                signature = typeuse_signature(__w, &child);
             }
             Rule::call_tag_canon => canonical = true,
             Rule::call_tag_fallback => {
@@ -8098,6 +9021,7 @@ fn walk_call_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
                 .unwrap_or(name),
             params: params as u8,
             results: results as u8,
+            signature,
             canonical,
             fallback,
         },
@@ -8125,6 +9049,7 @@ fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
     let mut local = String::new();
     let mut params = 0usize;
     let mut results = 0usize;
+    let mut signature = String::new();
     if let Some(desc) = pair
         .into_inner()
         .find(|c| c.as_rule() == Rule::import_desc)
@@ -8136,6 +9061,7 @@ fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
                     let (p, r) = count_typeuse_params_results(__w, &child);
                     params = p;
                     results = r;
+                    signature = typeuse_signature(__w, &child);
                 }
                 _ => {}
             }
@@ -8153,6 +9079,7 @@ fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
             name: external,
             params: params as u8,
             results: results as u8,
+            signature,
             canonical: false,
             fallback: None,
         },
@@ -8199,6 +9126,66 @@ fn walk_func_switch_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
 }
 
 /// Parameter and result counts of a `typeuse`, for a call tag's signature.
+/// The typeuse's DECLARED VALUE TYPES, as a signature string (`"i32,i32->f64"`).
+///
+/// ⛔ THE TYPES WERE BEING COUNTED AND THROWN AWAY.
+/// `count_typeuse_params_results` below reduces `(param i32) (result i32)` to
+/// `(1, 1)`, and everything downstream — `StmtKind::WasmCallTagDecl`,
+/// `CallTagDef`, `canonical_call_tags: HashMap<(u8,u8), u32>` — keys on that
+/// pair. So `call_tag.canon [i32]->[i32]` and `call_tag.canon [f64]->[f64]`
+/// intern to the SAME tag, and an `i32`-shaped funcref is callable under the
+/// `f64` canonical tag. Measured: that module is accepted today.
+///
+/// The Overview says `call_tag.canon $functype` derives the canonical tag *of
+/// that functype*; two functypes are two tags. And since `call_indirect $table
+/// $functype` is now shorthand for `call_with_tag (call_tag.canon $functype)`,
+/// the Security property — "a funcref called under a convention it does not
+/// handle STOPS, rather than being called anyway under the wrong shape" — is
+/// only ARITY-safety while the key is a pair of counts.
+///
+/// A string rather than a type model on purpose: the VM erases runtime types
+/// (`Chunk` carries `arity`/`param_count`/`result_arity` and no value types at
+/// all), so the declared spelling is the only place the functype survives. It
+/// is compared, never interpreted.
+fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
+    let mut params: Vec<String> = Vec::new();
+    let mut results: Vec<String> = Vec::new();
+    for child in pair.clone().into_inner() {
+        match child.as_rule() {
+            Rule::param => {
+                for t in child
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                {
+                    params.push(t.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                }
+            }
+            Rule::result => {
+                for t in child
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                {
+                    results.push(t.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                }
+            }
+            // `(type $t)` — a named functype. RESOLVED to its value types, not
+            // kept as a name: the writer matches this against a function's
+            // `func_sig`, which is value types, so a name would never match and
+            // the lookup would silently fall back to the count-keyed path this
+            // exists to replace.
+            Rule::index => {
+                let n = qualify_type_name(__w, child.as_str().trim_start_matches('$'));
+                if let Some((p, r)) = __w.type_func_sigs.get(&n) {
+                    params.extend(p.iter().cloned());
+                    results.extend(r.iter().cloned());
+                }
+            }
+            _ => {}
+        }
+    }
+    format!("{}->{}", params.join(","), results.join(","))
+}
+
 fn count_typeuse_params_results(__w: &mut WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
     let mut params = 0usize;
     let mut results = 0usize;
@@ -8220,7 +9207,10 @@ fn count_typeuse_params_results(__w: &mut WastWalker, pair: &Pair<Rule>) -> (usi
             }
             // `(type $t)` — take the referenced type's shape.
             Rule::index => {
-                let n = child.as_str().to_string();
+                // ⚠ TWO bugs here: the `$` was kept, so this never matched even
+                // before type names were module-qualified; and the key must now
+                // carry the module qualifier like every other type lookup.
+                let n = qualify_type_name(__w, child.as_str().trim_start_matches('$'));
                 if let Some(p) = __w.type_func_params.get(&n).copied() {
                     params = p;
                 }
@@ -8282,6 +9272,7 @@ fn scan_tag_signature(__w: &mut WastWalker, pair: Pair<Rule>) -> (Option<String>
                     inline as u8
                 } else {
                     type_ref
+                        .map(|n| qualify_type_name(__w, &n))
                         .and_then(|n| __w.type_func_params.get(&n).copied())
                         .unwrap_or(0) as u8
                 };
@@ -8447,6 +9438,42 @@ fn find_first_integer(pair: &Pair<Rule>) -> Option<i64> {
 /// Textual form of a WASM type-reference operand — a symbolic id (`$Sub`
 /// arrives as `Ident("Sub")`) or a numeric type index. Used to name the GC
 /// struct type a `struct.new`/`ref.test`/`ref.cast` refers to.
+/// The composite type of a `(type …)` field, as whitespace-normalised TEXT.
+///
+/// This is the structural identity WASM 3.0 canonicalisation compares, and it
+/// is read from the source rather than rebuilt from the parsed shape because
+/// the parsed shape is lossy in exactly the place that matters: field and
+/// element MUTABILITY. `(struct (field (mut i32)))` and `(struct (field i32))`
+/// are different types, and both parse to a storage type of "i32".
+///
+/// Whitespace is collapsed so two spellings of the same type agree; nothing
+/// else is normalised, so a difference we cannot interpret leaves the types
+/// DISTINCT — which is the status quo, not a wrong merge.
+fn composite_type_text(type_field: &Pair<Rule>) -> String {
+    fn find(p: &Pair<Rule>) -> Option<String> {
+        for c in p.clone().into_inner() {
+            if matches!(
+                c.as_rule(),
+                Rule::composite_type
+                    | Rule::struct_type
+                    | Rule::array_type
+                    | Rule::func_type
+            ) {
+                return Some(c.as_str().to_string());
+            }
+            if let Some(t) = find(&c) {
+                return Some(t);
+            }
+        }
+        None
+    }
+    find(type_field)
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The declared NAME a type immediate refers to: an `$id` verbatim, a positional
 /// index mapped through declaration order.
 ///
@@ -8469,7 +9496,14 @@ fn qualify_type_name(__w: &WastWalker, name: &str) -> String {
     if vybe_runtime::opcode::heaptype::HeapType::from_spec_name(name).is_some() {
         return name.to_string();
     }
-    format!("m#{}#{}", __w.current_module_seq, name)
+    let qualified = format!("m#{}#{}", __w.current_module_seq, name);
+    // One funnel, so `struct.new`, `ref.cast`, field lookups and diagnostics
+    // all agree on which row a `$id` names. Empty during the pre-scan that
+    // BUILDS the map, which is what keeps that pass reading raw names.
+    __w.type_canonical
+        .get(&qualified)
+        .cloned()
+        .unwrap_or(qualified)
 }
 
 fn resolve_wast_type_name(__w: &WastWalker, expr: Option<&Expression>) -> String {
@@ -8651,18 +9685,51 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
             // Declarative: only permits `ref.func`, no runtime payload.
             return Ok(Statement::with_span(StmtKind::Block(Vec::new()), span));
         }
-        // Passive: register the funcref list under this segment index so a later
+        // Passive: register the element list under this segment index so a later
         // `table.init $e` / `array.new_elem $e` copies real funcrefs from it.
         // Compile-time directive resolved to function chunk indices; the VM
         // materializes the funcrefs at instantiation (see `passive_elem_funcs`).
+        //
+        // ⚠ The CLASS is an argument. Each module in a script gets its own
+        // (`__wasm_module`, `__wasm_module_1`, …), and the consumer used to
+        // resolve names under a hardcoded `__wasm_module` — so every passive
+        // segment after the FIRST module resolved to nothing, was stored empty,
+        // and `table.init` reported "missing element segment".
+        let class = __w.module_class_name.clone();
         let mut args = vec![Expression::int(seg_index as i64)];
-        // A null element in a PASSIVE segment is dropped rather than reserved:
-        // the consumer (`__wast_register_passive_elem`, builtins.rs:1127) maps
-        // names to chunk indices and has no null representation. Same shifting
-        // hazard as the active path had — a compiler change to fix, so it is
-        // reported here, not worked around.
-        for f in funcs.iter().flatten() {
-            args.push(Expression::string(f));
+        // ⚠ ONE ARGUMENT PER SLOT, AND IT IS AN EXPRESSION.
+        //
+        // An element segment holds ELEMENT EXPRESSIONS (WASM 3.0 §4.5.4), so
+        // each slot sends the expression the VM evaluates at instantiation. A
+        // `ref.func` item sends `__elem_func(owner, method)` instead, because
+        // resolving a function name to a chunk is the compiler's job — and the
+        // OWNER matters, since an item may name an IMPORTED function, which
+        // lives in the exporting module's class rather than this one's.
+        //
+        // Emitting only the resolvable items renumbered the segment: an
+        // `(elem funcref (ref.null func) (ref.func $a))` put `$a` at index 0,
+        // so `table.init` copying one element from offset 1 read past the end.
+        for (i, f) in funcs.iter().enumerate() {
+            match f {
+                Some(item) => {
+                    let (owner, method) = elem_item_owner(__w, item, &class)
+                        .unwrap_or_else(|| (String::new(), String::new()));
+                    args.push(make_call(
+                        "__elem_func",
+                        vec![Expression::string(&owner), Expression::string(&method)],
+                        span,
+                    ));
+                }
+                // `ref.null` carries no expression and lands as a null slot; a
+                // general element expression sends itself.
+                None => args.push(
+                    item_exprs
+                        .get(i)
+                        .cloned()
+                        .flatten()
+                        .unwrap_or_else(Expression::null),
+                ),
+            }
         }
         return Ok(Statement::with_span(
             StmtKind::Expr(make_call("__wast_register_passive_elem", args, span)),
@@ -8676,11 +9743,7 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
         // still consumed, which is why the index comes from `enumerate` and not
         // from a counter that only advances on real funcrefs.
         let funcref = match f {
-            Some(f) => Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident(&class)),
-                field: f.clone(),
-                null_safe: false,
-            }),
+            Some(f) => elem_item_funcref(__w, f, &class),
             // A general element expression fills the slot with its value.
             None => match item_exprs.get(i).cloned().flatten() {
                 Some(e) => e,
@@ -8759,6 +9822,29 @@ fn default_value_for_storage_type(ty: &str) -> Expression {
 /// `(result …)` win when present — they are the spec's explicit restatement
 /// of the type — otherwise it comes from the `(type $t)` the function names.
 /// Mirrors how `scan_tag_signature` resolves a tag's arity.
+/// The function type a `(func $f (type $t) …)` field DECLARES, module-qualified.
+///
+/// Distinct from its structural signature: two types with identical params and
+/// results are the same STRUCTURE but different NAMES, and Custom Descriptors'
+/// exact casts discriminate on the name.
+fn func_field_declared_type(__w: &WastWalker, func_field: &Pair<Rule>) -> Option<String> {
+    for c in func_field.clone().into_inner() {
+        if c.as_rule() != Rule::typeuse {
+            continue;
+        }
+        for t in c.into_inner() {
+            if t.as_rule() == Rule::index {
+                let raw = t.as_str().trim_start_matches('$').to_string();
+                return Some(match raw.parse::<usize>() {
+                    Ok(i) => __w.type_index_name.get(i).cloned().unwrap_or(raw),
+                    Err(_) => qualify_type_name(__w, &raw),
+                });
+            }
+        }
+    }
+    None
+}
+
 fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<String>, Vec<String>) {
     let mut params: Vec<String> = Vec::new();
     let mut results: Vec<String> = Vec::new();
@@ -8791,7 +9877,12 @@ fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<Strin
         }
     }
     if params.is_empty() && results.is_empty() {
-        if let Some(sig) = type_ref.and_then(|n| __w.type_func_sigs.get(&n)) {
+        // The maps are keyed by the QUALIFIED name (the declaration site
+        // qualifies), while a `(type $t)` typeuse yields the bare `$t`.
+        if let Some(sig) = type_ref
+            .map(|n| qualify_type_name(__w, &n))
+            .and_then(|n| __w.type_func_sigs.get(&n))
+        {
             return sig.clone();
         }
     }
@@ -8918,10 +10009,11 @@ fn resolve_table_index(__w: &mut WastWalker, name: &str) -> i64 {
 
 fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
-    // Default and numeric memory indices are module-relative — shift into the
-    // script's accumulated index space (named memories resolve pre-shifted).
-    let mem_base = __w.memory_index_base as u32;
-    let mut memory_index: u32 = mem_base;
+    // Default and numeric memory indices are MODULE-RELATIVE; `memory_slots`
+    // maps them onto the script's index space, and an IMPORTED memory's entry
+    // points at the exporter's slot so a segment written here lands in the
+    // memory the other module can read.
+    let mut memory_index: u32 = default_memory_slot(__w) as u32;
     let mut offset: Option<Expression> = None;
     let mut bytes: Vec<u8> = Vec::new();
     let mut labels = LabelStack::new();
@@ -8936,7 +10028,13 @@ fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                         Rule::index => {
                             if let Some(i) = m.into_inner().next() {
                                 if i.as_rule() == Rule::integer {
-                                    memory_index = mem_base + parse_wat_u64(i.as_str()) as u32;
+                                    let n = parse_wat_u64(i.as_str()) as usize;
+                                    memory_index = __w
+                                        .memory_slots
+                                        .get(n)
+                                        .copied()
+                                        .unwrap_or(__w.memory_index_base + n)
+                                        as u32;
                                 } else {
                                     // `(memory $m2)` — resolve the name to its
                                     // declaration index.
@@ -9420,6 +10518,2513 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
 ///   * an import/export NAME whose bytes are not valid UTF-8. A name is a
 ///     character string and must decode; a DATA string is a byte string and
 ///     `\ff` there is an ordinary byte, so the check is on names only.
+/// Structural VALIDITY checks — the properties a module that PARSES can still
+/// violate. Returns the spec's diagnostic for the first violation found.
+///
+/// ⛔ VALIDITY IS NOT MALFORMEDNESS. `align=7` is malformed text (not a power
+/// of two); `align=8` on a one-byte load parses perfectly and is INVALID. The
+/// suite asserts them with different commands and different messages, so a
+/// check in the wrong half makes the other half's assertion pass for the wrong
+/// reason.
+///
+/// This is the structural subset only. The official suite carries 2720
+/// `assert_invalid` assertions and **2297 of them are "type mismatch"** — the
+/// stack-typing algorithm with block signatures, which does not exist yet
+/// ([[the validator]]). What is implemented here are the checks that need no
+/// type system at all:
+///
+///   * `alignment must not be larger than natural` — 99 assertions
+///   * `invalid lane index`                        — 48
+///   * `duplicate export name`                     — 17
+///
+/// Everything else still returns None, which means the assertion FAILS rather
+/// than passing quietly. That is the point: an unimplemented check must not
+/// look like a satisfied one.
+fn module_invalid_reason(pairs: pest::iterators::Pairs<Rule>) -> Option<String> {
+    use std::collections::HashSet;
+    let mut export_names: HashSet<String> = HashSet::new();
+    let pairs: Vec<Pair<Rule>> = pairs.collect();
+    for pair in pairs.clone() {
+        if let Some(r) = module_invalid_walk(pair, &mut export_names) {
+            return Some(r);
+        }
+    }
+    // ⛔ STACK TYPING RUNS LAST, AND THAT ORDER IS THE SPEC'S. Presence before
+    // agreement: a module with `local.get 99` AND a type error must report
+    // "unknown local". Every structural rule above settles first, and the
+    // one-directional message comparison turns any ordering slip into a
+    // visible wrong-message failure rather than a silent pass.
+    for pair in &pairs {
+        if let Some(r) = stack_typing_reason_in(pair) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+/// Name/index resolution over one module: every reference must name something
+/// the module declares. These need no type system — they are the second-biggest
+/// group in the suite after "type mismatch".
+///
+/// ⛔ ONLY UNAMBIGUOUS OPERAND POSITIONS ARE CHECKED. `memory.init $d` and
+/// `i32.load $m` carry an operand whose entity kind depends on how many bare
+/// indices are written (the memidx peel), and guessing wrong reports the wrong
+/// "unknown X" — which the message comparison now turns into a visible failure
+/// rather than a silent pass. Where the position is not certain, nothing is
+/// reported and the assertion stays honestly red.
+/// `global.set` on an immutable global. ⛔ The machinery for this already
+/// existed in `validate_module`, whose errors are routed to the MALFORMED
+/// check — so the suite's `assert_invalid "immutable global"` never saw it.
+/// Writing to a `const` global is a typing property of a module that parses
+/// perfectly: invalid, not malformed.
+fn immutable_global_reason(module: &Pair<Rule>) -> Option<String> {
+    let mut immut: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for pair in module.clone().into_inner() {
+        let inner = match pair.as_rule() {
+            Rule::module_field => match pair.clone().into_inner().next() {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => pair.clone(),
+        };
+        if inner.as_rule() != Rule::global_field {
+            continue;
+        }
+        let children: Vec<_> = inner.clone().into_inner().collect();
+        let is_mut = children
+            .iter()
+            .any(|c| c.as_rule() == Rule::global_type && c.as_str().contains("mut"));
+        if !is_mut {
+            if let Some(id) = census_id(&inner) {
+                immut.insert(id);
+            }
+        }
+    }
+    if immut.is_empty() {
+        return None;
+    }
+    let mut targets = Vec::new();
+    collect_global_set_targets(module.clone(), &mut targets);
+    targets
+        .into_iter()
+        .find(|t| immut.contains(t))
+        .map(|t| format!("immutable global: ${t}"))
+}
+
+/// §4.4.7: a memarg's `offset` must fit the memory's ADDRESS WIDTH. On a
+/// 32-bit memory the offset is a `u32`, so `offset=4294967296` — exactly 2^32 —
+/// is the first illegal value.
+///
+/// ⛔ VALIDITY, NOT MALFORMEDNESS, AND THE SUITE SPLITS THEM. `offset=-1` is
+/// malformed text ("unknown operator"); `offset=4294967296` parses perfectly
+/// and is INVALID ("offset out of range"). A check in the wrong half makes the
+/// other half's assertion pass for the wrong reason.
+///
+/// ⛔ memory64 RAISES THE CEILING, so the rule is skipped entirely when the
+/// module declares an `i64` memory — the width is a property of the MEMORY,
+/// not of the instruction, and applying the 32-bit bound there would reject
+/// valid memory64 modules.
+fn memarg_offset_range_reason(module: &Pair<Rule>) -> Option<String> {
+    fn any_i64_memory(p: &Pair<Rule>) -> bool {
+        if p.as_rule() == Rule::mem_type {
+            return p.as_str().split_whitespace().next() == Some("i64");
+        }
+        p.clone().into_inner().any(|c| any_i64_memory(&c))
+    }
+    if any_i64_memory(module) {
+        return None;
+    }
+    fn scan(p: &Pair<Rule>) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            for c in p.clone().into_inner() {
+                // A `mem_arg` reaches an instruction wrapped in `instr_arg`;
+                // accept it bare too rather than depend on which.
+                let txt = match c.as_rule() {
+                    Rule::mem_arg => c.as_str(),
+                    Rule::instr_arg => match c.clone().into_inner().next() {
+                        Some(i) if i.as_rule() == Rule::mem_arg => i.as_str(),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if let Some(v) = txt.trim().strip_prefix("offset=") {
+                    if parse_wat_u128(v).is_some_and(|n| n > u32::MAX as u128) {
+                        return Some("offset out of range".to_string());
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module)
+}
+
+/// A type may reference only types declared BEFORE it, or types in its OWN
+/// recursion group. Mutual recursion is legal exactly inside one `(rec …)`.
+///
+/// ```wast
+/// (type $t1 (func (param (ref $t2))))   ;; forward, and NOT in $t2's group
+/// (type $t2 (func (param (ref $t1))))
+///   → "unknown type"
+/// (rec (type (func (param (ref 1))))) (rec (type (func)))
+///   → "unknown type"   ;; two SEPARATE groups, so still forward
+/// ```
+///
+/// ⛔ A STANDALONE `(type …)` IS ITS OWN SINGLETON GROUP, so a self-reference
+/// is legal and `r == idx` must NOT be flagged. Only a reference to a LATER
+/// index in a DIFFERENT group is an error — which is why this needs the
+/// rec-group boundary and could not be written before `rec_begin`/`rec_end`
+/// reached the parse tree.
+fn type_forward_reference_reason(module: &Pair<Rule>) -> Option<String> {
+    let rec_of = rec_groups_of_module(module)?;
+    let (types, names) = descriptor_type_table(module);
+    let mut idx = 0usize;
+    for field in module_fields(module) {
+        if field.as_rule() != Rule::type_field {
+            continue;
+        }
+        let mut refs: Vec<usize> = Vec::new();
+        collect_concrete_type_refs(&field, &names, &mut refs);
+        for r in refs {
+            if r >= types.len() {
+                return Some("unknown type".to_string());
+            }
+            if r > idx && rec_of.get(r) != rec_of.get(idx) {
+                return Some("unknown type".to_string());
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Every CONCRETE (`Heap::Concrete`) type index a type definition mentions.
+/// Abstract heap types name no index and are skipped.
+fn collect_concrete_type_refs(
+    p: &Pair<Rule>,
+    names: &HashMap<String, usize>,
+    out: &mut Vec<usize>,
+) {
+    let t = p.as_str().trim();
+    if t.starts_with("(ref") {
+        if let Some(Vt::Ref(r)) = parse_vt(t, names) {
+            if let Heap::Concrete(i) = r.heap {
+                out.push(i);
+            }
+        }
+    }
+    for c in p.clone().into_inner() {
+        collect_concrete_type_refs(&c, names, out);
+    }
+}
+
+fn module_name_resolution_reason(module: &Pair<Rule>) -> Option<String> {
+    let mut c = ModuleCensus::default();
+    build_census(module, &mut c);
+    name_resolution_walk(module.clone(), &c, &mut Vec::new(), 0)
+}
+
+fn name_resolution_walk(
+    pair: Pair<Rule>,
+    c: &ModuleCensus,
+    locals: &mut Vec<std::collections::HashSet<String>>,
+    depth: usize,
+) -> Option<String> {
+    let rule = pair.as_rule();
+    // A function opens a LOCAL scope: its params and locals, by name. `local.get
+    // $x` resolves there and nowhere else, so the scope is pushed for the body
+    // and popped after — a module-level set would let one function see another's.
+    let pushed = if rule == Rule::func_field {
+        let mut names = std::collections::HashSet::new();
+        for ch in pair.clone().into_inner() {
+            match ch.as_rule() {
+                Rule::typeuse => {
+                    for pr in ch.into_inner() {
+                        if pr.as_rule() == Rule::param {
+                            if let Some(id) = census_id(&pr) {
+                                names.insert(id);
+                            }
+                        }
+                    }
+                }
+                Rule::local => {
+                    if let Some(id) = census_id(&ch) {
+                        names.insert(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        locals.push(names);
+        true
+    } else {
+        false
+    };
+
+    // A `(type $t)` inside a typeuse names a declared type in every context it
+    // appears — func signatures, `call_indirect`, GC ops.
+    if rule == Rule::typeuse {
+        if let Some(idx) = pair
+            .clone()
+            .into_inner()
+            .find(|x| x.as_rule() == Rule::index)
+        {
+            if !index_resolves(&idx, &c.types) {
+                if pushed {
+                    locals.pop();
+                }
+                return Some("unknown type".to_string());
+            }
+        }
+    }
+
+    // ── unknown memory / unknown table ────────────────────────────────────
+    //
+    // ⛔ THE COMMON SHAPE IS "THE MODULE DECLARES NONE AT ALL", which needs no
+    // memidx peel: `(module (func (drop (f32.load (i32.const 0)))))` is
+    // "unknown memory" because memory 0 does not exist, not because the operand
+    // was misread. That sidesteps the ambiguity that made `memory.init $d` and
+    // `i32.load $m` unsafe to check by operand position — the count is asked,
+    // never the index.
+    //
+    // An ACTIVE segment names a memory/table implicitly; a passive or
+    // declarative one does not. `data_mode`/`elem_mode` present = active,
+    // except `declare`.
+    if c.memories.1 == 0 {
+        let hits = match rule {
+            Rule::data_field => pair
+                .clone()
+                .into_inner()
+                .any(|x| x.as_rule() == Rule::data_mode),
+            Rule::plain_instr | Rule::folded_instr => instr_head_name(&pair)
+                .is_some_and(|n| instr_touches_memory(&n)),
+            _ => false,
+        };
+        if hits {
+            if pushed {
+                locals.pop();
+            }
+            // ⛔ THE INDEX IS PART OF THE DIAGNOSTIC. The suite asserts
+            // "unknown memory 0", and the comparison is one-directional — our
+            // reason must CONTAIN the asserted text, so a bare "unknown
+            // memory" does NOT discharge it. This arm only fires when the
+            // module declares NO memory, so the reference is always memory 0;
+            // naming it still satisfies the bare spelling too.
+            return Some("unknown memory 0".to_string());
+        }
+    }
+    if c.tables.1 == 0 {
+        let hits = match rule {
+            // ⛔ An elem's ELEMENT TYPE can be mistaken for its offset.
+            // `elem_field` is `elem_mode? ~ ref_val_type?` and `elem_mode`'s
+            // last alternative is a bare folded instruction, so `(elem $e
+            // (ref 1))` — a PASSIVE segment declaring `(ref 1)` elements —
+            // parses its type as an offset and looked active. An offset yields
+            // an address; no `ref.*` form does, so the head decides.
+            Rule::elem_field => pair.clone().into_inner().any(|x| {
+                x.as_rule() == Rule::elem_mode
+                    && x.as_str().trim() != "declare"
+                    && !elem_mode_is_reference_type(&x)
+            }),
+            Rule::plain_instr | Rule::folded_instr => instr_head_name(&pair)
+                .is_some_and(|n| instr_touches_table(&n)),
+            _ => false,
+        };
+        if hits {
+            if pushed {
+                locals.pop();
+            }
+            // Same: this arm needs `tables == 0`, so the target is table 0.
+            return Some("unknown table 0".to_string());
+        }
+    }
+
+    // An EXPORT names an entity by index too — `(export "a" (func 0))` in a
+    // module with no functions is "unknown function". Checked here because the
+    // reference is in a descriptor, not an instruction.
+    if rule == Rule::export_desc {
+        let kind = pair
+            .as_str()
+            .trim_start_matches('(')
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if let Some(idx) = pair
+            .clone()
+            .into_inner()
+            .find(|x| x.as_rule() == Rule::index)
+        {
+            let bad = match kind {
+                "func" => (!index_resolves(&idx, &c.funcs)).then(|| "unknown function"),
+                "global" => (!index_resolves(&idx, &c.globals)).then(|| "unknown global"),
+                // Tables and memories are counted, not named, in the census —
+                // a bare count is all an index needs.
+                "table" => {
+                    (!index_resolves(&idx, &c.tables)).then(|| "unknown table")
+                }
+                "memory" => (!index_resolves(&idx, &c.memories)).then(|| "unknown memory"),
+                _ => None,
+            };
+            if let Some(msg) = bad {
+                if pushed {
+                    locals.pop();
+                }
+                // Name the index when it is written as one. The suite asserts
+                // "unknown global 1" and "unknown data segment 1"; a `$name`
+                // spelling has no number to quote, so it stays bare.
+                let t = idx.as_str().trim();
+                return Some(match t.parse::<u64>() {
+                    Ok(n) => format!("{msg} {n}"),
+                    Err(_) => msg.to_string(),
+                });
+            }
+        }
+    }
+    // A `(ref $t)` VALUE TYPE names a declared type, and it can appear where no
+    // typeuse does — `(type $x (func (param (ref $undeclared))))`. `heap_type`
+    // is a single atomic token, so an `id`/`integer` there IS the reference;
+    // the abstract spellings (`func`, `any`, `none`, …) are not.
+    if rule == Rule::heap_type {
+        let t = pair.as_str().trim();
+        let concrete = t.strip_prefix('$').map(|n| (true, n.to_string())).or_else(|| {
+            t.parse::<usize>().ok().map(|_| (false, t.to_string()))
+        });
+        if let Some((named, key)) = concrete {
+            let ok = if named {
+                c.types.0.contains(&key)
+            } else {
+                key.parse::<usize>().is_ok_and(|n| n < c.types.1)
+            };
+            if !ok {
+                if pushed {
+                    locals.pop();
+                }
+                return Some("unknown type".to_string());
+            }
+        }
+    }
+    if matches!(rule, Rule::plain_instr | Rule::folded_instr) {
+        let mut name: Option<String> = None;
+        let mut first_idx: Option<Pair<Rule>> = None;
+        for ch in pair.clone().into_inner() {
+            match ch.as_rule() {
+                Rule::instr_name if name.is_none() => name = Some(ch.as_str().to_string()),
+                Rule::instr_arg if first_idx.is_none() => {
+                    if let Some(i) = ch.clone().into_inner().next() {
+                        if matches!(i.as_rule(), Rule::index | Rule::id | Rule::integer) {
+                            first_idx = Some(if i.as_rule() == Rule::index { i } else { ch });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // How many index-shaped immediates this instruction carries. ⛔ THE
+        // MEMIDX PEEL DECIDES WHAT OPERAND 0 MEANS: `memory.init d` names a
+        // DATA segment, `memory.init m d` names a memory THEN a segment. With
+        // one immediate the position is certain; with two it is not, and
+        // guessing reports the wrong "unknown X" — which the message
+        // comparison turns into a visible failure rather than a silent pass.
+        let idx_count = pair
+            .clone()
+            .into_inner()
+            .filter(|ch| ch.as_rule() == Rule::instr_arg)
+            .filter(|ch| {
+                ch.clone()
+                    .into_inner()
+                    .next()
+                    .is_some_and(|i| matches!(i.as_rule(), Rule::index | Rule::id | Rule::integer))
+            })
+            .count();
+        if let (Some(n), Some(idx)) = (name.as_deref(), first_idx) {
+            let base = n.split_once("@@").map(|(b, _)| b).unwrap_or(n);
+            let bad = match base {
+                // Operand 0 is unambiguously that entity for these.
+                "global.get" | "global.set" => {
+                    (!index_resolves(&idx, &c.globals)).then(|| "unknown global")
+                }
+                "call" | "ref.func" | "return_call" => {
+                    (!index_resolves(&idx, &c.funcs)).then(|| "unknown function")
+                }
+                "data.drop" => {
+                    (!index_resolves(&idx, &c.data_segs)).then(|| "unknown data segment")
+                }
+                // Single immediate ⇒ it IS the segment index (see the peel note).
+                "memory.init" if idx_count == 1 => {
+                    (!index_resolves(&idx, &c.data_segs)).then(|| "unknown data segment")
+                }
+                "elem.drop" => {
+                    (!index_resolves(&idx, &c.elem_segs)).then(|| "unknown elem segment")
+                }
+                "table.init" if idx_count == 1 => {
+                    (!index_resolves(&idx, &c.elem_segs)).then(|| "unknown elem segment")
+                }
+                // A bare `ref` is not an instruction — it is `(ref $t)` / `(ref N)`,
+                // a reference TYPE the grammar folded here (see
+                // `elem_mode_is_reference_type`). Its index names a declared type.
+                "ref" => (!index_resolves(&idx, &c.types)).then(|| "unknown type"),
+                "local.get" | "local.set" | "local.tee" => {
+                    let t = idx.as_str().trim();
+                    match t.strip_prefix('$') {
+                        Some(nm) => (!locals.last().is_some_and(|sc| sc.contains(nm)))
+                            .then(|| "unknown local"),
+                        // A NUMERIC local index needs the param+local count,
+                        // which the typeuse may state by reference to a type —
+                        // not resolvable from this scan alone.
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(msg) = bad {
+                if pushed {
+                    locals.pop();
+                }
+                // Name the index when it is written as one. The suite asserts
+                // "unknown global 1" and "unknown data segment 1"; a `$name`
+                // spelling has no number to quote, so it stays bare.
+                let t = idx.as_str().trim();
+                return Some(match t.parse::<u64>() {
+                    Ok(n) => format!("{msg} {n}"),
+                    Err(_) => msg.to_string(),
+                });
+            }
+        }
+    }
+
+    // ── unknown label ─────────────────────────────────────────────────────
+    // `br N` targets the Nth enclosing label, 0 = innermost, and the FUNCTION
+    // BODY is itself a label — so inside a function with no nested blocks the
+    // only legal depth is 0, and `(func (br 1))` is out of range.
+    // `br_table` names several at once and every one of them must be in range.
+    //
+    // ⛔ Folded spelling only. In the plain spelling `block … end` is a FLAT
+    // token sequence, not a nested pair, so the tree carries no nesting to
+    // count; guessing there would over-flag. Every fixture in the suite writes
+    // these folded.
+    //
+    // ⛔ `instr_head_name` CANNOT SEE A FOLDED BLOCK. In `"(" ~ "block" ~ id? ~
+    // block_type* ~ instr*` the keyword is a grammar LITERAL, so the pair has
+    // no `instr_name` child and the lookup returns None — the depth counter
+    // never incremented for the exact construct it exists to count. Every
+    // nested `br 1` therefore read as out of range: 28 fixtures in block.wast
+    // alone were reported "unknown label" when they assert "type mismatch".
+    // The keyword has to be read off the TEXT, which is what `head_keyword`
+    // does for the same reason in the flattener.
+    let inner_depth = if matches!(rule, Rule::folded_instr)
+        && matches!(head_keyword(&pair).as_str(), "block" | "loop" | "if")
+    {
+        depth + 1
+    } else {
+        depth
+    };
+    if matches!(rule, Rule::plain_instr | Rule::folded_instr) {
+        if let Some(n) = instr_head_name(&pair) {
+            if matches!(n.as_str(), "br" | "br_if" | "br_table") {
+                for arg in pair.clone().into_inner() {
+                    if arg.as_rule() != Rule::instr_arg {
+                        continue;
+                    }
+                    let Some(i) = arg.clone().into_inner().next() else {
+                        continue;
+                    };
+                    if i.as_rule() != Rule::integer {
+                        continue;
+                    }
+                    if let Some(v) = parse_wat_u128(i.as_str()) {
+                        if v > depth as u128 {
+                            if pushed {
+                                locals.pop();
+                            }
+                            return Some("unknown label".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for child in pair.into_inner() {
+        if let Some(r) = name_resolution_walk(child, c, locals, inner_depth) {
+            if pushed {
+                locals.pop();
+            }
+            return Some(r);
+        }
+    }
+    if pushed {
+        locals.pop();
+    }
+    None
+}
+
+fn module_invalid_walk(
+    pair: Pair<Rule>,
+    export_names: &mut std::collections::HashSet<String>,
+) -> Option<String> {
+    // Custom Descriptors' type-section rules. Whole-table, so they run ONCE
+    // per module rather than per pair — this recursion reaches `Rule::module`
+    // exactly once on its way down.
+    if pair.as_rule() == Rule::module {
+        if let Some(r) = descriptor_invalid_reason(&pair) {
+            return Some(r);
+        }
+    }
+    // A module's export names must be pairwise distinct — over ALL of
+    // funcs/tables/memories/globals/tags, which is why one set covers the
+    // inline and the standalone spellings together.
+    if matches!(pair.as_rule(), Rule::export_inline | Rule::export_field) {
+        if let Some(sname) = pair
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::string)
+        {
+            let n = unquote(sname.as_str());
+            if !export_names.insert(n) {
+                return Some("duplicate export name".to_string());
+            }
+        }
+    }
+    // Name resolution is a WHOLE-MODULE question — it needs the census — so it
+    // runs once when the walk reaches the module, not per pair.
+    if pair.as_rule() == Rule::module {
+        if let Some(r) = module_name_resolution_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = immutable_global_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = memarg_offset_range_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = module_unknown_local_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = type_forward_reference_reason(&pair) {
+            return Some(r);
+        }
+    }
+    // ── limits ────────────────────────────────────────────────────────────
+    // `mem_type`/`table_type` are `addr_type? ~ integer ~ integer?`, so the
+    // limits are the one or two integers after an optional `i32`/`i64`.
+    //
+    // ⛔ Three distinct diagnostics, and they are not interchangeable:
+    // a memory over 65536 PAGES is "memory size", a table over 2^32 ENTRIES is
+    // "table size", and min > max is "size minimum must not be greater than
+    // maximum" for both. The suite asserts each by its own wording.
+    if matches!(pair.as_rule(), Rule::mem_type | Rule::table_type) {
+        let is_mem = pair.as_rule() == Rule::mem_type;
+        // memory64 raises the page ceiling; a 64-bit table's is 2^64.
+        let is64 = pair.as_str().split_whitespace().next() == Some("i64");
+        let nums: Vec<u128> = pair
+            .clone()
+            .into_inner()
+            .filter(|c| c.as_rule() == Rule::integer)
+            .filter_map(|c| parse_wat_u128(c.as_str()))
+            .collect();
+        // A limit too large to be a u128 is malformed text, not invalid, and
+        // `parse_wat_u128` declining leaves it to that half.
+        let ceiling: u128 = match (is_mem, is64) {
+            (true, false) => 65536,               // 4 GiB in 64 KiB pages
+            (true, true) => 1u128 << 48,          // memory64 page ceiling
+            // ⛔ INCLUSIVE. A table holds at most 2^32 - 1 entries, so
+            // `0x1_0000_0000` is the FIRST illegal value — `> 1<<32` let it
+            // through. A memory's 65536 pages, by contrast, IS legal.
+            (false, false) => (1u128 << 32) - 1,  // table entries
+            (false, true) => u128::MAX,
+        };
+        if let Some(&min) = nums.first() {
+            if min > ceiling {
+                return Some(if is_mem { "memory size" } else { "table size" }.to_string());
+            }
+            if let Some(&max) = nums.get(1) {
+                if max > ceiling {
+                    return Some(if is_mem { "memory size" } else { "table size" }.to_string());
+                }
+                if min > max {
+                    return Some("size minimum must not be greater than maximum".to_string());
+                }
+            }
+        }
+    }
+    // ── constant expression required ──────────────────────────────────────
+    // A global initializer and an active segment's offset are CONSTANT
+    // EXPRESSIONS: only the const forms, `global.get`, the GC allocations, and
+    // the extended-const arithmetic. `(global f32 (f32.neg (f32.const 0)))`
+    // and `(data (nop))` are the shapes the suite asserts.
+    if matches!(
+        pair.as_rule(),
+        Rule::global_field | Rule::data_mode | Rule::elem_mode | Rule::elem_item
+    ) {
+        // An IMPORTED global has no initializer to check.
+        let imported = pair.as_rule() == Rule::global_field
+            && pair
+                .clone()
+                .into_inner()
+                .any(|c| c.as_rule() == Rule::import_inline);
+        // ⛔ SAME GRAMMAR AMBIGUITY, THIRD SYMPTOM. `(elem $e (ref 1))`'s
+        // element TYPE matches `elem_mode`'s bare-folded-instr alternative, so
+        // it looks like an offset here too — and `ref` is not a constant
+        // expression, so this reported "constant expression required" for a
+        // segment that has no offset at all. It is a type; skip it.
+        let is_ref_type = pair.as_rule() == Rule::elem_mode
+            && elem_mode_is_reference_type(&pair);
+        if !imported && !is_ref_type {
+            if let Some(bad) = first_non_const_instr(&pair) {
+                let _ = bad;
+                return Some("constant expression required".to_string());
+            }
+        }
+    }
+    if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+        let mut name: Option<String> = None;
+        let mut align: Option<u32> = None;
+        let mut first_int: Option<i64> = None;
+        for c in pair.clone().into_inner() {
+            match c.as_rule() {
+                Rule::instr_name if name.is_none() => name = Some(c.as_str().to_string()),
+                Rule::instr_arg => {
+                    let t = c.as_str().trim();
+                    if let Some(d) = t.strip_prefix("align=") {
+                        align = d.parse::<u32>().ok();
+                    } else if first_int.is_none() {
+                        if let Some(inner) = c.clone().into_inner().next() {
+                            if inner.as_rule() == Rule::integer {
+                                first_int = inner.as_str().parse::<i64>().ok();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(n) = name.as_deref() {
+            let base = n.split_once("@@").map(|(b, _)| b).unwrap_or(n);
+            // `align` states the access alignment in BYTES and must not exceed
+            // the width the instruction actually touches. `natural_align_bytes`
+            // is the opcode table's own answer — not a list kept here.
+            if let (Some(a), Some(op)) = (align, vybe_runtime::opcode::Op::from_wasm_name(base)) {
+                if let Some(natural) = op.natural_align_bytes() {
+                    if a > natural {
+                        return Some("alignment must not be larger than natural".to_string());
+                    }
+                }
+            }
+            // A lane immediate must be inside the vector's lane count, and the
+            // MNEMONIC states that count: `i8x16.*` has 16, `v128.load32_lane`
+            // has 128/32 = 4.
+            if let (Some(lanes), Some(idx)) = (mnemonic_lane_count(base), first_int) {
+                if idx < 0 || idx >= lanes as i64 {
+                    return Some("invalid lane index".to_string());
+                }
+            }
+        }
+    }
+    for child in pair.into_inner() {
+        if let Some(r) = module_invalid_walk(child, export_names) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+// ── Custom Descriptors: type-section validity ────────────────────────────────
+//
+// The proposal's structural rules — the ones that need no stack-typing pass.
+// Kept OUT of `module_invalid_walk`'s inline arms deliberately: those are the
+// rules that apply to every module (alignment, lane index, duplicate export)
+// and are checked per-pair during a generic recursion, while these need the
+// whole type table and its rec-group structure at once.
+//
+// ⛔ RETURNS `None` FOR ANYTHING IT DOES NOT RECOGNISE. Never a generic
+// "invalid module": `assert_invalid` compares the expected diagnostic, so a
+// rule firing with the wrong message discharges an assertion it was never
+// written for — the same lie as discharging without looking, one level down.
+
+/// One type's descriptor-related declaration, as written.
+#[derive(Default, Clone)]
+struct DescType {
+    /// Which recursion group this type belongs to. Every standalone `(type …)`
+    /// is its own singleton group; a `(rec …)` shares one.
+    rec_group: usize,
+    is_struct: bool,
+    /// `(descriptor N)` — N is the type that DESCRIBES this one.
+    descriptor: Option<usize>,
+    /// `(describes N)` — N is the type this one is the descriptor FOR.
+    describes: Option<usize>,
+    /// Declared supertypes: the `index*` of `(sub $parent … )`. Empty for a
+    /// `(sub …)` with no parent and for a type with no `sub` at all.
+    supers: Vec<usize>,
+    /// Declared struct field count — the operand count an allocation needs
+    /// before its descriptor.
+    fields: usize,
+    /// The declared field type SPELLINGS, in order, for subtype comparison.
+    field_types: Vec<String>,
+    /// ISO-RECURSIVE CANONICAL ID. Two declarations with this id equal ARE the
+    /// same type, even in different rec groups. `None` when the module's
+    /// groups could not be canonicalised, which leaves every comparison
+    /// undecided rather than wrong.
+    canon: Option<usize>,
+    /// Was this type written with an explicit `(sub …)`?
+    ///
+    /// ⛔ A PLAIN `(type $t (struct))` IS FINAL. It abbreviates
+    /// `(sub final (struct))`, so nothing may declare it as a supertype —
+    /// which is what `(type $s (sub $t (struct)))` asserts "sub type" for.
+    /// Openness is opt-in, not the default.
+    has_sub: bool,
+    /// `(sub final …)` — explicitly closed.
+    is_final: bool,
+    /// `struct` / `array` / `func`. A subtype must have the SAME form as its
+    /// supertype; a struct may not extend a func.
+    kind: Option<&'static str>,
+    /// A func type's param and result SPELLINGS. Needed because function
+    /// subtyping compares SIGNATURES, which no other field records.
+    func_sig: Option<(Vec<String>, Vec<String>)>,
+}
+
+/// The rec-group id of every type in declaration order.
+///
+/// ⛔ UNAVAILABLE TODAY, AND THAT IS A GRAMMAR FACT, NOT AN OVERSIGHT.
+/// `rec_group` is a SILENT pest rule (`_{ … }`), so a `(rec …)`'s members are
+/// spliced straight into the module and the boundary never reaches the parse
+/// tree. The grammar comment justifies that: "a TYPE-IDENTITY property, not a
+/// structural one". Validation is the consumer that disproves it — these two
+/// modules differ ONLY by the boundary and the spec gives them DIFFERENT
+/// diagnostics:
+///
+/// ```wast
+/// (type (descriptor 1) (struct)) (type (struct))
+///   → "descriptor type is outside rec group"
+/// (rec (type (descriptor 1) (struct)) (type (struct)))
+///   → "type is not described by its descriptor"
+/// ```
+///
+/// So the boundary decides WHICH message is right, and without it every rule
+/// below is unsafe — not just the two that name rec groups. Returning `None`
+/// here disables the whole helper, which is the honest state: those assertions
+/// fail as "the module validated" rather than passing for a made-up reason.
+///
+/// Making `rec_group` non-silent is not the fix: `Rule::module_field` is
+/// matched at 17 one-level sites in this file and every one would need a
+/// flatten. A zero-width boundary marker inside the silent rule would be
+/// invisible to all 17 (they filter FOR `module_field`) and is what this
+/// function is waiting on.
+fn rec_groups_of_module(module: &Pair<Rule>) -> Option<Vec<usize>> {
+    // `rec_group` is silent, so a `(rec …)`'s members stay spliced into the
+    // module exactly as before — but it now emits `rec_begin` / `rec_end`
+    // markers around them, and those ARE in the tree. Walking the module's
+    // children in order therefore recovers the boundary without any consumer
+    // seeing a wrapper: all 17 `Rule::module_field` loops filter for
+    // module_field and skip the markers.
+    let mut groups: Vec<usize> = Vec::new();
+    let mut next_group = 0usize;
+    let mut current_rec: Option<usize> = None;
+    for child in module.clone().into_inner() {
+        match child.as_rule() {
+            Rule::rec_begin => {
+                current_rec = Some(next_group);
+                next_group += 1;
+            }
+            Rule::rec_end => current_rec = None,
+            Rule::module_field => {
+                let is_type = child
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .is_some_and(|t| t.as_rule() == Rule::type_field);
+                if is_type {
+                    // Inside a `(rec …)` every member shares one group;
+                    // outside it, each `(type …)` is its own singleton.
+                    groups.push(current_rec.unwrap_or_else(|| {
+                        let g = next_group;
+                        next_group += 1;
+                        g
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(groups)
+}
+
+/// Resolve a `(descriptor …)` / `(describes …)` operand — a numeric index or a
+/// `$name` — against the module's declared type names.
+fn desc_clause_target(clause: &Pair<Rule>, names: &HashMap<String, usize>) -> Option<usize> {
+    let idx = clause
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)?;
+    let text = idx.as_str().trim();
+    match text.parse::<usize>() {
+        Ok(n) => Some(n),
+        // A `$name` that resolves to nothing is left unresolved rather than
+        // guessed at: "unknown type" is its own diagnostic and belongs to
+        // whoever implements it, not to a silent fallback here.
+        Err(_) => names.get(text).copied(),
+    }
+}
+
+/// Read the descriptor declarations off a module's type section, in
+/// declaration order.
+fn descriptor_type_table(module: &Pair<Rule>) -> (Vec<DescType>, HashMap<String, usize>) {
+    // Pass 1: `$name` → index, so a clause may name a type declared later.
+    let mut names: HashMap<String, usize> = HashMap::new();
+    let mut type_fields: Vec<Pair<Rule>> = Vec::new();
+    for child in module.clone().into_inner() {
+        if child.as_rule() != Rule::module_field {
+            continue;
+        }
+        if let Some(tf) = child.into_inner().next() {
+            if tf.as_rule() == Rule::type_field {
+                if let Some(id) = tf.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                    names.insert(id.as_str().trim().to_string(), type_fields.len());
+                }
+                type_fields.push(tf);
+            }
+        }
+    }
+    // Pass 2: the clauses. `desc_clauses` is silent, so the two clause pairs
+    // are spliced either directly into `type_field` or into its `sub_type` —
+    // `(type (descriptor $d) (struct))` vs `(type (sub (descriptor $d) …))`.
+    // Searching both levels is what makes the `sub` spellings work; the
+    // proposal's own fixtures use `sub`, `sub final` and `sub $parent` forms.
+    let table: Vec<DescType> = type_fields
+        .iter()
+        .map(|tf| {
+            let mut t = DescType::default();
+            let mut scan = |p: &Pair<Rule>| {
+                for c in p.clone().into_inner() {
+                    match c.as_rule() {
+                        Rule::describes_clause => {
+                            t.describes = desc_clause_target(&c, &names);
+                        }
+                        Rule::descriptor_clause => {
+                            t.descriptor = desc_clause_target(&c, &names);
+                        }
+                        Rule::composite_type => {
+                            t.field_types = c
+                                .clone()
+                                .into_inner()
+                                .next()
+                                .map(|k| {
+                                    k.into_inner()
+                                        .filter(|f| f.as_rule() == Rule::field_def)
+                                        // ⛔ ONE `field_def` CAN DECLARE SEVERAL
+                                        // FIELDS. The grammar is
+                                        // `"(" ~ "field" ~ (id ~ storage_type
+                                        //  | storage_type*) ~ ")"`, so
+                                        // `(field i32 i32)` — which the GC
+                                        // suite uses — is TWO fields in one
+                                        // node. Counting nodes undercounts,
+                                        // which both shrinks the allocation
+                                        // arity and silently shortens the
+                                        // sub/super field comparison (a `zip`
+                                        // stops at the shorter side, so the
+                                        // extra fields go unchecked).
+                                        .flat_map(|f| {
+                                            f.into_inner()
+                                                .filter(|x| x.as_rule() != Rule::id)
+                                                .map(|x| x.as_str().trim().to_string())
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .collect::<Vec<String>>()
+                                })
+                                .unwrap_or_default();
+                            t.fields = t.field_types.len();
+                            t.is_struct = c
+                                .clone()
+                                .into_inner()
+                                .next()
+                                .is_some_and(|k| {
+                                    matches!(k.as_rule(), Rule::struct_type | Rule::struct_subtype)
+                                });
+                            // ⛔ THE FORM IS A LITERAL KEYWORD, so it is not a
+                            // pair — read it off the text, the same way the
+                            // folded block keyword has to be.
+                            let head = c.as_str().trim_start_matches('(').trim_start();
+                            t.kind = match head.split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ')').next() {
+                                Some("struct") => Some("struct"),
+                                Some("array") => Some("array"),
+                                Some("func") => Some("func"),
+                                _ => t.kind,
+                            };
+                            if t.kind == Some("func") {
+                                let mut ps = Vec::new();
+                                let mut rs = Vec::new();
+                                collect_params_results(&c, &mut ps, &mut rs);
+                                t.func_sig = Some((ps, rs));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            scan(tf);
+            if let Some(sub) = tf
+                .clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::sub_type)
+            {
+                t.has_sub = true;
+                // `final` is a bare literal in the grammar, so it never
+                // reaches the tree as a pair.
+                t.is_final = sub
+                    .as_str()
+                    .trim_start_matches('(')
+                    .trim_start()
+                    .strip_prefix("sub")
+                    .map(|r| r.trim_start().starts_with("final"))
+                    .unwrap_or(false);
+                scan(&sub);
+                // `sub_type = { "(" ~ "sub" ~ "final"? ~ index* ~ desc_clauses
+                // ~ composite_type ~ ")" }` — the supertypes are the DIRECT
+                // `index` children. The clauses' own indices are nested inside
+                // `describes_clause` / `descriptor_clause`, so they are not
+                // picked up here.
+                for c in sub.into_inner() {
+                    if c.as_rule() == Rule::index {
+                        let text = c.as_str().trim();
+                        if let Some(n) = text
+                            .parse::<usize>()
+                            .ok()
+                            .or_else(|| names.get(text).copied())
+                        {
+                            t.supers.push(n);
+                        }
+                    }
+                }
+            }
+            t
+        })
+        .collect();
+    let mut table = table;
+    if let Some(ids) = canonical_type_ids(module, &names) {
+        for (t, id) in table.iter_mut().zip(ids) {
+            t.canon = Some(id);
+        }
+    }
+    (table, names)
+}
+
+/// The ISO-RECURSIVE canonical id of every type, in declaration order.
+///
+/// ⛔ TWO DECLARATIONS CAN BE THE SAME TYPE. WASM identifies types by the
+/// STRUCTURE of their whole recursion group, not by where they were written —
+/// so `(rec (type $f1 (sub (func))) …)` and an identically shaped
+/// `(rec (type $f2 (sub (func))) …)` make `(ref $f1)` and `(ref $f2)`
+/// interchangeable. `gc/type-subtyping.wast` is built to test exactly that,
+/// and without this the declared-`sub`-chain walk answers "not a subtype" for
+/// a perfectly valid module.
+///
+/// Computable in one forward pass ONLY because a type may reference just
+/// earlier types or its own group — the rule `type_forward_reference_reason`
+/// enforces. Each group is normalised with intra-group references written
+/// group-relative (`#n`) and outward ones by the referent's ALREADY canonical
+/// group (`@g.n`), then interned: identical normal form ⇒ identical group.
+fn canonical_type_ids(module: &Pair<Rule>, names: &HashMap<String, usize>) -> Option<Vec<usize>> {
+    let rec_of = rec_groups_of_module(module)?;
+    let fields: Vec<Pair<Rule>> = module_fields(module)
+        .into_iter()
+        .filter(|f| f.as_rule() == Rule::type_field)
+        .collect();
+    if fields.len() != rec_of.len() {
+        return None;
+    }
+    let ngroups = rec_of.iter().copied().max().map_or(0, |m| m + 1);
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); ngroups];
+    for (i, &g) in rec_of.iter().enumerate() {
+        members[g].push(i);
+    }
+    let mut group_canon: Vec<Option<usize>> = vec![None; ngroups];
+    let mut group_interned: HashMap<String, usize> = HashMap::new();
+    let mut type_interned: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut canon = vec![0usize; fields.len()];
+    let mut order: Vec<usize> = (0..ngroups).collect();
+    order.sort_by_key(|&g| members[g].first().copied().unwrap_or(usize::MAX));
+    for g in order {
+        if members[g].is_empty() {
+            continue;
+        }
+        let start = members[g][0];
+        let mut form = String::new();
+        for &i in &members[g] {
+            form.push_str(&canon_form(
+                &fields[i], names, &rec_of, g, start, &group_canon, &members,
+            )?);
+            form.push('|');
+        }
+        let next = group_interned.len();
+        let gid = *group_interned.entry(form).or_insert(next);
+        group_canon[g] = Some(gid);
+        for (off, &i) in members[g].iter().enumerate() {
+            let n = type_interned.len();
+            canon[i] = *type_interned.entry((gid, off)).or_insert(n);
+        }
+    }
+    Some(canon)
+}
+
+/// One type's structure as a normal-form string.
+///
+/// ⛔ TEXT, NOT A PAIR WALK. Pest does not capture string literals, so `"ref"`
+/// and `"null"` are absent from the tree — a structural walk cannot tell
+/// `(ref $t)` from `(ref null $t)` and would call two different types equal.
+/// The type's OWN id is dropped (a name is not part of its structure); every
+/// other `$name` or bare integer inside a type definition IS a type index.
+fn canon_form(
+    field: &Pair<Rule>,
+    names: &HashMap<String, usize>,
+    rec_of: &[usize],
+    group: usize,
+    start: usize,
+    group_canon: &[Option<usize>],
+    members: &[Vec<usize>],
+) -> Option<String> {
+    let src = field.as_str();
+    let bytes = src.as_bytes();
+    let mut out = String::new();
+    let mut i = 0usize;
+    let mut seen_type_kw = false;
+    let mut expect_own_id = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c == ';' && src[i..].starts_with(";;") {
+            i = src[i..].find('\n').map_or(bytes.len(), |k| i + k);
+            continue;
+        }
+        if c.is_whitespace() {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            i += 1;
+            continue;
+        }
+        if c == '(' || c == ')' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let mut end = bytes.len();
+        for (j, c2) in src[i..].char_indices() {
+            if c2.is_whitespace() || c2 == '(' || c2 == ')' {
+                end = i + j;
+                break;
+            }
+        }
+        let tok = &src[i..end];
+        i = end;
+        if tok == "type" && !seen_type_kw {
+            seen_type_kw = true;
+            expect_own_id = true;
+            out.push_str(tok);
+            continue;
+        }
+        if expect_own_id {
+            expect_own_id = false;
+            if tok.starts_with('$') {
+                continue;
+            }
+        }
+        let idx = match tok.strip_prefix('$') {
+            Some(bare) => names.get(tok).or_else(|| names.get(bare)).copied(),
+            None => tok.parse::<usize>().ok(),
+        };
+        match idx {
+            Some(r) if r < rec_of.len() => {
+                if rec_of[r] == group {
+                    out.push_str(&format!("#{}", r - start));
+                } else {
+                    let gid = group_canon.get(rec_of[r]).copied().flatten()?;
+                    let off = members[rec_of[r]].iter().position(|&x| x == r)?;
+                    out.push_str(&format!("@{gid}.{off}"));
+                }
+            }
+            _ => out.push_str(tok),
+        }
+    }
+    Some(out)
+}
+
+/// The Custom Descriptors type-section rules.
+///
+/// ⚠ THE ORDER OF THESE CHECKS IS SPEC, NOT TASTE. Two modules can violate
+/// several rules at once and the suite pins exactly one message for each, so a
+/// reordering produces a WRONG diagnostic rather than a differently-worded
+/// right one. Derived from the fixtures, verified case by case:
+///
+///   1. rec-group membership  — `(descriptor D)` then `(describes S)`
+///   2. struct-ness of the CLAUSE CARRIER (not of its target: in
+///      `(rec (type (descriptor 1) (func)) (type (describes 0) (struct)))`
+///      the descriptor IS a struct and the message is still "descriptor type
+///      must be a struct", naming the clause the offending type carries)
+///   3. forward use of a described type
+///   4. pair agreement in both directions
+fn descriptor_invalid_reason(module: &Pair<Rule>) -> Option<String> {
+    let rec_of = rec_groups_of_module(module)?;
+    let (types, names) = descriptor_type_table(module);
+    // A target outside the table has no group, and the spec reports that as
+    // the rec-group violation it is — `(type (descriptor 1) (struct))` alone
+    // asserts "descriptor type is outside rec group", not "unknown type".
+    let group = |i: usize| rec_of.get(i).copied();
+    for (i, t) in types.iter().enumerate() {
+        let own = group(i);
+        if let Some(d) = t.descriptor {
+            if group(d) != own {
+                return Some("descriptor type is outside rec group".to_string());
+            }
+        }
+        if let Some(s) = t.describes {
+            if group(s) != own {
+                return Some("described type is outside rec group".to_string());
+            }
+        }
+        if t.descriptor.is_some() && !t.is_struct {
+            return Some("descriptor type must be a struct".to_string());
+        }
+        if t.describes.is_some() && !t.is_struct {
+            return Some("described type must be a struct".to_string());
+        }
+        // A descriptor may only describe a type declared BEFORE it — including
+        // not itself, which is why this is `>=`.
+        if let Some(s) = t.describes {
+            if s >= i {
+                return Some("forward use of described type".to_string());
+            }
+        }
+        if let Some(d) = t.descriptor {
+            if types.get(d).and_then(|x| x.describes) != Some(i) {
+                return Some("type is not described by its descriptor".to_string());
+            }
+        }
+        if let Some(s) = t.describes {
+            if types.get(s).and_then(|x| x.descriptor) != Some(i) {
+                return Some("described type is not described by descriptor".to_string());
+            }
+        }
+    }
+
+    // ── Subtyping: descriptor PRESENCE, then descriptor AGREEMENT ────────────
+    //
+    // These need no structural subtyping — only the DECLARED `sub` chain — so
+    // they are here rather than waiting on the stack-typing pass that the 2297
+    // "type mismatch" assertions need. The failure mode is the safe one: a
+    // subtyping violation with no descriptor component leaves both sides
+    // `None` and this returns None, so a non-descriptor error can never be
+    // reported with a descriptor message.
+    //
+    // ⚠ The two passes are SEPARATE and presence goes first. The
+    // "supertype of a descriptor must describe the supertype of the
+    // descriptor's described type" fixture violates presence AND agreement at
+    // once, and the spec reports the presence failure — running agreement
+    // first would answer "descriptor type N does not match" where the suite
+    // asserts "sub type 3 does not match super type 1".
+    let declared_subtype = |sub: usize, sup: usize| -> bool {
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut stack = vec![sub];
+        while let Some(x) = stack.pop() {
+            if x == sup {
+                return true;
+            }
+            if !seen.insert(x) {
+                continue;
+            }
+            if let Some(t) = types.get(x) {
+                stack.extend(t.supers.iter().copied());
+            }
+        }
+        false
+    };
+    for (i, t) in types.iter().enumerate() {
+        for &sup in &t.supers {
+            let Some(st) = types.get(sup) else { continue };
+            // A descriptor is inherited downwards but not upwards: if the
+            // SUPERTYPE has one the subtype must too, while a subtype may
+            // introduce a descriptor its supertype does not have. Only this
+            // direction is an error.
+            if st.descriptor.is_some() && t.descriptor.is_none() {
+                return Some(format!("sub type {i} does not match super type {sup}"));
+            }
+            // Being a descriptor, unlike having one, must match in BOTH
+            // directions — a descriptor may only be a subtype of a descriptor.
+            if t.describes.is_some() != st.describes.is_some() {
+                return Some(format!("sub type {i} does not match super type {sup}"));
+            }
+        }
+    }
+    for t in types.iter() {
+        for &sup in &t.supers {
+            let Some(st) = types.get(sup) else { continue };
+            // The subtype's descriptor must itself be a subtype of the
+            // supertype's descriptor. Named by the DESCRIPTOR's index, not the
+            // type that carries it.
+            if let (Some(d), Some(sd)) = (t.descriptor, st.descriptor) {
+                if !declared_subtype(d, sd) {
+                    return Some(format!("descriptor type {d} does not match"));
+                }
+            }
+            // Mirror: the supertype's described type must be a supertype of
+            // the subtype's described type.
+            if let (Some(b), Some(sb)) = (t.describes, st.describes) {
+                if !declared_subtype(b, sb) {
+                    return Some(format!("described type {b} does not match"));
+                }
+            }
+        }
+    }
+
+    // ── Structural agreement of a descriptor type with its supertype ────────
+    //
+    // ── The GENERAL subtyping rules, before any field comparison ────────────
+    //
+    // ⛔ ORDER IS THE SPEC'S: a declaration that may not be extended AT ALL is
+    // reported as such, not as a field disagreement. Interleaving these with
+    // the field walk answers a "sub type" fixture with the wrong reason.
+    for (i, t) in types.iter().enumerate() {
+        for &sup in &t.supers {
+            let Some(st) = types.get(sup) else { continue };
+            // ⛔ FINALITY IS THE DEFAULT. `(type $t (struct))` abbreviates
+            // `(sub final (struct))`, so a plain declaration is CLOSED and
+            // `(type $s (sub $t (struct)))` is invalid. Openness is opt-in.
+            if !st.has_sub || st.is_final {
+                return Some(format!("sub type {i} does not match super type {sup}"));
+            }
+            // A subtype must have the same FORM as its supertype — a struct
+            // may not extend a func.
+            if let (Some(a), Some(b)) = (t.kind, st.kind) {
+                if a != b {
+                    return Some(format!("sub type {i} does not match super type {sup}"));
+                }
+            }
+            // ⛔ FUNCTION SUBTYPING IS CONTRAVARIANT IN PARAMS, COVARIANT IN
+            // RESULTS, and the ARITIES must match exactly — `(func)` extended
+            // by `(func (param i32))` is invalid on arity alone. Getting the
+            // direction backwards would accept unsound overrides, so the two
+            // loops deliberately pass their operands in opposite orders.
+            if t.kind == Some("func") && st.kind == Some("func") {
+                if let (Some((tp, tr)), Some((sp, sr))) = (&t.func_sig, &st.func_sig) {
+                    if tp.len() != sp.len() || tr.len() != sr.len() {
+                        return Some(format!("sub type {i} does not match super type {sup}"));
+                    }
+                    // params: the SUPER's must be usable where the sub's is.
+                    for (a, b) in tp.iter().zip(sp.iter()) {
+                        if field_incompatible(b, a, &types, &names).is_some() {
+                            return Some(format!("sub type {i} does not match super type {sup}"));
+                        }
+                    }
+                    // results: the SUB's must be usable where the super's is.
+                    for (a, b) in tr.iter().zip(sr.iter()) {
+                        if field_incompatible(a, b, &types, &names).is_some() {
+                            return Some(format!("sub type {i} does not match super type {sup}"));
+                        }
+                    }
+                }
+            }
+            // An ARRAY's element type is its single field. Immutable is
+            // covariant, mutable is INVARIANT — same as a struct field.
+            if t.kind == Some("array") && st.kind == Some("array") {
+                if let (Some(a), Some(b)) = (t.field_types.first(), st.field_types.first()) {
+                    if let Some(m) = field_incompatible(a, b, &types, &names) {
+                        let _ = m;
+                        return Some(format!("sub type {i} does not match super type {sup}"));
+                    }
+                }
+            }
+        }
+    }
+
+    // A subtype's struct fields must extend its supertype's: it may add
+    // fields, but the ones it shares have to agree.
+    //
+    // ⛔ SCOPED TO DESCRIPTOR TYPES ON PURPOSE. Field compatibility is a
+    // GENERAL GC subtyping rule and this helper runs over every module — an
+    // imprecise version would fire on the many valid struct hierarchies in the
+    // gc suites, which is an overfire in files that have nothing to do with
+    // descriptors. Gating on one side of the relationship carrying a
+    // descriptor/describes clause keeps it to the rules this file owns; the
+    // general case belongs to the typed pass.
+    for (i, t) in types.iter().enumerate() {
+        for &sup in &t.supers {
+            let Some(st) = types.get(sup) else { continue };
+            if !t.is_struct || !st.is_struct {
+                continue;
+            }
+            if t.field_types.len() < st.field_types.len() {
+                return Some(format!("sub type {i} does not match super type {sup}"));
+            }
+            for (a, b) in t.field_types.iter().zip(st.field_types.iter()) {
+                // ⛔ `!vt_subtype` IS NOT PROOF OF MISMATCH — it also means
+                // "cannot decide", and reporting on it is a confident wrong
+                // answer about a VALID module. `field_incompatible` reports
+                // only what it can establish, mutability included.
+                if field_incompatible(a, b, &types, &names).is_some() {
+                    return Some(format!("sub type {i} does not match super type {sup}"));
+                }
+            }
+        }
+    }
+
+    // ── Allocation and descriptor-read instructions ──────────────────────────
+    //
+    // Whether a type HAS a descriptor decides which allocation instruction is
+    // legal for it, and the two errors are not symmetric spellings of one
+    // rule — the spec words them differently, so they are checked separately.
+    if let Some(m) = descriptor_instr_reason(module, &types, &names) {
+        return Some(m);
+    }
+    descriptor_operand_mismatch(module, &types, &names)
+}
+
+/// The instruction-level Custom Descriptors rules.
+///
+/// Only the descriptor instructions are examined. A wrong type index on any
+/// OTHER instruction is left alone: "unknown type" is a general validation
+/// diagnostic and claiming it here would discharge assertions this helper was
+/// never written for.
+fn descriptor_instr_reason(
+    pair: &Pair<Rule>,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<String> {
+    if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+        let mut name: Option<String> = None;
+        let mut args: Vec<String> = Vec::new();
+        for c in pair.clone().into_inner() {
+            match c.as_rule() {
+                Rule::instr_name if name.is_none() => name = Some(c.as_str().trim().to_string()),
+                Rule::instr_arg => args.push(c.as_str().trim().to_string()),
+                _ => {}
+            }
+        }
+        let first_arg = args.first().cloned();
+        if let Some(n) = name.as_deref() {
+            let base = n.split_once("@@").map(|(b, _)| b).unwrap_or(n);
+            let descriptor_instr = matches!(
+                base,
+                "struct.new"
+                    | "struct.new_default"
+                    | "struct.new_desc"
+                    | "struct.new_default_desc"
+                    | "ref.get_desc"
+            );
+            if descriptor_instr {
+                // The operand may be a numeric index or a `$name`. An operand
+                // that is neither — a folded sub-expression sitting where the
+                // immediate would be — means the immediate is elsewhere, so
+                // this instruction is left unjudged.
+                let target = first_arg.as_deref().and_then(|a| {
+                    a.parse::<usize>()
+                        .ok()
+                        .or_else(|| names.get(a).copied())
+                });
+                if let Some(t) = target {
+                    let Some(info) = types.get(t) else {
+                        // Only the descriptor-read form asserts this; the
+                        // allocation forms' out-of-range cases are covered by
+                        // the general type-index rules.
+                        return (base == "ref.get_desc").then(|| "unknown type".to_string());
+                    };
+                    let has_desc = info.descriptor.is_some();
+                    match base {
+                        // ⛔ ASYMMETRIC ON PURPOSE. A type that HAS a
+                        // descriptor must be allocated with the `_desc` form,
+                        // and a type WITHOUT one must not be — but the spec
+                        // words the two failures differently, so they cannot
+                        // share a message.
+                        "struct.new" | "struct.new_default" if has_desc => {
+                            return Some(
+                                "type with descriptor requires descriptor allocation".to_string(),
+                            );
+                        }
+                        "struct.new_desc" | "struct.new_default_desc" if !has_desc => {
+                            return Some(
+                                "type without descriptor requires non-descriptor allocation"
+                                    .to_string(),
+                            );
+                        }
+                        // `ref.get_desc` reads a type's descriptor, so the
+                        // type must have one. A DESCRIPTOR is not itself
+                        // described, so `ref.get_desc` on the descriptor half
+                        // of a pair fails here too.
+                        "ref.get_desc" if !has_desc => {
+                            return Some("type without descriptor".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // The BRANCHING and cast forms take the target as a REFTYPE
+            // immediate rather than a bare type index, and they report a
+            // missing descriptor differently again — naming the heap type,
+            // which for an abstract target is a spelling and not an index.
+            //
+            //   br_on_cast_desc_eq $l rt_1 rt_2   → rt_2 is the target (arg 2)
+            //   ref.cast_desc_eq rt               → arg 0
+            let target_arg = match base {
+                "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail" => args.get(2),
+                "ref.cast_desc_eq" => args.first(),
+                _ => None,
+            };
+            if let Some(rt) = target_arg {
+                if let Some(reason) = cast_target_descriptor_reason(rt, types, names) {
+                    return Some(reason);
+                }
+            }
+        }
+    }
+    for child in pair.clone().into_inner() {
+        if let Some(r) = descriptor_instr_reason(&child, types, names) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+// ── Descriptor OPERAND typing ────────────────────────────────────────────────
+//
+// ⛔ THIS IS NOT A WASM VALIDATOR AND MUST NEVER GROW INTO A HALF-BUILT ONE.
+// It types the operands of the DESCRIPTOR instructions and nothing else, and
+// it ABANDONS a function the moment it meets anything it cannot type — an
+// unmodelled instruction, an unresolvable index, a plain (non-folded)
+// instruction whose operands come off a stack it does not track.
+//
+// That bail is the entire safety property. `assert_invalid` compares the
+// expected diagnostic, so a pass that GUESSES reports "type mismatch" on
+// modules it never actually typed, and the assertions it turns green mean
+// nothing. Unknown must propagate, never default.
+//
+// The label-typing fixtures ("No types at label", "Too many types at label",
+// "Label types do not match fallthrough types") are deliberately NOT covered:
+// they need block signatures and a control stack, which is the general pass
+// this file does not contain.
+
+#[derive(Clone, PartialEq, Debug)]
+enum Heap {
+    Abs(&'static str),
+    Concrete(usize),
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct RefT {
+    nullable: bool,
+    exact: bool,
+    heap: Heap,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Vt {
+    /// ⛔ CARRIES ITS SPELLING. Collapsing the numeric types into one variant
+    /// made `i64` a subtype of `i32`, which silently defeated the struct-field
+    /// comparison — the fixtures differ by exactly that.
+    Num(&'static str),
+    Ref(RefT),
+    /// `unreachable` — a subtype of everything.
+    Bottom,
+}
+
+/// The abstract heap types, by their spec spelling. `None` for anything else,
+/// which is what makes an unrecognised spelling abandon the function rather
+/// than be treated as some default.
+fn abs_heap(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "any" => "any",
+        "eq" => "eq",
+        "i31" => "i31",
+        "struct" => "struct",
+        "array" => "array",
+        "none" => "none",
+        "func" => "func",
+        "nofunc" => "nofunc",
+        "extern" => "extern",
+        "noextern" => "noextern",
+        _ => return None,
+    })
+}
+
+/// Parse a val-type / ref-type SPELLING. Handles `i32`, the §2.3.4
+/// abbreviations, `(ref $t)`, `(ref null $t)` and the proposal's
+/// `(ref (exact $t))`.
+fn parse_vt(text: &str, names: &HashMap<String, usize>) -> Option<Vt> {
+    let t = text.trim();
+    if let Some(n) = match t {
+        "i32" => Some("i32"),
+        "i64" => Some("i64"),
+        "f32" => Some("f32"),
+        "f64" => Some("f64"),
+        "v128" => Some("v128"),
+        _ => None,
+    } {
+        return Some(Vt::Num(n));
+    }
+    if let Some((heap, _)) = vybe_runtime::opcode::heaptype::HeapType::from_spec_reftype_name(t) {
+        return Some(Vt::Ref(RefT {
+            nullable: true,
+            exact: false,
+            heap: Heap::Abs(abs_heap(heap)?),
+        }));
+    }
+    if !t.starts_with('(') {
+        return None;
+    }
+    let inner = t.trim_start_matches('(').trim_end_matches(')').trim();
+    let rest = inner.strip_prefix("ref")?.trim();
+    let (rest, nullable) = match rest.strip_prefix("null") {
+        Some(r) => (r.trim(), true),
+        None => (rest, false),
+    };
+    // `(exact $t)` — the proposal's exact heap types.
+    let (spelling, exact) = match rest.strip_prefix("(exact") {
+        Some(r) => (r.trim().trim_end_matches(')').trim(), true),
+        None => (rest, false),
+    };
+    let heap = match abs_heap(spelling) {
+        Some(a) => Heap::Abs(a),
+        None => Heap::Concrete(
+            spelling
+                .parse::<usize>()
+                .ok()
+                .or_else(|| names.get(spelling).copied())?,
+        ),
+    };
+    Some(Vt::Ref(RefT {
+        nullable,
+        exact,
+        heap,
+    }))
+}
+
+/// The param and result type SPELLINGS under a pair, in order.
+fn collect_params_results(p: &Pair<Rule>, ps: &mut Vec<String>, rs: &mut Vec<String>) {
+    for c in p.clone().into_inner() {
+        match c.as_rule() {
+            Rule::param => {
+                for d in c.into_inner() {
+                    if d.as_rule() != Rule::id {
+                        ps.push(d.as_str().trim().to_string());
+                    }
+                }
+            }
+            Rule::result => {
+                for d in c.into_inner() {
+                    rs.push(d.as_str().trim().to_string());
+                }
+            }
+            _ => collect_params_results(&c, ps, rs),
+        }
+    }
+}
+
+/// Are two field spellings DEMONSTRABLY incompatible as sub/super?
+///
+/// ⛔ MUTABILITY IS INVARIANT AND ITS PRESENCE MUST MATCH. `(mut T)` may only
+/// be extended by `(mut T)` with the SAME `T` — narrowing a mutable field is
+/// unsound because it can still be written through the supertype. An immutable
+/// field is covariant. Dropping or adding `mut` is a mismatch either way, and
+/// the suite asserts exactly that pair.
+fn field_incompatible(
+    a: &str,
+    b: &str,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<&'static str> {
+    let unmut = |s: &str| -> Option<String> {
+        let t = s.trim();
+        let inner = t.strip_prefix('(')?.trim().strip_prefix("mut")?;
+        Some(inner.trim().trim_end_matches(')').trim().to_string())
+    };
+    match (unmut(a), unmut(b)) {
+        // Both mutable: INVARIANT, so the spellings must denote the same type.
+        (Some(x), Some(y)) => {
+            if x == y {
+                return None;
+            }
+            match (parse_vt(&x, names), parse_vt(&y, names)) {
+                (Some(px), Some(py)) => {
+                    if vt_subtype(&px, &py, types) && vt_subtype(&py, &px, types) {
+                        None
+                    } else if provably_not_subtype(&px, &py, types)
+                        || provably_not_subtype(&py, &px, types)
+                    {
+                        Some("mutable field is invariant")
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        // One mutable, one not — a mismatch whichever way round.
+        (Some(_), None) | (None, Some(_)) => Some("mutability differs"),
+        (None, None) => {
+            if a.trim() == b.trim() {
+                return None;
+            }
+            match (parse_vt(a, names), parse_vt(b, names)) {
+                (Some(x), Some(y)) if vt_subtype(&x, &y, types) => None,
+                (Some(x), Some(y)) if provably_not_subtype(&x, &y, types) => {
+                    Some("field is not a subtype")
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Is `a` DEMONSTRABLY not a subtype of `b`?
+///
+/// ⛔ THE COMPLEMENT OF `vt_subtype` IS NOT THIS. `vt_subtype` answers "can I
+/// prove yes"; its `false` covers both "provably no" and "cannot tell", and a
+/// rule that reports on `false` alone announces a mismatch it never
+/// established.
+///
+/// The undecidable case here is real and the suite pins it: WASM types are
+/// ISO-RECURSIVE, so two concrete types in DIFFERENT rec groups whose groups
+/// are structurally identical ARE the same type. `gc/type-subtyping.wast`
+/// builds exactly that — `(rec (type $f1 …) (type $s1 …))` and
+/// `(rec (type $f2 …) (type $s2 …))` with identical shapes, making
+/// `(ref $f1)` and `(ref $f2)` interchangeable. Deciding it needs rec-group
+/// CANONICALISATION, which this file does not do; until it does, two distinct
+/// concrete indices must answer "don't know", never "different".
+fn provably_not_subtype(a: &Vt, b: &Vt, types: &[DescType]) -> bool {
+    match (a, b) {
+        (Vt::Bottom, _) | (_, Vt::Bottom) => false,
+        // Different scalar spellings are decidable outright — and this is the
+        // case the fixtures actually assert.
+        (Vt::Num(x), Vt::Num(y)) => x != y,
+        (Vt::Num(_), Vt::Ref(_)) | (Vt::Ref(_), Vt::Num(_)) => true,
+        (Vt::Ref(x), Vt::Ref(y)) => match (&x.heap, &y.heap) {
+            // Decidable ONCE both canonical ids are known — that is exactly
+            // what canonicalisation buys. Without them this stays "don't
+            // know", because a `false` from the sub-chain walk alone proves
+            // nothing about twin rec groups.
+            (Heap::Concrete(i), Heap::Concrete(j)) => {
+                match (
+                    types.get(*i).and_then(|t| t.canon),
+                    types.get(*j).and_then(|t| t.canon),
+                ) {
+                    (Some(_), Some(_)) => !heap_subtype(&x.heap, &y.heap, types),
+                    _ => false,
+                }
+            }
+            // A concrete type's abstract head depends on its form, which this
+            // table does not record — undecidable here.
+            (Heap::Concrete(_), Heap::Abs(_)) | (Heap::Abs(_), Heap::Concrete(_)) => false,
+            // FULLY DECIDABLE now that `abs_subtype` is complete: the abstract
+            // lattice is finite and closed.
+            (Heap::Abs(p), Heap::Abs(q)) => !abs_subtype(p, q) || (x.nullable && !y.nullable),
+        },
+    }
+}
+
+/// Is `a` a subtype of `b`?
+///
+/// ⚠ EXACTNESS IS NOT A FLAG THAT WIDENS. `(ref (exact $d))` is NOT a subtype
+/// of `(ref (exact $b))` even when `$d` is a subtype of `$b` — an exact target
+/// admits that type and nothing under it. The suite pins this directly ("An
+/// exact reference to a subtype of the descriptor does not cut it").
+fn vt_subtype(a: &Vt, b: &Vt, types: &[DescType]) -> bool {
+    match (a, b) {
+        (Vt::Bottom, _) => true,
+        (Vt::Num(x), Vt::Num(y)) => x == y,
+        (Vt::Ref(x), Vt::Ref(y)) => {
+            if x.nullable && !y.nullable {
+                return false;
+            }
+            if y.exact {
+                return x.exact && x.heap == y.heap;
+            }
+            heap_subtype(&x.heap, &y.heap, types)
+        }
+        _ => false,
+    }
+}
+
+/// The COMPLETE abstract heap-type lattice.
+///
+/// ⛔ THE PARTIAL VERSION WAS NOT SAFE TO DECIDE ON. It knew `struct/array/i31
+/// <: eq` and the `any` roof but not `nofunc <: func` or `noextern <: extern`,
+/// so treating its `false` as "provably not a subtype" would have rejected
+/// valid modules. Abstract subtyping is finite and fully decidable; write all
+/// of it, then it can be relied on.
+///
+/// Three disjoint hierarchies — internal (`any`), function (`func`) and
+/// external (`extern`) — each with its own bottom. Nothing crosses between.
+fn abs_subtype(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let internal = ["any", "eq", "i31", "struct", "array", "none"];
+    let is_internal = |t: &str| internal.contains(&t);
+    match (a, b) {
+        // Bottoms.
+        ("none", t) if is_internal(t) => true,
+        ("nofunc", "func") => true,
+        ("noextern", "extern") => true,
+        ("noexn", "exn") => true,
+        // Internal roof and the `eq` layer.
+        (x, "any") if is_internal(x) => true,
+        ("i31" | "struct" | "array", "eq") => true,
+        _ => false,
+    }
+}
+
+fn heap_subtype(a: &Heap, b: &Heap, types: &[DescType]) -> bool {
+    match (a, b) {
+        (Heap::Abs(x), Heap::Abs(y)) => abs_subtype(x, y),
+        // A concrete type sits under the abstract head of its OWN hierarchy,
+        // and which head that is depends on its FORM. The table records the
+        // form now, so this is exact rather than the old
+        // "concrete is below struct and eq" approximation — which both missed
+        // `$t <: any` and wrongly put a concrete FUNC type under `struct`.
+        (Heap::Concrete(i), Heap::Abs(y)) => match types.get(*i).and_then(|t| t.kind) {
+            Some(k) => abs_subtype(k, y),
+            // Form unknown: keep the permissive answer rather than invent one.
+            None => matches!(*y, "struct" | "eq" | "any"),
+        },
+        // `none` bottoms the INTERNAL hierarchy only — `nofunc` bottoms
+        // functions. A concrete func type is not above `none`.
+        (Heap::Abs("none"), Heap::Concrete(j)) => {
+            !matches!(types.get(*j).and_then(|t| t.kind), Some("func"))
+        }
+        (Heap::Abs("nofunc"), Heap::Concrete(j)) => {
+            matches!(types.get(*j).and_then(|t| t.kind), Some("func"))
+        }
+        (Heap::Concrete(i), Heap::Concrete(j)) => {
+            // ⛔ SAME TYPE, DIFFERENT DECLARATION. Under iso-recursive
+            // equivalence two structurally identical rec groups ARE one type,
+            // so the declared-`sub`-chain walk below is not the whole answer —
+            // it says "no" for `(ref $f1)` vs `(ref $f2)` in twin groups,
+            // which is a valid module.
+            match (
+                types.get(*i).and_then(|t| t.canon),
+                types.get(*j).and_then(|t| t.canon),
+            ) {
+                (Some(a), Some(b)) if a == b => return true,
+                _ => {}
+            }
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut stack = vec![*i];
+            while let Some(x) = stack.pop() {
+                if x == *j {
+                    return true;
+                }
+                if !seen.insert(x) {
+                    continue;
+                }
+                if let Some(t) = types.get(x) {
+                    stack.extend(t.supers.iter().copied());
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// The type a folded operand produces, or `None` — which abandons the
+/// function. Every arm here is an instruction whose result type is decided by
+/// its IMMEDIATE, so no operand stack is needed.
+fn infer_operand(
+    pair: &Pair<Rule>,
+    locals: &[Vt],
+    local_names: &HashMap<String, usize>,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<Vt> {
+    // Unwrap the non-silent `instr` wrapper if it is still on.
+    if pair.as_rule() == Rule::instr {
+        return infer_operand(&pair.clone().into_inner().next()?, locals, local_names, types, names);
+    }
+    if !matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+        return None;
+    }
+    let mut head: Option<String> = None;
+    let mut args: Vec<String> = Vec::new();
+    for c in pair.clone().into_inner() {
+        match c.as_rule() {
+            Rule::instr_name if head.is_none() => head = Some(c.as_str().trim().to_string()),
+            Rule::instr_arg => args.push(c.as_str().trim().to_string()),
+            _ => {}
+        }
+    }
+    let h = head?;
+    let base = h.split_once("@@").map(|(b, _)| b).unwrap_or(&h);
+    match base {
+        "unreachable" => Some(Vt::Bottom),
+        "i32.const" => Some(Vt::Num("i32")),
+        "i64.const" => Some(Vt::Num("i64")),
+        "f32.const" => Some(Vt::Num("f32")),
+        "f64.const" => Some(Vt::Num("f64")),
+        "local.get" => {
+            let a = args.first()?;
+            let idx = a
+                .parse::<usize>()
+                .ok()
+                .or_else(|| local_names.get(a.as_str()).copied())?;
+            locals.get(idx).cloned()
+        }
+        "ref.null" => {
+            let a = args.first()?;
+            let heap = match abs_heap(a) {
+                Some(x) => Heap::Abs(x),
+                None => Heap::Concrete(
+                    a.parse::<usize>()
+                        .ok()
+                        .or_else(|| names.get(a.as_str()).copied())?,
+                ),
+            };
+            Some(Vt::Ref(RefT {
+                nullable: true,
+                exact: false,
+                heap,
+            }))
+        }
+        // An allocation yields an EXACT, non-null reference to the type it
+        // names — that is what makes a descriptor operand typed by
+        // `struct.new $b` acceptable where `(ref (exact $b))` is required.
+        "struct.new" | "struct.new_default" | "struct.new_desc" | "struct.new_default_desc" => {
+            let a = args.first()?;
+            let idx = a
+                .parse::<usize>()
+                .ok()
+                .or_else(|| names.get(a.as_str()).copied())?;
+            let _ = types.get(idx)?;
+            Some(Vt::Ref(RefT {
+                nullable: false,
+                exact: true,
+                heap: Heap::Concrete(idx),
+            }))
+        }
+        "ref.cast" => parse_vt(args.first()?, names),
+        _ => None,
+    }
+}
+
+/// Split an instruction's children into IMMEDIATES (text) and OPERANDS (folded
+/// sub-instructions), in source order.
+///
+/// ⛔ `instr_arg` can itself BE a `folded_instr` — the grammar alternation puts
+/// them in the same slot — so an operand and an immediate are not told apart
+/// by their parent rule. The inner rule is what decides.
+// ⛔ `&Pair<'a, …>`, NOT `&'a Pair<'a, …>`. A pest `Pair<'a>` is Clone and its
+// `'a` is the lifetime of the PARSED INPUT, not of the borrow — tying the two
+// together forced every caller to keep the borrowed pair alive for as long as
+// the returned operands, which a loop over owned pairs cannot do. Written the
+// tight way first; it compiled only because my own callers happened to hold
+// the pair, and broke the first caller that did not.
+fn split_immediates_and_operands<'a>(
+    pair: &Pair<'a, Rule>,
+) -> (Vec<String>, Vec<Pair<'a, Rule>>) {
+    let mut imms = Vec::new();
+    let mut ops = Vec::new();
+    for c in pair.clone().into_inner() {
+        match c.as_rule() {
+            Rule::instr_arg => match c.clone().into_inner().next() {
+                Some(inner) if inner.as_rule() == Rule::folded_instr => ops.push(inner),
+                _ => imms.push(c.as_str().trim().to_string()),
+            },
+            // ⛔ `instr = { folded_instr | plain_instr }` is NOT silent, so an
+            // operand arrives wrapped and never as a bare `folded_instr`.
+            // Matching only the bare forms found zero operands and the whole
+            // pass sat inert while still compiling.
+            Rule::instr => {
+                if let Some(inner) = c.into_inner().next() {
+                    ops.push(inner);
+                }
+            }
+            Rule::folded_instr | Rule::plain_instr => ops.push(c),
+            _ => {}
+        }
+    }
+    (imms, ops)
+}
+
+/// The declared local types of a function, params first — `None` if any
+/// declaration cannot be parsed, which abandons the function.
+fn func_locals(
+    f: &Pair<Rule>,
+    names: &HashMap<String, usize>,
+) -> Option<(Vec<Vt>, HashMap<String, usize>)> {
+    let mut out = Vec::new();
+    let mut by_name = HashMap::new();
+    // ⛔ `param` is NOT a direct child of `func_field` — it sits inside
+    // `typeuse` (`func_field = { … ~ typeuse ~ … ~ local* ~ instr* }`).
+    // Iterating one level found no params at all, so every function typed as
+    // having zero locals and the pass sat inert while compiling and passing.
+    // Collected in document order, which is the index order params and locals
+    // share.
+    let mut decls: Vec<Pair<Rule>> = Vec::new();
+    fn collect_decls<'a>(p: Pair<'a, Rule>, out: &mut Vec<Pair<'a, Rule>>) {
+        if matches!(p.as_rule(), Rule::param | Rule::local) {
+            out.push(p);
+            return;
+        }
+        // Do not descend into a nested function type: its params are not this
+        // function's locals.
+        if p.as_rule() == Rule::func_type {
+            return;
+        }
+        for c in p.into_inner() {
+            collect_decls(c, out);
+        }
+    }
+    for c in f.clone().into_inner() {
+        collect_decls(c, &mut decls);
+    }
+    for c in decls {
+        let mut id: Option<String> = None;
+        let mut decls: Vec<String> = Vec::new();
+        for d in c.clone().into_inner() {
+            match d.as_rule() {
+                Rule::id => id = Some(d.as_str().trim().to_string()),
+                _ => decls.push(d.as_str().trim().to_string()),
+            }
+        }
+        if let Some(n) = id {
+            by_name.insert(n, out.len());
+        }
+        for d in decls {
+            out.push(parse_vt(&d, names)?);
+        }
+    }
+    Some((out, by_name))
+}
+
+/// Operand typing for the descriptor instructions.
+///
+/// Returns `None` when the function could not be fully typed — the bail — and
+/// `Some(msg)` only for a mismatch it actually proved.
+fn descriptor_operand_mismatch(
+    module: &Pair<Rule>,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<String> {
+    for c in module.clone().into_inner() {
+        if c.as_rule() != Rule::module_field {
+            continue;
+        }
+        let Some(f) = c.into_inner().next() else { continue };
+        if f.as_rule() != Rule::func_field {
+            continue;
+        }
+        let Some((locals, local_names)) = func_locals(&f, names) else {
+            continue;
+        };
+        if let Some(m) = scan_descriptor_operands(&f, &locals, &local_names, types, names) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+fn scan_descriptor_operands(
+    pair: &Pair<Rule>,
+    locals: &[Vt],
+    local_names: &HashMap<String, usize>,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<String> {
+    if matches!(pair.as_rule(), Rule::folded_instr) {
+        let head = pair
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::instr_name)
+            .map(|c| c.as_str().trim().to_string());
+        if let Some(h) = head {
+            let base = h.split_once("@@").map(|(b, _)| b).unwrap_or(&h);
+            let (imms, ops) = split_immediates_and_operands(pair);
+            // Which immediate names the target, and how many operands the
+            // instruction takes, is per-instruction — there is no general rule
+            // to lean on here.
+            let target_spelling = match base {
+                "ref.cast_desc_eq" => imms.first(),
+                "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail" => imms.get(2),
+                _ => None,
+            };
+            // ⚠ IMMEDIATE-ONLY, so it holds even when the operand is
+            // `unreachable`. `br_on_cast_desc_eq $l rt_1 rt_2` requires
+            // rt_2 <: rt_1; `(ref null func)` with `(ref $a)` is two
+            // hierarchies and the suite asserts that with a bottom operand
+            // precisely so no operand typing can excuse it.
+            if matches!(base, "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail") {
+                if let (Some(a), Some(b)) = (imms.get(1), imms.get(2)) {
+                    if let (Some(from), Some(to)) = (parse_vt(a, names), parse_vt(b, names)) {
+                        if !vt_subtype(&to, &from, types) {
+                            return Some("type mismatch".to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(rt) = target_spelling {
+                if let Some(Vt::Ref(target)) = parse_vt(rt, names) {
+                    if let Heap::Concrete(t) = target.heap {
+                        if let Some(desc_idx) = types.get(t).and_then(|x| x.descriptor) {
+                            // The descriptor operand is the LAST one, and its
+                            // exactness is inherited from the cast: an exact
+                            // cast demands an exact descriptor.
+                            if let Some(dop) = ops.last() {
+                                let Some(got) =
+                                    infer_operand(dop, locals, local_names, types, names)
+                                else {
+                                    return None;
+                                };
+                                let want = Vt::Ref(RefT {
+                                    nullable: true,
+                                    exact: target.exact,
+                                    heap: Heap::Concrete(desc_idx),
+                                });
+                                if !vt_subtype(&got, &want, types) {
+                                    return Some("type mismatch".to_string());
+                                }
+                            }
+                            // The CAST VALUE has to be in the same type
+                            // hierarchy as the target. A descriptor target is
+                            // always a struct, so the value must sit under
+                            // `any` — `(ref null func)` is a different
+                            // hierarchy and the suite calls that out directly
+                            // ("Cannot cast across hierarchies").
+                            if ops.len() >= 2 {
+                                let Some(got) =
+                                    infer_operand(&ops[0], locals, local_names, types, names)
+                                else {
+                                    return None;
+                                };
+                                let any = Vt::Ref(RefT {
+                                    nullable: true,
+                                    exact: false,
+                                    heap: Heap::Abs("any"),
+                                });
+                                if !vt_subtype(&got, &any, types) {
+                                    return Some("type mismatch".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Allocation arity: a `_desc` form takes the struct's fields PLUS
+            // one descriptor. Counted only in the folded spelling, where the
+            // operands are syntactically present.
+            if matches!(
+                base,
+                "struct.new_desc" | "struct.new_default_desc" | "struct.new" | "struct.new_default"
+            ) {
+                if let Some(a) = imms.first() {
+                    if let Some(idx) = a
+                        .parse::<usize>()
+                        .ok()
+                        .or_else(|| names.get(a.as_str()).copied())
+                    {
+                        if let Some(info) = types.get(idx) {
+                            // `_desc` forms take one more operand than their
+                            // plain counterparts: the descriptor.
+                            let want = match base {
+                                "struct.new_desc" => info.fields + 1,
+                                "struct.new_default_desc" => 1,
+                                "struct.new" => info.fields,
+                                _ => 0,
+                            };
+                            if ops.len() != want {
+                                return Some("type mismatch".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // `ref.get_desc $t` reads the descriptor OFF a `$t`, so its
+            // operand must actually be one.
+            if base == "ref.get_desc" {
+                if let (Some(a), Some(op)) = (imms.first(), ops.first()) {
+                    if let Some(idx) = a
+                        .parse::<usize>()
+                        .ok()
+                        .or_else(|| names.get(a.as_str()).copied())
+                    {
+                        if types.get(idx).is_some() {
+                            let Some(got) =
+                                infer_operand(op, locals, local_names, types, names)
+                            else {
+                                return None;
+                            };
+                            let want = Vt::Ref(RefT {
+                                nullable: true,
+                                exact: false,
+                                heap: Heap::Concrete(idx),
+                            });
+                            if !vt_subtype(&got, &want, types) {
+                                return Some("type mismatch".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for child in pair.clone().into_inner() {
+        if let Some(m) = scan_descriptor_operands(&child, locals, local_names, types, names) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// A descriptor cast's TARGET reftype must name a type that has a descriptor.
+///
+/// The diagnostic spells the target the way the SOURCE does: a concrete target
+/// is reported by index ("type 0 does not have a descriptor"), an abstract one
+/// by its heap type ("type any …", "type none …") — so `anyref` reports as
+/// `any` and `nullref` as `none`, via the §2.3.4 abbreviation table rather
+/// than a list kept here.
+fn cast_target_descriptor_reason(
+    arg: &str,
+    types: &[DescType],
+    names: &HashMap<String, usize>,
+) -> Option<String> {
+    // `(ref null $a)` / `(ref 1)` / `anyref`. The heap type is the last token
+    // once the reftype wrapper and its `null` marker are removed.
+    let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
+    let spelling = inner
+        .split_whitespace()
+        .filter(|t| *t != "ref" && *t != "null")
+        .next_back()?;
+    let concrete = spelling
+        .parse::<usize>()
+        .ok()
+        .or_else(|| names.get(spelling).copied());
+    match concrete {
+        Some(n) => match types.get(n) {
+            None => Some("unknown type".to_string()),
+            Some(t) if t.descriptor.is_none() => {
+                Some(format!("type {n} does not have a descriptor"))
+            }
+            Some(_) => None,
+        },
+        None => {
+            // An abstract heap type never has a descriptor. Anything that is
+            // not a recognised spelling is left alone rather than guessed at.
+            let heap = vybe_runtime::opcode::heaptype::HeapType::from_spec_reftype_name(spelling)
+                .map(|(h, _)| h)
+                .or(
+                    match vybe_runtime::opcode::heaptype::HeapType::from_spec_name(spelling) {
+                        Some(_) => Some(spelling),
+                        None => None,
+                    },
+                )?;
+            Some(format!("type {heap} does not have a descriptor"))
+        }
+    }
+}
+
+/// What a module DECLARES, per entity kind: the set of `$id`s and the total
+/// count. A reference resolves against one or the other — `$name` against the
+/// set, a bare integer against the count — which is exactly the pair the
+/// "unknown X" diagnostics test.
+#[derive(Default)]
+struct ModuleCensus {
+    types: (std::collections::HashSet<String>, usize),
+    funcs: (std::collections::HashSet<String>, usize),
+    globals: (std::collections::HashSet<String>, usize),
+    data_segs: (std::collections::HashSet<String>, usize),
+    elem_segs: (std::collections::HashSet<String>, usize),
+    // ⛔ COUNTED, NOT NAMED, WAS A BUG. `(export "a" (table $a))` resolved
+    // `$a` against `Default::default()` — an EMPTY name set — so every
+    // by-name export of a table or memory reported "unknown table" on a
+    // perfectly valid module. Nothing in the suite could show it: these rules
+    // only ever run inside `assert_invalid`, where the module is asserted
+    // invalid already. The false-positive sweep over VALID modules is what
+    // surfaced it.
+    memories: (std::collections::HashSet<String>, usize),
+    tables: (std::collections::HashSet<String>, usize),
+}
+
+fn census_id(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+}
+
+/// Count every declaration in a module, both spellings of an import included.
+///
+/// ⛔ IMPORTS DECLARE ENTITIES. `(import "m" "n" (func $f …))` and
+/// `(func $f (import "m" "n") …)` each add a function; counting only
+/// `func_field` makes `call 3` in a module with three imports look out of
+/// range and reports "unknown function" for a call that is perfectly fine.
+/// Rec-group members splice in as ordinary `module_field`s, so no special case.
+fn build_census(module: &Pair<Rule>, c: &mut ModuleCensus) {
+    for pair in module.clone().into_inner() {
+        let inner = match pair.as_rule() {
+            Rule::module_field => match pair.clone().into_inner().next() {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => pair.clone(),
+        };
+        match inner.as_rule() {
+            Rule::type_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.types.0.insert(id);
+                }
+                c.types.1 += 1;
+            }
+            Rule::func_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.funcs.0.insert(id);
+                }
+                c.funcs.1 += 1;
+            }
+            Rule::global_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.globals.0.insert(id);
+                }
+                c.globals.1 += 1;
+            }
+            Rule::data_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.data_segs.0.insert(id);
+                }
+                c.data_segs.1 += 1;
+            }
+            Rule::elem_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.elem_segs.0.insert(id);
+                }
+                c.elem_segs.1 += 1;
+            }
+            Rule::memory_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.memories.0.insert(id);
+                }
+                c.memories.1 += 1;
+            }
+            Rule::table_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.tables.0.insert(id);
+                }
+                c.tables.1 += 1;
+            }
+            Rule::import_field => {
+                if let Some(desc) = inner
+                    .clone()
+                    .into_inner()
+                    .find(|x| x.as_rule() == Rule::import_desc)
+                {
+                    let id = census_id(&desc);
+                    // The descriptor's keyword is its first token.
+                    let kind = desc.as_str().trim_start_matches('(').trim_start();
+                    let kind = kind.split_whitespace().next().unwrap_or("");
+                    // An IMPORTED memory or table declares one just as a
+                    // defined field does — `(import "m" "n" (memory 1))` makes
+                    // memory 0 exist, so a load in that module is fine.
+                    match kind {
+                        "memory" => {
+                            if let Some(n) = census_id(&desc) {
+                                c.memories.0.insert(n);
+                            }
+                            c.memories.1 += 1;
+                        }
+                        "table" => {
+                            if let Some(n) = census_id(&desc) {
+                                c.tables.0.insert(n);
+                            }
+                            c.tables.1 += 1;
+                        }
+                        _ => {}
+                    }
+                    let slot = match kind {
+                        "func" => Some(&mut c.funcs),
+                        "global" => Some(&mut c.globals),
+                        _ => None,
+                    };
+                    if let Some(slot) = slot {
+                        if let Some(id) = id {
+                            slot.0.insert(id);
+                        }
+                        slot.1 += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    c.types.1 += implicit_type_upper_bound(module);
+}
+
+/// How many types a module's inline signatures can ADD to the type index
+/// space, as an upper bound.
+///
+/// ⛔ THE TYPE SECTION IS NOT JUST THE `(type …)` FIELDS. §6.6.4: a `typeuse`
+/// written inline — `(func $f (result f64) …)` — DEFINES a type when the
+/// module has no matching one, and it lands in the SAME index space. A module
+/// with one explicit `(type $t …)` and two inline signatures therefore has
+/// three types, and `(type 1)` in it is perfectly legal. Counting only the
+/// explicit fields reported "unknown type" on the suite's own func.wast — a
+/// VALID module, which is why no `assert_invalid` fixture could ever show it.
+///
+/// An UPPER bound is the right shape: the spec DEDUPES, so the true count is
+/// at most this. Over-counting can only make us miss a genuine out-of-range
+/// index, leaving that assertion honestly red; under-counting invents an error
+/// on a valid module, which is the failure this exists to prevent.
+fn implicit_type_upper_bound(pair: &Pair<Rule>) -> usize {
+    let mut n = 0;
+    if pair.as_rule() == Rule::typeuse {
+        let has_index = pair.clone().into_inner().any(|c| c.as_rule() == Rule::index);
+        let has_sig = pair
+            .clone()
+            .into_inner()
+            .any(|c| matches!(c.as_rule(), Rule::param | Rule::result));
+        if !has_index && has_sig {
+            n += 1;
+        }
+    }
+    for c in pair.clone().into_inner() {
+        n += implicit_type_upper_bound(&c);
+    }
+    n
+}
+
+/// Does `idx` (an `index` pair: `$name` or an integer) resolve?
+fn index_resolves(idx: &Pair<Rule>, decl: &(std::collections::HashSet<String>, usize)) -> bool {
+    let t = idx.as_str().trim();
+    match t.strip_prefix('$') {
+        Some(name) => decl.0.contains(name),
+        None => match t.parse::<usize>() {
+            Ok(n) => n < decl.1,
+            // Not a resolvable spelling at all — leave it to another check
+            // rather than inventing a diagnostic for it.
+            Err(_) => true,
+        },
+    }
+}
+
+/// The first instruction inside a constant-expression context that is not a
+/// constant form, if any.
+///
+/// ⛔ The set is the SPEC's, not "things that happen to fold": `i32.ctz` is
+/// perfectly computable at compile time and is still not a constant expression.
+/// `i32.add`/`sub`/`mul` (and the i64 forms) ARE, but only because the
+/// extended-const proposal is merged into 3.0.
+fn first_non_const_instr(pair: &Pair<Rule>) -> Option<String> {
+    const CONST_OPS: &[&str] = &[
+        "i32.const", "i64.const", "f32.const", "f64.const", "v128.const",
+        "ref.null", "ref.func", "ref.i31",
+        "global.get",
+        "struct.new", "struct.new_default", "struct.new_desc", "struct.new_default_desc",
+        "array.new", "array.new_default", "array.new_fixed",
+        // extended-const (merged in WASM 3.0)
+        "i32.add", "i32.sub", "i32.mul", "i64.add", "i64.sub", "i64.mul",
+        "any.convert_extern", "extern.convert_any",
+    ];
+    fn walk(p: Pair<Rule>, out: &mut Option<String>) {
+        if out.is_some() {
+            return;
+        }
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            if let Some(n) = instr_head_name(&p) {
+                if !CONST_OPS.contains(&n.as_str()) {
+                    *out = Some(n);
+                    return;
+                }
+            }
+        }
+        for ch in p.into_inner() {
+            walk(ch, out);
+        }
+    }
+    let mut out = None;
+    walk(pair.clone(), &mut out);
+    out
+}
+
+/// Is this `elem_mode` actually the segment's REFERENCE TYPE, mis-matched as an
+/// offset by the grammar's ordering? An offset computes an address; a `ref.*`
+/// form cannot.
+fn elem_mode_is_reference_type(mode: &Pair<Rule>) -> bool {
+    fn head(p: Pair<Rule>) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            return instr_head_name(&p);
+        }
+        p.into_inner().find_map(head)
+    }
+    // ⛔ `(ref 1)` folds to an instruction named plain `ref` — no dot — so
+    // matching only `ref.` missed the very shape this exists for.
+    head(mode.clone()).is_some_and(|n| n == "ref" || n.starts_with("ref."))
+}
+
+/// The mnemonic at the head of an instruction pair, suffixes stripped.
+fn instr_head_name(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::instr_name)
+        .map(|c| {
+            let n = c.as_str();
+            n.split_once("@@").map(|(b, _)| b).unwrap_or(n).to_string()
+        })
+}
+
+/// Does this instruction access linear memory? Every load/store declares a
+/// natural alignment — that IS the property of touching memory — and the
+/// `memory.*` family does so by name. Asked of the OPCODE TABLE rather than a
+/// list kept here.
+fn instr_touches_memory(name: &str) -> bool {
+    if name.starts_with("memory.") {
+        return true;
+    }
+    vybe_runtime::opcode::Op::from_wasm_name(name)
+        .and_then(|op| op.natural_align_bytes())
+        .is_some()
+}
+
+/// Does this instruction access a table? `call_indirect` needs one even though
+/// its name does not say so.
+fn instr_touches_table(name: &str) -> bool {
+    name.starts_with("table.") || matches!(name, "call_indirect" | "return_call_indirect")
+}
+
+/// A WAT `uN` as a u128 — decimal or `0x` hex, `_` separators. Wide on purpose:
+/// the limits fixtures write `0x1_0000_0000`, which overflows the u32 the value
+/// is stored in, and the check needs to SEE the overflow rather than wrap.
+/// Returns None for anything that is not a well-formed unsigned literal, which
+/// is the malformed half's business.
+fn parse_wat_u128(text: &str) -> Option<u128> {
+    let t = text.trim().replace('_', "");
+    match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(hex) => u128::from_str_radix(hex, 16).ok(),
+        None => t.parse::<u128>().ok(),
+    }
+}
+
+/// The number of lanes an instruction's lane immediate indexes, read off the
+/// MNEMONIC — which is where WASM states the shape. `i16x8.extract_lane` has 8;
+/// `v128.store64_lane` writes 64 bits of a 128-bit vector, so 2.
+fn mnemonic_lane_count(name: &str) -> Option<u32> {
+    if !name.contains("_lane") {
+        return None;
+    }
+    if let Some(shape) = name.split('.').next() {
+        match shape {
+            "i8x16" => return Some(16),
+            "i16x8" => return Some(8),
+            "i32x4" | "f32x4" => return Some(4),
+            "i64x2" | "f64x2" => return Some(2),
+            _ => {}
+        }
+    }
+    // `v128.loadN_lane` / `v128.storeN_lane` — N bits per lane.
+    for (tag, lanes) in [("8_lane", 16u32), ("16_lane", 8), ("32_lane", 4), ("64_lane", 2)] {
+        if name.ends_with(tag) {
+            return Some(lanes);
+        }
+    }
+    None
+}
+
 fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
     // `$id` → (param types, result types) for every `(type $id (func …))` the
     // quoted module declares. A block that gives BOTH a `(type $t)` and an
@@ -9507,6 +13112,21 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
                         match digits.parse::<u32>() {
                             Ok(n) if n.is_power_of_two() => {}
                             _ => return true,
+                        }
+                    }
+                    // A memarg `offset=` field is a WAT `uN` — decimal or
+                    // `0x`-hex, `_` separators allowed, NO SIGN. `offset=-1`
+                    // is not a memarg the lexer can build at all, which is why
+                    // the spec's expected text is "unknown operator" and not
+                    // something about offsets (`simd_address.wast`).
+                    //
+                    // ⛔ This is a LEXICAL check only. `offset=4294967296` on a
+                    // 32-bit memory lexes fine and is INVALID, not malformed —
+                    // flagging it here would make that assertion pass for the
+                    // wrong reason.
+                    if let Some(digits) = c.as_str().trim().strip_prefix("offset=") {
+                        if !is_wat_unsigned_literal(digits) {
+                            return true;
                         }
                     }
                 }
@@ -9922,6 +13542,17 @@ fn name_string_is_utf8(literal: &str) -> bool {
     std::str::from_utf8(&bytes).is_ok()
 }
 
+/// A WAT `uN`: decimal or `0x`-prefixed hex, `_` digit separators allowed, no
+/// sign and at least one digit. Shared by the memarg malformed check and
+/// `parse_memarg_number`, so a field this accepts is a field that one reads.
+fn is_wat_unsigned_literal(text: &str) -> bool {
+    let t = text.replace('_', "");
+    match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(hex) => !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()),
+        None => !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()),
+    }
+}
+
 /// Names the grammar's generic mnemonic rule matches that are not instructions.
 /// Structural keywords (`then`, `else`, `item`, …) reach the same rule, so they
 /// are not evidence of malformed text.
@@ -9936,7 +13567,7 @@ fn unknown_instruction_name(name: &str) -> bool {
     if STRUCTURAL.contains(&name) {
         return false;
     }
-    let base = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+    let base = name.split_once("@@").map(|(b, _)| b).unwrap_or(name);
     vybe_runtime::opcode::Op::from_wasm_name(base).is_none()
 }
 
@@ -10345,6 +13976,123 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
     false
 }
 
+/// `(assert_invalid (module …) "diagnostic")` — the module must PARSE and then
+/// fail validation. Settled at walk time, like `assert_malformed`: validity is
+/// a static property of the text, so nothing needs to run.
+fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
+    let _ = &__w;
+    let span = to_span(&pair);
+    // Both spellings: an inline `(module …)` is already parsed, a `(module
+    // quote "…")` has to be parsed from its concatenated strings first.
+    let mut reason: Option<String> = None;
+    let mut examined = false;
+    // ⛔ The expected diagnostic is written AFTER the module, and the module
+    // arm below `break`s — so reading both in one pass silently never saw the
+    // string and every comparison came out vacuously true. Collect first.
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let expected: Option<String> = children
+        .iter()
+        .find(|c| c.as_rule() == Rule::string)
+        .map(|c| unquote(c.as_str()));
+    for child in children {
+        // The expected diagnostic. ⛔ It used to be parsed and DROPPED, which
+        // made every `assert_invalid` assert only that the module was rejected
+        // for SOME reason — a module refused for a bad lane index satisfied a
+        // fixture demanding "alignment must not be larger than natural". That
+        // is the identical disease `walk_assert_trap` records against its own
+        // past, and it is how an over-flagging check makes an assertion pass
+        // for the WRONG reason while looking green.
+        if child.as_rule() != Rule::module_or_binary {
+            continue;
+        }
+        let text = child.as_str();
+        let head: Vec<&str> = text.split_whitespace().take(4).collect();
+        if head.iter().any(|t| *t == "binary") {
+            // A binary module's validity is a property of its BYTES; the text
+            // walk here cannot see them. Left unexamined on purpose.
+            break;
+        }
+        if head.iter().any(|t| *t == "quote") {
+            let mut source = String::new();
+            for sp in child.clone().into_inner() {
+                if sp.as_rule() == Rule::string {
+                    source.push_str(&unquote(sp.as_str()));
+                }
+            }
+            // ⛔ A QUOTED MODULE MAY OMIT ITS OWN `(module …)` WRAPPER. Both
+            // spellings are in the suite: align.wast quotes
+            // `"(module (memory 0) …)"` while address.wast quotes `"(memory 1)"`
+            // and `"(func …)"` — the text format's inline-module form. Parsed
+            // as-is the second yields module FIELDS at top level and no
+            // `Rule::module` pair at all, so every module-level rule (name
+            // resolution, limits, memarg range, stack typing) silently never
+            // ran and the assertion reported "the module validated".
+            let trimmed = source.trim_start();
+            let wrapped;
+            let text = if trimmed.starts_with("(module") {
+                &source
+            } else {
+                wrapped = format!("(module {source})");
+                &wrapped
+            };
+            if let Ok(pairs) = WastParser::parse(Rule::program, text) {
+                examined = true;
+                reason = module_invalid_reason(pairs);
+            }
+            break;
+        }
+        examined = true;
+        let mut names = std::collections::HashSet::new();
+        reason = module_invalid_walk(child.clone(), &mut names);
+        if reason.is_none() {
+            reason = stack_typing_reason_in(&child);
+        }
+        break;
+    }
+    // ⛔ ONE DIRECTION ONLY: the reason we give must CONTAIN the asserted text,
+    // which is the reference harness's own rule. Accepting the reverse as well
+    // looked like harmless latitude and was not — a fixture asserting
+    // "unknown memory 1" was satisfied by a bare "unknown memory", so a check
+    // that cannot name the index discharged an assertion about the index. Being
+    // vaguer than the fixture is exactly the failure this comparison exists to
+    // catch, and it is the direction that flatters us.
+    let matched = match (&reason, &expected) {
+        (Some(r), Some(e)) => r.contains(e.as_str()),
+        (Some(_), None) => true,
+        _ => false,
+    };
+    Ok(match (&reason, matched) {
+        // Rejected for the reason asserted: discharged.
+        (Some(_), true) => Statement::with_span(StmtKind::Empty, span),
+        (Some(r), false) => Statement::with_span(
+            StmtKind::Throw {
+                expr: Some(Expression::string(&format!(
+                    "assert_invalid failed: expected \"{}\", got \"{}\"",
+                    expected.as_deref().unwrap_or(""),
+                    r
+                ))),
+                cause: None,
+            },
+            span,
+        ),
+        _ => Statement::with_span(
+            StmtKind::Throw {
+                expr: Some(Expression::string(&format!(
+                    "assert_invalid failed: {} — expected \"{}\"",
+                    if examined {
+                        "the module validated"
+                    } else {
+                        "the module was not examined"
+                    },
+                    expected.as_deref().unwrap_or("")
+                ))),
+                cause: None,
+            },
+            span,
+        ),
+    })
+}
+
 fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut quoted: Option<String> = None;
@@ -10528,12 +14276,244 @@ fn walk_assert_exception(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
     ))
 }
 
+/// `__wast_check_trap(err, expected, marker)` — the WHOLE of an `assert_trap`
+/// check, emitted ONCE per script and called with three constants per
+/// assertion.
+///
+/// It is one function rather than an inlined check for a concrete reason:
+/// the per-assertion form allocated scratch locals in every catch body, and
+/// `Chunk::alloc_scratch` indexes a `u16` that is only `max`ed at the END of a
+/// chunk. `bulk-memory/table_copy.wast` has 1206 `assert_trap`s, which pushed
+/// the counter past 65535 and panicked the compiler ("attempt to add with
+/// overflow"). Collapsing the body into a call keeps each assertion at a fixed,
+/// tiny cost. (The underlying `alloc_scratch` ceiling is a separate issue and
+/// is not fixed here — this only stops the wast front end from being the thing
+/// that reaches it.)
+///
+/// Three facts drive the body:
+///
+///  * **Two shapes of caught value.** A WASM trap is `make_runtime_error(msg)`
+///    — an OBJECT carrying `.message` (`calls.rs::raise_trap`). A host-side
+///    trap is a bare STRING (`ctx.throw_value(Value::String)`, e.g. every
+///    `wasm:js-string` TypeError), as is our own "expected a trap" marker. So
+///    read `.message` and fall back to the value itself when that is null;
+///    reading `.message` off a string yields null rather than trapping, which
+///    is what makes the fallback safe.
+///  * **Containment, not equality.** The spec suite's convention is that the
+///    fixture's text appears IN the implementation's: `"cast failure"` is
+///    satisfied by `"trap: descriptor cast failure"`. Substring search is
+///    composed from the `wasm:js-string` builtins the runtime already
+///    registers (`length`/`substring`/`equals`) rather than a new host
+///    function, which would have been a runtime change.
+///  * **An empty expected message passes on any trap**, which is what the
+///    spec means by an `assert_trap` written without text.
+fn build_trap_check_helper(span: Span) -> Statement {
+    fn param(name: &str) -> Param {
+        Param {
+            name: name.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }
+    }
+    fn let_of(name: &str, init: Expression, span: Span) -> Statement {
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name.to_string()),
+                    type_hint: None,
+                    init: Some(init),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            },
+            span,
+        )
+    }
+    fn bin(op: BinOp, l: Expression, r: Expression, span: Span) -> Expression {
+        Expression::with_span(
+            ExprKind::Binary {
+                op,
+                left: Box::new(l),
+                right: Box::new(r),
+            },
+            span,
+        )
+    }
+    fn if_then(cond: Expression, then_body: Vec<Statement>, span: Span) -> Statement {
+        Statement::with_span(
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs: Vec::new(),
+                else_body: None,
+            },
+            span,
+        )
+    }
+    fn ret(span: Span) -> Statement {
+        Statement::with_span(StmtKind::Return(None), span)
+    }
+
+    let e = || Expression::ident("__wct_e");
+    let exp = || Expression::ident("__wct_exp");
+    let mk = || Expression::ident("__wct_marker");
+    let m = || Expression::ident("__wct_m");
+    let hl = || Expression::ident("__wct_hl");
+    let nl = || Expression::ident("__wct_nl");
+    let i = || Expression::ident("__wct_i");
+
+    // throw "assert_trap failed: expected trap message containing <exp>, got: <m>"
+    let report = Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(bin(
+                BinOp::Add,
+                bin(
+                    BinOp::Add,
+                    bin(
+                        BinOp::Add,
+                        Expression::string("assert_trap failed: expected trap message containing \""),
+                        exp(),
+                        span,
+                    ),
+                    Expression::string("\", got: "),
+                    span,
+                ),
+                m(),
+                span,
+            )),
+            cause: None,
+        },
+        span,
+    );
+
+    let body = vec![
+        // The action completed normally — our own marker came back, so no trap
+        // happened at all. Re-raise it as the failure it is.
+        if_then(
+            bin(BinOp::Eq, e(), mk(), span),
+            vec![Statement::with_span(
+                StmtKind::Throw {
+                    expr: Some(e()),
+                    cause: None,
+                },
+                span,
+            )],
+            span,
+        ),
+        let_of(
+            "__wct_m",
+            Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(e()),
+                    field: "message".to_string(),
+                    null_safe: false,
+                },
+                span,
+            ),
+            span,
+        ),
+        if_then(
+            bin(BinOp::Eq, m(), Expression::null(), span),
+            vec![Statement::with_span(
+                StmtKind::Assign {
+                    targets: vec![m()],
+                    value: e(),
+                    by_ref: false,
+                },
+                span,
+            )],
+            span,
+        ),
+        let_of("__wct_nl", make_call("string_length", vec![exp()], span), span),
+        // No expected text: any trap satisfies the assertion.
+        if_then(
+            bin(BinOp::Eq, nl(), Expression::int(0), span),
+            vec![ret(span)],
+            span,
+        ),
+        let_of("__wct_hl", make_call("string_length", vec![m()], span), span),
+        // Needle longer than haystack: no window to test, and `hl - nl` would
+        // go negative — `substring` clamps u32-wise, so the loop must not run.
+        if_then(bin(BinOp::Lt, hl(), nl(), span), vec![report.clone()], span),
+        let_of("__wct_i", Expression::int(0), span),
+        Statement::with_span(
+            StmtKind::While {
+                cond: bin(BinOp::LtEq, i(), bin(BinOp::Sub, hl(), nl(), span), span),
+                body: vec![
+                    if_then(
+                        bin(
+                            BinOp::Eq,
+                            make_call(
+                                "string_equals",
+                                vec![
+                                    make_call(
+                                        "string_substring",
+                                        vec![m(), i(), bin(BinOp::Add, i(), nl(), span)],
+                                        span,
+                                    ),
+                                    exp(),
+                                ],
+                                span,
+                            ),
+                            Expression::int(1),
+                            span,
+                        ),
+                        vec![ret(span)],
+                        span,
+                    ),
+                    Statement::with_span(
+                        StmtKind::Assign {
+                            targets: vec![i()],
+                            value: bin(BinOp::Add, i(), Expression::int(1), span),
+                            by_ref: false,
+                        },
+                        span,
+                    ),
+                ],
+                else_body: None,
+            },
+            span,
+        ),
+        report,
+    ];
+
+    Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: "__wast_check_trap".to_string(),
+            params: vec![param("__wct_e"), param("__wct_exp"), param("__wct_marker")],
+            return_type: None,
+            body,
+            modifiers: Default::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+        span,
+    )
+}
+
 fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut action_expr: Option<Expression> = None;
+    let mut expected_msg: Option<String> = None;
     for child in pair.into_inner() {
-        if child.as_rule() == Rule::action {
-            action_expr = Some(walk_action(__w, child)?);
+        match child.as_rule() {
+            Rule::action => action_expr = Some(walk_action(__w, child)?),
+            // The expected trap text. This used to be parsed and DROPPED,
+            // which made every `assert_trap` assert only that SOMETHING went
+            // wrong — a `call_indirect` reporting "null is not callable"
+            // satisfied a fixture demanding "uninitialized element", and the
+            // 16 "cast failure" asserts in the descriptor suite passed on any
+            // trap at all.
+            Rule::string => expected_msg = Some(unquote(child.as_str())),
+            _ => {}
         }
     }
     let Some(action) = action_expr else {
@@ -10543,10 +14523,6 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
     // action inside a try; COMPLETING normally is the failure, so the body
     // throws a marker after the action, and the catch re-raises exactly
     // that marker (a genuine trap lands in the catch and passes).
-    //
-    // ⚠ The expected MESSAGE is not compared — see the note on the catch arm
-    // below for why, and for the two routes that would close it. An earlier
-    // comment here claimed the opposite; the code never did it.
     let marker = "assert_trap failed: expected a trap";
     let body = vec![
         Statement::with_span(StmtKind::Expr(action), span),
@@ -10558,47 +14534,27 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
             span,
         ),
     ];
-    let rethrow = Statement::with_span(
-        StmtKind::Throw {
-            expr: Some(Expression::ident("__wast_trap_err")),
-            cause: None,
-        },
-        span,
-    );
-    // A trap did happen. Whether it is the RIGHT trap is NOT checked, and
-    // that is a real gap rather than a decision: `assert_trap`'s expected
-    // message is parsed and dropped, so every one of these asserts only that
-    // something went wrong. It is what let `call_indirect` on a null table
-    // slot report "null is not callable" and still satisfy a fixture
-    // asserting "uninitialized element".
+    // The whole check is ONE call to the helper `parse` prepends. Inlining it
+    // here instead cost scratch locals per assertion and overflowed
+    // `alloc_scratch`'s u16 on the big generated fixtures — see
+    // `build_trap_check_helper`.
     //
-    // Enforcing it needs a substring test on the caught error's `.message`,
-    // and neither route is open from here today:
-    //   * the wast PROFILE declares no string methods (only `string_compare`
-    //     as a function), so `.indexOf` on the message resolves to undefined
-    //     — it works under the ecma profile and cannot work under this one;
-    //   * `vybe:wast:assert_trap` IS declared in the profile, but that host
-    //     lives only in `languages/wast/tests/wast/helpers.rs`, so routing
-    //     there breaks standalone `vybex file.wast` with an unresolved import.
-    // The fix is one of: give the wast profile a substring primitive, or make
-    // the VM's trap `message` exactly the spec's canonical text so a plain
-    // equality comparison suffices.
+    // The marker is passed in rather than compared here because the helper has
+    // to tell two cases apart that both arrive as a caught value: our own
+    // "the action completed, so no trap happened" marker, and a real trap.
     let catch_body = vec![Statement::with_span(
-        StmtKind::If {
-            cond: Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(Expression::ident("__wast_trap_err")),
-                    right: Box::new(Expression::string(marker)),
-                },
-                span,
-            ),
-            then_body: vec![rethrow],
-            elifs: Vec::new(),
-            else_body: None,
-        },
+        StmtKind::Expr(make_call(
+            "__wast_check_trap",
+            vec![
+                Expression::ident("__wast_trap_err"),
+                Expression::string(expected_msg.as_deref().unwrap_or("")),
+                Expression::string(marker),
+            ],
+            span,
+        )),
         span,
     )];
+    __w.needs_trap_contains = true;
     Ok(Statement::with_span(
         StmtKind::Try {
             body,
@@ -11280,18 +15236,109 @@ fn binary_module_bytes(pair: &Pair<Rule>) -> Vec<u8> {
     out
 }
 
+/// Decode a WAT string literal.
+///
+/// A single left-to-right scan, which the previous chain of `.replace()` calls
+/// could not be. Two things were wrong with that chain:
+///
+///  * **No `\HH` hex escape.** It is the WAT spec's primary escape form
+///    (`\00`–`\ff`), and dropping it left the two bytes in the text. That is
+///    what made `comments.wast` unparseable: its `(module quote …)` ends line
+///    comments with `\0a` / `\0d`, so with the escape undecoded the whole
+///    module arrived as ONE line and every `;;` comment ran to the end of it.
+///  * **Order dependence.** `.replace("\\n", "\n")` ran first and rewrote the
+///    `\n` INSIDE a `\\n` (an escaped backslash followed by the letter n),
+///    yielding backslash + newline instead of backslash + "n".
+///
+/// Bytes are accumulated and decoded at the end, since `\HH` can name a
+/// non-ASCII byte; a lone invalid byte becomes U+FFFD rather than failing the
+/// parse, matching how the rest of this front end treats malformed text.
 fn unquote(s: &str) -> String {
     let s = s.trim();
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1]
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\r", "\r")
-            .replace("\\\\", "\\")
-            .replace("\\\"", "\"")
-    } else {
-        s.to_string()
+    if !(s.len() >= 2 && s.starts_with('"') && s.ends_with('"')) {
+        return s.to_string();
     }
+    let inner = &s[1..s.len() - 1];
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // A trailing lone backslash: keep it rather than reading past the end.
+        let Some(&c) = bytes.get(i + 1) else {
+            out.push(b'\\');
+            break;
+        };
+        match c {
+            b'n' => {
+                out.push(b'\n');
+                i += 2;
+            }
+            b't' => {
+                out.push(b'\t');
+                i += 2;
+            }
+            b'r' => {
+                out.push(b'\r');
+                i += 2;
+            }
+            b'\\' => {
+                out.push(b'\\');
+                i += 2;
+            }
+            b'"' => {
+                out.push(b'"');
+                i += 2;
+            }
+            b'\'' => {
+                out.push(b'\'');
+                i += 2;
+            }
+            // `\u{...}` — a Unicode scalar, encoded as UTF-8.
+            b'u' if bytes.get(i + 2) == Some(&b'{') => {
+                match inner[i + 3..].find('}') {
+                    Some(rel) => {
+                        let hex = &inner[i + 3..i + 3 + rel];
+                        match u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
+                            Some(ch) => {
+                                let mut buf = [0u8; 4];
+                                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
+                            // Not a scalar value: keep the text verbatim so a
+                            // malformed-ness assertion still sees something wrong.
+                            None => out.extend_from_slice(&bytes[i..i + 3 + rel + 1]),
+                        }
+                        i += 3 + rel + 1;
+                    }
+                    None => {
+                        out.push(b'\\');
+                        i += 1;
+                    }
+                }
+            }
+            // `\HH` — exactly two hex digits, one raw byte.
+            _ => {
+                let hi = (c as char).to_digit(16);
+                let lo = bytes.get(i + 2).and_then(|&d| (d as char).to_digit(16));
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    // Not a recognised escape: keep the backslash literally.
+                    _ => {
+                        out.push(b'\\');
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {
@@ -11476,9 +15523,20 @@ fn peek_typeuse_shape(__w: &WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
         }
     }
     if let Some(n) = named {
+        // ⚠ Type names are MODULE-QUALIFIED (`m#<seq>#<name>`) — a bare `$t`
+        // would otherwise mean different types in different modules of one
+        // script. A NUMERIC `(type 0)` is a declaration-order index instead, and
+        // `type_index_name` already holds the qualified names.
+        // Looking one up qualified and the other bare is not a near miss: it
+        // reports `expected 0→1` for a 2→1 signature, which reads as a bad
+        // table entry rather than a failed lookup.
+        let key = match n.parse::<usize>() {
+            Ok(i) => __w.type_index_name.get(i).cloned().unwrap_or(n),
+            Err(_) => qualify_type_name(__w, &n),
+        };
         return (
-            __w.type_func_params.get(&n).copied().unwrap_or(0) as usize,
-            __w.type_func_results.get(&n).copied().unwrap_or(0) as usize,
+            __w.type_func_params.get(&key).copied().unwrap_or(0) as usize,
+            __w.type_func_results.get(&key).copied().unwrap_or(0) as usize,
         );
     }
     (params, results)
@@ -11886,20 +15944,10 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         let call = make_call("return_call_indirect", call_args, span);
                         statements.push(Statement::with_span(StmtKind::Expr(call), span));
                     } else {
-                        // Same landing as the folded arm: a multi-result callee
-                        // destructures into temps so the N values are N stack
-                        // entries, which is what the multi-value return and
-                        // every other consumer expect.
-                        let call = make_call("call_indirect", call_args, span);
-                        land_instr_value(
-                            __w,
-                            call,
-                            expected_results.max(1),
-                            true,
-                            span,
-                            &mut statements,
-                            &mut stack,
-                        );
+                        // See the folded arm: the destructure belongs with a
+                        // compiler change that is not made, so the packed push
+                        // stays.
+                        stack.push(make_call("call_indirect", call_args, span));
                     }
                     i += 1;
                     continue;
@@ -12298,13 +16346,17 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                     // lowers to the frame-reusing `Op::RETURN_CALL` (a plain
                     // `return f(args)` would grow the stack and overflow).
                     "return_call" | "return_call_ref" => {
+                        // See the folded arm: the ref form has its own opcode
+                        // and a funcref VALUE, not a callee NAME.
                         let inner = if name == "return_call" {
                             "call"
                         } else {
-                            "call_ref"
+                            "return_call_ref"
                         };
                         let call = map_instr_to_ast(__w, inner.to_string(), args, span)?;
-                        if let ExprKind::Call {
+                        if inner == "return_call_ref" {
+                            statements.push(Statement::with_span(StmtKind::Expr(call), span));
+                        } else if let ExprKind::Call {
                             callee,
                             args: call_args,
                             ..
@@ -12412,8 +16464,9 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
 }
 
 fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) -> usize {
-    // A `@@mem<N>` multi-memory selector suffix is not part of the op identity.
-    let name = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+    // The `@@off<N>` / `@@mem<N>` suffixes are emitter channels, not part
+    // of the op identity: the base name is everything before the first `@@`.
+    let name = name.split_once("@@").map(|(b, _)| b).unwrap_or(name);
     match name {
         // Binary ops
         "i32.add" | "i32.sub" | "i32.mul" | "i32.div_s" | "i32.div_u" | "i32.rem_s"
@@ -12642,14 +16695,9 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
         "call_indirect" | "return_call_indirect" => 2,
         // call_ref pops the funcref plus the sig's params.
         "call_ref" | "return_call_ref" => {
-            let params = args
-                .first()
-                .and_then(|e| match &e.kind {
-                    ExprKind::Ident(n) => __w.type_func_params.get(n).copied(),
-                    _ => None,
-                })
-                .unwrap_or(0);
-            1 + params
+            // Both spellings of `$sig` — a numeric type index reaches here too.
+            let t = resolve_wast_type_name(__w, args.first());
+            1 + __w.type_func_params.get(&t).copied().unwrap_or(0)
         }
 
         // GC struct ops
@@ -12659,11 +16707,8 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
             // args[0] is typeidx immediate (ident or int) — not a stack value.
             // Remaining stack operands = field count for that type.
             if let Some(first) = args.first() {
-                let type_name = match &first.kind {
-                    ExprKind::Ident(n) => n.clone(),
-                    ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-                    _ => String::new(),
-                };
+                let _ = first;
+                let type_name = resolve_wast_type_name(__w, args.first());
                 *__w.struct_field_counts.get(&type_name).unwrap_or(&0)
             } else {
                 0
@@ -12676,11 +16721,8 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
         // the instruction and the type immediate was never resolved.
         "struct.new_desc" => {
             if let Some(first) = args.first() {
-                let type_name = match &first.kind {
-                    ExprKind::Ident(n) => n.clone(),
-                    ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-                    _ => String::new(),
-                };
+                let _ = first;
+                let type_name = resolve_wast_type_name(__w, args.first());
                 *__w.struct_field_counts.get(&type_name).unwrap_or(&0) + 1
             } else {
                 1
@@ -12782,8 +16824,9 @@ fn call_result_count(__w: &mut WastWalker, args: &[Expression]) -> usize {
 }
 
 fn get_instruction_push_count(name: &str) -> usize {
-    // A `@@mem<N>` multi-memory selector suffix is not part of the op identity.
-    let name = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+    // The `@@off<N>` / `@@mem<N>` suffixes are emitter channels, not part
+    // of the op identity: the base name is everything before the first `@@`.
+    let name = name.split_once("@@").map(|(b, _)| b).unwrap_or(name);
     match name {
         // `unreachable` stays at 0 ON PURPOSE. It looks like it should push —
         // WASM makes it polymorphic, satisfying any result type — but a 0 sends
@@ -12810,4 +16853,1605 @@ fn get_instruction_push_count(name: &str) -> usize {
         | "v128.store" | "v128.store8_lane" | "v128.store16_lane"
         | "v128.store32_lane" | "v128.store64_lane" => 0,
         _ => 1 }
+}
+
+// ═══ THE STACK-TYPING PASS ═══════════════════════════════════════════════════
+//
+// WASM §3.3 validation over the MODULE TEXT: an abstract operand stack and a
+// control stack, run per function body. This is the general pass that
+// `descriptor_operand_mismatch` above deliberately refused to grow into — it
+// is the 2297 "type mismatch" assertions, 84% of the suite's `assert_invalid`
+// corpus, and it is one algorithm rather than a rule per fixture.
+//
+// ⛔ THE BAIL IS THE SAFETY PROPERTY, INHERITED VERBATIM. Anything this pass
+// cannot type — an unmodelled mnemonic, an unresolvable index, a construct
+// outside its scope — abandons the whole function and reports NOTHING, so the
+// assertion stays honestly red. `assert_invalid` compares the expected
+// diagnostic, so a pass that guesses turns assertions green for reasons it
+// never established. Unknown must propagate, never default.
+//
+// ⛔ IT RUNS LAST. Presence before agreement: a module with `local.get 99` AND
+// a type error must report "unknown local". The name-resolution, const-expr,
+// limits and immutable-global rules all settle before this one is asked.
+
+/// A function type, resolved to the typing lattice.
+#[derive(Clone, Debug)]
+struct FnSig {
+    params: Vec<Vt>,
+    results: Vec<Vt>,
+}
+
+/// Why a function body stopped being typed.
+enum Fail {
+    /// A rule the module provably violates — reportable.
+    Mismatch(String),
+    /// Not typeable by this pass. Reports nothing.
+    Bail,
+}
+type R<T> = std::result::Result<T, Fail>;
+
+fn tmis<T>() -> R<T> {
+    Err(Fail::Mismatch("type mismatch".to_string()))
+}
+
+/// The same failure, carrying WHAT disagreed.
+///
+/// ⛔ THIS IS NOT COSMETIC AND IT DOES NOT WEAKEN THE ASSERTION. The suite's
+/// comparison is one-directional — our reason must CONTAIN the asserted text —
+/// so "type mismatch: …" discharges a `"type mismatch"` fixture exactly as the
+/// bare string does. What it buys is the only thing that can tell an
+/// over-firing rule from a correct one: 2297 fixtures all assert the same two
+/// words, so a pass that fires for the WRONG reason is indistinguishable from
+/// one that fires for the right one unless the message says which.
+fn tmis_d<T>(detail: String) -> R<T> {
+    Err(Fail::Mismatch(format!("type mismatch: {detail}")))
+}
+
+/// A value type in its spec spelling.
+fn vt_show(v: &Vt) -> String {
+    match v {
+        Vt::Num(n) => (*n).to_string(),
+        Vt::Bottom => "bot".to_string(),
+        Vt::Ref(r) => {
+            let h = match &r.heap {
+                Heap::Abs(a) => (*a).to_string(),
+                Heap::Concrete(i) => format!("{i}"),
+            };
+            format!(
+                "(ref{}{})",
+                if r.nullable { " null" } else { "" },
+                if r.exact { format!(" (exact {h})") } else { format!(" {h}") }
+            )
+        }
+    }
+}
+
+/// Everything a body is typed against: the module's index spaces.
+#[derive(Default)]
+struct TypeCtx {
+    types: Vec<DescType>,
+    type_names: HashMap<String, usize>,
+    /// Per type index: its function signature, when it is a functype.
+    type_sigs: Vec<Option<FnSig>>,
+    funcs: Vec<Option<FnSig>>,
+    func_names: HashMap<String, usize>,
+    /// Per function index: the type index it was declared with, for `ref.func`.
+    func_types: Vec<Option<usize>>,
+    globals: Vec<Vt>,
+    global_names: HashMap<String, usize>,
+    /// Per memory: its address type. memory64 declares `i64`; the default is
+    /// `i32`, and it decides the operand type of every load, store and
+    /// `memory.*` on that memory.
+    mem_addr: Vec<&'static str>,
+    tables: Vec<Vt>,
+    table_addr: Vec<&'static str>,
+    table_names: HashMap<String, usize>,
+    tags: Vec<Vec<Vt>>,
+}
+
+/// One flattened instruction. Folded and plain source forms both reduce to
+/// this sequence — which is the point: the typing rules are written once.
+struct FlatInstr<'a> {
+    head: String,
+    imms: Vec<String>,
+    /// The `block_type` pairs when this instruction opens a control frame,
+    /// and the `(result …)` of a typed `select`.
+    btypes: Vec<Pair<'a, Rule>>,
+    label: Option<String>,
+}
+
+/// A control frame, per the spec's validation algorithm.
+struct Ctrl {
+    op: &'static str,
+    label: Option<String>,
+    start: Vec<Vt>,
+    end: Vec<Vt>,
+    height: usize,
+    unreachable: bool,
+}
+
+struct Tv<'a> {
+    ctx: &'a TypeCtx,
+    vals: Vec<Vt>,
+    ctrls: Vec<Ctrl>,
+    locals: Vec<Vt>,
+    local_names: HashMap<String, usize>,
+}
+
+impl<'a> Tv<'a> {
+    // ── the spec's algorithm, verbatim ───────────────────────────────────
+    //
+    // ⛔ `pop_val` is the detail that decides `unreached-invalid.wast` (117
+    // assertions). After `unreachable`, pops return the BOTTOM type instead of
+    // erroring — but the enclosing frame's height floor is still enforced.
+    // Treat unreachable code as unvalidated and all 117 report "the module
+    // validated"; treat it as unconstrained and they fail the other way.
+
+    fn pop_val(&mut self) -> R<Vt> {
+        let f = self.ctrls.last().ok_or(Fail::Bail)?;
+        if self.vals.len() == f.height {
+            if f.unreachable {
+                return Ok(Vt::Bottom);
+            }
+            return tmis_d("stack underflow in block".to_string());
+        }
+        self.vals.pop().ok_or(Fail::Bail)
+    }
+
+    fn pop_expect(&mut self, e: &Vt) -> R<Vt> {
+        let a = self.pop_val()?;
+        if matches!(a, Vt::Bottom) {
+            return Ok(e.clone());
+        }
+        if matches!(e, Vt::Bottom) {
+            return Ok(a);
+        }
+        if !vt_subtype(&a, e, &self.ctx.types) {
+            return tmis_d(format!("expected {}, got {}", vt_show(e), vt_show(&a)));
+        }
+        Ok(a)
+    }
+
+    fn push_val(&mut self, v: Vt) {
+        self.vals.push(v);
+    }
+
+    fn push_vals(&mut self, vs: &[Vt]) {
+        for v in vs {
+            self.vals.push(v.clone());
+        }
+    }
+
+    /// Pop a whole result list — in REVERSE, the order they sit on the stack.
+    fn pop_vals(&mut self, vs: &[Vt]) -> R<()> {
+        for v in vs.iter().rev() {
+            self.pop_expect(v)?;
+        }
+        Ok(())
+    }
+
+    fn push_ctrl(&mut self, op: &'static str, label: Option<String>, start: Vec<Vt>, end: Vec<Vt>) {
+        let height = self.vals.len();
+        self.ctrls.push(Ctrl {
+            op,
+            label,
+            start: start.clone(),
+            end,
+            height,
+            unreachable: false,
+        });
+        self.push_vals(&start);
+    }
+
+    fn pop_ctrl(&mut self) -> R<Ctrl> {
+        let (end, height) = {
+            let f = self.ctrls.last().ok_or(Fail::Bail)?;
+            (f.end.clone(), f.height)
+        };
+        self.pop_vals(&end)?;
+        // ⛔ NOT `<`. Values LEFT OVER above the frame's floor are a type
+        // mismatch just as surely as missing ones — that is the whole of
+        // "type mismatch: values remaining on stack at end of block".
+        if self.vals.len() != height {
+            return tmis_d(format!(
+                "values remaining on stack at end of block ({} above the frame)",
+                self.vals.len() - height
+            ));
+        }
+        self.ctrls.pop().ok_or(Fail::Bail)
+    }
+
+    fn unreachable(&mut self) -> R<()> {
+        let h = self.ctrls.last().ok_or(Fail::Bail)?.height;
+        self.vals.truncate(h);
+        if let Some(f) = self.ctrls.last_mut() {
+            f.unreachable = true;
+        }
+        Ok(())
+    }
+
+    /// A `loop` label takes the block's PARAMETERS (branching to it re-enters);
+    /// every other frame takes its results.
+    fn label_types(f: &Ctrl) -> &[Vt] {
+        if f.op == "loop" { &f.start } else { &f.end }
+    }
+
+    /// Resolve a branch target: a depth, or a label NAME searched innermost-out.
+    fn label_index(&self, s: &str) -> R<usize> {
+        if let Some(name) = s.strip_prefix('$') {
+            for (i, f) in self.ctrls.iter().rev().enumerate() {
+                if f.label.as_deref() == Some(name) {
+                    return Ok(i);
+                }
+            }
+            // Unresolvable — `unknown label` is another rule's to report.
+            return Err(Fail::Bail);
+        }
+        let n: usize = s.parse().map_err(|_| Fail::Bail)?;
+        if n >= self.ctrls.len() {
+            return Err(Fail::Bail);
+        }
+        Ok(n)
+    }
+}
+
+// ── The fixed signatures ─────────────────────────────────────────────────────
+//
+// Every instruction whose operand and result types are the SAME whatever the
+// module says. The parametric ones (`drop`, `select`), the indexed ones
+// (`local.*`, `global.*`, `call`), the control ones and anything whose address
+// width depends on a declared memory are NOT here — they are typed in `step`
+// against the module's index spaces.
+//
+// Kept as plain type SPELLINGS rather than `Vt` on purpose: this table is a
+// per-opcode fact with no module-relative content, so it stays movable to the
+// shared opcode table if a second consumer (a validator over the emitted
+// binary) ever appears. `Vt` carries `Heap::Concrete(usize)` — module type
+// indices — and could not be expressed there.
+
+/// The scalar type of one lane of a SIMD shape.
+fn lane_scalar(shape: &str) -> Option<&'static str> {
+    Some(match shape {
+        "i8x16" | "i16x8" | "i32x4" => "i32",
+        "i64x2" => "i64",
+        "f32x4" => "f32",
+        "f64x2" => "f64",
+        _ => return None,
+    })
+}
+
+fn static_num(t: &str) -> Option<&'static str> {
+    Some(match t {
+        "i32" => "i32",
+        "i64" => "i64",
+        "f32" => "f32",
+        "f64" => "f64",
+        "v128" => "v128",
+        _ => return None,
+    })
+}
+
+fn fixed_sig(name: &str) -> Option<(Vec<&'static str>, Vec<&'static str>)> {
+    let (head, op) = name.split_once('.')?;
+
+    // ── v128.* ───────────────────────────────────────────────────────────
+    if head == "v128" {
+        return Some(match op {
+            "const" => (vec![], vec!["v128"]),
+            "not" => (vec!["v128"], vec!["v128"]),
+            "and" | "andnot" | "or" | "xor" => (vec!["v128", "v128"], vec!["v128"]),
+            "bitselect" => (vec!["v128", "v128", "v128"], vec!["v128"]),
+            "any_true" => (vec!["v128"], vec!["i32"]),
+            _ => return None,
+        });
+    }
+
+    // ── SIMD shapes ──────────────────────────────────────────────────────
+    if let Some(scalar) = lane_scalar(head) {
+        // Lane accessors carry a lane index immediate; the lane index rule is
+        // a separate, already-landed check.
+        if op == "splat" {
+            return Some((vec![scalar], vec!["v128"]));
+        }
+        if op == "extract_lane" || op == "extract_lane_s" || op == "extract_lane_u" {
+            return Some((vec!["v128"], vec![scalar]));
+        }
+        if op == "replace_lane" {
+            return Some((vec!["v128", scalar], vec!["v128"]));
+        }
+        if op == "shuffle" {
+            return Some((vec!["v128", "v128"], vec!["v128"]));
+        }
+        // A vector shift takes a SCALAR i32 shift count whatever the lane
+        // width — `i64x2.shl` is [v128 i32] → [v128], not [v128 i64].
+        if matches!(op, "shl" | "shr_s" | "shr_u") {
+            return Some((vec!["v128", "i32"], vec!["v128"]));
+        }
+        if matches!(op, "all_true" | "bitmask") {
+            return Some((vec!["v128"], vec!["i32"]));
+        }
+        // Unary lanewise.
+        if op.starts_with("extend_low_")
+            || op.starts_with("extend_high_")
+            || op.starts_with("extadd_pairwise_")
+            || op.starts_with("convert_")
+            || op.starts_with("trunc_sat_")
+            || op.starts_with("relaxed_trunc_")
+            || matches!(
+                op,
+                "abs" | "neg" | "sqrt" | "ceil" | "floor" | "trunc" | "nearest" | "popcnt"
+                    | "demote_f64x2_zero" | "promote_low_f32x4"
+            )
+        {
+            return Some((vec!["v128"], vec!["v128"]));
+        }
+        // Everything else lanewise is binary v128 → v128: arithmetic, the
+        // comparisons (which produce a MASK, not an i32), saturating and
+        // widening forms, and the relaxed variants.
+        if op.starts_with("add")
+            || op.starts_with("sub")
+            || op.starts_with("mul")
+            || op.starts_with("min")
+            || op.starts_with("max")
+            || op.starts_with("avgr")
+            || op.starts_with("narrow_")
+            || op.starts_with("extmul_")
+            || op.starts_with("dot_")
+            || op.starts_with("q15mulr")
+            || op.starts_with("relaxed_")
+            || matches!(
+                op,
+                "div" | "pmin" | "pmax" | "swizzle"
+                    | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
+                    | "lt_s" | "lt_u" | "gt_s" | "gt_u"
+                    | "le_s" | "le_u" | "ge_s" | "ge_u"
+            )
+        {
+            return Some((vec!["v128", "v128"], vec!["v128"]));
+        }
+        // `relaxed_laneselect` and friends take three vectors.
+        if op == "relaxed_laneselect" {
+            return Some((vec!["v128", "v128", "v128"], vec!["v128"]));
+        }
+        return None;
+    }
+
+    // ── scalar numeric ───────────────────────────────────────────────────
+    let t = static_num(head)?;
+    let is_int = t == "i32" || t == "i64";
+    Some(match op {
+        "const" => (vec![], vec![t]),
+        // Integer unary and binary.
+        "clz" | "ctz" | "popcnt" | "extend8_s" | "extend16_s" | "extend32_s" if is_int => {
+            (vec![t], vec![t])
+        }
+        "eqz" if is_int => (vec![t], vec!["i32"]),
+        "add" | "sub" | "mul" | "div_s" | "div_u" | "rem_s" | "rem_u" | "and" | "or" | "xor"
+        | "shl" | "shr_s" | "shr_u" | "rotl" | "rotr"
+            if is_int =>
+        {
+            (vec![t, t], vec![t])
+        }
+        "eq" | "ne" | "lt_s" | "lt_u" | "gt_s" | "gt_u" | "le_s" | "le_u" | "ge_s" | "ge_u"
+            if is_int =>
+        {
+            (vec![t, t], vec!["i32"])
+        }
+        // Float unary and binary.
+        "abs" | "neg" | "ceil" | "floor" | "trunc" | "nearest" | "sqrt" if !is_int => {
+            (vec![t], vec![t])
+        }
+        "add" | "sub" | "mul" | "div" | "min" | "max" | "copysign" if !is_int => {
+            (vec![t, t], vec![t])
+        }
+        "eq" | "ne" | "lt" | "gt" | "le" | "ge" if !is_int => (vec![t, t], vec!["i32"]),
+        // Conversions. Each names its SOURCE type in the mnemonic, which is
+        // what makes them checkable without a table entry apiece.
+        _ => {
+            let src = op
+                .strip_prefix("wrap_")
+                .or_else(|| op.strip_prefix("extend_"))
+                .or_else(|| op.strip_prefix("trunc_"))
+                .or_else(|| op.strip_prefix("trunc_sat_"))
+                .or_else(|| op.strip_prefix("convert_"))
+                .or_else(|| op.strip_prefix("demote_"))
+                .or_else(|| op.strip_prefix("promote_"))
+                .or_else(|| op.strip_prefix("reinterpret_"))?;
+            // `i64.extend_i32_s` → `i32_s`; `f64.convert_i32_u` → `i32_u`.
+            let src = src
+                .strip_suffix("_s")
+                .or_else(|| src.strip_suffix("_u"))
+                .unwrap_or(src);
+            // `i32.trunc_sat_f32_s` reaches here as `sat_f32` when the
+            // `trunc_` prefix matched first; peel the qualifier.
+            let src = src.strip_prefix("sat_").unwrap_or(src);
+            (vec![static_num(src)?], vec![t])
+        }
+    })
+}
+
+/// The load/store family, whose ADDRESS operand type is the memory's, not a
+/// constant. Returns `(value type, is_store)`.
+fn mem_access_sig(name: &str) -> Option<(&'static str, bool)> {
+    let (head, op) = name.split_once('.')?;
+    if head == "v128" {
+        return Some(match op {
+            "load" | "load8x8_s" | "load8x8_u" | "load16x4_s" | "load16x4_u" | "load32x2_s"
+            | "load32x2_u" | "load8_splat" | "load16_splat" | "load32_splat" | "load64_splat"
+            | "load32_zero" | "load64_zero" => ("v128", false),
+            "store" => ("v128", true),
+            // The lane forms take the vector as a second operand.
+            _ => return None,
+        });
+    }
+    let t = static_num(head)?;
+    if op == "load" || op == "store" {
+        return Some((t, op == "store"));
+    }
+    for w in ["8", "16", "32"] {
+        for sx in ["_s", "_u", ""] {
+            if op == format!("load{w}{sx}") {
+                return Some((t, false));
+            }
+        }
+        if op == format!("store{w}") {
+            return Some((t, true));
+        }
+    }
+    None
+}
+
+// ── Building the module's index spaces ───────────────────────────────────────
+
+/// The `param*`/`result*` of a `typeuse` or `func_type`, resolved.
+fn sig_from_params(p: &Pair<Rule>, names: &HashMap<String, usize>) -> Option<FnSig> {
+    let mut params = Vec::new();
+    let mut results = Vec::new();
+    for c in p.clone().into_inner() {
+        match c.as_rule() {
+            Rule::param => {
+                for d in c.into_inner() {
+                    if d.as_rule() != Rule::id {
+                        params.push(parse_vt(d.as_str().trim(), names)?);
+                    }
+                }
+            }
+            Rule::result => {
+                for d in c.into_inner() {
+                    results.push(parse_vt(d.as_str().trim(), names)?);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(FnSig { params, results })
+}
+
+/// A `typeuse`: `(type $t)` alone, an inline signature, or both. When both are
+/// written the inline one must agree, and it is the one the body is typed
+/// against — so the inline spelling wins when it carries anything.
+fn sig_from_typeuse(
+    tu: &Pair<Rule>,
+    ctx_type_sigs: &[Option<FnSig>],
+    type_names: &HashMap<String, usize>,
+    names: &HashMap<String, usize>,
+) -> Option<(Option<usize>, FnSig)> {
+    let written = tu.clone().into_inner().find(|c| c.as_rule() == Rule::index);
+    let idx = written
+        .as_ref()
+        .and_then(|i| resolve_wast_index(i.as_str().trim(), type_names));
+    // ⛔ WRITTEN-BUT-UNRESOLVABLE IS NOT "NO TYPE INDEX". The guard below keys
+    // off `idx`, so a lookup MISS looked identical to a function that named no
+    // type at all and quietly took the empty inline signature.
+    if written.is_some() && idx.is_none() {
+        return None;
+    }
+    // ⛔ THE TYPE INDEX IS AUTHORITATIVE WHEN IT RESOLVES. Where a function
+    // writes both, the spec requires the inline spelling to MATCH the named
+    // type — so they are interchangeable when legal, and the named one is the
+    // only one that is complete when the inline half is partial.
+    if let Some(i) = idx {
+        if let Some(s) = ctx_type_sigs.get(i).cloned().flatten() {
+            return Some((Some(i), s));
+        }
+    }
+    let inline = sig_from_params(tu, names)?;
+    // ⛔ AN UNRESOLVED `(type N)` IS NOT `() -> ()`. Falling through to the
+    // empty inline signature GUESSES a type, and a function whose body then
+    // leaves its real result on the stack reads as "values remaining on stack"
+    // — a confident wrong answer on a VALID module, which is exactly what the
+    // bail exists to prevent.
+    if idx.is_some() && inline.params.is_empty() && inline.results.is_empty() {
+        return None;
+    }
+    Some((idx, inline))
+}
+
+/// `$name` or a decimal index.
+fn resolve_wast_index(s: &str, names: &HashMap<String, usize>) -> Option<usize> {
+    let t = s.trim();
+    match t.strip_prefix('$') {
+        // ⛔ TWO KEY CONVENTIONS LIVE IN THIS FILE. `descriptor_type_table`
+        // keys its name map by the id WITH the `$` still on it (`Rule::id`
+        // matches `$name`), while `census_id`/`field_id` strip it. Looking up
+        // only one silently missed EVERY `(type $t)` — and the miss was not
+        // harmless: `sig_from_typeuse` fell through to the empty inline
+        // signature and typed the function as `() -> ()`, which is a confident
+        // wrong answer of exactly the kind the bail exists to prevent.
+        Some(bare) => names.get(bare).or_else(|| names.get(t)).copied(),
+        None => t.parse().ok(),
+    }
+}
+
+/// The keyword an import descriptor or a field opens with.
+fn head_keyword(p: &Pair<Rule>) -> String {
+    let s = p.as_str().trim_start_matches('(').trim_start();
+    s.split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The `id` immediately following a field's keyword, if it has one.
+fn field_id(p: &Pair<Rule>) -> Option<String> {
+    p.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+}
+
+fn build_type_ctx(module: &Pair<Rule>) -> TypeCtx {
+    let (types, type_names) = descriptor_type_table(module);
+    let mut ctx = TypeCtx {
+        types,
+        type_names,
+        ..Default::default()
+    };
+    let names = ctx.type_names.clone();
+
+    // Pass 1 — the type section, so every later `(type $t)` resolves.
+    for field in module_fields(module) {
+        if field.as_rule() == Rule::type_field {
+            let ft = find_rule(&field, Rule::func_type);
+            ctx.type_sigs
+                .push(ft.and_then(|f| sig_from_params(&f, &names)));
+        }
+    }
+
+    // Pass 1b — THE IMPLICIT TYPES. §6.6.4: a `typeuse` written inline defines
+    // a type when the module has no matching one, appended to the SAME index
+    // space AFTER every explicit `(type …)`. func.wast pins the numbering
+    // directly: one explicit `(type $t (func (param i32)))` is type 0, and the
+    // inline `(func $f (result f64) …)` written ABOVE it becomes type 1.
+    //
+    // ⛔ DEDUPED, AND THE DEDUP IS WHAT MAKES THE INDICES RIGHT. `(func $g
+    // (param i32))` in that same module adds nothing — it REUSES type 0 — so
+    // appending unconditionally would shift every later index by one and
+    // mistype the bodies that name them.
+    let mut inline_sigs: Vec<Pair<Rule>> = Vec::new();
+    collect_typeuses(module, &mut inline_sigs);
+    for tu in inline_sigs {
+        let has_index = tu.clone().into_inner().any(|c| c.as_rule() == Rule::index);
+        if has_index {
+            continue;
+        }
+        let Some(sig) = sig_from_params(&tu, &names) else { continue };
+        if sig.params.is_empty() && sig.results.is_empty() {
+            continue;
+        }
+        let dup = ctx.type_sigs.iter().any(|t| {
+            t.as_ref()
+                .is_some_and(|t| t.params == sig.params && t.results == sig.results)
+        });
+        if !dup {
+            ctx.type_sigs.push(Some(sig));
+        }
+    }
+
+    // Pass 2 — imports, THEN definitions. ⛔ An imported function occupies an
+    // index before every defined one whatever the text order, so collecting in
+    // document order across both spellings would shift every `call`.
+    let mut defined: Vec<Pair<Rule>> = Vec::new();
+    for field in module_fields(module) {
+        match field.as_rule() {
+            Rule::import_field => {
+                if let Some(desc) = find_rule(&field, Rule::import_desc) {
+                    add_entity(&mut ctx, &desc, &names);
+                }
+            }
+            Rule::func_field
+            | Rule::global_field
+            | Rule::memory_field
+            | Rule::table_field
+            | Rule::tag_field => {
+                // The inline spelling `(func $f (import "m" "n") …)` is an
+                // import too, and belongs in the same early pass.
+                if find_rule(&field, Rule::import_inline).is_some() {
+                    add_entity(&mut ctx, &field, &names);
+                } else {
+                    defined.push(field);
+                }
+            }
+            _ => {}
+        }
+    }
+    for field in defined {
+        add_entity(&mut ctx, &field, &names);
+    }
+    ctx
+}
+
+/// Add one declared entity to its index space. Shared by both import
+/// spellings and the defining fields, which is what keeps the two in step.
+fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>) {
+    let kind = head_keyword(p);
+    let id = field_id(p);
+    match kind.as_str() {
+        "func" => {
+            let sig = find_rule(p, Rule::typeuse)
+                .and_then(|tu| sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, names));
+            if let Some(n) = id {
+                ctx.func_names.insert(n, ctx.funcs.len());
+            }
+            // ⛔ A FUNCTION DECLARED INLINE STILL HAS A TYPE INDEX — the
+            // IMPLICIT one. `ref.func $f` is typed `(ref $t)` where `$t` is the
+            // function's type, so taking only the WRITTEN `(type N)` left every
+            // inline-signature function without one and made `ref.func` bail.
+            // Pass 1b has already materialised those types, so the index is
+            // recoverable by structural match — the same match the spec's own
+            // dedup uses to decide whether to append in the first place.
+            let ti = sig.as_ref().and_then(|(i, _)| *i).or_else(|| {
+                let s = &sig.as_ref()?.1;
+                ctx.type_sigs.iter().position(|t| {
+                    t.as_ref()
+                        .is_some_and(|t| t.params == s.params && t.results == s.results)
+                })
+            });
+            ctx.func_types.push(ti);
+            ctx.funcs.push(sig.map(|(_, s)| s));
+        }
+        "global" => {
+            let vt = find_rule(p, Rule::global_type)
+                .and_then(|g| {
+                    let inner = g.as_str().trim();
+                    let spelling = inner
+                        .strip_prefix('(')
+                        .and_then(|x| x.trim().strip_prefix("mut"))
+                        .map(|x| x.trim().trim_end_matches(')').trim())
+                        .unwrap_or(inner);
+                    parse_vt(spelling, names)
+                })
+                .unwrap_or(Vt::Bottom);
+            if let Some(n) = id {
+                ctx.global_names.insert(n, ctx.globals.len());
+            }
+            ctx.globals.push(vt);
+        }
+        "memory" => {
+            // ⛔ `addr_type` is a bare literal, so it never reaches the parse
+            // tree as a pair — the memory's address width has to be read off
+            // the text. It decides the operand type of every load and store
+            // against this memory, and defaulting it to i32 mis-types every
+            // memory64 body.
+            let is64 = find_rule(p, Rule::mem_type)
+                .map(|m| m.as_str().split_whitespace().next() == Some("i64"))
+                .unwrap_or(false);
+            ctx.mem_addr.push(if is64 { "i64" } else { "i32" });
+        }
+        "table" => {
+            let tt = find_rule(p, Rule::table_type);
+            let is64 = tt
+                .as_ref()
+                .map(|m| m.as_str().split_whitespace().next() == Some("i64"))
+                .unwrap_or(false);
+            let elem = tt
+                .and_then(|t| {
+                    t.into_inner()
+                        .filter(|c| !matches!(c.as_rule(), Rule::integer))
+                        .last()
+                })
+                .and_then(|c| parse_vt(c.as_str().trim(), names))
+                .unwrap_or(Vt::Bottom);
+            if let Some(n) = id {
+                ctx.table_names.insert(n, ctx.tables.len());
+            }
+            ctx.table_addr.push(if is64 { "i64" } else { "i32" });
+            ctx.tables.push(elem);
+        }
+        "tag" => {
+            let params = find_rule(p, Rule::typeuse)
+                .and_then(|tu| sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, names))
+                .map(|(_, s)| s.params)
+                .unwrap_or_default();
+            ctx.tags.push(params);
+        }
+        _ => {}
+    }
+}
+
+/// Every `typeuse` under a pair, in DOCUMENT ORDER — which is the order the
+/// implicit types are appended in.
+fn collect_typeuses<'a>(p: &Pair<'a, Rule>, out: &mut Vec<Pair<'a, Rule>>) {
+    for c in p.clone().into_inner() {
+        if c.as_rule() == Rule::typeuse {
+            out.push(c.clone());
+        }
+        collect_typeuses(&c, out);
+    }
+}
+
+/// The `module_field` children of a module, unwrapped one level.
+fn module_fields<'a>(module: &Pair<'a, Rule>) -> Vec<Pair<'a, Rule>> {
+    module
+        .clone()
+        .into_inner()
+        .filter_map(|p| {
+            if p.as_rule() == Rule::module_field {
+                p.into_inner().next()
+            } else {
+                Some(p)
+            }
+        })
+        .collect()
+}
+
+/// The first descendant with the given rule, not descending past it.
+fn find_rule<'a>(p: &Pair<'a, Rule>, want: Rule) -> Option<Pair<'a, Rule>> {
+    for c in p.clone().into_inner() {
+        if c.as_rule() == want {
+            return Some(c);
+        }
+        if let Some(f) = find_rule(&c, want) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+// ── Flattening: folded and plain reduce to ONE sequence ──────────────────────
+//
+// Plain form needs no work at all — `block`, `else` and `end` are already
+// sibling `plain_instr`s carrying their `block_type` as an ordinary argument,
+// so a linear walk types them as they come. Only the folded form has to be
+// unfolded, and it unfolds POST-ORDER: a folded instruction's operands are
+// evaluated before it.
+
+fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) -> Option<()> {
+    for p in seq {
+        let p = if p.as_rule() == Rule::instr {
+            p.into_inner().next()?
+        } else {
+            p
+        };
+        match p.as_rule() {
+            Rule::plain_instr => {
+                let (imms, ops) = split_immediates_and_operands(&p);
+                // A plain instruction may still absorb folded operands.
+                flatten_instrs(ops, out)?;
+                let head = p
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::instr_name)?
+                    .as_str()
+                    .trim()
+                    .to_string();
+                let btypes: Vec<Pair<Rule>> = p
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::instr_arg)
+                    .filter_map(|c| c.into_inner().next())
+                    .filter(|c| c.as_rule() == Rule::block_type)
+                    .collect();
+                let label = p
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::instr_arg)
+                    .find_map(|c| c.into_inner().next())
+                    .filter(|c| c.as_rule() == Rule::id)
+                    .map(|c| c.as_str()[1..].to_string());
+                let imms = imms
+                    .into_iter()
+                    .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
+                        && !s.starts_with("(param"))
+                    .collect();
+                out.push(FlatInstr { head, imms, btypes, label });
+            }
+            Rule::folded_instr => {
+                let head = head_keyword(&p);
+                // ⛔ TWO PLACES, ONE MEANING. `block`/`loop`/`if` name
+                // `block_type*` directly in the grammar, but on every other
+                // folded instruction the same `(type $t)` arrives inside an
+                // `instr_arg` — so `(call_indirect (type $t) …)` collected
+                // ZERO signatures and typed as `[] -> []`, which is a wrong
+                // answer rather than an absent one.
+                let btypes: Vec<Pair<Rule>> = p
+                    .clone()
+                    .into_inner()
+                    .filter_map(|c| match c.as_rule() {
+                        Rule::block_type => Some(c),
+                        Rule::instr_arg => c
+                            .into_inner()
+                            .next()
+                            .filter(|i| i.as_rule() == Rule::block_type),
+                        _ => None,
+                    })
+                    .collect();
+                let label = p
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::id)
+                    .map(|c| c.as_str()[1..].to_string());
+                match head.as_str() {
+                    "block" | "loop" => {
+                        let body: Vec<Pair<Rule>> = p
+                            .clone()
+                            .into_inner()
+                            .filter(|c| c.as_rule() == Rule::instr)
+                            .collect();
+                        out.push(FlatInstr {
+                            head,
+                            imms: vec![],
+                            btypes,
+                            label,
+                        });
+                        flatten_instrs(body, out)?;
+                        out.push(FlatInstr {
+                            head: "end".into(),
+                            imms: vec![],
+                            btypes: vec![],
+                            label: None,
+                        });
+                    }
+                    "if" => {
+                        // ⛔ THE CONDITION IS EVALUATED BEFORE THE FRAME OPENS.
+                        // In `(if (cond) (then …))` the `instr` children are
+                        // the condition and nothing else — `then`/`else` are
+                        // their own rules — so they flatten AHEAD of the `if`.
+                        let cond: Vec<Pair<Rule>> = p
+                            .clone()
+                            .into_inner()
+                            .filter(|c| c.as_rule() == Rule::instr)
+                            .collect();
+                        flatten_instrs(cond, out)?;
+                        out.push(FlatInstr {
+                            head: "if".into(),
+                            imms: vec![],
+                            btypes,
+                            label,
+                        });
+                        for c in p.clone().into_inner() {
+                            match c.as_rule() {
+                                Rule::then_block => {
+                                    let b: Vec<Pair<Rule>> =
+                                        c.into_inner().filter(|x| x.as_rule() == Rule::instr).collect();
+                                    flatten_instrs(b, out)?;
+                                }
+                                Rule::else_block => {
+                                    out.push(FlatInstr {
+                                        head: "else".into(),
+                                        imms: vec![],
+                                        btypes: vec![],
+                                        label: None,
+                                    });
+                                    let b: Vec<Pair<Rule>> =
+                                        c.into_inner().filter(|x| x.as_rule() == Rule::instr).collect();
+                                    flatten_instrs(b, out)?;
+                                }
+                                _ => {}
+                            }
+                        }
+                        out.push(FlatInstr {
+                            head: "end".into(),
+                            imms: vec![],
+                            btypes: vec![],
+                            label: None,
+                        });
+                    }
+                    // Exception handling has its own frame kinds and its own
+                    // fixtures; out of scope for this pass.
+                    "try_table" | "try" => return None,
+                    _ => {
+                        let (imms, ops) = split_immediates_and_operands(&p);
+                        flatten_instrs(ops, out)?;
+                        let imms = imms
+                            .into_iter()
+                            .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
+                                && !s.starts_with("(param"))
+                            .collect();
+                        out.push(FlatInstr { head, imms, btypes, label });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(())
+}
+
+// ── The typing rules ─────────────────────────────────────────────────────────
+
+impl<'a> Tv<'a> {
+    fn num(t: &str) -> Vt {
+        Vt::Num(static_num(t).unwrap_or("i32"))
+    }
+
+    /// A block signature: `(type $t)`, or inline `(param …)`/`(result …)`, or
+    /// nothing at all.
+    fn block_sig(&self, btypes: &[Pair<Rule>]) -> R<(Vec<Vt>, Vec<Vt>)> {
+        let mut params = Vec::new();
+        let mut results = Vec::new();
+        for b in btypes {
+            let text = b.as_str().trim();
+            let body = text.trim_start_matches('(').trim();
+            if let Some(rest) = body.strip_prefix("type") {
+                let name = rest.trim().trim_end_matches(')').trim();
+                let i = resolve_wast_index(name, &self.ctx.type_names).ok_or(Fail::Bail)?;
+                let sig = self.ctx.type_sigs.get(i).cloned().flatten().ok_or(Fail::Bail)?;
+                params.extend(sig.params);
+                results.extend(sig.results);
+            } else if body.starts_with("result") || body.starts_with("param") {
+                let is_param = body.starts_with("param");
+                for c in b.clone().into_inner() {
+                    if c.as_rule() == Rule::id {
+                        continue;
+                    }
+                    let v = parse_vt(c.as_str().trim(), &self.ctx.type_names)
+                        .ok_or(Fail::Bail)?;
+                    if is_param {
+                        params.push(v)
+                    } else {
+                        results.push(v)
+                    }
+                }
+            }
+        }
+        Ok((params, results))
+    }
+
+    /// The address type of the memory an access names — `i32`, or `i64` when
+    /// the memory was declared `i64`.
+    fn mem_addr(&self, imms: &[String]) -> R<Vt> {
+        let idx = imms
+            .iter()
+            .find(|s| !s.starts_with("offset=") && !s.starts_with("align="))
+            .and_then(|s| resolve_wast_index(s, &HashMap::new()))
+            .unwrap_or(0);
+        let t = self
+            .ctx
+            .mem_addr
+            .get(idx)
+            .or_else(|| self.ctx.mem_addr.first())
+            .ok_or(Fail::Bail)?;
+        Ok(Vt::Num(t))
+    }
+
+    fn table_of(&self, imms: &[String]) -> R<(usize, Vt, Vt)> {
+        let idx = imms
+            .first()
+            .and_then(|s| resolve_wast_index(s, &self.ctx.table_names))
+            .unwrap_or(0);
+        let elem = self.ctx.tables.get(idx).cloned().ok_or(Fail::Bail)?;
+        let addr = Vt::Num(self.ctx.table_addr.get(idx).copied().ok_or(Fail::Bail)?);
+        Ok((idx, elem, addr))
+    }
+
+    fn local_at(&self, s: &str) -> R<Vt> {
+        let s = s.trim();
+        let i = match s.strip_prefix('$') {
+            // ⛔ THE SAME TWO-CONVENTION SPLIT AS `resolve_wast_index`, AND
+            // HERE IT WAS SILENT. `func_locals` keys its map by the id WITH
+            // the `$` still attached; stripping before the lookup missed every
+            // NAMED local, so any function written with `(param $x …)` bailed
+            // and went completely unvalidated. It looked like conservatism —
+            // the bail reports nothing — which is exactly why nothing failed:
+            // 8 simd lane files asserted "type mismatch" against a pass that
+            // had quietly declined to type the function at all.
+            Some(bare) => *self
+                .local_names
+                .get(bare)
+                .or_else(|| self.local_names.get(s))
+                .ok_or(Fail::Bail)?,
+            None => s.parse().map_err(|_| Fail::Bail)?,
+        };
+        self.locals.get(i).cloned().ok_or(Fail::Bail)
+    }
+
+    fn is_ref(v: &Vt) -> bool {
+        matches!(v, Vt::Ref(_) | Vt::Bottom)
+    }
+
+    fn step(&mut self, ins: &FlatInstr, func_results: &[Vt]) -> R<()> {
+        // The walker's `@@` channels ride in the name; the mnemonic is what
+        // precedes the first one.
+        let head = ins.head.split("@@").next().unwrap_or(&ins.head).to_string();
+        let name = head.as_str();
+        let imms = &ins.imms;
+
+        match name {
+            "nop" => Ok(()),
+            "unreachable" => self.unreachable(),
+            "drop" => {
+                self.pop_val()?;
+                Ok(())
+            }
+            "select" => {
+                self.pop_expect(&Vt::Num("i32"))?;
+                if !ins.btypes.is_empty() {
+                    let (_, res) = self.block_sig(&ins.btypes)?;
+                    // ⛔ A TYPED `select` TAKES EXACTLY ONE RESULT, AND THE
+                    // SPEC GIVES THAT ITS OWN DIAGNOSTIC. `(select (result))`
+                    // and `(select (result i32 i32))` assert "invalid result
+                    // arity", not "type mismatch" — reporting the generic
+                    // message there fails the fixture even though the module
+                    // is correctly rejected.
+                    if res.len() != 1 {
+                        return Err(Fail::Mismatch("invalid result arity".to_string()));
+                    }
+                    let t = res.first().cloned().ok_or(Fail::Bail)?;
+                    self.pop_expect(&t)?;
+                    self.pop_expect(&t)?;
+                    self.push_val(t);
+                    return Ok(());
+                }
+                let t1 = self.pop_val()?;
+                let t2 = self.pop_val()?;
+                // ⛔ UNTYPED `select` IS NUMERIC/VECTOR ONLY. A reference
+                // operand needs the `(result t)` spelling, and the suite
+                // asserts exactly that.
+                if Self::is_ref(&t1) && !matches!(t1, Vt::Bottom) {
+                    return tmis();
+                }
+                if Self::is_ref(&t2) && !matches!(t2, Vt::Bottom) {
+                    return tmis();
+                }
+                let t = match (&t1, &t2) {
+                    (Vt::Bottom, x) | (x, Vt::Bottom) => x.clone(),
+                    (a, b) if a == b => a.clone(),
+                    _ => return tmis(),
+                };
+                self.push_val(t);
+                Ok(())
+            }
+
+            // ── control ──────────────────────────────────────────────────
+            "block" | "loop" => {
+                let (p, r) = self.block_sig(&ins.btypes)?;
+                self.pop_vals(&p)?;
+                let op = if name == "loop" { "loop" } else { "block" };
+                self.push_ctrl(op, ins.label.clone(), p, r);
+                Ok(())
+            }
+            "if" => {
+                let (p, r) = self.block_sig(&ins.btypes)?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_vals(&p)?;
+                self.push_ctrl("if", ins.label.clone(), p, r);
+                Ok(())
+            }
+            "else" => {
+                let f = self.pop_ctrl()?;
+                if f.op != "if" {
+                    return tmis();
+                }
+                self.push_ctrl("else", f.label.clone(), f.start, f.end);
+                Ok(())
+            }
+            "end" => {
+                let f = self.pop_ctrl()?;
+                // ⛔ AN `if` WITH NO `else` IS THE IDENTITY ON ITS PARAMETERS,
+                // so it is only well typed when they ARE its results. Without
+                // this an `(if (result i32) (then …))` types clean.
+                if f.op == "if" && f.start != f.end {
+                    return tmis_d(
+                        "if without else must have the same parameters and results".to_string(),
+                    );
+                }
+                self.push_vals(&f.end);
+                Ok(())
+            }
+            "br" => {
+                let l = self.label_index(imms.first().ok_or(Fail::Bail)?)?;
+                let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                self.pop_vals(&lt)?;
+                self.unreachable()
+            }
+            "br_if" => {
+                self.pop_expect(&Vt::Num("i32"))?;
+                let l = self.label_index(imms.first().ok_or(Fail::Bail)?)?;
+                let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                self.pop_vals(&lt)?;
+                self.push_vals(&lt);
+                Ok(())
+            }
+            "br_table" => {
+                self.pop_expect(&Vt::Num("i32"))?;
+                if imms.is_empty() {
+                    return Err(Fail::Bail);
+                }
+                // The last label is the default; every arm must agree with it.
+                let dl = self.label_index(imms.last().ok_or(Fail::Bail)?)?;
+                let dt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - dl]).to_vec();
+                for s in &imms[..imms.len() - 1] {
+                    let l = self.label_index(s)?;
+                    let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                    if lt.len() != dt.len() {
+                        return tmis();
+                    }
+                }
+                self.pop_vals(&dt)?;
+                self.unreachable()
+            }
+            "return" => {
+                let r = func_results.to_vec();
+                self.pop_vals(&r)?;
+                self.unreachable()
+            }
+
+            // ── calls ────────────────────────────────────────────────────
+            "call" | "return_call" => {
+                let i = resolve_wast_index(imms.first().ok_or(Fail::Bail)?, &self.ctx.func_names)
+                    .ok_or(Fail::Bail)?;
+                let sig = self.ctx.funcs.get(i).cloned().flatten().ok_or(Fail::Bail)?;
+                self.pop_vals(&sig.params)?;
+                if name == "return_call" {
+                    if sig.results != func_results {
+                        return tmis();
+                    }
+                    return self.unreachable();
+                }
+                self.push_vals(&sig.results);
+                Ok(())
+            }
+            "call_indirect" | "return_call_indirect" => {
+                let (p, r) = self.block_sig(&ins.btypes)?;
+                let (_, _, addr) = self.table_of(imms)?;
+                self.pop_expect(&addr)?;
+                self.pop_vals(&p)?;
+                if name == "return_call_indirect" {
+                    if r != func_results {
+                        return tmis();
+                    }
+                    return self.unreachable();
+                }
+                self.push_vals(&r);
+                Ok(())
+            }
+            "call_ref" | "return_call_ref" => {
+                let ti = resolve_wast_index(imms.first().ok_or(Fail::Bail)?, &self.ctx.type_names)
+                    .ok_or(Fail::Bail)?;
+                let sig = self.ctx.type_sigs.get(ti).cloned().flatten().ok_or(Fail::Bail)?;
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                }))?;
+                self.pop_vals(&sig.params)?;
+                if name == "return_call_ref" {
+                    if sig.results != func_results {
+                        return tmis();
+                    }
+                    return self.unreachable();
+                }
+                self.push_vals(&sig.results);
+                Ok(())
+            }
+
+            // ── variables ────────────────────────────────────────────────
+            "local.get" => {
+                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                self.push_val(t);
+                Ok(())
+            }
+            "local.set" => {
+                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                self.pop_expect(&t)?;
+                Ok(())
+            }
+            "local.tee" => {
+                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                self.pop_expect(&t)?;
+                self.push_val(t);
+                Ok(())
+            }
+            "global.get" | "global.set" => {
+                let i = resolve_wast_index(
+                    imms.first().ok_or(Fail::Bail)?,
+                    &self.ctx.global_names,
+                )
+                .ok_or(Fail::Bail)?;
+                let t = self.ctx.globals.get(i).cloned().ok_or(Fail::Bail)?;
+                if matches!(t, Vt::Bottom) {
+                    return Err(Fail::Bail);
+                }
+                if name == "global.get" {
+                    self.push_val(t);
+                } else {
+                    self.pop_expect(&t)?;
+                }
+                Ok(())
+            }
+
+            // ── references ───────────────────────────────────────────────
+            "ref.null" => {
+                let a = imms.first().ok_or(Fail::Bail)?;
+                let heap = match abs_heap(a) {
+                    Some(x) => Heap::Abs(x),
+                    None => Heap::Concrete(
+                        resolve_wast_index(a, &self.ctx.type_names).ok_or(Fail::Bail)?,
+                    ),
+                };
+                self.push_val(Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap,
+                }));
+                Ok(())
+            }
+            "ref.is_null" => {
+                let t = self.pop_val()?;
+                if !Self::is_ref(&t) {
+                    return tmis();
+                }
+                self.push_val(Vt::Num("i32"));
+                Ok(())
+            }
+            "ref.as_non_null" => {
+                let t = self.pop_val()?;
+                match t {
+                    Vt::Bottom => self.push_val(Vt::Bottom),
+                    Vt::Ref(r) => self.push_val(Vt::Ref(RefT {
+                        nullable: false,
+                        ..r
+                    })),
+                    _ => return tmis(),
+                }
+                Ok(())
+            }
+            "ref.func" => {
+                let f = resolve_wast_index(imms.first().ok_or(Fail::Bail)?, &self.ctx.func_names)
+                    .ok_or(Fail::Bail)?;
+                // Without the function's TYPE index this cannot be given the
+                // `(ref $t)` the spec assigns it, and approximating it as
+                // `(ref func)` would fail a perfectly good `(ref $t)` context.
+                let ti = self.ctx.func_types.get(f).copied().flatten().ok_or(Fail::Bail)?;
+                self.push_val(Vt::Ref(RefT {
+                    nullable: false,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                }));
+                Ok(())
+            }
+            "br_on_null" | "br_on_non_null" => {
+                let l = self.label_index(imms.first().ok_or(Fail::Bail)?)?;
+                let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                let t = self.pop_val()?;
+                let nn = match &t {
+                    Vt::Bottom => Vt::Bottom,
+                    Vt::Ref(r) => Vt::Ref(RefT {
+                        nullable: false,
+                        ..r.clone()
+                    }),
+                    _ => return tmis(),
+                };
+                if name == "br_on_null" {
+                    self.pop_vals(&lt)?;
+                    self.push_vals(&lt);
+                    self.push_val(nn);
+                } else {
+                    // Branches carrying the non-null reference; falls through
+                    // with it consumed.
+                    let mut want = lt.clone();
+                    if want.pop().is_none() {
+                        return tmis();
+                    }
+                    self.pop_vals(&want)?;
+                    self.push_vals(&want);
+                }
+                Ok(())
+            }
+
+            // ── memory ───────────────────────────────────────────────────
+            "memory.size" => {
+                let a = self.mem_addr(imms)?;
+                self.push_val(a);
+                Ok(())
+            }
+            "memory.grow" => {
+                let a = self.mem_addr(imms)?;
+                self.pop_expect(&a)?;
+                self.push_val(a);
+                Ok(())
+            }
+            "memory.fill" => {
+                let a = self.mem_addr(imms)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "memory.copy" => {
+                let a = self.mem_addr(imms)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "memory.init" => {
+                // ⛔ THE MEMIDX PEEL AGAIN. `memory.init $d` names a DATA
+                // segment; only the multi-memory spelling puts a memidx first,
+                // and guessing wrong silently types the address against
+                // ANOTHER memory's width. Memory 0 is the one form both
+                // spellings agree on.
+                let a = self.mem_addr(&[])?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "data.drop" | "elem.drop" => Ok(()),
+
+            // ── tables ───────────────────────────────────────────────────
+            "table.get" => {
+                let (_, e, a) = self.table_of(imms)?;
+                self.pop_expect(&a)?;
+                self.push_val(e);
+                Ok(())
+            }
+            "table.set" => {
+                let (_, e, a) = self.table_of(imms)?;
+                self.pop_expect(&e)?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "table.size" => {
+                let (_, _, a) = self.table_of(imms)?;
+                self.push_val(a);
+                Ok(())
+            }
+            "table.grow" => {
+                let (_, e, a) = self.table_of(imms)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&e)?;
+                self.push_val(a);
+                Ok(())
+            }
+            "table.fill" => {
+                let (_, e, a) = self.table_of(imms)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&e)?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "table.copy" => {
+                // Two tableidx immediates, in a position the peel cannot tell
+                // from one — table 0 is what both spellings share.
+                let (_, _, a) = self.table_of(&[])?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&a)?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+            "table.init" => {
+                let (_, _, a) = self.table_of(&[])?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&a)?;
+                Ok(())
+            }
+
+            _ => {
+                // v128 lane-indexed accesses carry the vector as an operand.
+                if let Some(rest) = name.strip_prefix("v128.load") {
+                    if rest.ends_with("_lane") {
+                        let a = self.mem_addr(imms)?;
+                        self.pop_expect(&Vt::Num("v128"))?;
+                        self.pop_expect(&a)?;
+                        self.push_val(Vt::Num("v128"));
+                        return Ok(());
+                    }
+                }
+                if let Some(rest) = name.strip_prefix("v128.store") {
+                    if rest.ends_with("_lane") {
+                        let a = self.mem_addr(imms)?;
+                        self.pop_expect(&Vt::Num("v128"))?;
+                        self.pop_expect(&a)?;
+                        return Ok(());
+                    }
+                }
+                if let Some((vt, is_store)) = mem_access_sig(name) {
+                    let a = self.mem_addr(imms)?;
+                    if is_store {
+                        self.pop_expect(&Self::num(vt))?;
+                        self.pop_expect(&a)?;
+                    } else {
+                        self.pop_expect(&a)?;
+                        self.push_val(Self::num(vt));
+                    }
+                    return Ok(());
+                }
+                if let Some((p, r)) = fixed_sig(name) {
+                    let ps: Vec<Vt> = p.iter().map(|t| Self::num(t)).collect();
+                    self.pop_vals(&ps)?;
+                    for t in r {
+                        self.push_val(Self::num(t));
+                    }
+                    return Ok(());
+                }
+                // ⛔ NEVER GUESS. An unmodelled mnemonic abandons the whole
+                // function — GC, exceptions, atomics and the string builtins
+                // all land here on purpose.
+                Err(Fail::Bail)
+            }
+        }
+    }
+}
+
+// ── The driver ───────────────────────────────────────────────────────────────
+
+/// Type every defined function in a module. `None` means nothing was proved —
+/// either the module types clean or some function could not be typed at all.
+fn module_stack_typing_reason(module: &Pair<Rule>) -> Option<String> {
+    let ctx = build_type_ctx(module);
+    for field in module_fields(module) {
+        if field.as_rule() != Rule::func_field {
+            continue;
+        }
+        // An imported function has no body to type.
+        if find_rule(&field, Rule::import_inline).is_some() {
+            continue;
+        }
+        if let Some(m) = type_one_func(&field, &ctx) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// A function's locals, params first — the one index space `local.get` reads.
+///
+/// ⛔ A `(type $t)`-ONLY FUNCTION STILL HAS PARAMETERS. `func_locals` reads the
+/// DECLARED `param`/`local` groups, so a body written against a type index has
+/// none of them and every `local.get` shifts by the parameter count — silently
+/// typing `local.get 0` as the first LOCAL. Prepend the signature's params and
+/// shift the name map with them.
+fn func_local_types(
+    f: &Pair<Rule>,
+    tu: &Pair<Rule>,
+    sig: &FnSig,
+    names: &HashMap<String, usize>,
+) -> Option<(Vec<Vt>, HashMap<String, usize>)> {
+    let has_inline_params = tu.clone().into_inner().any(|c| c.as_rule() == Rule::param);
+    let (declared, declared_names) = func_locals(f, names)?;
+    if has_inline_params {
+        return Some((declared, declared_names));
+    }
+    let off = sig.params.len();
+    let mut v = sig.params.clone();
+    v.extend(declared);
+    let shifted = declared_names.into_iter().map(|(k, i)| (k, i + off)).collect();
+    Some((v, shifted))
+}
+
+/// A NUMERIC `local.get`/`set`/`tee` index past the end of the function's
+/// locals.
+///
+/// ⛔ `name_resolution_walk` DECLINES THIS CASE ON PURPOSE — its own comment
+/// says a numeric local index "needs the param+local count, which the typeuse
+/// may state by reference to a type". That count exists now: the type context
+/// resolves a `typeuse` through both spellings AND the implicit types, so the
+/// check is answerable where it was not before. 19 fixtures assert it.
+///
+/// Reports NOTHING when the count cannot be established — the same bail as
+/// everywhere else, because inventing a bound would reject valid modules.
+fn module_unknown_local_reason(module: &Pair<Rule>) -> Option<String> {
+    let ctx = build_type_ctx(module);
+    for f in module_fields(module) {
+        if f.as_rule() != Rule::func_field || find_rule(&f, Rule::import_inline).is_some() {
+            continue;
+        }
+        let Some(tu) = find_rule(&f, Rule::typeuse) else { continue };
+        let Some((_, sig)) = sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, &ctx.type_names)
+        else {
+            continue;
+        };
+        let Some((locals, _)) = func_local_types(&f, &tu, &sig, &ctx.type_names) else {
+            continue;
+        };
+        if let Some(n) = first_out_of_range_local(&f, locals.len()) {
+            return Some(format!("unknown local {n}"));
+        }
+    }
+    None
+}
+
+fn first_out_of_range_local(p: &Pair<Rule>, count: usize) -> Option<u128> {
+    if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+        let head = instr_head_name(p).unwrap_or_default();
+        if matches!(head.as_str(), "local.get" | "local.set" | "local.tee") {
+            for c in p.clone().into_inner() {
+                if c.as_rule() != Rule::instr_arg {
+                    continue;
+                }
+                // A `$name` is another rule's business; only a written NUMBER
+                // is decidable from a count.
+                let t = c.as_str().trim();
+                if t.starts_with('$') {
+                    continue;
+                }
+                if let Some(v) = parse_wat_u128(t) {
+                    if v >= count as u128 {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+    for c in p.clone().into_inner() {
+        if let Some(v) = first_out_of_range_local(&c, count) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn type_one_func(f: &Pair<Rule>, ctx: &TypeCtx) -> Option<String> {
+    let names = &ctx.type_names;
+    let tu = find_rule(f, Rule::typeuse)?;
+    let (_, sig) = sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, names)?;
+
+    // ⛔ A `(type $t)`-ONLY FUNCTION STILL HAS PARAMETERS. `func_locals` reads
+    // the DECLARED param/local groups, so a body written against a type index
+    // has none of them and every `local.get` shifts by the parameter count —
+    // silently typing `local.get 0` as the first local. Prepend the signature's
+    // params and shift the name map with them.
+    let (locals, local_names) = func_local_types(f, &tu, &sig, names)?;
+
+    let body: Vec<Pair<Rule>> = f
+        .clone()
+        .into_inner()
+        .filter(|c| c.as_rule() == Rule::instr)
+        .collect();
+    let mut flat = Vec::new();
+    flatten_instrs(body, &mut flat)?;
+
+    let mut tv = Tv {
+        ctx,
+        vals: Vec::new(),
+        ctrls: Vec::new(),
+        locals,
+        local_names,
+    };
+    // The function body is itself a block returning the function's results.
+    tv.push_ctrl("func", None, Vec::new(), sig.results.clone());
+    for ins in &flat {
+        match tv.step(ins, &sig.results) {
+            Ok(()) => {}
+            Err(Fail::Mismatch(m)) => return Some(m),
+            Err(Fail::Bail) => return None,
+        }
+    }
+    // An unbalanced body is MALFORMED, not invalid — a different command's
+    // question, so it leaves here reporting nothing.
+    if tv.ctrls.len() != 1 {
+        return None;
+    }
+    match tv.pop_ctrl() {
+        Ok(_) => None,
+        Err(Fail::Mismatch(m)) => Some(m),
+        Err(Fail::Bail) => None,
+    }
+}
+
+/// Find the modules under a pair and type each. Used from the two places an
+/// `assert_invalid` module arrives — inline and `(module quote …)`.
+fn stack_typing_reason_in(pair: &Pair<Rule>) -> Option<String> {
+    if pair.as_rule() == Rule::module {
+        return module_stack_typing_reason(pair);
+    }
+    for c in pair.clone().into_inner() {
+        if let Some(r) = stack_typing_reason_in(&c) {
+            return Some(r);
+        }
+    }
+    None
 }

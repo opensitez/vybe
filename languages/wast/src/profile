@@ -77,6 +77,15 @@ log_f64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255
 # route that to the real host import (already registered in vybe_host).
 string_compare = { emit = "host:wasm:js-string:compare", min_args = 2, max_args = 2 }
 
+# `assert_trap` message checking needs substring containment on the caught
+# trap's `.message`. These three are the WASM 3.0 js-string-builtins the
+# runtime already registers (`js_string_builtins.rs`); the walker composes
+# them into a containment loop (`__wast_msg_contains`) rather than asking for
+# a new host function, which would be a runtime change.
+string_length    = { emit = "host:wasm:js-string:length",    min_args = 1, max_args = 1 }
+string_substring = { emit = "host:wasm:js-string:substring", min_args = 3, max_args = 3 }
+string_equals    = { emit = "host:wasm:js-string:equals",    min_args = 2, max_args = 2 }
+
 activeDocument   = { emit = "host:web:html:activeDocument",  min_args = 0, max_args = 0 }
 body             = { emit = "host:web:html:body",             min_args = 1, max_args = 1 }
 setTitle         = { emit = "host:web:html:setTitle",         min_args = 2, max_args = 2 }

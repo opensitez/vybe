@@ -21,7 +21,11 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ line_comment | block_comment | annotation }
 
-line_comment  = _{ ";;" ~ (!"\n" ~ ANY)* }
+// A line comment ends at EITHER line terminator. WAT counts CR and LF both,
+// so `;; comment\0d` (a bare CR, `comments.wast` f2) ENDS here — terminating
+// only on LF swallowed the `(return …)` on the next line and the function
+// silently returned its first value instead.
+line_comment  = _{ ";;" ~ (!("\n" | "\r") ~ ANY)* }
 // Nested block comments per the spec
 block_comment = _{ "(;" ~ (block_comment | (!";" ~ ANY) | (";" ~ !")"))* ~ ";)" }
 
@@ -614,11 +618,30 @@ module_definition_kw = { "definition" }
 module = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ (module_field | rec_group)* ~ ")" }
 
 // A recursion group `(rec (type …) …)` makes its type definitions mutually
-// recursive. That is a TYPE-IDENTITY property, not a structural one — the
-// members are ordinary module fields — so the rule is SILENT and splices its
-// members straight into the module, which is exactly how every consumer
-// (prescan and walk) already sees them.
-rec_group = _{ "(" ~ "rec" ~ module_field* ~ ")" }
+// recursive. The rule stays SILENT and splices its members straight into the
+// module, which is how every consumer (prescan and walk) already sees them —
+// `Rule::module_field` is matched at 17 one-level loops and a wrapper pair
+// would have to be flattened at every one.
+//
+// ⛔ THE BOUNDARY IS NO LONGER INVISIBLE, and the old comment's reasoning
+// ("a TYPE-IDENTITY property, not a structural one") stopped being true the
+// moment validation arrived. Rec-group MEMBERSHIP is what the custom-descriptor
+// rules turn on, and it alone decides which diagnostic is correct:
+//
+//   (type (descriptor 1) (struct))                       "descriptor type is outside rec group"
+//   (rec (type (descriptor 1) (struct)) (type (struct)))  "type is not described by its descriptor"
+//
+// Same types, same clauses, same indices — only the `rec` differs. So the
+// group's EXTENT is emitted as two zero-consumer marker pairs while its members
+// stay spliced. All 17 loops filter FOR `module_field`, so a new sibling rule
+// is ignored by every one of them.
+//
+// ⛔ `rec_end` matches the CLOSING PAREN rather than being zero-width: a
+// `{ "" }` rule is a question about what pest does with an empty match, and
+// there is no reason to ask it when the delimiter is right there.
+rec_group = _{ "(" ~ rec_begin ~ module_field* ~ rec_end }
+rec_begin = { "rec" }
+rec_end   = { ")" }
 
 // ── WAST Script Commands ──────────────────────────────────────────────────────
 
