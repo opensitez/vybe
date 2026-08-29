@@ -16,6 +16,7 @@ pub mod dispatch;
 pub mod math_adapter;
 pub mod math_runtime;
 pub mod mysql_adapter;
+pub mod object_fields;
 pub mod posix_adapter;
 pub mod regex_adapter;
 pub mod sdl;

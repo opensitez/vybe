@@ -9,11 +9,10 @@
 //! emits a direct call-by-name to it. This keeps the implementation in
 //! Rust bytecode (no JS polyfill) and in the proper emitter path.
 
-use std::sync::Arc;
 
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 
@@ -1122,10 +1121,15 @@ fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat
     c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     {
-        let exact_key = c.add_constant(Value::String(Arc::from("__c_exact_int")));
         let exact = c.emit_block(0);
         lg(c, ARG);
-        c.emit_struct_field_op(Op::STRUCT_GET, 0, exact_key, 0);
+        vybe_compiler::primitives::class_slots::emit_class_get(
+            c,
+            vybe_compiler::primitives::class_slots::ObjSource::Stack,
+            &super::object_fields::field_slot("__c_exact_int"),
+            vybe_compiler::primitives::class_slots::Dest::Stack,
+            0,
+        );
         ls(c, RAW);
         lg(c, RAW);
         c.emit_op(Op::REF_IS_NULL, 0);

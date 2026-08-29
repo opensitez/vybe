@@ -13,9 +13,39 @@
 //! per spec §10.1, or throw if `fatal: true`.
 
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
 use vybe_runtime::{HostContext, VM, Value};
+
+// ── Encoding Standard prototypes ──────────────────────────────────────
+//
+// Same defect as `URL`: no constructor object, so `te instanceof TextEncoder`
+// had nothing to walk and fell through to a `__type` string in the ECMA host.
+// Encoding Standard §7.1 / §8.1.
+
+static TEXT_ENCODER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static TEXT_DECODER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static str) -> Value {
+    let proto = cell.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+        vybe_runtime::heap::alloc(obj)
+    });
+    Value::Object(proto.clone())
+}
+
+/// %TextEncoder.prototype% — Encoding Standard §7.1.
+pub fn shared_text_encoder_prototype() -> Value {
+    named_prototype(&TEXT_ENCODER_PROTOTYPE, "TextEncoder")
+}
+
+/// %TextDecoder.prototype% — Encoding Standard §8.1.
+pub fn shared_text_decoder_prototype() -> Value {
+    named_prototype(&TEXT_DECODER_PROTOTYPE, "TextDecoder")
+}
+
 
 fn make_uint8_array(bytes: Vec<u8>) -> Value {
     let array = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, bytes.len());
@@ -137,6 +167,8 @@ pub fn register(vm: &mut VM) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("TextEncoder")));
             obj.properties
+                .insert("__proto__".into(), shared_text_encoder_prototype());
+            obj.properties
                 .insert("encoding".into(), Value::String(Arc::from("utf-8")));
             Value::Object(vybe_runtime::heap::alloc(obj))
         }),
@@ -208,6 +240,8 @@ pub fn register(vm: &mut VM) {
             let mut obj = Object::new();
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("TextDecoder")));
+            obj.properties
+                .insert("__proto__".into(), shared_text_decoder_prototype());
             obj.properties.insert(
                 "encoding".into(),
                 Value::String(Arc::from(if label.is_empty() {

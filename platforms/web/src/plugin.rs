@@ -2,6 +2,8 @@
 //! the others. `init` registers the `web:*` host functions (WHATWG / W3C:
 //! crypto, URL, TextEncoder, fetch, dom-parser). Always-on (pure computation).
 
+use vybe_runtime::Value;
+
 /// The web platform plugin.
 pub struct Plugin;
 
@@ -30,6 +32,67 @@ impl vybe_runtime::Plugin for Plugin {
         // stamping — registered via the `register_type` primitive after every
         // plugin's host fns exist.
         crate::builtin_types::register_types(fw);
+
+        // ── WHATWG constructor ↔ prototype wiring ──────────────────────
+        //
+        // `URL`, `URLSearchParams`, `TextEncoder` and `TextDecoder` are
+        // CONSTRUCTORS, and a constructor is a function with a `prototype` its
+        // instances link to. They had neither: the bare name resolved to a
+        // namespace placeholder (`typeof URL === "object"`), so
+        // `u instanceof URL` had nothing to walk and was answered by a `__type`
+        // string compare inside the ECMA host — a vybe stamp deciding identity,
+        // which is exactly what the ECMA host is not allowed to do.
+        //
+        // `__ctor_<Name>` is the anchor the compiler resolves a bare read
+        // through. ⛔ A name published here MUST also appear in the compiler's
+        // `is_js_builtin_ctor_value`, or the bare read resolves to the
+        // placeholder again.
+        if let Some(vm) = fw.vm.as_deref_mut() {
+            for (name, module, ctor_fn, proto) in [
+                ("URL", "web:url", "new", crate::url::shared_url_prototype()),
+                (
+                    "URLSearchParams",
+                    "web:url",
+                    "searchParamsNew",
+                    crate::url::shared_url_search_params_prototype(),
+                ),
+                (
+                    "TextEncoder",
+                    "web:encoding",
+                    "encoderNew",
+                    crate::encoding::shared_text_encoder_prototype(),
+                ),
+                (
+                    "TextDecoder",
+                    "web:encoding",
+                    "decoderNew",
+                    crate::encoding::shared_text_decoder_prototype(),
+                ),
+            ] {
+                let Some(&idx) = vm
+                    .host_registry
+                    .get(&(module.to_string(), ctor_fn.to_string()))
+                else {
+                    continue;
+                };
+                let mut ctor = vybe_runtime::value::Object::new();
+                ctor.kind = vybe_runtime::value::ObjectKind::HostFunction(idx);
+                ctor.properties.insert(
+                    "name".into(),
+                    Value::String(std::sync::Arc::from(name)),
+                );
+                ctor.properties.insert("prototype".into(), proto.clone());
+                let ctor = Value::Object(vybe_runtime::heap::alloc(ctor));
+                if let Value::Object(p) = &proto {
+                    p.lock()
+                        .unwrap()
+                        .properties
+                        .insert("constructor".into(), ctor.clone());
+                }
+                vm.set_global_owned(name.to_string(), ctor.clone());
+                vm.set_global_owned(format!("__ctor_{name}"), ctor);
+            }
+        }
 
         // `document` — a property of the global object, which is where a
         // browser puts it (HTML §7.3: `window.document`). Guest code says

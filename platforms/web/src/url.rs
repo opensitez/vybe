@@ -5,6 +5,41 @@ use url::{Origin, Url};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
+// ── WHATWG URL prototypes ─────────────────────────────────────────────
+//
+// `URL` / `URLSearchParams` had no constructor object at all — the bare name
+// resolved to a namespace placeholder (`typeof URL === "object"`, no `name`,
+// no `prototype`) and `new URL(...)` worked only through the compiler's
+// known-types path. `u instanceof URL` therefore had nothing to walk and was
+// answered by a `__type` string inside the ECMA host. These singletons are the
+// object the constructor exposes AND the object instances link to.
+//
+// Primed implicitly on first use; wired in `plugin::finalize`.
+
+static URL_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static URL_SEARCH_PARAMS_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static str) -> Value {
+    let proto = cell.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+        vybe_runtime::heap::alloc(obj)
+    });
+    Value::Object(proto.clone())
+}
+
+/// %URL.prototype% — WHATWG URL §6.1.
+pub fn shared_url_prototype() -> Value {
+    named_prototype(&URL_PROTOTYPE, "URL")
+}
+
+/// %URLSearchParams.prototype% — WHATWG URL §6.2.
+pub fn shared_url_search_params_prototype() -> Value {
+    named_prototype(&URL_SEARCH_PARAMS_PROTOTYPE, "URLSearchParams")
+}
+
+
 const MODULE: &str = "web:url";
 
 #[derive(Clone, Copy)]
@@ -249,6 +284,8 @@ fn make_search_params_object(
     let fns = host_fns();
     let mut obj = Object::new();
     obj.properties
+        .insert("__proto__".into(), shared_url_search_params_prototype());
+    obj.properties
         .insert("__type".into(), str_value("URLSearchParams"));
     obj.properties
         .insert("get".into(), receiver_fn("searchParamsGet", fns.params_get));
@@ -385,6 +422,8 @@ fn sync_url_object(obj: &Arc<Mutex<Object>>, url: &Url) {
 
     {
         let mut lock = obj.lock().unwrap();
+        lock.properties
+            .insert("__proto__".into(), shared_url_prototype());
         lock.properties.insert("__type".into(), str_value("URL"));
         lock.properties
             .insert("href".into(), str_value(url.to_string()));

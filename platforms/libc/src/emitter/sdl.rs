@@ -1,7 +1,5 @@
-use std::sync::Arc;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::value::Value;
 
 use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
 
@@ -123,9 +121,25 @@ fn emit_web_events_call(chunks: &mut [Chunk], current: usize, func: &str, argc: 
 
 /// Read `obj.<field>` from the DOM event object in `slot`.
 fn emit_dom_field(chunks: &mut [Chunk], current: usize, slot: u16, field: &str, line: u32) {
-    emit_get_local(chunks, current, slot, line);
-    let key = chunks[current].add_constant(Value::String(Arc::from(field)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(slot),
+        &super::object_fields::field_slot(field),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
+}
+
+/// `<obj already on the stack>.<field>` — the CHAINED read
+/// (`ev.key.keysym.sym`), where each step consumes the previous result.
+fn emit_stack_field(chunks: &mut [Chunk], current: usize, field: &str, line: u32) {
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Stack,
+        &super::object_fields::field_slot(field),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
 }
 
 /// `target.<field> = <value on stack>`.
@@ -138,12 +152,15 @@ fn emit_store_field(
     line: u32,
 ) {
     emit_set_local(chunks, current, tmp, line);
-    emit_get_local(chunks, current, target, line);
-    emit_get_local(chunks, current, tmp, line);
-    let key = chunks[current].add_constant(Value::String(Arc::from(field)));
     // The NAME-KEYED `struct.set` (typeidx 0) pushes the value back — unlike
     // the spec's indexed form, which yields nothing. Hence the DROP.
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(target),
+        &super::object_fields::field_slot(field),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(tmp),
+        line,
+    );
 }
 
 /// `1` when the DOM event's `type` equals `kind`, else `0`.
@@ -161,14 +178,12 @@ fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, l
 /// undefined, which arrives as zero in every field.
 fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_get_local(chunks, current, slot, line);
-    let kind_key = chunks[current].add_constant(Value::String(Arc::from("__ref_kind")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
+    emit_stack_field(chunks, current, "__ref_kind", line);
     chunks[current].emit_string_const("cell", line);
     chunks[current].emit_op(Op::EQ, line);
     chunks[current].emit_if_value(line);
     emit_get_local(chunks, current, slot, line);
-    let val_key = chunks[current].add_constant(Value::String(Arc::from("__value")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, val_key, line);
+    emit_stack_field(chunks, current, "__value", line);
     chunks[current].emit_else(line);
     emit_get_local(chunks, current, slot, line);
     chunks[current].emit_end(line);
@@ -244,8 +259,7 @@ fn emit_load_f64_from_struct(
     line: u32,
 ) {
     emit_get_local(chunks, current, ptr_slot, line);
-    let field_key = chunks[current].add_constant(Value::String(Arc::from(field)));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
+    emit_stack_field(chunks, current, field, line);
 }
 
 fn emit_cstring_to_text(
@@ -772,12 +786,10 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // key.keysym.{sym,scancode,mod} — DOM keyCode IS the SDL keysym for the
     // printable range, which is how the winit layer fills it.
     emit_get_local(chunks, current, ptr, line);
-    let key_field = chunks[current].add_constant(Value::String(Arc::from("key")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_field, line);
+    emit_stack_field(chunks, current, "key", line);
     emit_set_local(chunks, current, key, line);
     emit_get_local(chunks, current, key, line);
-    let keysym_field = chunks[current].add_constant(Value::String(Arc::from("keysym")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_field, line);
+    emit_stack_field(chunks, current, "keysym", line);
     emit_set_local(chunks, current, keysym, line);
 
     // DOM `keyCode` is the legacy UPPERCASE identity (A = 65); an SDL keysym
@@ -856,8 +868,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
     // button.{button,x,y} — DOM button is 0-based, SDL 1-based.
     emit_get_local(chunks, current, ptr, line);
-    let btn_field = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_field, line);
+    emit_stack_field(chunks, current, "button", line);
     emit_set_local(chunks, current, btn, line);
     emit_dom_field(chunks, current, ev, "button", line);
     chunks[current].emit_f64_const(1.0, line);
@@ -870,8 +881,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
     // motion.{x,y}
     emit_get_local(chunks, current, ptr, line);
-    let motion_field = chunks[current].add_constant(Value::String(Arc::from("motion")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, motion_field, line);
+    emit_stack_field(chunks, current, "motion", line);
     emit_set_local(chunks, current, motion, line);
     emit_dom_field(chunks, current, ev, "clientX", line);
     emit_store_field(chunks, current, motion, "x", store_tmp, line);
@@ -880,8 +890,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
     // wheel.y — DOM deltaY is positive DOWN, SDL wheel y positive UP.
     emit_get_local(chunks, current, ptr, line);
-    let wheel_field = chunks[current].add_constant(Value::String(Arc::from("wheel")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, wheel_field, line);
+    emit_stack_field(chunks, current, "wheel", line);
     emit_set_local(chunks, current, wheel, line);
     chunks[current].emit_f64_const(0.0, line);
     emit_dom_field(chunks, current, ev, "deltaY", line);
@@ -905,8 +914,7 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
     // The SDL type decides the DOM `type` string.
     emit_get_local(chunks, current, ptr, line);
-    let type_key = chunks[current].add_constant(Value::String(Arc::from("type")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    emit_stack_field(chunks, current, "type", line);
     emit_set_local(chunks, current, ty, line);
 
     emit_get_local(chunks, current, ty, line);
@@ -947,12 +955,9 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // the poll side derive both `sym` AND the USB-HID `scancode` back.
     let sym_v = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
-    let key_key = chunks[current].add_constant(Value::String(Arc::from("key")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_key, line);
-    let keysym_key = chunks[current].add_constant(Value::String(Arc::from("keysym")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_key, line);
-    let sym_key = chunks[current].add_constant(Value::String(Arc::from("sym")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, sym_key, line);
+    emit_stack_field(chunks, current, "key", line);
+    emit_stack_field(chunks, current, "keysym", line);
+    emit_stack_field(chunks, current, "sym", line);
     emit_set_local(chunks, current, sym_v, line);
 
     emit_get_local(chunks, current, sym_v, line);
@@ -980,12 +985,9 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // function. `bit = m - 2*floor(m/2)` needs no coercion at all.
     let mods = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
-    let key_key2 = chunks[current].add_constant(Value::String(Arc::from("key")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_key2, line);
-    let keysym_key2 = chunks[current].add_constant(Value::String(Arc::from("keysym")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_key2, line);
-    let mod_key = chunks[current].add_constant(Value::String(Arc::from("mod")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, mod_key, line);
+    emit_stack_field(chunks, current, "key", line);
+    emit_stack_field(chunks, current, "keysym", line);
+    emit_stack_field(chunks, current, "mod", line);
     emit_set_local(chunks, current, mods, line);
 
     for (mask, field) in [(1i32, "shiftKey"), (0x40, "ctrlKey"), (0x100, "altKey")] {
@@ -1003,10 +1005,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     }
 
     emit_get_local(chunks, current, ptr, line);
-    let btn_key = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key, line);
-    let bb_key = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bb_key, line);
+    emit_stack_field(chunks, current, "button", line);
+    emit_stack_field(chunks, current, "button", line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_SUB, line);
     emit_store_field(chunks, current, dom, "button", store_tmp, line);
@@ -1015,10 +1015,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // 4 middle — a different assignment from SDL's, resolved here.
     let sdl_btn = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
-    let btn_k = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_k, line);
-    let bb_k = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bb_k, line);
+    emit_stack_field(chunks, current, "button", line);
+    emit_stack_field(chunks, current, "button", line);
     emit_set_local(chunks, current, sdl_btn, line);
     emit_get_local(chunks, current, sdl_btn, line);
     chunks[current].emit_f64_const(1.0, line);
@@ -1045,17 +1043,13 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_store_field(chunks, current, dom, "buttons", store_tmp, line);
 
     emit_get_local(chunks, current, ptr, line);
-    let btn_key2 = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key2, line);
-    let bx_key = chunks[current].add_constant(Value::String(Arc::from("x")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bx_key, line);
+    emit_stack_field(chunks, current, "button", line);
+    emit_stack_field(chunks, current, "x", line);
     emit_store_field(chunks, current, dom, "clientX", store_tmp, line);
 
     emit_get_local(chunks, current, ptr, line);
-    let btn_key3 = chunks[current].add_constant(Value::String(Arc::from("button")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key3, line);
-    let by_key = chunks[current].add_constant(Value::String(Arc::from("y")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, by_key, line);
+    emit_stack_field(chunks, current, "button", line);
+    emit_stack_field(chunks, current, "y", line);
     emit_store_field(chunks, current, dom, "clientY", store_tmp, line);
 
     emit_get_local(chunks, current, dom, line);

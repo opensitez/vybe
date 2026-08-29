@@ -29,6 +29,38 @@ use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 
+/// The effective timeout for a scheduled task, in milliseconds.
+///
+/// A timeout BELOW 1ms is raised to 1, which is the one place this surface
+/// follows node rather than HTML §8.6 (whose step 3 only says "if timeout is
+/// less than 0, set it to 0"). It is not a fudge — it decides ORDER:
+///
+///     setTimeout(a, 1);   // registered first
+///     setTimeout(b, 0);   // registered second
+///
+/// Unclamped, `b` is due a millisecond earlier and runs FIRST. Under node both
+/// land on the same 1ms deadline, so the queue's registration order decides and
+/// `a` runs first — and `a` first is what the corpus expects, because the
+/// corpus is authored against node and verified by running it there
+/// (`js/ecma/test_set_timeout_async`, measured 2026-08-28: node prints
+/// `check:[timer ]`, vybe printed `check:[]`).
+///
+/// It matters far past that one test: the js harness defers EVERY assertion
+/// through `__checkLater`, a `setTimeout(..., 0)` registered last, and the
+/// whole collect-then-compare design rests on it running after the timers the
+/// test itself scheduled.
+///
+/// The upper half of node's rule (a delay above `i32::MAX` also becomes 1) is
+/// deliberately NOT copied: it exists because node stores the delay in a signed
+/// 32-bit field, which is an implementation limit rather than an observable,
+/// and nothing here has that field.
+fn clamp_timeout(delay: Option<f64>) -> f64 {
+    match delay {
+        Some(ms) if ms >= 1.0 => ms,
+        _ => 1.0,
+    }
+}
+
 /// Declare a `web:timers` function. No resource: a timer id is a plain integer
 /// the guest holds, not a handle the host owns.
 fn timer_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
@@ -195,7 +227,7 @@ pub fn register(vm: &mut VM) {
         "setTimeout",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let handler = args.first().cloned().unwrap_or(Value::Undefined);
-            let delay_ms = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+            let delay_ms = clamp_timeout(args.get(1).map(|v| v.as_f64()));
             Value::F64(t.set(handler, delay_ms, false) as f64)
         }),
     );
@@ -230,7 +262,7 @@ pub fn register(vm: &mut VM) {
         "setInterval",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let handler = args.first().cloned().unwrap_or(Value::Undefined);
-            let delay_ms = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+            let delay_ms = clamp_timeout(args.get(1).map(|v| v.as_f64()));
             Value::F64(t.set(handler, delay_ms, true) as f64)
         }),
     );
