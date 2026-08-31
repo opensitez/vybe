@@ -44,21 +44,21 @@ static PRESERVE_IDX: OnceLock<usize> = OnceLock::new();
 pub fn register(vm: &mut VM) {
     // Internal settle helpers — never called directly from user code.
     // Signature: bound-args=[promise], runtime-arg=value.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__settle_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let promise = ctx.capture(args, 0);
             let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[promise, value], "fulfilled");
             Value::Undefined
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__settle_rejected",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let promise = ctx.capture(args, 0);
             let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[promise, reason], "rejected");
             Value::Undefined
@@ -68,12 +68,12 @@ pub fn register(vm: &mut VM) {
     // Promise.all element resolver. bound-args=[aggregate, index],
     // runtime-arg=value. Stores the value at its slot and settles the
     // aggregate once every element has fulfilled.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__all_element",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let aggregate = ctx.capture(args, 0);
+            let index = ctx.capture(args, 1).as_f64() as usize;
             let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete = aggregate_record_element(&aggregate, index, value);
             if let Some(results) = complete {
@@ -85,12 +85,12 @@ pub fn register(vm: &mut VM) {
     // Promise.allSettled element handlers. bound-args=[aggregate, index],
     // runtime-arg=value/reason. Store the descriptor and fulfill the aggregate
     // after every input has settled.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__allsettled_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let aggregate = ctx.capture(args, 0);
+            let index = ctx.capture(args, 1).as_f64() as usize;
             let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("fulfilled", value));
@@ -100,12 +100,12 @@ pub fn register(vm: &mut VM) {
             Value::Undefined
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__allsettled_rejected",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let aggregate = ctx.capture(args, 0);
+            let index = ctx.capture(args, 1).as_f64() as usize;
             let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("rejected", reason));
@@ -117,11 +117,11 @@ pub fn register(vm: &mut VM) {
     );
     // Aggregate rejecter (Promise.all / Promise.race short-circuit).
     // bound-args=[aggregate], runtime-arg=reason.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__aggregate_reject",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
+            let aggregate = ctx.capture(args, 0);
             let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, reason], "rejected");
             Value::Undefined
@@ -130,22 +130,22 @@ pub fn register(vm: &mut VM) {
     // Promise.any fulfillment/rejection handlers. Fulfillment short-circuits;
     // rejection records the reason and rejects with AggregateError once every
     // input has rejected.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__any_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
+            let aggregate = ctx.capture(args, 0);
             let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, value], "fulfilled");
             Value::Undefined
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__any_rejected",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let aggregate = args.first().cloned().unwrap_or(Value::Undefined);
-            let index = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
+            let aggregate = ctx.capture(args, 0);
+            let index = ctx.capture(args, 1).as_f64() as usize;
             let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
             if let Some(error) = any_record_rejection(ctx, &aggregate, index, reason) {
                 settle_and_drain(ctx, &[aggregate, error], "rejected");
@@ -153,17 +153,14 @@ pub fn register(vm: &mut VM) {
             Value::Undefined
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__reaction",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let result_promise = args.first().cloned().unwrap_or(Value::Undefined);
-            let state = args
-                .get(1)
-                .map(|v| format!("{}", v))
-                .unwrap_or_else(|| "fulfilled".to_string());
-            let on_fulfilled = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let on_rejected = args.get(3).cloned().unwrap_or(Value::Undefined);
+            let result_promise = ctx.capture(args, 0);
+            let state = format!("{}", ctx.capture(args, 1));
+            let on_fulfilled = ctx.capture(args, 2);
+            let on_rejected = ctx.capture(args, 3);
             let value = ctx.user_args(args, 4).first().cloned().unwrap_or(Value::Undefined);
             run_reaction(
                 ctx,
@@ -195,11 +192,11 @@ pub fn register(vm: &mut VM) {
     // §27.2.1.3.2 Promise Resolve Function. bound-args=[promise],
     // runtime-arg=resolution. Resolves THROUGH promises/thenables (adopt
     // eventual state / queue a thenable job) instead of settling raw.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__resolve",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let promise = ctx.capture(args, 0);
             let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
             resolve_promise_with_value(ctx, &promise, value);
             Value::Undefined
@@ -209,13 +206,13 @@ pub fn register(vm: &mut VM) {
     // §27.2.2.2 NewPromiseResolveThenableJob. bound-args=[promise,
     // thenable, then_fn]. Calls then_fn with this=thenable and the
     // promise's (resolve, reject) functions; a throw rejects.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__thenable_job",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let promise = args.first().cloned().unwrap_or(Value::Undefined);
-            let thenable = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let then_fn = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let promise = ctx.capture(args, 0);
+            let thenable = ctx.capture(args, 1);
+            let then_fn = ctx.capture(args, 2);
             let res = RESOLVE_IDX
                 .get()
                 .map(|&i| bound_settler(i, promise.clone()))
@@ -237,16 +234,13 @@ pub fn register(vm: &mut VM) {
 
     // Force-settle a promise with a bound (state, value), ignoring the runtime
     // (awaited) value. bound-args = [promise, state, forced_value].
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:promise",
         "__preserve",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let promise = args.first().cloned().unwrap_or(Value::Undefined);
-            let state = args
-                .get(1)
-                .map(|v| format!("{}", v))
-                .unwrap_or_else(|| "fulfilled".to_string());
-            let forced = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let promise = ctx.capture(args, 0);
+            let state = format!("{}", ctx.capture(args, 1));
+            let forced = ctx.capture(args, 2);
             mutate_promise_state(ctx, &promise, &state, forced);
             Value::Undefined
         }),

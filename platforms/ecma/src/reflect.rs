@@ -219,11 +219,16 @@ fn reflect_set(
                 // Accessor convention: arity-1 setters take (value) with
                 // ambient `this`; arity-2 setters take (receiver, value).
                 let st = Value::Object(s_obj);
-                if arity >= 2 {
-                    invoke_with_explicit_this(ctx, &st, receiver.clone(), &[receiver, val]);
-                } else {
-                    invoke_with_explicit_this(ctx, &st, receiver, &[val]);
-                }
+                // ⛔ ONE RECEIVER, PASSED ONCE. The arity guess below was
+                // reading a receiver-first setter as `(receiver, value)` and
+                // passing both — but under `ReceiverAbi::Parameter` the invoke
+                // ALSO supplies the receiver, so the setter got it twice:
+                // `this` took the supplied one and the value parameter took the
+                // receiver. Measured: `Reflect.set(t,"v",5)` wrote `[object]`.
+                // `invoke_with_receiver` is correct under BOTH bindings, so the
+                // arity question disappears rather than being answered.
+                let _ = arity;
+                ctx.invoke_with_receiver(&st, receiver, &[val]);
                 return Value::Bool(true);
             }
             // noop setter (HostFunction) = non-writable data property
@@ -322,10 +327,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.apply(target, thisArg, argsList) → result
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "apply",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             // §28.1.1 step 1: IsCallable(target) — plain objects throw.
             let callable = matches!(
@@ -373,10 +387,19 @@ pub fn register(vm: &mut VM) {
     // §28.1.2 routes through target.[[Construct]]; for proxy exotic
     // objects that is the construct trap (§10.5.13), so delegate to the
     // shared dispatch in ecma::proxy.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "construct",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let args_list = args.get(1).cloned().unwrap_or_else(|| {
                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
@@ -387,10 +410,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.get(target, key, receiver?) → value
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "get",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let key = args.get(1).map(property_key).unwrap_or_default();
             let receiver = args.get(2).cloned().unwrap_or_else(|| target.clone());
@@ -399,10 +431,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.set(target, key, value, receiver?) → bool (always true here)
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "set",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let key = args.get(1).map(property_key).unwrap_or_default();
             let val = args.get(2).cloned().unwrap_or(Value::Undefined);
@@ -433,10 +474,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.has(target, key) → bool. Mirrors `key in target` (own + proto).
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "has",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             if let Some(Value::Object(obj)) = args.first() {
                 // §28.1.8 on a proxy routes through the has trap (§10.5.7).
@@ -482,10 +532,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.deleteProperty(target, key) → bool
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "deleteProperty",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             if let Some(Value::Object(obj)) = args.first() {
                 // §28.1.4 on a proxy: deleteProperty trap, else the target.
@@ -528,10 +587,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.ownKeys(target) → Array of string keys.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "ownKeys",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             // §28.1.10 routes through [[OwnPropertyKeys]] — proxies get
             // their ownKeys trap (or the target's keys when trapless).
             if let Some(v) = args.first() {
@@ -600,10 +668,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.defineProperty(target, key, attrs) → bool
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "defineProperty",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             // §28.1.3 step 1: target must be an Object.
             if !matches!(args.first(), Some(Value::Object(_))) {
                 return throw_type_error(ctx, "Reflect.defineProperty called on non-object");
@@ -660,10 +737,19 @@ pub fn register(vm: &mut VM) {
     // Reflect.getPrototypeOf(target) → Object | null
     //
     // Vybe stores the prototype under `__proto__`; missing → null.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "getPrototypeOf",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             // §28.1.7 step 1: unlike Object.getPrototypeOf, a non-object
             // target is a TypeError here — Reflect does not coerce.
             let Some(value @ Value::Object(_)) = args.first() else {
@@ -679,10 +765,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.setPrototypeOf(target, proto) → bool
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "setPrototypeOf",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             // §28.1.14 steps 1-2: non-object target, or a prototype that is
             // neither object nor null, is a TypeError.
             let Some(value @ Value::Object(_)) = args.first() else {
@@ -712,10 +807,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.isExtensible(target) → bool.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "isExtensible",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let Some(value) = args.first() else {
                 return throw_type_error(ctx, "Reflect.isExtensible called on non-object");
             };
@@ -761,10 +865,19 @@ pub fn register(vm: &mut VM) {
     );
 
     // Reflect.preventExtensions(target) → bool
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:reflect",
         "preventExtensions",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Every `ecma:reflect` entry is reached as a METHOD
+            // (`Reflect.set(...)`), so under `ReceiverAbi::Parameter`
+            // argument 0 is the receiver. Shadowing `args` once here
+            // keeps every positional read below correct under both
+            // bindings — `user_args` skips nothing when there is no
+            // receiver slot. Reading at fixed indices made
+            // `Reflect.set(t,"v",5)` pass the Reflect object as the
+            // target and the target as the value.
+            let args = &ctx.user_args(args, 0).to_vec()[..];
             let Some(value) = args.first() else {
                 return throw_type_error(ctx, "Reflect.preventExtensions called on non-object");
             };

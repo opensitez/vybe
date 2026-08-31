@@ -246,7 +246,22 @@ pub fn register(vm: &mut VM) {
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            let user_args: &[Value] = if args.len() > 2 { &args[2..] } else { &[] };
+            // §7.3.14 `Call(F, V, argumentsList)` — argument 2 is the LIST,
+            // not the first of N. Reading `&args[2..]` is what made this
+            // import variadic and therefore untypeable as a WASM import.
+            // A flat tail is still accepted so nothing half-migrated breaks.
+            let listed: Option<Vec<Value>> = match args.get(2) {
+                Some(Value::Object(o)) => match &o.lock().unwrap().kind {
+                    ObjectKind::Array(a) => Some(a.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let user_args: &[Value] = match &listed {
+                Some(list) => list.as_slice(),
+                None if args.len() > 2 => &args[2..],
+                None => &[],
+            };
             dispatch(ctx, &receiver, &method, user_args)
         }),
     );
@@ -1390,7 +1405,15 @@ fn dispatch_array(
             if let ObjectKind::Array(ref v) = o.kind {
                 let len = v.len() as i32;
                 let start = args.first().map(|a| a.as_i32()).unwrap_or(0);
-                let end = args.get(1).map(|a| a.as_i32()).unwrap_or(len);
+                // §23.1.3.27 step 5: "If end is undefined, let relativeEnd
+                // be len". `as_i32()` gave an explicit `undefined` 0, so it
+                // truncated to empty while an OMITTED end returned everything.
+                // They cannot be allowed to differ: a WASM import has ONE
+                // arity, so the call site pads and never truly omits.
+                let end = match args.get(1) {
+                    None | Some(Value::Undefined) => len,
+                    Some(a) => a.as_i32(),
+                };
                 let s = (if start < 0 { len + start } else { start })
                     .max(0)
                     .min(len) as usize;
@@ -1429,7 +1452,12 @@ fn dispatch_array(
         "copyWithin" => {
             let target = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.4 step 8: "If end is undefined, let relativeEnd be
+            // len". Same padding argument as `slice` above.
+            let end = match args.get(2) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
             let mut o = obj.lock().unwrap();
             if let ObjectKind::Array(ref mut v) = o.kind {
                 let len = v.len() as i32;
@@ -1591,7 +1619,12 @@ fn dispatch_array(
             if let ObjectKind::Array(ref mut v) = o.kind {
                 let len = v.len() as i32;
                 let start = args.get(1).map(|a| a.as_i32()).unwrap_or(0);
-                let end = args.get(2).map(|a| a.as_i32()).unwrap_or(len);
+                // §23.1.3.7 step 7: "If end is undefined, let relativeEnd
+                // be len". Same padding argument as `slice` above.
+                let end = match args.get(2) {
+                    None | Some(Value::Undefined) => len,
+                    Some(a) => a.as_i32(),
+                };
                 let s = (if start < 0 { len + start } else { start })
                     .max(0)
                     .min(len) as usize;

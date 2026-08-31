@@ -43,10 +43,21 @@ pub fn shared_function_prototype() -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:function",
         "invokeBound",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ Captures start AFTER the receiver slot. The VM places a host
+            // callee's receiver FIRST, ahead of the bound captures, precisely
+            // because this wrapper's capture count varies
+            // (`[target, this, proto, ...partials]`) and a receiver appended
+            // after them could not be located at all.
+            // ⛔ THE CAPTURES START AT 0. §20.2.3.2: a bound function
+            // IGNORES the thisArg of a later call — it already closed over
+            // one — so its type declares no receiver
+            // (`register_free_fn`), no slot is filled for it, and there is
+            // no offset to compute. This used to read `receiver_argc()`,
+            // asking the CALL a question only the callee's type can answer.
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let bound_this = args.get(1).cloned().unwrap_or(Value::Undefined);
             let target_proto = args.get(2).cloned().unwrap_or(Value::Undefined);
@@ -54,7 +65,21 @@ pub fn register(vm: &mut VM) {
             // The trailing arguments are a REST parameter — empty when the
             // caller passes fewer. `&args[3..]` panicked instead, and a host
             // panic takes down the whole worker, not just the call.
-            invoke_bound_target(ctx, &target, bound_this, target_proto, args.get(3..).unwrap_or(&[]))
+            //
+            // ⛔ `user_args`, NOT `args.get(3..)`. The three leading values are
+            // this wrapper's own captures; under
+            // `ReceiverBinding::UniversalParameter` the CALL then puts a
+            // receiver after them, and slicing from a fixed 3 handed that
+            // receiver to the target as its first real argument. Measured:
+            // `f.bind(o, 1)(2)` returned NaN and a bound method stored on an
+            // object returned `11[object Object]`. `user_args` skips the
+            // captures and the receiver slot, and is a no-op under the ambient
+            // binding.
+            // Everything past the three captures is `partials ++ callArgs`,
+            // which is exactly what §20.2.3.2 hands the target. The receiver
+            // sits BEFORE the captures, so it is already skipped by `base`.
+            let call_args = args.get(3..).unwrap_or(&[]).to_vec();
+            invoke_bound_target(ctx, &target, bound_this, target_proto, &call_args)
         }),
     );
 
@@ -238,7 +263,41 @@ pub fn register(vm: &mut VM) {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
             let invoke_args = args.get(2).map(collect_apply_args).unwrap_or_default();
-            invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+            // ⛔ A HOST BUILTIN HAS NO `this` — IT READS ARGUMENT 0.
+            //
+            // `apply` hands `thisArg` to the callee's `this`, which is right
+            // for a bytecode function and useless for `ecma:array.slice`, whose
+            // body opens `array_of(args, 0)`. Under the ambient binding that
+            // still worked, because `getMethodForCall(arr, "slice", bind=true)`
+            // had stuffed the receiver into `__bound_args` and the VM prepended
+            // it. Under `ReceiverAbi::Parameter` I pass `bind = false` — binding
+            // is that untypeable hidden-prepend channel — so nothing prepends it
+            // and `slice` read the START index as its array: `[1,2,3,4].slice(1)`
+            // returned `[]`, `indexOf` returned -1.
+            //
+            // `invoke_with_receiver` is exactly this split: it PREPENDS for a
+            // host callee (which reads argument 0) and SETS the channel for a
+            // bytecode one (which gets it prepended by `invoke`), so neither
+            // ends up with two. Under `Ambient` it binds the global and behaves
+            // as before.
+            // ⛔ ONLY A HOST CALLEE GOES THROUGH `invoke_with_receiver`.
+            //
+            // A host builtin reads its receiver as ARGUMENT 0, so it needs the
+            // prepend. A BYTECODE callee needs `invoke_compiled_function`,
+            // which also does REST PACKING and builds `arguments` — routing it
+            // through the raw invoke skipped both: `len.apply(null, [1,2])`
+            // reported `arguments.length` as `undefined`, and an EMPTY args
+            // array threw "Cannot convert undefined or null to object".
+            let host_callee = matches!(
+                &target,
+                Value::Object(o)
+                    if matches!(o.lock().map(|g| matches!(g.kind, ObjectKind::HostFunction(_))), Ok(true))
+            );
+            if host_callee {
+                ctx.invoke_with_receiver(&target, this_arg, &invoke_args)
+            } else {
+                invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+            }
         }),
     );
 
@@ -514,7 +573,41 @@ pub fn invoke_with_explicit_this(
                     return ret;
                 }
             }
-            if host_function_uses_explicit_receiver(target) {
+            // ⛔ DO NOT PREPEND, AND DO NOT BRANCH ON THE CALLEE'S KIND.
+            // The receiver slot of a host callee is filled in exactly ONE
+            // place — `call_value_inner` — so prepending here handed the
+            // callee two and shifted every real argument. Branching on whether
+            // THIS host function "uses an explicit receiver" is the deeper
+            // problem: it makes a call's meaning depend on the callee's
+            // runtime kind, which no WASM call instruction can express, and a
+            // funcref's type cannot say "argument 0 is a receiver, sometimes".
+            //
+            // Binding the channel is the whole job. `invoke_with_receiver`
+            // says WHICH receiver; the VM decides WHERE it goes, once, for
+            // every callee alike.
+            // Under `ReceiverAbi::Parameter` every host callee's argument 0
+            // is its receiver, so binding is unconditional and
+            // `invoke_with_receiver` adds nothing to the list — the VM fills
+            // the slot.
+            //
+            // ⛔ UNDER THE AMBIENT ABI IT IS NOT UNCONDITIONAL. There the
+            // receiver is only placed for a host function that actually
+            // DECLARES one; handing it to every host callee shifts the
+            // arguments of the ones that do not — measured on csharp as
+            // `HashSet.SetEquals` answering False. The ambient surface was
+            // never uniform, and pretending it is breaks it.
+            if ctx.receiver_is_parameter() {
+                // Under `Parameter` the VM fills the receiver slot; binding the
+                // channel is all this has to do.
+                ctx.invoke_with_receiver(target, this_arg, args)
+            } else if host_function_uses_explicit_receiver(target) {
+                // ⛔ AMBIENT: PLACE THE RECEIVER, DO NOT REBIND THE CHANNEL.
+                // `invoke_with_receiver` also sets `__js_this` around the call,
+                // and rebinding that global disturbs an ENCLOSING method's own
+                // receiver — the plan records the same defect turning a PHP
+                // `$this->n++` into NaN. The original here prepended and left
+                // the channel alone; that is what component-class method bodies
+                // depend on.
                 let mut invoke_args = Vec::with_capacity(args.len() + 1);
                 invoke_args.push(this_arg);
                 invoke_args.extend_from_slice(args);
@@ -598,7 +691,22 @@ fn invoke_bound_target(
             }
         }
         _ => {
-            if host_function_uses_explicit_receiver(target) {
+            // ⛔ DO NOT BRANCH ON THE CALLEE'S KIND. Under
+            // `ReceiverAbi::Parameter` argument 0 of EVERY host callee is its
+            // receiver, so `invoke_with_receiver` says which one and the VM
+            // places it — one signature, one meaning. Asking whether this
+            // particular host function "uses an explicit receiver" is a
+            // runtime type test at the call, which no WASM call instruction
+            // can express: measured, `Array.prototype.join.bind([1,2,3])("-")`
+            // answered EMPTY because `join` carries no receiver marker, so the
+            // channel was never bound and the VM filled the slot from a stale
+            // receiver. §20.2.3.2 hands the target the BOUND this, always.
+            //
+            // The ambient arm is unchanged: there the VM places nothing, so
+            // only a host function that declares a receiver may be given one.
+            if ctx.receiver_is_parameter() {
+                ctx.invoke_with_receiver(target, bound_this, args)
+            } else if host_function_uses_explicit_receiver(target) {
                 let mut invoke_args = Vec::with_capacity(args.len() + 1);
                 invoke_args.push(bound_this);
                 invoke_args.extend_from_slice(args);
@@ -639,7 +747,22 @@ fn try_invoke_bound_target(
             }
         }
         _ => {
-            if host_function_uses_explicit_receiver(target) {
+            // ⛔ DO NOT BRANCH ON THE CALLEE'S KIND. Under
+            // `ReceiverAbi::Parameter` argument 0 of EVERY host callee is its
+            // receiver, so `invoke_with_receiver` says which one and the VM
+            // places it — one signature, one meaning. Asking whether this
+            // particular host function "uses an explicit receiver" is a
+            // runtime type test at the call, which no WASM call instruction
+            // can express: measured, `Array.prototype.join.bind([1,2,3])("-")`
+            // answered EMPTY because `join` carries no receiver marker, so the
+            // channel was never bound and the VM filled the slot from a stale
+            // receiver. §20.2.3.2 hands the target the BOUND this, always.
+            //
+            // The ambient arm is unchanged: there the VM places nothing, so
+            // only a host function that declares a receiver may be given one.
+            if ctx.receiver_is_parameter() {
+                ctx.try_invoke_with_receiver(target, bound_this, args)
+            } else if host_function_uses_explicit_receiver(target) {
                 let mut invoke_args = Vec::with_capacity(args.len() + 1);
                 invoke_args.push(bound_this);
                 invoke_args.extend_from_slice(args);

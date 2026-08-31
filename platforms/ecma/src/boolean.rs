@@ -37,14 +37,14 @@ pub fn boxed_boolean(value: bool) -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:boolean",
         "Boolean",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:boolean",
         "new",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {

@@ -223,6 +223,28 @@ fn string_fn(
         results,
     }));
 }
+/// Register a FREE FUNCTION — one whose type has no receiver parameter.
+///
+/// `encodeURIComponent(s)` takes a string and nothing else; it is not a method
+/// being spelled as a call the way `padStart(s, 4)` is. Declaring that keeps
+/// the shape identical whether it is called directly or handed to `map`.
+fn string_fn_free(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(
+        HostFnDecl::new("ecma:string", name, call)
+            .with_sig(FuncSig {
+                name: name.to_string(),
+                params,
+                results,
+            })
+            .without_receiver(),
+    );
+}
 
 /// The string operand — every §22.1.3 method takes its receiver first.
 fn str_t() -> ValType {
@@ -435,7 +457,7 @@ fn register_adapters(vm: &mut VM) {
 // is called as a host fn from .NET / VB / etc. (where Convert.ToString
 // expects method dispatch on objects rather than "[object Object]").
 fn register_constructor(vm: &mut VM) {
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:string",
         "String",
         Box::new(|ctx, args| {
@@ -443,7 +465,7 @@ fn register_constructor(vm: &mut VM) {
             Value::String(to_string_primitive(ctx, v))
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:string",
         "new",
         Box::new(|ctx, args| {
@@ -1154,7 +1176,7 @@ fn register_uri(vm: &mut VM) {
     // encodeURIComponent — encodes everything except the unreserved set
     // (ALPHA / DIGIT / `-` / `_` / `.` / `~` / `!` / `*` / `'` / `(` / `)`).
     // ECMA-262 §19.2.6.5.
-    string_fn(
+    string_fn_free(
         vm,
         "encodeURIComponent",
         vec![str_t()],
@@ -1181,7 +1203,7 @@ fn register_uri(vm: &mut VM) {
     );
 
     // decodeURIComponent — reverses encodeURIComponent.
-    string_fn(
+    string_fn_free(
         vm,
         "decodeURIComponent",
         vec![str_t()],
@@ -1201,7 +1223,7 @@ fn register_uri(vm: &mut VM) {
     // encodeURI — like encodeURIComponent but ALSO leaves URI-syntax
     // chars unencoded: `;` `,` `/` `?` `:` `@` `&` `=` `+` `$` `#`.
     // ECMA-262 §19.2.6.4.
-    string_fn(
+    string_fn_free(
         vm,
         "encodeURI",
         vec![str_t()],
@@ -1231,7 +1253,7 @@ fn register_uri(vm: &mut VM) {
     // reserved set than decodeURIComponent (it preserves URI-syntax
     // chars even if they were percent-encoded), but for our MVP we
     // simply unescape every `%XX` — same behaviour as decodeURIComponent.
-    string_fn(
+    string_fn_free(
         vm,
         "decodeURI",
         vec![str_t()],
@@ -1251,12 +1273,18 @@ fn register_uri(vm: &mut VM) {
     // Annex B `escape` — legacy percent encoder used by older JS code.
     // Leaves `A-Z a-z 0-9 @*_+-./` unescaped, encodes Latin-1 bytes as
     // `%XX`, and wider code points as `%uXXXX`.
-    string_fn(
+    string_fn_free(
         vm,
         "escape",
         vec![str_t()],
         vec![str_t()],
         Box::new(|_ctx, args| {
+            // ⛔ `escape`/`unescape` are GLOBAL functions, not methods, so
+            // argument 0 is not a receiver they want — but under
+            // `ReceiverAbi::Parameter` a plain call still puts one there
+            // (§10.2.1.1 binds `undefined`). Reading the string at a fixed
+            // index picked up that receiver and returned `undefined`. Inert
+            // under the ambient binding.
             let s = s_arg(args, 0);
             let mut encoded = String::new();
             for ch in s.chars() {
@@ -1276,12 +1304,13 @@ fn register_uri(vm: &mut VM) {
     );
 
     // Annex B `unescape` — reverses `%XX` and `%uXXXX` escapes.
-    string_fn(
+    string_fn_free(
         vm,
         "unescape",
         vec![str_t()],
         vec![str_t()],
         Box::new(|_ctx, args| {
+            // Global function, not a method — see `escape` above.
             let s = s_arg(args, 0);
             let bytes = s.as_bytes();
             let mut out = String::with_capacity(bytes.len());

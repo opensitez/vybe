@@ -33,6 +33,28 @@ fn number_fn(
         results,
     }));
 }
+/// Register a FREE FUNCTION — one whose type has no receiver parameter.
+///
+/// `encodeURIComponent(s)` takes a string and nothing else; it is not a method
+/// being spelled as a call the way `padStart(s, 4)` is. Declaring that keeps
+/// the shape identical whether it is called directly or handed to `map`.
+fn number_fn_free(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(
+        HostFnDecl::new("ecma:number", name, call)
+            .with_sig(FuncSig {
+                name: name.to_string(),
+                params,
+                results,
+            })
+            .without_receiver(),
+    );
+}
 
 /// `Number.MAX_VALUE`, `Number.NaN`, … — the callable form of a constant,
 /// registered alongside the `register_host_value` form below. Takes nothing.
@@ -111,11 +133,12 @@ pub fn register(vm: &mut VM) {
 //   string → StringToNumber (parse with whitespace trim, "" → 0).
 //   Other types fall through to NaN — boxed wrappers aren't supported.
 fn register_constructor(vm: &mut VM) {
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:number",
         "Number",
         Box::new(|ctx, args| {
-            match coerce_to_number_with_context(ctx, args.first().unwrap_or(&Value::Undefined)) {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            match coerce_to_number_with_context(ctx, &value) {
                 Ok(n) => Value::F64(n),
                 Err(error) => {
                     ctx.throw_value(error);
@@ -124,11 +147,12 @@ fn register_constructor(vm: &mut VM) {
             }
         }),
     );
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:number",
         "new",
         Box::new(|ctx, args| {
-            match coerce_to_number_with_context(ctx, args.first().unwrap_or(&Value::Undefined)) {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            match coerce_to_number_with_context(ctx, &value) {
                 Ok(n) => boxed_number(Value::F64(n)),
                 Err(error) => {
                     ctx.throw_value(error);
@@ -336,27 +360,31 @@ fn to_f64_coerce(v: &Value) -> f64 {
 
 fn register_predicates(vm: &mut VM) {
     // ecma:number:isFinite — STRICT, no coercion (Number.isFinite).
-    number_fn(
+    number_fn_free(
         vm,
         "isFinite",
         vec![ValType::Any],
         vec![ValType::Bool],
-        Box::new(|_ctx, args| match args.first() {
-            Some(Value::F64(n)) => Value::Bool(n.is_finite()),
-            Some(Value::I32(_)) => Value::Bool(true),
-            _ => Value::Bool(false),
+        Box::new(|_ctx, args| {
+            match args.first() {
+                Some(Value::F64(n)) => Value::Bool(n.is_finite()),
+                Some(Value::I32(_)) => Value::Bool(true),
+                _ => Value::Bool(false),
+            }
         }),
     );
 
     // ecma:number:isNaN — STRICT, no coercion (Number.isNaN).
-    number_fn(
+    number_fn_free(
         vm,
         "isNaN",
         vec![ValType::Any],
         vec![ValType::Bool],
-        Box::new(|_ctx, args| match args.first() {
-            Some(Value::F64(n)) => Value::Bool(n.is_nan()),
-            _ => Value::Bool(false),
+        Box::new(|_ctx, args| {
+            match args.first() {
+                Some(Value::F64(n)) => Value::Bool(n.is_nan()),
+                _ => Value::Bool(false),
+            }
         }),
     );
 
@@ -418,7 +446,7 @@ fn register_predicates(vm: &mut VM) {
 // global `parseInt` / `parseFloat` (ECMA-262 §21.1.2.{12,13}).
 
 fn register_parsers(vm: &mut VM) {
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:number",
         "parseInt",
         Box::new(|_ctx, args| {
@@ -432,7 +460,7 @@ fn register_parsers(vm: &mut VM) {
         }),
     );
 
-    number_fn(
+    number_fn_free(
         vm,
         "parseFloat",
         vec![ValType::String],

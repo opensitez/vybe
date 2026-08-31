@@ -637,13 +637,19 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-                let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+                let end = args.get(2).map(|v| v.as_i32());
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     let src = state.bytes.lock().unwrap();
                     let len = src.len() as i32;
-                    let s = start.max(0).min(len) as usize;
-                    let e = end.max(0).min(len) as usize;
+                    // §25.2.5.3 → §25.1.5.3 steps 6/9: a NEGATIVE index is
+                    // relative to the END (`len + k`), it is not clamped to
+                    // zero. Only the ArrayBuffer arm did this, so
+                    // `sab.slice(-2)` clamped `-2` to 0 and returned the WHOLE
+                    // buffer — 10 bytes where the spec gives 2.
+                    let rel = |k: i32| (if k < 0 { len + k } else { k }).max(0).min(len) as usize;
+                    let s = rel(start);
+                    let e = end.map_or(len as usize, rel);
                     let slice: Vec<u8> = if s < e {
                         src[s..e].to_vec()
                     } else {

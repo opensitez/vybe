@@ -282,17 +282,23 @@ fn natural_compare(a: &str, b: &str) -> std::cmp::Ordering {
 
 fn register_collator(vm: &mut VM) {
     // Register compare first so we can look up its index for bound instances.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:intl/collator",
         "compare",
         Box::new(|ctx, args| {
             use icu::collator::{Collator, options::CollatorOptions};
-            let collator = match args.first() {
-                Some(Value::Object(o)) => o.clone(),
+            // ⛔ A BOUND host fn: `[collator]` is a CAPTURE, and under
+            // `ReceiverAbi::Parameter` the call's receiver sits between the
+            // captures and the real arguments. Reading the strings at fixed
+            // indices compared the collator against the first argument, so
+            // `compare` returned -1 for every pair.
+            let collator = match ctx.capture(args, 0) {
+                Value::Object(o) => o.clone(),
                 _ => return Value::I32(0),
             };
-            if matches!(args.get(1), Some(Value::Symbol(_)))
-                || matches!(args.get(2), Some(Value::Symbol(_)))
+            let user = ctx.user_args(args, 1).to_vec();
+            if matches!(user.first(), Some(Value::Symbol(_)))
+                || matches!(user.get(1), Some(Value::Symbol(_)))
             {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -301,12 +307,12 @@ fn register_collator(vm: &mut VM) {
                 ));
                 return Value::Undefined;
             }
-            let mut a = match args.get(1) {
+            let mut a = match user.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
                 None => String::new(),
             };
-            let mut b = match args.get(2) {
+            let mut b = match user.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
                 None => String::new(),

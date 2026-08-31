@@ -105,10 +105,18 @@ pub fn has_description(sym: &Arc<str>) -> bool {
 pub fn register(vm: &mut VM) {
     // `Symbol(description?)` — fresh unique symbol. Description is
     // stored in the Arc<str> contents so `toString()` round-trips.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:symbol",
         "Symbol",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ `user_args`, NOT `args.first()`. `Symbol("x")` is a PLAIN call,
+            // and under `ReceiverAbi::Parameter` EVERY call puts a receiver at
+            // argument 0 — §10.2.1.1 binds `undefined` for a plain one, and
+            // "absent" and "undefined" are not the same thing. Reading the
+            // description at a fixed index picked up that receiver, so every
+            // symbol came out `Symbol()` with no description. Inert under the
+            // ambient binding.
+            let args = _ctx.user_args(args, 0);
             // Spec §20.4.1.1: store description verbatim. toString wraps it
             // as `Symbol(<desc>)` per §20.4.3.3 — keeping the wrap there
             // means Display and toString agree on a single representation.
@@ -130,10 +138,13 @@ pub fn register(vm: &mut VM) {
     );
 
     // Symbol.for(key) — global registry lookup; creates if absent.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:symbol",
         "for",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            // Reached as `Symbol.for(k)` — a METHOD call, so argument 0 is the
+            // receiver under `Parameter`. See the note on `Symbol` above.
+            let args = _ctx.user_args(args, 0);
             let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
             let mut reg = registry().lock().unwrap();
             let arc = reg
@@ -145,10 +156,11 @@ pub fn register(vm: &mut VM) {
     );
 
     // Symbol.keyFor(sym) — reverse lookup; returns string or undefined.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:symbol",
         "keyFor",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let args = _ctx.user_args(args, 0);
             if let Some(Value::Symbol(sym)) = args.first() {
                 let reg = registry().lock().unwrap();
                 for (key, val) in reg.iter() {
@@ -181,10 +193,17 @@ pub fn register(vm: &mut VM) {
     register_constant(vm, "asyncDispose", wk.async_dispose.clone());
 
     // `new` — alias for Symbol() to match test patterns.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:symbol",
         "new",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ `user_args`, NOT `args.first()`. `Symbol("x")` is a PLAIN call,
+            // and under `ReceiverAbi::Parameter` every call — plain ones
+            // included, §10.2.1.1 binds `undefined` — puts a receiver at
+            // argument 0. Reading the description at a fixed index picked up
+            // that receiver, so every symbol came out as `Symbol()` with no
+            // description. A no-op under the ambient binding.
+            let args = _ctx.user_args(args, 0);
             let has_description = args.first().is_some_and(|v| !matches!(v, Value::Undefined));
             let desc = args
                 .first()

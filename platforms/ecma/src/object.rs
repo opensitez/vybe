@@ -458,14 +458,15 @@ fn assign_strict_set(
                     _ => None,
                 }
             };
-            match setter_arity {
-                Some(1) => {
-                    ctx.invoke(&setter_val, &[value]);
-                }
-                _ => {
-                    ctx.invoke(&setter_val, &[Value::Object(target.clone()), value]);
-                }
-            }
+            // ⛔ ONE RECEIVER, PASSED ONCE. The arity guess below decided
+            // whether to pass the receiver, but under `ReceiverAbi::Parameter`
+            // the invoke ALSO supplies one, so an arity-2 setter got it twice:
+            // `this` took the supplied receiver and the VALUE parameter took
+            // the target. Measured: `Object.assign(t, {a: 5})` left `t._got`
+            // undefined. `invoke_with_receiver` is correct under BOTH bindings,
+            // so the arity question disappears rather than being answered.
+            let _ = setter_arity;
+            ctx.invoke_with_receiver(&setter_val, Value::Object(target.clone()), &[value]);
             return true;
         }
     }
@@ -1189,6 +1190,23 @@ fn proto_walk_invoke_getter(
         _ => None,
     };
     let receiver = Value::Object(obj.clone());
+    // ⛔ UNDER `ReceiverAbi::Parameter` THE VM'S INVOKE SUPPLIES THE RECEIVER.
+    // Passing it here too gave the getter TWO: `this` bound to the prepended
+    // one and the real receiver arriving as an extra argument, so an
+    // object-literal `get n(){ return this._n }` threw "Cannot read properties
+    // of undefined". Bind it and pass NO arguments — a getter has none.
+    // ⛔ THE MODULE'S ABI, NOT THE CALL'S. `receiver_argc()` answers "did the
+    // call that reached ME carry a receiver slot", which is a different
+    // question and 0 whenever host plumbing built the arguments — so a getter
+    // reached through a host walk took the wrong branch. This asks whether a
+    // callee I invoke expects one, which is what the branch is for.
+    if ctx.receiver_is_parameter() {
+        let previous = ctx.current_js_this();
+        ctx.set_js_this(receiver);
+        let out = ctx.invoke(&getter, &[]);
+        ctx.set_js_this(previous);
+        return Some(out);
+    }
     Some(match getter_arity {
         Some(0) => ctx.invoke(&getter, &[]),
         _ => ctx.invoke(&getter, &[receiver]),
@@ -1937,10 +1955,29 @@ fn register_access(vm: &mut VM) {
                             // needs `this`. Both branches bind it now, because
                             // §10.1.5 step 6.b is unconditional; only the
                             // argument list differs.
-                            let receiver_first = ctx.func_handles_call_tag(
-                                &setter_val,
-                                vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG,
-                            ) || setter_arity.is_none_or(|a| a >= 2);
+                            // ⛔ UNDER `ReceiverAbi::Parameter` THE VM'S OWN
+                            // INVOKE SUPPLIES THE RECEIVER, so passing it here
+                            // as well hands the setter TWO — `this` becomes the
+                            // prepended one and `v` becomes the receiver.
+                            // Measured: `defineProperty(o,"v",{set})` then
+                            // `o.v = 9` wrote nothing, and an object-literal
+                            // getter threw "Cannot read properties of
+                            // undefined". Take the binding branch instead: it
+                            // sets the receiver and passes only the value,
+                            // which is exactly what the parameter ABI wants.
+                            // ⛔ NO TAG, NO ARITY GUESS — BOTH BRANCHES AGREE
+                            // NOW. `invoke_with_receiver` binds the receiver
+                            // channel and passes only the value, and the VM
+                            // fills the receiver slot in one place, so it is
+                            // right whether or not the setter declares the
+                            // receiver as a parameter. The tag and the
+                            // `arity >= 2` guess existed only to choose
+                            // between two spellings of the same call; there is
+                            // one spelling now. Left in place upstream, no
+                            // longer consulted here.
+                            // No call tag: `takes_receiver` is now set
+                            // wherever the tag is, so the signature answers it.
+                            let receiver_first = setter_arity.is_none_or(|a| a >= 2);
                             if receiver_first {
                                 // The receiver is an ARGUMENT here, so the
                                 // callee already has it and the ambient binding
@@ -1949,7 +1986,13 @@ fn register_access(vm: &mut VM) {
                                 // own `this` in languages that read it there,
                                 // which turned a PHP `$this->n++` inside a
                                 // method into NaN.
-                                ctx.invoke(&setter_val, &[receiver, val]);
+                                // ⛔ `invoke_with_receiver`, NOT `invoke` with
+                                // the receiver in the argument list: under
+                                // `Parameter` a plain `invoke` PREPENDS one
+                                // too, and the setter then took the prepended
+                                // value as `this` and the receiver as its
+                                // value parameter. One receiver, passed once.
+                                ctx.invoke_with_receiver(&setter_val, receiver, &[val]);
                             } else {
                                 // Bind `this` around the SAME invoke path the
                                 // arity branch used. `invoke_with_explicit_this`
@@ -2287,7 +2330,20 @@ fn register_access(vm: &mut VM) {
                 if is_nonconfig(&o, &key) {
                     return Value::Bool(false);
                 }
-                let existed = o.properties.shift_remove(&key).is_some();
+                // ⛔ AN ACCESSOR IS NOT STORED UNDER ITS OWN NAME. A getter/
+                // setter lives as `__get_<k>` / `__set_<k>`, so removing only
+                // `k` left the accessor intact and `delete o.g` was a silent
+                // no-op — `o.g` kept returning 7 where ECMA-262 §13.5.1 says
+                // the whole property goes. Measured against node, which
+                // returns `undefined`.
+                let removed_accessor = o
+                    .properties
+                    .shift_remove(&format!("__get_{key}"))
+                    .is_some()
+                    | o.properties
+                        .shift_remove(&format!("__set_{key}"))
+                        .is_some();
+                let existed = o.properties.shift_remove(&key).is_some() | removed_accessor;
                 // Drop the key from `__keys` so re-adding goes to the
                 // end (ECMA-262 §13.5.1 + §7.3.22 ordering — delete
                 // shifts a key out of insertion order; subsequent

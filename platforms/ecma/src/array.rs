@@ -881,10 +881,19 @@ fn register_constructors(vm: &mut VM) {
     //                         (TypeError if n is non-integer or out of range —
     //                         Vybe falls back to a single-element array)
     //   new Array(a, b, …)  → [a, b, …]
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:array",
         "new",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| match args.len() {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // ⛔ `user_args`, NOT the raw list. `Array(4)` is a PLAIN call, and
+            // under `ReceiverAbi::Parameter` every call puts a receiver at
+            // argument 0 (§10.2.1.1 binds `undefined` for a plain one). Counted
+            // as an element it made `Array(4)` a TWO-element array
+            // `[undefined, 4]`, so `Array(4).fill(7)` produced `7,7`. Inert
+            // under the ambient binding.
+            let args = ctx.user_args(args, 0).to_vec();
+            let args = &args[..];
+            match args.len() {
             0 => make_array(Vec::new()),
             1 => match &args[0] {
                 Value::F64(_) | Value::I32(_) | Value::I64(_) => {
@@ -899,6 +908,7 @@ fn register_constructors(vm: &mut VM) {
                 other => make_array(vec![other.clone()]),
             },
             _ => make_array(args.to_vec()),
+            }
         }),
     );
 
@@ -1713,7 +1723,12 @@ fn register_mutators(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
             let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
-            let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.7 step 7: "If end is undefined, let relativeEnd be
+            // len" — the same rule `slice` below already follows.
+            let end = match args.get(3) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
             // §23.1.3.7 relative indexing: negative counts from the end;
             // i64 math so a saturated -Infinity cast can't overflow.
             let norm = |x: i32, len: i32| -> usize {
@@ -1767,7 +1782,12 @@ fn register_mutators(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let target = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
-            let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.4 step 8: "If end is undefined, let relativeEnd be
+            // len" — the same rule `slice` below already follows.
+            let end = match args.get(3) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
             // §23.1.3.4 relative indexing — same normalization as fill.
             let norm = |x: i32, len: i32| -> usize {
                 if x < 0 {
@@ -1831,8 +1851,20 @@ fn register_non_mutators(vm: &mut VM) {
         "ecma:array",
         "slice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.27: `undefined` is not 0 and not "no argument" — for
+            // `start` it means 0 and for `end` it means `len`. Reading it
+            // through `as_i32()` gave BOTH of them 0, so an explicitly-passed
+            // `undefined` end truncated the slice to empty while an OMITTED
+            // one returned the whole thing. Those must agree, because a WASM
+            // import has one arity: a call site cannot choose to omit.
+            let start = match args.get(1) {
+                None | Some(Value::Undefined) => 0,
+                Some(v) => v.as_i32(),
+            };
+            let end = match args.get(2) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
             if let Some(Value::String(s)) = args.first() {
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len() as i32;
@@ -1895,30 +1927,79 @@ fn register_non_mutators(vm: &mut VM) {
                     out.extend(v.iter().cloned());
                 }
             }
-            // Spec: if `other` is an iterable, spread it; otherwise
-            // append as single element.
+            // §23.1.3.1 Array.prototype.concat step 5.b — IsConcatSpreadable.
+            //
+            // ⛔ THE QUESTION IS NOT "IS IT ITERABLE". §22.1.3.1.1 says: a
+            // non-Object is NEVER spread; otherwise ask `@@isConcatSpreadable`,
+            // and only when that is `undefined` fall back to `IsArray`. This
+            // used to spread by KIND, which got three things wrong at once —
+            // a STRING was spread into its code points (`[].concat("ab")` gave
+            // `a,b` where the spec appends `"ab"` whole), an array-like opting
+            // IN with the symbol was appended as one element, and an array
+            // opting OUT with `false` was spread anyway.
             match args.get(1) {
                 Some(Value::Object(o)) => {
-                    let lock = o.lock().unwrap();
-                    match &lock.kind {
-                        ObjectKind::Array(v) => out.extend(v.iter().cloned()),
-                        ObjectKind::Set(s) => out.extend(s.iter().cloned()),
-                        ObjectKind::Map(m) => {
-                            for (k, v) in m.iter() {
-                                let pair = vec![k.clone(), v.clone()];
-                                out.push(make_array(pair));
-                            }
+                    let (explicit, is_array, arr_items, set_items, map_pairs, length) = {
+                        let lock = o.lock().unwrap();
+                        let explicit = lock.properties.get("isconcatspreadable").cloned();
+                        let arr = match &lock.kind {
+                            ObjectKind::Array(v) => Some(v.clone()),
+                            _ => None,
+                        };
+                        let set = match &lock.kind {
+                            ObjectKind::Set(sv) => Some(sv.iter().cloned().collect::<Vec<_>>()),
+                            _ => None,
+                        };
+                        let map = match &lock.kind {
+                            ObjectKind::Map(m) => Some(
+                                m.iter()
+                                    .map(|(k, v)| make_array(vec![k.clone(), v.clone()]))
+                                    .collect::<Vec<_>>(),
+                            ),
+                            _ => None,
+                        };
+                        let len = lock
+                            .properties
+                            .get("length")
+                            .map(|v| v.as_f64() as usize)
+                            .unwrap_or(0);
+                        (explicit, arr.is_some(), arr, set, map, len)
+                    };
+                    let spreadable = match explicit {
+                        Some(Value::Undefined) | None => is_array,
+                        // ⛔ ToBoolean (§7.1.2), NOT `Value::as_bool`. That
+                        // accessor is `matches!(self, Bool(true))` — it answers
+                        // "is this the boolean true", so every truthy NON-bool
+                        // read as false. §22.1.3.1.1 step 4 applies ToBoolean,
+                        // so `arr[@@isConcatSpreadable] = 1` must spread just
+                        // as `= true` does; measured, `1` did not and `true`
+                        // did.
+                        Some(v) => crate::boolean::to_boolean(&v),
+                    };
+                    if !spreadable {
+                        out.push(Value::Object(o.clone()));
+                    } else if let Some(v) = arr_items {
+                        out.extend(v);
+                    } else if let Some(v) = set_items {
+                        out.extend(v);
+                    } else if let Some(v) = map_pairs {
+                        out.extend(v);
+                    } else {
+                        // Array-LIKE that opted in: spread by `length`, reading
+                        // the indexed properties (§23.1.3.1 step 5.c.iv).
+                        let lock = o.lock().unwrap();
+                        for i in 0..length {
+                            out.push(
+                                lock.properties
+                                    .get(&i.to_string())
+                                    .cloned()
+                                    .unwrap_or(Value::Undefined),
+                            );
                         }
-                        _ => out.push(Value::Object(o.clone())),
                     }
                 }
-                Some(Value::String(s)) => {
-                    // Spreading a string yields its code-points (per
-                    // Symbol.iterator on String).
-                    for c in s.chars() {
-                        out.push(Value::String(Arc::from(c.to_string().as_str())));
-                    }
-                }
+                // A primitive is never spread — including a String, whose
+                // `Symbol.iterator` is irrelevant here.
                 Some(v) => out.push(v.clone()),
                 None => {}
             }

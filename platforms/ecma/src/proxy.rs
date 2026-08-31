@@ -811,6 +811,23 @@ fn construct_dispatch_inner(
     constructor: &Value,
     args_list: &Value,
 ) -> Value {
+    // ⛔ §13.3.5.1 EvaluateNew: *"If IsConstructor(constructor) is false, throw
+    // a TypeError exception."* A PRIMITIVE is never a constructor, and without
+    // this `new 5` silently produced an ordinary object — no throw at all,
+    // where node reports `5 is not a constructor`.
+    //
+    // Deliberately narrower than `is_constructor`, which additionally requires
+    // `ObjectKind::Function | HostFunction`: an object-shaped callee that this
+    // predicate would reject already throws further down (`new {}` and
+    // `new (()=>{})` both answer TypeError today), so widening the guard here
+    // would only risk refusing a class whose runtime shape this predicate does
+    // not anticipate. Primitives are the whole measured gap.
+    if !matches!(constructor, Value::Object(_)) {
+        let message = format!("{} is not a constructor", constructor);
+        let err = make_type_error(ctx, &message);
+        ctx.throw_value(err);
+        return Value::Undefined;
+    }
     if let Some(proxy_obj) = is_proxy(constructor) {
         if proxy_is_revoked(&proxy_obj) {
             return throw_revoked(ctx);

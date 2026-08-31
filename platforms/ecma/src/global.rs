@@ -80,11 +80,21 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:global",
         "eval",
         Box::new(
-            |_ctx: &mut HostContext, args: &[Value]| match args.first() {
+            |_ctx: &mut HostContext, args: &[Value]| match _ctx
+                .user_args(args, 0)
+                .first()
+            {
+                // ⛔ `user_args`: INDIRECT eval (`const g = eval; g("3+4")`)
+                // reaches this host fn as a VALUE through a dynamic call, and
+                // under `ReceiverAbi::Parameter` that call puts a receiver at
+                // argument 0. Reading the source at a fixed index picked up the
+                // receiver and returned `undefined`. Direct `eval(...)` is
+                // compiled specially and was unaffected, which is why only the
+                // indirect form failed.
                 Some(Value::String(s)) => {
                     if let Ok(n) = s.trim().parse::<f64>() {
                         Value::F64(n)

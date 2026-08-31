@@ -229,20 +229,31 @@ pub fn try_materialize_iterable_values(
 
 pub fn register(vm: &mut VM) {
     // Iterator.from(obj) — adapts arrays, iterables, generators.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:iterator",
         "from",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let v = args.first().cloned().unwrap_or(Value::Null);
+            // ⛔ A MEMBER CALL PUTS THE RECEIVER AT ARGUMENT 0. `Iterator.from`
+            // happens to lower to a direct host call, which carries none, while
+            // its twin `AsyncIterator.from` stays an ordinary member call and
+            // does — so reading the iterable at a fixed index handed the latter
+            // the `AsyncIterator` namespace object and it answered
+            // `{done: true}` immediately. `user_args` is correct under BOTH
+            // shapes: it strips nothing when the call carried nothing.
+            let user = ctx.user_args(args, 0);
+            let v = user.first().cloned().unwrap_or(Value::Null);
             make_iterator(materialize_iterable_values(ctx, &v, false))
         }),
     );
 
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:iterator",
         "asyncFrom",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let v = args.first().cloned().unwrap_or(Value::Null);
+            // See `from` above — this is the shape that actually carried a
+            // receiver, and the reason the two twins disagreed.
+            let user = ctx.user_args(args, 0);
+            let v = user.first().cloned().unwrap_or(Value::Null);
             make_iterator(materialize_iterable_values(ctx, &v, true))
         }),
     );
