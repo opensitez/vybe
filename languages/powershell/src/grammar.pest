@@ -186,7 +186,8 @@ assignment_stmt = { lvalue ~ (ws* ~ "," ~ ws* ~ lvalue)* ~ ws* ~ assignment_op ~
 // are ordinary PowerShell, where the value is whatever the taken branch output.
 // Tried before `command_pipeline` so `switch` is not read as a command name.
 rhs_value = _{
-    (expression ~ &(ws* ~ (terminator | EOI | "}")))
+    (chain_pipeline ~ &(ws* ~ (terminator | EOI | "}")))
+  | (expression ~ &(ws* ~ (terminator | EOI | "}")))
   | value_stmt
   | command_pipeline
 }
@@ -237,9 +238,22 @@ condition_expr = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
 // `($x | Measure-Object)`. Try the pure expression first and require it to reach
 // the closing paren — if it stops short (a bare command head, or a `|`), fall
 // back to the command pipeline form.
-paren_body = _{ (expression ~ &(eat_separators ~ ")")) | command_pipeline }
-command_pipeline = { pipeline_head ~ (ws* ~ "|" ~ eat_ws_nl ~ command_segment)* }
-pipeline_head = _{ (expression ~ &(ws* ~ ("|" | ")"))) | command_segment }
+// ⛔`($x = 5)` IS AN EXPRESSION IN POWERSHELL and yields 5. Without
+// `assignment_stmt` here it was not an `expression`, so it fell through to
+// `command_pipeline` and `$x` became a command NAME with `=` and `5` as its
+// arguments — `null is not callable`.
+paren_body = _{ (chain_pipeline ~ &(eat_separators ~ ")")) | (expression ~ &(eat_separators ~ ")")) | (assignment_stmt ~ &(eat_separators ~ ")")) | command_pipeline }
+command_pipeline = { pipeline_head ~ (ws* ~ pipe_op ~ eat_ws_nl ~ command_segment)* }
+// ⛔A PIPE IS ONE `|`. Left as a bare `"|"` the pipeline repetition ate the
+// first bar of `A || B` and then failed to find a command after the second,
+// which pest backtracks silently — so the chain operator was never reachable
+// from a context that tries `command_pipeline` first.
+pipe_op = _{ "|" ~ !"|" }
+// A head expression may be followed by a CHAIN operator as well as a pipe or a
+// close paren: `( (1) && (2) )` is an ordinary pwsh chain, and without
+// `chain_op` here the lookahead failed and `(1)` fell through to
+// `command_segment`, which cannot start with `(`.
+pipeline_head = _{ (expression ~ &(ws* ~ (pipe_op | ")" | chain_op))) | command_segment }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Command / pipeline layer (PowerShell "command mode")
@@ -255,8 +269,25 @@ pipeline_head = _{ (expression ~ &(ws* ~ ("|" | ")"))) | command_segment }
 invoke_op = @{ ("." | "&") ~ &(" " | "\t") }
 command_stmt = { pipeline_expr ~ (ws* ~ chain_op ~ eat_ws_nl ~ pipeline_expr)* }
 chain_op = @{ "&&" | "||" }
+// `&&` / `||` bind LOOSER than `|`, so a chain is a sequence of PIPELINES. The
+// `+` is what keeps this rule off every ordinary pipeline: it matches only when
+// a chain operator is actually present, so the contexts that try it first —
+// `rhs_value`, `paren_body`, `sub_body` — are unchanged without one.
+chain_pipeline = { chain_side ~ (ws* ~ chain_op ~ eat_ws_nl ~ chain_side)+ }
+// ⛔A CHAIN SIDE MAY END THE STATEMENT, and `pipeline_head` only lets a value
+// stand where a `|` or a `)` follows it. The LAST side of `$r = $( … ) && $( … )`
+// has neither, so `command_pipeline` fell through to `command_segment`, which
+// took the subexpression as a command NAME and called its value — `bool is not
+// callable`. The wider lookahead is confined to this rule so the pipeline rules
+// keep their own.
+chain_side = { (expression ~ &(ws* ~ (chain_op | terminator | EOI | "}" | ")"))) | command_pipeline }
 // A `|` may end a line and continue on the next.
-pipeline_expr = { command_segment ~ (ws* ~ "|" ~ eat_ws_nl ~ command_segment)* }
+// ⛔A PIPELINE MAY START WITH A VALUE HERE TOO. `command_pipeline` has said so
+// via `pipeline_head` all along, but the STATEMENT form demanded a
+// `command_segment`, and `command_head` rejects a bare number — so
+// `1, 2, 3 | Test-Thing` failed to parse at the `|` while `@(1,2,3) | …` and
+// `$a | …` were fine.
+pipeline_expr = { pipeline_head ~ (ws* ~ pipe_op ~ eat_ws_nl ~ command_segment)* }
 // NOTE: no explicit separator between head and args — pest skips implicit
 // WHITESPACE between terms in a non-atomic rule, so an explicit `ws1` here
 // would never match (the whitespace is already consumed).
@@ -266,7 +297,11 @@ redirection = { redirect_op ~ command_token? }
 redirect_op = @{ ASCII_DIGIT? ~ (">>" | ">") ~ ("&" ~ ASCII_DIGIT)? }
 command_head = { !keyword ~ !(number ~ !command_name_char) ~ command_token }
 command_name_char = _{ ASCII_ALPHANUMERIC | "_" | "-" | "." | ":" | "\\" | "/" }
-command_arg = { command_param | command_token }
+// ⛔`&&` IS NOT AN ARGUMENT. `bare_token` excludes `|`, so `A || B` split
+// correctly while `A && B` swallowed both the operator and the right side as
+// two STRING arguments of `A` — the statement rule never saw a `chain_op` and
+// the chain silently became a one-command call.
+command_arg = { !chain_op ~ (command_param | command_token) }
 command_param = @{ "-" ~ (ASCII_ALPHANUMERIC | "_")+ ~ (":" ~ (!(WHITESPACE | NEWLINE | ";" | "|") ~ ANY)+)? }
 // A command ARGUMENT takes its whole postfix chain: `$b.Count`, `$x.F()`,
 // `[math]::Abs(1)`. Matching a bare `var_ref` here split `$b.Count` into
@@ -276,7 +311,7 @@ command_token = { quoted_string | single_quoted_string | script_block | sub_expr
 script_block = {
     "{" ~ (script_block | quoted_string | single_quoted_string | (!("{" | "}") ~ ANY))* ~ "}"
 }
-bare_token = @{ (!("|" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
+bare_token = @{ (!("|" | "&&" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
 
 keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"enum" | ^"namespace" | ^"function") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
 ws_boundary = _{ WHITESPACE | NEWLINE | "{" | "}" | "(" | ")" | ";" | "|" }
@@ -372,7 +407,21 @@ unary_op    = @{
 cast_expr   = { type_literal ~ ws* ~ unary }
 
 postfix     = { primary ~ postfix_op* }
-postfix_op  = _{ method_call | static_call | static_member | member_get | index_get }
+// ⛔The NULL-CONDITIONAL forms come FIRST and are LONGEST-FIRST among
+// themselves. `?.` and `?[` are spellings nothing else in this grammar
+// matches, so these are purely additive — but `null_member_get` would
+// otherwise swallow `?.ToUpper` and leave `(` stranded, exactly as
+// `member_get` sits after `method_call` below for the same reason.
+//
+// ⛔NO WHITESPACE before `?`, which is what keeps the TERNARY apart:
+// `$cond ? $a : $b` has a space and `postfix_op` follows `primary`
+// immediately, so the ternary never reaches here. PowerShell requires the
+// braced `${name}?.M()` spelling for the same reason — a bare `$name?` cannot
+// be told from a ternary condition — and `var_ref` already accepts `${…}`.
+postfix_op  = _{ null_method_call | null_member_get | null_index_get | method_call | static_call | static_member | member_get | index_get }
+null_method_call = { "?." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+null_member_get  = { "?." ~ (member_name | var_ref) }
+null_index_get   = { "?[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
 method_call = { "." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 static_call = { "::" ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 static_member = { "::" ~ member_name }
@@ -408,7 +457,11 @@ sub_expr     = { "$(" ~ eat_separators ~ sub_body ~ eat_separators ~ ")" }
 // … })` is ordinary PowerShell, and without it the `if` parsed as a bare
 // statement whose value nothing collected, so the subexpression was empty.
 // It reuses the branch-value lowering `$x = if (…) { … }` already goes through.
-sub_body     = _{ (expression ~ &(eat_separators ~ ")")) | (value_stmt ~ &(eat_separators ~ ")")) | (statement ~ eat_separators)* }
+// ⛔THE LAST STATEMENT HAS NO TERMINATOR. `expr_stmt` demands a terminator,
+// `EOI` or `}` after it and a `)` is none of those, so `$(1; 2)` matched `1;`
+// as a statement, stopped, and failed the whole `sub_expr` on the leftover
+// `2)`. The trailing expression is spelled out here instead.
+sub_body     = _{ (chain_pipeline ~ &(eat_separators ~ ")")) | (expression ~ &(eat_separators ~ ")")) | (value_stmt ~ &(eat_separators ~ ")")) | ((statement ~ eat_separators)* ~ (expression ~ &(eat_separators ~ ")"))?) }
 // Elements may be commands too: `@(Get-ChildItem)`.
 array_expr   = { "@(" ~ eat_separators ~ array_body? ~ eat_separators ~ ")" }
 // \u26d4`,` BINDS TIGHTER THAN `|`. `@(1, 2, 3 | Double-Stream)` is ONE pipeline
@@ -453,7 +506,13 @@ here_string_single = @{ "@'" ~ (!(NEWLINE ~ "'@") ~ ANY)* ~ NEWLINE ~ "'@" }
 //
 // `""` is PowerShell's escape for a literal quote inside a double-quoted string
 // (the backtick form `` `" `` is handled by the escape alternative).
-quoted_string = @{ "\"" ~ ( "\"\"" | "\\\"" | "\\\\" | "`" ~ ANY | interp_sub | (!"\"" ~ ANY) )* ~ "\"" }
+//
+// ⛔BACKSLASH IS AN ORDINARY CHARACTER. PowerShell's escape is the BACKTICK, so
+// there is no `\"` and no `\\` — `"\"` is a one-character string holding a
+// backslash. Listing them as alternatives made `\"` swallow the closing quote,
+// and the string ran on until the next one: `$h["p"].Contains("\")` took the
+// rest of the file with it.
+quoted_string = @{ "\"" ~ ( "\"\"" | "`" ~ ANY | interp_sub | (!"\"" ~ ANY) )* ~ "\"" }
 interp_sub    = @{ "$(" ~ interp_part* ~ ")" }
 nested_paren  = @{ "(" ~ interp_part* ~ ")" }
 interp_part   = _{ "`" ~ ANY | quoted_string | single_quoted_string | nested_paren | (!")" ~ !"(" ~ ANY) }

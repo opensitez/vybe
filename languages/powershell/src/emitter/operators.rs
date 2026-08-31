@@ -34,6 +34,12 @@ pub fn emit_ensure_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let concat = chunk.add_import("ecma:array", "concat");
     let push = chunk.add_import("ecma:array", "push");
     let is_string = chunk.add_import("wasm:js-string", "test");
+    let get_method = chunk.add_import("ecma:value", "getMethodForCall");
+    let get_prop = chunk.add_import("ecma:object", "get");
+    let type_of = chunk.add_import("ecma:value", "typeof");
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let array_from = chunk.add_import("ecma:array", "from");
 
     // Arguments arrive with the LAST on top, so store them before rebuilding
     // the call in source order.
@@ -49,7 +55,284 @@ pub fn emit_ensure_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
 
+    // ⛔EVERY scratch local up front: `alloc_scratch` ALIASES named locals, so
+    // allocating inside the loop would hand two iterations the same slot.
+    let iter_fn = chunk.alloc_scratch(1);
+    let next_fn = chunk.alloc_scratch(1);
+    let cur_fn = chunk.alloc_scratch(1);
+    let drained = chunk.alloc_scratch(1);
+    let guard = chunk.alloc_scratch(1);
+    let orig = chunk.alloc_scratch(1);
+    let step = chunk.alloc_scratch(1);
     for i in 0..argc as u16 {
+        // ⛔THE ORIGINAL IS KEPT, because the `Iterator` slot answers for values
+        // this adaptation has no business touching. A native `Set` — which is
+        // what `[System.Collections.Generic.HashSet[int]]` is — carries
+        // `Symbol.iterator`, so the probe below fired, replaced the Set with a
+        // SET ITERATOR OBJECT, and `concat` then appended that object whole:
+        // `@($set)` answered ONE element and `foreach ($x in $set)` handed the
+        // iterator to `+=`, trapping in `wasm:js-number.toF64`. `concat` already
+        // enumerates a Set and a Map correctly, so the replacement is kept ONLY
+        // when it produced something better — an array, or a drained enumerator.
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, orig, line);
+        // An ENUMERABLE is asked for its enumeration first.
+        //
+        // `class Col : IEnumerable { [IEnumerator] GetEnumerator() { … } }`
+        // reaching a pipeline head is not a scalar and not an array, so
+        // `concat` appended the OBJECT whole and `$col | ForEach-Object { $_ * 2 }`
+        // answered `NaN` — while the explicit `$col.GetEnumerator() | …`
+        // beside it answered `2,4,6`. The class already carries the
+        // enumeration: `protocol.rs` maps `GetEnumerator` onto the shared
+        // `Iterator` role, whose canonical member name is `iterator`.
+        //
+        // ⛔THE ROLE IS A SLOT, AND THE SLOT IS NOT ITS SPELLING.
+        // `getMethodForCall(col, "iterator")` finds NOTHING, and so does
+        // `ClassSlot::internal("iterator")` — `$col.iterator()` is
+        // `undefined is not callable`. `classes.rs` installs the member under
+        // `canon(source_name)`, so it lives at `getenumerator`; the canonical
+        // name only keys `current_class_slot_keys`, which is compile-time.
+        // `ClassSlot::Slot(ProtocolSlot::Iterator)` is the stamped runtime
+        // key, and asking for the SLOT rather than a spelling is what
+        // flexclassplan §2a requires of a language in the first place.
+        // ⛔The result REPLACES the operand rather than switching the branch
+        // below to `isArray` — `concat` is what flattens a Set and a Map, and
+        // this function's own comment records that testing `isArray` instead
+        // would take both of those with it.
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        vybe_compiler::primitives::class_slots::emit_class_get(
+            chunk,
+            vybe_compiler::primitives::class_slots::ObjSource::Stack,
+            &vybe_compiler::primitives::class_slots::resolve(
+                &vybe_compiler::primitives::class_slots::ClassSlot::Slot(
+                    vybe_ast::ProtocolSlot::Iterator,
+                ),
+                &vybe_compiler::primitives::class_slots::PlainNames,
+            ),
+            vybe_compiler::primitives::class_slots::Dest::Local(iter_fn),
+            line,
+        );
+
+        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("function", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        // ⛔THE RECEIVER TRAVELS AS ARGUMENT 0. PowerShell declares no
+        // `method_receiver`, so the call site supplies one — the same
+        // convention `emit_smart_length` uses to call `__get_length`.
+        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+
+        // A .NET ENUMERATOR IS DRAINED HERE, because it is not an iterator in
+        // the sense everything downstream means.
+        //
+        // `GetEnumerator` may hand back an ARRAY — `$this.Items.GetEnumerator()`
+        // — and `concat` below already flattens that. It may equally hand back
+        // an object with `MoveNext()` and `get_Current()`, and that object
+        // answers NOTHING the shared machinery asks for: the for-of driver
+        // wants `next()` returning `{done, value}` per ECMA-262, while
+        // `MoveNext` returns a BOOL and the value lives on a separate member.
+        // The renames are already in place — `protocol.rs` maps `MoveNext` onto
+        // the `Next` role — so the shape is the only thing missing, and this
+        // loop IS the adapter.
+        //
+        // ⛔`get_Current` is read by SPELLING, and only here. No `Current`
+        // protocol slot exists to ask instead, and a PowerShell spelling in
+        // PowerShell's own emitter is where a spelling belongs — the rule
+        // forbids them in SHARED crates.
+        // ⛔BOUNDED, and the bound is not a detail. An enumerator is free to be
+        // infinite — `[NatEnum] MoveNext() { $this.Val++; return $true }` is in
+        // the corpus — so an eager drain MUST stop somewhere or it is a hang,
+        // not a wrong answer. `generators.rs` picked 1,000,000 for its own
+        // drain; measured here that turned two tests from a fast failure into a
+        // 60-SECOND TIMEOUT EACH and took the whole PowerShell gate from 58s to
+        // 136s, which every peer pays on every run. Each drained step is a full
+        // dynamic invoke — MEASURED at ~1.1ms in a debug build — so 10,000 is
+        // 11s per site and still risks the 60s per-test TIMEOUT on a loaded
+        // machine. 1,000 is ~1.1s, and it answers every enumerator in the
+        // corpus, because what they ask for is `Select-Object -First 3` /
+        // `-First 5` off the front of a source that never ends.
+        //
+        // ⚠ This is a BOUND standing in for laziness, not laziness. A finite
+        // enumeration longer than the cap would be silently truncated. The real
+        // fix is to hand the pipeline a lazy sequence — the stack-switching
+        // generator path — rather than an array; until then the cap is what
+        // keeps an infinite source from hanging the process.
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        vybe_compiler::primitives::class_slots::emit_class_get(
+            chunk,
+            vybe_compiler::primitives::class_slots::ObjSource::Stack,
+            &vybe_compiler::primitives::class_slots::resolve(
+                &vybe_compiler::primitives::class_slots::ClassSlot::Slot(
+                    vybe_ast::ProtocolSlot::Next,
+                ),
+                &vybe_compiler::primitives::class_slots::PlainNames,
+            ),
+            vybe_compiler::primitives::class_slots::Dest::Local(next_fn),
+            line,
+        );
+
+        // ⛔TWO KEYS, slot THEN spelling — the probe `generators.rs` documents.
+        // A .NET enumerator fills the `Next` SLOT. A native ECMA iterator (what
+        // `[System.Collections.Generic.HashSet[int]]` hands back) carries the
+        // plain `next` PROPERTY and no slot at all, and asking only the slot
+        // left it undrained.
+        chunk.emit_op_u16(Op::LOCAL_GET, next_fn, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("function", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_string_const("next", line);
+        chunk.emit_call(get_method, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, next_fn, line);
+        chunk.emit_end(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, next_fn, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("function", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+
+        chunk.emit_array_new_fixed(0, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, drained, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, guard, line);
+
+        let exit = chunk.emit_block(line);
+        let (again, _) = chunk.emit_loop_s(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, guard, line);
+        chunk.emit_i32_const(1_000, line);
+        chunk.emit_op(Op::I32_GE_S, line);
+        chunk.emit_br_if(1, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, next_fn, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, step, line);
+
+        // ⛔THE STEP HAS TWO SHAPES and the RESULT tells them apart. ECMA-262
+        // says `next()` returns an OBJECT carrying `done`/`value`; .NET's
+        // `MoveNext()` returns a BOOL and leaves the value on `Current`. Both
+        // reach this loop, so the test is on what came back, not on which key
+        // found the method.
+        chunk.emit_op_u16(Op::LOCAL_GET, step, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("object", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, step, line);
+        chunk.emit_string_const("done", line);
+        chunk.emit_call(get_prop, 2, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_br_if(2, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, drained, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, step, line);
+        chunk.emit_string_const("value", line);
+        chunk.emit_call(get_prop, 2, line);
+        chunk.emit_call(push, 2, line);
+        chunk.emit_op(Op::DROP, line);
+
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, step, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_br_if(2, line);
+
+        // ⛔`get_Current` is read by SPELLING, and only here. No `Current`
+        // protocol slot exists to ask instead, and a PowerShell spelling in
+        // PowerShell's own emitter is where a spelling belongs.
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_string_const("get_current", line);
+        chunk.emit_call(get_method, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, cur_fn, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, drained, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, cur_fn, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("function", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, cur_fn, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_string_const("current", line);
+        chunk.emit_call(get_prop, 2, line);
+        chunk.emit_end(line);
+        chunk.emit_call(push, 2, line);
+        chunk.emit_op(Op::DROP, line);
+
+        chunk.emit_end(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, guard, line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, guard, line);
+
+        chunk.emit_br(0, line);
+        chunk.emit_end(line);
+        chunk.patch_loop(again);
+        chunk.emit_end(line);
+        chunk.patch_block(exit);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, drained, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+        chunk.emit_end(line);
+
+        // Still not an array: either the slot answered with a plain ECMA
+        // iterable, or this value never entered the adaptation at all.
+        //
+        // ⛔A `HashSet` IS A NATIVE `Set` — `$set.ToString()` is `[object Set]`
+        // — and `concat` does NOT flatten one, measured: `@($set).Count` is 1.
+        // That was invisible until `foreach` started routing its source through
+        // here, because the shared for-of iterates a Set natively and `@()`
+        // over one is in no test. `Array.from` is the primitive for exactly
+        // this and covers a Set, a Map and an iterator object alike.
+        //
+        // ⛔Gated on the value HAVING a `values` method, not on `Array.from`
+        // succeeding: `Array.from` answers `[]` for a NON-iterable object, and
+        // a PowerShell `@{ a = 1 }` is a bare object that must stay ONE element.
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_call(is_array, 1, line);
+        chunk.emit_call(cast_bool, 1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_string_const("values", line);
+        chunk.emit_call(get_method, 2, line);
+        chunk.emit_call(type_of, 1, line);
+        chunk.emit_string_const("function", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
+        chunk.emit_call(array_from, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, orig, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+        chunk.emit_end(line);
+
+        chunk.emit_end(line);
+
         chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
         chunk.emit_call(is_string, 1, line);
         chunk.emit_if(line);
@@ -70,6 +353,267 @@ pub fn emit_ensure_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+}
+
+/// `$obj.PSObject.Properties.Add($descriptor)` — attach an ETS member.
+///
+/// Two kinds reach here, both pure data:
+///
+/// * `note` — the payload IS the value. `$o.Status = "Active"`.
+/// * `alias` — the payload NAMES another member, so the value is read off the
+///   target. ⚠ Read ONCE, here: a real `PSAliasProperty` re-reads its target on
+///   every access. Nothing in the corpus writes through an alias or mutates the
+///   aliased member afterwards, and a stored value is a truthful snapshot where
+///   a fake getter would not be.
+///
+/// A descriptor of any other kind is left alone rather than half-applied.
+///
+/// Stack: `[target, descriptor]` -> `[null]`.
+/// `.Add(…)` — one spelling, two collections, told apart by ARITY.
+///
+/// A list takes one element (`$list.Add($x)`); a hashtable takes a key AND a
+/// value (`$h.Add($k, $v)`), and its storage is object properties rather than
+/// array slots. The arity is known here, so nothing has to guess from the name.
+///
+/// ⛔ This is the fallback for an UNTYPED receiver only. A `Dictionary` names a
+/// registered type and resolves through the namespace tree to `ecma:map`
+/// before this row is consulted, which is what keeps the two storages apart —
+/// the previous walker rewrite keyed on spelling and arity alone and sent a
+/// `Dictionary`'s `Add` to object properties while its `Count` and `Keys` read
+/// the map.
+///
+/// Stack: `[recv, value]` → `[recv']`, or `[recv, key, value]` → `[…]`.
+pub fn emit_collection_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 3 {
+        let idx = chunks[current].add_import("ecma:object", "set");
+        chunks[current].emit_call(idx, 3, line);
+    } else {
+        vybe_compiler::primitives::collections::emit_push(chunks, current, line);
+    }
+}
+
+pub fn emit_prop_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let desc = chunk.alloc_scratch(1);
+    let target = chunk.alloc_scratch(1);
+    let member = chunk.alloc_scratch(1);
+    let payload = chunk.alloc_scratch(1);
+
+    let obj_get = chunk.add_import("ecma:object", "get");
+    let obj_set = chunk.add_import("ecma:object", "set");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, desc, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, desc, line);
+    chunk.emit_string_const("Name", line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, member, line);
+
+    // ⛔The value is computed into a LOCAL first. Leaving `[target, member]`
+    // underneath an `if_value` block and joining the three on the stack
+    // afterwards produced `NaN` at every call site — the operands never met.
+    chunk.emit_op_u16(Op::LOCAL_GET, desc, line);
+    chunk.emit_string_const("Value", line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, payload, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, desc, line);
+    chunk.emit_string_const("__ps_kind", line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_string_const("alias", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, payload, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, payload, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, member, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, payload, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_ref_null(0x6e, line);
+}
+
+/// `$obj.PSObject` — the EXTENDED TYPE SYSTEM view of a value.
+///
+/// PowerShell wraps every value in a `PSObject` carrying `TypeNames`,
+/// `Properties` and `Members` alongside the value's own members. It has to be
+/// the SAME object every time, because the corpus mutates through it and reads
+/// back: `$o.psobject.TypeNames.Insert(0, "T")` then
+/// `$o.psobject.TypeNames[0]`. So this is get-or-CREATE, stashed on the target
+/// under a private key, not a fresh view per access.
+///
+/// ⛔`TypeNames` ARRIVES AS AN ARGUMENT rather than being built here. It must
+/// support `Insert`/`Add`/`Contains`/`Clear`/`Count`/`[0]`, and a bare array
+/// answers only some of those — `@("a").Insert(0, "b")` is
+/// `undefined is not callable`, because `Insert` is a leaf on the dotnet TREE
+/// and declaring a `[value_methods] Insert` row would SHADOW that leaf and
+/// break `List[T].Insert` for everyone. The walker therefore hands in a real
+/// `List[string]`, built the ordinary way, and this only stores it.
+///
+/// Stack: `[target, fresh_type_names]` -> `[psobject]`.
+pub fn emit_psobject(chunks: &mut [Chunk], current: usize, line: u32) {
+    let names = chunks[current].alloc_scratch(1);
+    let target = chunks[current].alloc_scratch(1);
+    let view = chunks[current].alloc_scratch(1);
+
+    let obj_get = chunks[current].add_import("ecma:object", "get");
+    let obj_set = chunks[current].add_import("ecma:object", "set");
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, names, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, target, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target, line);
+    chunks[current].emit_string_const("__ps_psobject", line);
+    chunks[current].emit_call(obj_get, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, view, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, view, line);
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    vybe_compiler::primitives::dict::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, view, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, view, line);
+    chunks[current].emit_string_const("TypeNames", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, names, line);
+    chunks[current].emit_call(obj_set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // The view has to know what it is a view OF: `Properties.Add` writes to the
+    // TARGET, not to the view.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, view, line);
+    chunks[current].emit_string_const("__ps_target", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target, line);
+    chunks[current].emit_call(obj_set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target, line);
+    chunks[current].emit_string_const("__ps_psobject", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, view, line);
+    chunks[current].emit_call(obj_set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, view, line);
+}
+
+/// PowerShell's `*`, which is the same LEFT-OPERAND rule as `+` — and is the
+/// reason `+` needed one in the first place.
+///
+/// | `$a` | `$a * 3` |
+/// |------|----------|
+/// | array | the elements REPEATED — `@(1,2) * 3` is six elements |
+/// | string | the text repeated — `"ab" * 3` is `"ababab"` |
+/// | number | arithmetic |
+///
+/// Verified against `/usr/local/bin/pwsh` 7.6.4: `(@(1,2) * 3).Count` is 6 and
+/// `"ab" * 3` is `ababab` there, while both answered `NaN`/0 here — `F64_MUL`
+/// coerces an array or a string operand to a number, so a repetition became a
+/// silent nothing rather than an error.
+///
+/// ⛔The COUNT is read as an i32 and the loop is a real one: `concat` appends
+/// one operand per call, so a repetition is n appends. Reusing `emit_add`'s
+/// shape would only have appended once.
+///
+/// Stack: `[a, b]` -> `[result]`.
+pub fn emit_multiply(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    let acc = chunk.alloc_scratch(1);
+    let count = chunk.alloc_scratch(1);
+
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let concat = chunk.add_import("ecma:array", "concat");
+    let is_string = chunk.add_import("wasm:js-string", "test");
+    let repeat = chunk.add_import("ecma:string", "repeat");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_if_value(line);
+
+    // Array on the left: n appends of the whole array.
+    chunk.emit_array_new_fixed(0, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
+    // ⛔The counter stays a DYNAMIC value. `$n` arrives boxed and there is no
+    // `emit_dyn_to_i32`; the shared drain in `generators.rs` counts the same
+    // way, with `emit_dyn_lt` / `emit_dyn_add`.
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, count, line);
+
+    let done = chunk.emit_block(line);
+    let (again, _) = chunk.emit_loop_s(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count, line);
+    chunk.emit_i32_const(-1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, count, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(again);
+    chunk.emit_end(line);
+    chunk.patch_block(done);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_string, 1, line);
+    chunk.emit_if_value(line);
+
+    // String on the left: `String.prototype.repeat`, which is this operation
+    // exactly — including throwing on a negative count, as PowerShell does.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(repeat, 2, line);
+
+    chunk.emit_else(line);
+
+    // Number on the left: arithmetic — but ⛔NOT a bare `F64_MUL`. `*` still has
+    // to reach a user `operator *`, which is what `emit_divide` does for `/`
+    // through the same helper. Multiplying an `Int128`/`BigInteger` numerically
+    // would answer nonsense, and those carry their own operator.
+    // ⛔`emit_rich_arithmetic` takes the operands as LOCAL SLOTS, not from the
+    // stack — pushing them first leaves two values behind and unbalances the
+    // enclosing `if`.
+    vybe_compiler::primitives::expressions::emit_rich_arithmetic(
+        chunk,
+        a_slot,
+        b_slot,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Mul),
+        |c: &mut Chunk, l: u32| c.emit_op(Op::F64_MUL, l),
+        line,
+    );
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 /// PowerShell's `+`, which is three operations chosen by the LEFT operand:

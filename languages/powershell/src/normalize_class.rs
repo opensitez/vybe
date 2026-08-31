@@ -3,7 +3,10 @@
 //! The walker already lowered class syntax into `ClassDecl` + `ClassMember`.
 //! This normalizer only maps members into the shared `NormalMembers` shape.
 
-use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
+use vybe_ast::class_normalize::{
+    NormalMembers, build_normal_method, declared_protocol_slots, from_method_stmt,
+    resolve_special_kind, types::*,
+};
 use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, PropertySetter, Span, StmtKind,
 };
@@ -17,6 +20,18 @@ pub fn normalize_class(
     modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
+
+    // A slot the DECLARATION states outranks one guessed from the spelling.
+    //
+    // ⛔ Reading the spelling alone loses every slot a shared lowering stamps,
+    // because those members are deliberately nameless: `enum_lowering` installs
+    // the `Int` role as `__enum_to_int` — "no language spells this method, they
+    // all spell the coercion" — so `canonical_method` finds nothing and the
+    // role is dropped. The member then installs under its NAME, and the reader,
+    // which asks for the SLOT, gets undefined: `vybex -d` on
+    // `[P]::R -bor [P]::W` shows `struct.get (__vybe_slot_42)` twice and
+    // `struct.set (__vybe_slot_42)` never, while csharp emits both.
+    let declared_slots = declared_protocol_slots(members);
 
     for member in members {
         match member {
@@ -51,7 +66,8 @@ pub fn normalize_class(
                     continue;
                 };
 
-                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
+                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;

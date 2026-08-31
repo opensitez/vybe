@@ -23,6 +23,15 @@ uses_common_resolver = true
 # consulted, so constructors are never wired.
 uses_normalize_class = true
 
+# Every PowerShell class method is overridable — the language has no `virtual`
+# keyword to mark one with, so a derived method always replaces its base.
+#
+# Shared code decides virtuality once, from the marks a walker sets plus this
+# flag, and a method that is not virtual binds DIRECTLY to the declared type's
+# body. So a receiver whose declared type differs from its runtime type —
+# `[Base]$x = [Derived]::new()` — runs `Base`'s method without it.
+methods_virtual_by_default = true
+
 # PowerShell exceptions ARE .NET exceptions and this compiler models those on
 # the ECMA `Error` shape — non-enumerable `Message`/`InnerException` fields plus
 # the `instanceof` chain. Without the flag, `class E : System.Exception` got
@@ -51,6 +60,38 @@ negative_index_wraps = true
 # PowerShell answers `10`. The result takes the LEFT operand's type.
 
 [builtins]
+# `System.Numerics` / `Int128` width discipline — the same rows csharp and vb
+# carry. The emitters live in `platforms/dotnet`, which powershell already
+# runs on, so this is a binding, not a third implementation.
+"__vybe_bi_is_num" = { emit = "common:dotnet.i128_is_numeric", min_args = 1, max_args = 1 }
+"__vybe_bi_is_pow2" = { emit = "common:dotnet.i128_is_pow2", min_args = 1, max_args = 1 }
+"__vybe_bi_hex"     = { emit = "common:dotnet.i128_hex",     min_args = 2, max_args = 2 }
+"__vybe_bi_str"     = { emit = "common:dotnet.i128_str",     min_args = 1, max_args = 1 }
+"__vybe_bi_sign"    = { emit = "common:dotnet.i128_sign",    min_args = 1, max_args = 1 }
+"__vybe_bi_abs"     = { emit = "common:dotnet.i128_abs",     min_args = 1, max_args = 1 }
+"__vybe_bi_is_even" = { emit = "common:dotnet.i128_is_even", min_args = 1, max_args = 1 }
+"__vybe_bi_cmp"     = { emit = "common:dotnet.i128_cmp",     min_args = 2, max_args = 2 }
+"__vybe_bi_clamp"   = { emit = "common:dotnet.i128_clamp",   min_args = 3, max_args = 3 }
+"__vybe_bi_min"     = { emit = "common:dotnet.i128_min",     min_args = 2, max_args = 2 }
+"__vybe_bi_max"     = { emit = "common:dotnet.i128_max",     min_args = 2, max_args = 2 }
+"__vybe_bi_add"  = { emit = "common:dotnet.i128_add",  min_args = 2, max_args = 2 }
+"__vybe_bi_sub"  = { emit = "common:dotnet.i128_sub",  min_args = 2, max_args = 2 }
+"__vybe_bi_mul"  = { emit = "common:dotnet.i128_mul",  min_args = 2, max_args = 2 }
+"__vybe_bi_div"  = { emit = "common:dotnet.i128_div",  min_args = 2, max_args = 2 }
+"__vybe_bi_rem"  = { emit = "common:dotnet.i128_rem",  min_args = 2, max_args = 2 }
+"__vybe_bi_and"  = { emit = "common:dotnet.i128_and",  min_args = 2, max_args = 2 }
+"__vybe_bi_or"   = { emit = "common:dotnet.i128_or",   min_args = 2, max_args = 2 }
+"__vybe_bi_xor"  = { emit = "common:dotnet.i128_xor",  min_args = 2, max_args = 2 }
+"__vybe_bi_eq"   = { emit = "common:dotnet.i128_eq",   min_args = 2, max_args = 2 }
+"__vybe_bi_ne"   = { emit = "common:dotnet.i128_ne",   min_args = 2, max_args = 2 }
+"__vybe_bi_lt"   = { emit = "common:dotnet.i128_lt",   min_args = 2, max_args = 2 }
+"__vybe_bi_le"   = { emit = "common:dotnet.i128_le",   min_args = 2, max_args = 2 }
+"__vybe_bi_gt"   = { emit = "common:dotnet.i128_gt",   min_args = 2, max_args = 2 }
+"__vybe_bi_ge"   = { emit = "common:dotnet.i128_ge",   min_args = 2, max_args = 2 }
+"__vybe_int128_wrap"  = { emit = "common:dotnet.int128_wrap",  min_args = 1, max_args = 1 }
+"__vybe_uint128_wrap" = { emit = "common:dotnet.uint128_wrap", min_args = 1, max_args = 1 }
+"__vybe_int128_shl"   = { emit = "common:dotnet.int128_shl",   min_args = 2, max_args = 2 }
+"__vybe_int128_shr"   = { emit = "common:dotnet.int128_shr",   min_args = 2, max_args = 2 }
 
 "write-output" = { emit = "print", min_args = 0, max_args = 255 }
 "write-host" = { emit = "print", min_args = 0, max_args = 255 }
@@ -90,6 +131,17 @@ __ps_splat_arg  = { emit = "common:powershell.splat_arg",  min_args = 3, max_arg
 # numeric divide: `emit_rich_binop` consults only a USER operator method before
 # falling back to `F64_DIV`.
 __ps_divide     = { emit = "common:powershell.divide",    min_args = 2, max_args = 2 }
+# `*` — the same LEFT-OPERAND rule as `+`. ⛔`[builtin_slots.array] mul` does
+# NOT work: `compile_binop` consults that table in its `Add` arm and not in its
+# `Mul` arm, so the row is declared and never read (measured).
+__ps_multiply   = { emit = "common:powershell.multiply",  min_args = 2, max_args = 2 }
+# `$obj.PSObject` — see `emit_psobject`. Two arguments: the target, and a fresh
+# `List[string]` for `TypeNames` that the walker builds the ordinary way.
+__ps_psobject   = { emit = "common:powershell.psobject",  min_args = 2, max_args = 2 }
+# `$obj.PSObject.Properties.Add($d)` — see `emit_prop_add`.
+__ps_prop_add   = { emit = "common:powershell.prop_add",  min_args = 2, max_args = 2 }
+# `New-Object byte[] 4` — a sized array of the element type's zero value.
+__ps_repeat     = { emit = "common:collections.repeat_value", min_args = 2, max_args = 2 }
 # `$env:X = 5` stores the STRING "5" — the environment is string→string.
 __ps_to_string  = { emit = "common:powershell.to_display", min_args = 1, max_args = 1 }
 
@@ -150,12 +202,105 @@ __ps_min       = { emit = "common:collections.min",    min_args = 1, max_args = 
 # variants to cover both canonical profile wiring and normalized lookup paths.
 [value_methods]
 
+# `Count` / `Length` ARE the shared `Len` slot — the one `vybe_ast` documents as
+# "len() / length / size / Count". `slot = "len"` is how pascal's `count`,
+# python's `len`, php's `strlen` and kotlin's `size` say the same thing, and it
+# is the question the shared layer actually asks:
+# `lookup_value_method(field, 0).slot == ProtocolSlot::Len`.
+#
+# ⛔This REPLACES a walker rewrite that folded both spellings onto the literal
+# name `length` before anything else could see them. That fold was a two-entry
+# name table doing a protocol slot's job, and it defeated the shared layer's own
+# protection — `expressions.rs` refuses the generic length when
+# `receiver_class_declares_member(object, field)` says the receiver's class
+# declares that member, but `field` had already become `length`, which no
+# PowerShell class declares. MEASURED against pwsh 7.6.4:
+# `class C { [int]$Count = 9 }` answered 9 there and EMPTY here;
+# `[PSCustomObject]@{ Count = 7; Name = "g"; Group = @(1,2) }` answered 7 there
+# and 3 here — the object's KEY COUNT, which is a plausible-looking number and
+# so hid the bug.
+#
+# The slot is a FALLBACK, not an override: a declared member is resolved before
+# `[value_methods]` is consulted (see the `CompareTo` note below), which is what
+# makes a type carrying its own `Count` reach its own value again.
+Count    = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+count    = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+Length   = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+length   = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+
 ToString = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 
-# `System.String` members are NOT declared here — they are leaves on the dotnet
-# tree (`component_classes_system.rs`, class `String`), and a `[value_methods]`
-# row SHADOWS the leaf rather than backing it up.
+# `$x.GetType()` is .NET's, and `dotnet.get_type` already answers it for C# and
+# VB: a descriptor carrying `Name`, read off the value's own class name, its
+# `__type`, or `typeof` in that order. The corpus asks for `.Name` 53 times
+# against four for every other Type member.
+GetType = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
+gettype = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
+
+# `@{ … }.ContainsKey(k)` / `.Add(k, v)` — the HASHTABLE spellings.
+#
+# A PowerShell `@{}` is a bare object with no `__type`, so it reaches no tree
+# leaf; these rows are the fallback that answers for it. A `Dictionary` names a
+# REGISTERED type and resolves through the tree to `ecma:map` instead, which is
+# what keeps the two storages apart.
+#
+# ⛔These were a walker rewrite keyed on SPELLING AND ARITY, applied whatever
+# the receiver was. A `Dictionary` is an `ecma:map`, so its `Add` wrote an
+# object PROPERTY while `Count`, `Keys` and `$d[k]` read the map — two halves of
+# one object, each self-consistent, disagreeing with each other.
+ContainsKey = { emit = "host:ecma:object:has", min_args = 1, max_args = 1 }
+containskey = { emit = "host:ecma:object:has", min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# `System.String` INSTANCE MEMBERS
+# ────────────────────────────────────────────────────────────────────────────
+#
+# These names are also leaves on the dotnet tree (`component_classes_system.rs`,
+# class `String`), and a `[value_methods]` row SHADOWS the leaf. They are
+# declared here anyway because a tree leaf resolves only on a receiver whose
+# type is known at COMPILE time, and a PowerShell variable carries no declared
+# type: `$s = "hi"` walks to a plain `Assign`, so `resolve_receiver_type_hint`
+# answers `None` and the leaf is unreachable. `[string]$s = "hi"` DOES reach it
+# — that asymmetry is what these rows close.
+#
+# A literal receiver has the same gap in every .NET frontend, which is why the
+# csharp profile carries the same set.
+#
+# ⛔`[value_methods]` is language-global: a row fires on EVERY receiver, not
+# just a string. `Contains`, `IndexOf` and `LastIndexOf` are therefore NOT here
+# — arrays spell them too, and `[builtin_slots.array] contains` already answers
+# the `-contains` / `-in` operator with the collection meaning. One spelling,
+# two receivers, needs runtime dispatch rather than a row.
+Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
+TrimStart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 0 }
+TrimEnd       = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
+ToUpper       = { emit = "common:strings.to_upper",    min_args = 0, max_args = 0 }
+ToLower       = { emit = "common:strings.to_lower",    min_args = 0, max_args = 0 }
+# The dotnet spellings, not `common:str_*`: these accept the optional
+# `StringComparison` argument and read its ordinal, which the ECMA-shaped
+# two-operand primitives have no room for.
+StartsWith    = { emit = "common:dotnet.string_starts_with", min_args = 1, max_args = 2 }
+EndsWith      = { emit = "common:dotnet.string_ends_with",   min_args = 1, max_args = 2 }
+Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
+Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
+# .NET `Substring(start[, length])` takes a LENGTH; the ECMA `substring` host
+# call takes an END INDEX, so `"HeLLo".Substring(1, 3)` answers `eL` through it
+# and `eLL` through the dotnet adapter. `dotnet.string_substring` also carries
+# .NET's own bounds check.
+Substring     = { emit = "common:dotnet.string_substring", min_args = 1, max_args = 2 }
+# The pad character is OPTIONAL in .NET and defaults to a space. The
+# `common:str_pad_*` primitives require it — `"hi".PadLeft(5)` answers `null`
+# through them — and the dotnet adapter supplies the default.
+PadLeft       = { emit = "common:dotnet.string_pad_left",  min_args = 1, max_args = 2 }
+PadRight      = { emit = "common:dotnet.string_pad_right", min_args = 1, max_args = 2 }
+ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
+Normalize     = { emit = "common:dotnet.string_normalize",     min_args = 0, max_args = 1 }
+IsNormalized  = { emit = "common:dotnet.string_is_normalized",  min_args = 0, max_args = 1 }
+# `IndexOfAny(char[])` takes a SET, so it collides with no collection spelling.
+IndexOfAny    = { emit = "common:dotnet.string_index_of_any",      min_args = 1, max_args = 3 }
+LastIndexOfAny = { emit = "common:dotnet.string_last_index_of_any", min_args = 1, max_args = 3 }
+
 Equals        = { emit = "common:object.equals",       min_args = 1, max_args = 2 }
 # `CompareTo` and `GetHashCode` are `System.Object` members, so EVERY value has
 # them — `(5).CompareTo(3)`, `$str.CompareTo($other)`, `$obj.GetHashCode()`.
@@ -211,7 +356,18 @@ __ps_join        = { emit = "common:collections.join", min_args = 0, max_args = 
 # needs a binding, not an implementation.
 
 # Collection surface.
-Add           = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
+# `Add` names a LIST at one argument and a HASHTABLE at two, so the arity picks
+# the storage. A `Dictionary` never reaches here — it is a registered type and
+# the tree answers first with `ecma:map`.
+Add           = { emit = "common:powershell.collection_add", min_args = 1, max_args = 255 }
+# `Insert` is bound here for the SAME reason `Add` is. The dotnet tree already
+# has `List[T].Insert`, but a TREE leaf only resolves on a receiver whose type
+# is known at COMPILE time: `$l = [List[string]]::new(); $l.Insert(0,"A")` works
+# and `$h.L.Insert(0,"A")` on the identical object is
+# `undefined is not callable`. Anything reached through a field, a pipeline or
+# `$obj.psobject.TypeNames` is untyped by then. `Add` sitting here and Lists
+# still working is the precedent.
+Insert        = { emit = "common:collections.insert",  min_args = 2, max_args = 2 }
 Clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
 # `collections.slice` wants [array, start, end]; a 0-arg `Clone` pushed only the
 # receiver, so the host call read two garbage operands and answered an EMPTY
