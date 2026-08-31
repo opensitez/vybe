@@ -19,6 +19,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "cobol.alter" => crate::emitter::control::emit_alter(chunks, current, argc, line),
         "cobol.sort" => crate::emitter::files::emit_sort(chunks, current, argc, line),
         "cobol.merge" => crate::emitter::files::emit_merge(chunks, current, argc, line),
+        // JSON routes to `primitives/json.rs`, the shared serializer, which has
+        // no `common:json.*` dispatch key of its own.
+        "cobol.json_generate" => {
+            crate::emitter::json::emit_json_generate(chunks, current, argc, line)
+        }
+        "cobol.json_parse" => crate::emitter::json::emit_json_parse(chunks, current, argc, line),
         "cobol.copy" => crate::emitter::data::emit_copy(chunks, current, argc, line),
         "cobol.validate" => crate::emitter::data::emit_validate(chunks, current, argc, line),
         "cobol.typedef" => crate::emitter::data::emit_typedef(chunks, current, argc, line),

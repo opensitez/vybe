@@ -14,8 +14,34 @@
 // ── Whitespace and comments ─────────────────────────────────────────────────
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ inline_comment | fixed_comment }
+COMMENT    = _{ inline_comment | fixed_comment | listing_directive }
 inline_comment = _{ "*>" ~ (!"\n" ~ ANY)* }
+
+// LISTING directives — `EJECT`, `SKIP1/2/3`, `TITLE "…"`, `>>PAGE`,
+// `>>SOURCE FORMAT FREE|FIXED`. They control the printed listing and the source
+// FORMAT; none of them affects the program's meaning, and all of them may appear
+// anywhere a separator may.
+//
+// They belong in COMMENT rather than in the statement/division grammar for two
+// reasons. They occur between divisions, between paragraphs and between
+// statements, so a statement-level rule would have to be repeated at every one
+// of those points. And a COMMENT produces NO parse node, so nothing downstream
+// sees a new tree shape — which is exactly the failure mode that made three
+// earlier grammar additions land as net regressions.
+//
+// ⚠ `>>SOURCE FORMAT` is accepted and IGNORED: the lexer is already
+// format-agnostic (`fixed_comment` allows up to 6 leading columns), so honouring
+// the switch would change nothing. If a fixed-format-only construct ever needs
+// it, this is the place that has to start producing a node.
+listing_directive = _{
+    (">>" ~ WHITESPACE* ~ (^"SOURCE" ~ WHITESPACE+ ~ (^"FORMAT" ~ WHITESPACE+)?
+                            ~ (^"FREE" | ^"FIXED")
+                          | ^"PAGE"
+                          | ^"TITLE" ~ WHITESPACE+ ~ directive_text))
+  | (^"EJECT" | ^"SKIP1" | ^"SKIP2" | ^"SKIP3") ~ !(ident_cont | "-") ~ WHITESPACE* ~ "."?
+  | ^"TITLE" ~ !(ident_cont | "-") ~ WHITESPACE+ ~ directive_text ~ WHITESPACE* ~ "."?
+}
+directive_text = _{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" | "'" ~ (!"'" ~ ANY)* ~ "'" }
 // Fixed-format: line starts with * in column 7 — simplified as * at line start
 fixed_comment  = _{ "\n" ~ " "{0,6} ~ "*" ~ (!"\n" ~ ANY)* }
 
@@ -73,7 +99,10 @@ program_id_paragraph = {
 }
 
 program_id_options = {
-    kw_is? ~ program_id_option+
+    // `PROGRAM-ID. S1 IS COMMON PROGRAM.` — the trailing `PROGRAM` is part of
+    // the standard spelling and was missing, so every nested COMMON/INITIAL
+    // subprogram failed to parse at the word `PROGRAM`.
+    kw_is? ~ program_id_option+ ~ kw_program?
 }
 
 program_id_option = {
@@ -200,7 +229,12 @@ method_procedure_division = {
     ~ procedure_block*
 }
 
-using_clause    = { kw_using ~ (kw_by? ~ (kw_reference | kw_content)? ~ ident_name)+ }
+// `PROCEDURE DIVISION USING BY VALUE x BY REFERENCE y` — `BY VALUE` is one of
+// the three standard phrases and was the only one missing, so every
+// value-passing subprogram failed to parse at the word `VALUE`. The phrase is
+// STICKY (it governs the following names until another `BY`), which the walker
+// already models for `CALL … USING`.
+using_clause    = { kw_using ~ (kw_by? ~ (kw_reference | kw_content | kw_value)? ~ ident_name)+ }
 returning_clause = { kw_returning ~ ident_name }
 
 // ── Environment Division ────────────────────────────────────────────────────
@@ -325,7 +359,8 @@ file_control_paragraph = {
 }
 
 select_entry = {
-    kw_select ~ ident_name
+    // `SELECT OPTIONAL f` — the file need not exist at OPEN INPUT.
+    kw_select ~ kw_optional? ~ ident_name
     ~ kw_assign ~ kw_to? ~ (ident_name | string_literal)
     ~ select_clause*
     ~ period
@@ -338,6 +373,14 @@ select_clause = {
     | kw_relative ~ kw_key ~ kw_is? ~ ident_name
   | kw_record ~ kw_key ~ kw_is? ~ ident_name
   | kw_alternate ~ kw_record? ~ kw_key ~ kw_is? ~ ident_name ~ (kw_with? ~ kw_duplicates)?
+  // Buffering / padding / locking are runtime-environment clauses: they are
+  // part of the standard SELECT and change nothing we model, so they parse and
+  // stop here rather than failing the whole FILE-CONTROL paragraph.
+  | kw_reserve ~ (number_literal | kw_no) ~ (kw_areas | kw_area)?
+  | kw_padding ~ kw_character? ~ kw_is? ~ (ident_name | string_literal)
+  | kw_lock ~ kw_mode ~ kw_is? ~ (kw_manual | kw_automatic | kw_exclusive | ident_name)
+    ~ (kw_with? ~ kw_lock ~ kw_on? ~ (kw_multiple | kw_record)? ~ ident_or_keyword?)?
+  | kw_record ~ kw_delimiter ~ kw_is? ~ ident_or_keyword
 }
 
 // ── Data Division ───────────────────────────────────────────────────────────
@@ -568,6 +611,10 @@ level_88_item = {
     level_88 ~ ident_name
     ~ kw_value ~ kw_is? ~ literal ~ (kw_thru ~ literal)?
     ~ (","? ~ literal ~ (kw_thru ~ literal)?)*
+    // The FALSE value — what `SET cond-name TO FALSE` stores. Both spellings
+    // are standard; without it `SET … TO FALSE` has nothing to write and cobc
+    // rejects the whole declaration.
+    ~ (kw_when? ~ kw_set? ~ kw_to? ~ kw_false ~ kw_is? ~ literal)?
     ~ period
 }
 
@@ -611,7 +658,13 @@ pic_clause = { (kw_pic | kw_picture) ~ kw_is? ~ pic_string }
 // PIC string stops at period, VALUE, OCCURS, REDEFINES, USAGE, EOF
 // (matches parser.rs:807 parse_pic_string stop conditions)
 pic_string = @{ pic_char+ }
-pic_char   = _{ ASCII_ALPHANUMERIC | "(" | ")" | "+" | "-" | "*" | "/" | "$" | "," | "." ~ &ASCII_DIGIT }
+// The `.` lookahead is what separates a DECIMAL POINT from the period that
+// ends the data item. Every character that can legally follow the point inside
+// a picture is listed: `PIC ZZZ.ZZ` and `PIC ***.**` are ordinary
+// numeric-edited items whose fraction suppresses, and requiring a digit there
+// left both of them unparseable. A terminating period is always followed by
+// whitespace or a newline, neither of which is in this set.
+pic_char   = _{ ASCII_ALPHANUMERIC | "(" | ")" | "+" | "-" | "*" | "/" | "$" | "," | "." ~ &(ASCII_DIGIT | "Z" | "z" | "*" | "$" | "+" | "-" | ",") }
 
 value_clause = {
     kw_value ~ kw_is?
@@ -717,7 +770,15 @@ use_condition = {
 use_target = { kw_input | kw_output | kw_i_o | kw_extend | kw_all | ident_name }
 
 debugging_use_clause = {
-    kw_for ~ kw_debugging ~ kw_on ~ ((kw_all ~ kw_procedures) | (ident_name ~ kw_section?))
+    // `ON ALL REFERENCES OF x` names a DATA item to trace, where the other
+    // forms name a procedure. It is the second of the standard's four spellings
+    // and the only one the corpus uses; without it the whole DECLARATIVES
+    // paragraph failed to parse.
+    kw_for ~ kw_debugging ~ kw_on ~ (
+        kw_all ~ kw_references ~ kw_of ~ ident_name
+      | kw_all ~ kw_procedures
+      | ident_name ~ kw_section?
+    )
 }
 
 resume_stmt = { kw_resume ~ (kw_next ~ kw_statement | paragraph_name) }
@@ -897,6 +958,11 @@ add_stmt = {
 // COBOL arithmetic operands are literals, identifiers, or subscripted names.
 arith_operand = { atom ~ subscript_or_refmod* ~ qualification* }
 
+// ⛔ REVERTED 2026-08-29: `kw_giving ~ (data_target ~ rounded_clause?)+` does
+// accept `GIVING r1 ROUNDED r2 ROUNDED` (+1 test) but the INNER `rounded_clause`
+// then captures the ROUNDED that `add_stmt`/`multiply_stmt` expect in their own
+// trailing slot, so the walker stopped seeing it and 14 rounding tests went red.
+// A multi-target GIVING needs the two levels disentangled first.
 giving_clause  = { kw_giving ~ data_target }
 // `MODE IS <mode>` — the `IS` is optional noise in COBOL and was missing here,
 // which rejected EVERY spelled rounding mode, not just the unlisted ones.
@@ -999,7 +1065,9 @@ when_value = {
   | condition ~ (kw_thru ~ condition)?
 }
 
-when_other_clause = { kw_when ~ kw_other ~ statement_list }
+// `EVALUATE a ALSO b … WHEN OTHER ALSO OTHER` — with N subjects the catch-all
+// arm repeats `OTHER` N times. One `OTHER` left the rest unparsed.
+when_other_clause = { kw_when ~ kw_other ~ (kw_also ~ kw_other)* ~ statement_list }
 
 // ── PERFORM ─────────────────────────────────────────────────────────────────
 
@@ -1009,16 +1077,38 @@ perform_stmt = {
   | perform_times
   | perform_async
     | perform_paragraph_until
+  // The out-of-line forms must precede `perform_paragraph`: that rule matches
+  // `PERFORM p` and leaves `5 TIMES` / `VARYING …` stranded.
+  | perform_paragraph_varying
+  | perform_paragraph_times
   | perform_thru
   | perform_paragraph
   | perform_inline
 }
 
 perform_varying = {
-    kw_perform ~ kw_varying ~ ident_name
+    kw_perform ~ test_clause? ~ kw_varying ~ ident_name
     ~ kw_from ~ expression ~ kw_by ~ expression ~ kw_until ~ condition
+    ~ perform_after*
     ~ statement_list
     ~ kw_end_perform?
+}
+
+// `AFTER j FROM 1 BY 1 UNTIL j > 2` — the inner dimensions of a VARYING.
+perform_after = {
+    kw_after ~ ident_name ~ kw_from ~ expression ~ kw_by ~ expression
+    ~ kw_until ~ condition
+}
+
+// Out-of-line forms: the body is a PARAGRAPH, not an inline statement list.
+perform_paragraph_varying = {
+    kw_perform ~ paragraph_name ~ test_clause? ~ kw_varying ~ ident_name
+    ~ kw_from ~ expression ~ kw_by ~ expression ~ kw_until ~ condition
+    ~ perform_after*
+}
+
+perform_paragraph_times = {
+    kw_perform ~ paragraph_name ~ expression ~ kw_times
 }
 
 perform_until = {
@@ -1166,7 +1256,13 @@ inspect_mode = { kw_all | kw_leading | kw_first | kw_trailing | kw_characters }
 
 call_stmt = {
     kw_call ~ (string_literal | ident_name) ~ kw_async?
-    ~ (kw_using ~ call_arg+)?
+    // `CALL 'S1' BY CONTENT A` — the USING-less form. cobc accepts it and the
+    // corpus uses it 13 times. The `&kw_by` lookahead is what makes this safe:
+    // it fires ONLY when the next word is `BY`, so `CALL 'S1' RETURNING R`,
+    // `CALL 'S1' ON EXCEPTION …` and a bare `CALL 'S1'.` are untouched — and
+    // because it reuses `call_arg`, the parse tree is the shape the walker
+    // already handles, sticky BY and all. No walker change, no new tree shape.
+    ~ ((kw_using ~ call_arg+) | (&kw_by ~ call_arg+))?
     ~ (kw_returning ~ ident_name)?
     ~ on_exception_clause?
     ~ kw_end_call?
@@ -1184,7 +1280,10 @@ return_stmt = {
 }
 
 call_arg = {
-    (kw_by ~ (kw_reference | kw_content | kw_value))? ~ ident_name
+    // A LITERAL argument (`CALL 'S1' USING 'A'`) is legal and is passed BY
+    // CONTENT by definition — there is no storage to alias. Ordered after
+    // `ident_name` so nothing about an identifier argument changes.
+    (kw_by ~ (kw_reference | kw_content | kw_value))? ~ (ident_name | literal)
 }
 
 on_exception_clause = {
@@ -1202,9 +1301,30 @@ initialize_stmt = {
 // ── SET ─────────────────────────────────────────────────────────────────────
 
 set_stmt = {
-    kw_set ~ ident_name ~ kw_to ~ (kw_true | kw_false | expression)
+    // `SET ADDRESS OF x TO p` — the only genuinely unparseable SET form. The
+    // target is the ADDRESS of a LINKAGE item, so `kw_set ~ ident_name` reached
+    // `ADDRESS`, then wanted `TO` and found `OF`.
+    //
+    // ⛔ NOTHING ELSE BELONGS HERE. `SET p TO ADDRESS OF x`, `SET p TO NULL` and
+    // `SET p TO ENTRY 'S'` ALREADY PARSE — `ADDRESS OF x` is read by
+    // `qualified_ident` as a qualified NAME (`qualification = (OF|IN) ~ name`)
+    // and resolves correctly. Adding alternatives for them gave those WORKING
+    // statements a new parse tree the walker did not know, and 10 pointer tests
+    // went red for a feature that was never missing. Measured twice on
+    // 2026-08-29: first with NULL, then with the whole pointer-source rule.
+    kw_set ~ kw_address ~ kw_of ~ qualified_ident ~ kw_to ~ expression
+    // `SET p TO ENTRY 'SUB'` — a PROGRAM-POINTER source. Gated on `kw_entry`,
+    // which nothing else can match, so no working SET changes shape. (The
+    // earlier attempt at this swept in `ADDRESS OF x` and `NULL`, which ALREADY
+    // parsed, and cost 10 green tests.)
+  | kw_set ~ ident_name ~ kw_to ~ kw_entry ~ (string_literal | ident_name)
+    // `SET p(1) TO …` — a subscripted pointer target. Gated on the subscript
+    // being present, so the bare-identifier form is untouched.
+  | kw_set ~ ident_name ~ subscript ~ kw_to ~ (kw_true | kw_false | expression)
+  | kw_set ~ ident_name ~ kw_to ~ (kw_true | kw_false | expression)
   | kw_set ~ ident_name ~ (kw_up | kw_down) ~ kw_by ~ expression
 }
+
 
 // ── ALTER ───────────────────────────────────────────────────────────────────
 
@@ -1212,7 +1332,16 @@ alter_stmt = { kw_alter ~ paragraph_name ~ kw_to ~ kw_proceed ~ kw_to ~ paragrap
 
 // ── GO TO ───────────────────────────────────────────────────────────────────
 
-go_to_stmt = { kw_go ~ kw_to? ~ paragraph_name }
+// `GO TO a b c DEPENDING ON n` transfers to the n-th name (1-based); out of
+// range falls through. One name and no DEPENDING is the ordinary GO TO, and
+// stays the first alternative so nothing about it changes.
+// ⛔ The extra names are consumed ONLY when a `DEPENDING ON` actually follows.
+// A bare `paragraph_name+` ate the `NOT ON EXCEPTION` of an enclosing CALL —
+// `GO TO end-prog NOT ON EXCEPTION …` swallowed three words as paragraph names.
+// PEG backtracks the whole optional group, so the plain form is unchanged.
+// ⛔ `paragraph_name` matches a bare keyword, so the repetition has to be
+// guarded: unguarded, it consumed `DEPENDING` and `ON` themselves.
+go_to_stmt = { kw_go ~ kw_to? ~ paragraph_name ~ ((!kw_depending ~ paragraph_name)* ~ depending_clause)? }
 
 // ── STOP RUN ────────────────────────────────────────────────────────────────
 
@@ -1235,37 +1364,62 @@ raise_stmt = { kw_raise ~ kw_exception? ~ expression }
 // ── JSON GENERATE / PARSE ───────────────────────────────────────────────────
 
 xml_stmt = {
-        kw_xml ~ kw_generate ~ ident_name ~ kw_from ~ expression
+        kw_xml ~ kw_generate ~ (kw_file ~ ident_name | ident_name) ~ kw_from ~ expression
         ~ xml_generate_option*
         ~ on_exception_clause?
         ~ kw_end_xml?
-    | kw_xml ~ kw_parse ~ expression
-        ~ kw_processing ~ kw_procedure ~ ident_name
+    // ⛔ `PROCESSING PROCEDURE` is OPTIONAL and the options may precede it:
+    // `XML PARSE DOC WITH ENCODING 1208 PROCESSING PROCEDURE P1` is standard,
+    // and a bare `XML PARSE XML-DOC` is a whole statement. Requiring the
+    // procedure, and allowing options only after it, rejected both.
+    | kw_xml ~ kw_parse ~ (kw_file ~ ident_name | expression)
         ~ xml_parse_option*
+        ~ (kw_processing ~ kw_procedure ~ ident_name)?
+        ~ xml_parse_option*
+        ~ (kw_returning ~ ident_name)?
         ~ on_exception_clause?
         ~ kw_end_xml?
 }
 
 xml_generate_option = {
         kw_count ~ kw_in ~ ident_name
-    | kw_encoding ~ expression
+    // `WITH ENCODING 1208` — the `WITH` is optional noise and was not accepted.
+    | kw_with? ~ kw_encoding ~ expression
     | kw_with ~ kw_xml_declaration
     | kw_with ~ kw_attributes
+    | kw_name ~ kw_of? ~ ident_name ~ kw_is? ~ (string_literal | kw_omitted)
     | kw_namespace ~ kw_is? ~ string_literal
     | kw_namespace_prefix ~ kw_is? ~ string_literal
+    // `SUPPRESS b` names an ITEM to omit; `SUPPRESS WHEN ZERO` is the
+    // condition form. Only the second was accepted.
     | kw_suppress ~ kw_when ~ (kw_zero | kw_spaces)
+    | kw_suppress ~ ident_name+
 }
 
 xml_parse_option = {
-        kw_encoding ~ expression
+        kw_with? ~ kw_encoding ~ expression
+    | kw_returning ~ ident_name
+    | kw_with ~ kw_detail
 }
 
 json_stmt = {
-    kw_json ~ kw_generate ~ ident_name ~ kw_from ~ ident_name
-    ~ (kw_name ~ kw_of? ~ ident_name ~ kw_is? ~ (string_literal | kw_omitted))*
+    kw_json ~ kw_generate ~ (kw_file ~ ident_name | ident_name) ~ kw_from ~ ident_name
+    ~ json_option*
+    ~ on_exception_clause?
     ~ kw_end_json?
-  | kw_json ~ kw_parse ~ ident_name ~ kw_into ~ ident_name
+  // `INTO` is optional: `JSON PARSE JSON-DOC` parses in place.
+  | kw_json ~ kw_parse ~ ident_name ~ (kw_into ~ ident_name)?
+    ~ json_option*
+    ~ on_exception_clause?
     ~ kw_end_json?
+}
+
+json_option = {
+        kw_count ~ kw_in ~ ident_name
+    | kw_name ~ kw_of? ~ ident_name ~ kw_is? ~ (string_literal | kw_omitted)
+    | kw_suppress ~ ident_name+
+    | kw_with ~ kw_detail
+    | kw_with? ~ kw_encoding ~ expression
 }
 
 // ── OPEN ────────────────────────────────────────────────────────────────────
@@ -1278,13 +1432,20 @@ file_open_mode = { kw_input | kw_output | kw_i_o | kw_extend }
 
 // ── CLOSE ───────────────────────────────────────────────────────────────────
 
-close_stmt = { kw_close ~ ident_name+ }
+close_stmt = { kw_close ~ (ident_name ~ close_option?)+ }
+
+// `WITH LOCK` forbids reopening in this run unit; `WITH NO REWIND` applies to
+// tape. Neither changes what a CLOSE does to our file handle, so both are
+// accepted and carried no further.
+close_option = { kw_with? ~ (kw_lock | kw_no ~ kw_rewind) }
 
 // ── READ ────────────────────────────────────────────────────────────────────
 
 read_stmt = {
+    // `WITH [NO] LOCK` is record locking — accepted, not modelled.
     kw_read ~ ident_name
     ~ (kw_next? ~ kw_record?)?
+    ~ (kw_with? ~ kw_no? ~ kw_lock)?
     ~ (kw_into ~ ident_name)?
     ~ at_end_clause?
     ~ invalid_key_clause?
@@ -1350,9 +1511,21 @@ delete_stmt = {
 
 start_stmt = {
     kw_start ~ ident_name
-    ~ (kw_key ~ (kw_is? ~ (kw_equal | kw_greater | kw_not_less | kw_not_greater | "=" | ">=" | "<=" | ">" | "<"))? ~ ident_name)?
+    // `KEY IS EQUAL TO k` / `KEY IS GREATER THAN k` — the standard spells the
+    // relation in words, and `TO` / `THAN` are part of it.
+    ~ (kw_key ~ (kw_is? ~ start_key_op)? ~ ident_name)?
     ~ invalid_key_clause?
     ~ kw_end_start?
+}
+
+start_key_op = {
+    kw_not? ~ (
+        kw_equal ~ kw_to?
+      | kw_greater ~ kw_than? ~ (kw_or ~ kw_equal ~ kw_to?)?
+      | kw_less ~ kw_than? ~ (kw_or ~ kw_equal ~ kw_to?)?
+      | kw_not_less | kw_not_greater
+      | ">=" | "<=" | ">" | "<" | "="
+    )
 }
 
 // ── SORT ────────────────────────────────────────────────────────────────────
@@ -1432,7 +1605,13 @@ validate_stmt = { kw_validate ~ ident_name ~ kw_end_validate? }
 // ── FREE / ALLOCATE ─────────────────────────────────────────────────────────
 
 free_stmt     = { kw_free ~ ident_name }
-allocate_stmt = { kw_allocate ~ ident_name ~ (kw_returning ~ ident_name)? }
+// `ALLOCATE 10 CHARACTERS RETURNING p` allocates by SIZE; `ALLOCATE rec` by
+// the item's own size. Both are COBOL 2002 and both reach the same statement.
+allocate_stmt = {
+    kw_allocate ~ (expression ~ (kw_characters | kw_character) | ident_name)
+    ~ kw_initialized?
+    ~ (kw_returning ~ ident_name)?
+}
 
 // ── TYPEDEF ─────────────────────────────────────────────────────────────────
 
@@ -1502,7 +1681,11 @@ and_condition = {
 }
 
 not_condition = {
-    kw_not ~ comparison
+    // A PARENTHESISED CONDITION is not an expression — `(A > 0 AND B = 0)` has
+    // to re-enter `condition`, or the `(` reaches the arithmetic grammar and
+    // the whole IF fails. `NOT` is allowed to stack (`NOT NOT (N > 0)`).
+    kw_not ~ not_condition
+  | "(" ~ condition ~ ")"
   | comparison
 }
 
@@ -1837,6 +2020,24 @@ kw_block           = @{ ^"block"           ~ word_end }
 kw_contains        = @{ ^"contains"        ~ word_end }
 kw_characters      = @{ ^"characters"      ~ word_end }
 kw_character       = @{ ^"character"       ~ word_end }
+kw_references       = @{ ^"references"       ~ word_end }
+kw_address          = @{ ^"address"          ~ word_end }
+kw_rewind           = @{ ^"rewind"           ~ word_end }
+kw_areas            = @{ ^"areas"            ~ word_end }
+kw_area             = @{ ^"area"             ~ word_end }
+kw_padding          = @{ ^"padding"          ~ word_end }
+kw_optional         = @{ ^"optional"         ~ word_end }
+kw_reserve          = @{ ^"reserve"          ~ word_end }
+kw_manual           = @{ ^"manual"           ~ word_end }
+kw_automatic        = @{ ^"automatic"        ~ word_end }
+kw_exclusive        = @{ ^"exclusive"        ~ word_end }
+kw_multiple         = @{ ^"multiple"         ~ word_end }
+kw_entry            = @{ ^"entry"            ~ word_end }
+kw_initialized      = @{ ^"initialized"      ~ word_end }
+kw_eject            = @{ ^"eject"            ~ word_end }
+kw_title            = @{ ^"title"            ~ word_end }
+kw_format           = @{ ^"format"           ~ word_end }
+kw_fixed            = @{ ^"fixed"            ~ word_end }
 kw_label           = @{ ^"label"           ~ word_end }
 kw_standard        = @{ ^"standard"        ~ word_end }
 kw_condition       = @{ ^"condition"       ~ word_end }

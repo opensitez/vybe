@@ -117,6 +117,8 @@ struct CobolWalkerContext {
     // Elementary working-storage fields whose PICTURE gives a fixed display
     // width, so DISPLAY of the field pads to that width.
     field_pics: HashMap<String, CobolPicFmt>,
+    /// `OCCURS` element pictures — see `register_element_pic`.
+    element_pics: HashMap<String, CobolPicFmt>,
     // Elementary fields whose PICTURE is numeric-EDITED. Kept apart from
     // `field_pics` because the two answer different questions: `field_pics`
     // says how wide the stored text is (every reader), this says how a value
@@ -192,6 +194,7 @@ impl CobolWalkerContext {
             condition_settings: HashMap::new(),
             screen_items: HashSet::new(),
             field_pics: HashMap::new(),
+            element_pics: HashMap::new(),
             field_edit_pics: HashMap::new(),
             field_attrs: HashMap::new(),
             global_fields: HashSet::new(),
@@ -213,6 +216,22 @@ impl CobolWalkerContext {
 
     fn is_screen_item(&self, name: &str) -> bool {
         self.screen_items.contains(&cobol_name_key(name))
+    }
+
+    /// The PICTURE of ONE ELEMENT of an `OCCURS` table.
+    ///
+    /// It cannot live in `field_pics`: that map answers "how is the item called
+    /// `name` rendered", and for a table the answer is "it is a table" — a bare
+    /// `STRING TB` must not render as one padded element. `TB(1)` however IS one
+    /// element and is rendered by this picture. Two questions, two maps.
+    fn register_element_pic(&mut self, name: &str, pic: &str) {
+        if let Some(fmt) = cobol_pic_display_fmt(pic) {
+            self.element_pics.insert(cobol_name_key(name), fmt);
+        }
+    }
+
+    fn element_pic(&self, name: &str) -> Option<CobolPicFmt> {
+        self.element_pics.get(&cobol_name_key(name)).copied()
     }
 
     fn register_field_pic(&mut self, name: &str, pic: &str) {
@@ -400,18 +419,39 @@ impl CobolWalkerContext {
         match &expr.kind {
             ExprKind::Ident(name) => self.field_pic(name),
             ExprKind::Member { field, .. } => self.field_pic(field),
+            // ⛔ NO `Index` ARM HERE, deliberately. `pic_of` is consulted in
+            // ARITHMETIC contexts too, and answering it for `TB(1)` made a
+            // table element arrive as its rendered STRING inside `COMPUTE` —
+            // 8 tests red for 5 gained. Only `format_of` (the RENDERING
+            // question, asked by STRING/DISPLAY) may see through a subscript.
             _ => None,
         }
     }
 
     fn format_of(&self, expr: &Expression) -> Option<(CobolPicFmt, CobolFieldAttrs)> {
         match &expr.kind {
+            // ⛔ A NUMERIC-EDITED item IS ALREADY ITS FINAL TEXT. The edit runs
+            // at the STORE (`cobol_move_value_for_target` -> `cobol_edit_expr`),
+            // so `PIC 99CR` holds "05CR" — re-rendering that through the numeric
+            // formatter feeds `__to_fixed2` a non-number and yields NaN.
+            ExprKind::Ident(name) if self.field_edit_pic(name).is_some() => None,
+            ExprKind::Member { field, .. } if self.field_edit_pic(field).is_some() => None,
             ExprKind::Ident(name) => self
                 .field_pic(name)
                 .map(|fmt| (fmt, self.field_attrs(name))),
             ExprKind::Member { field, .. } => self
                 .field_pic(field)
                 .map(|fmt| (fmt, self.field_attrs(field))),
+            // A table element is rendered by its element PICTURE — cobc prints
+            // `0010` for a `PIC 9(4)` element where we printed `10`. The
+            // picture lives in `element_pics`, not `field_pics`: a bare
+            // `STRING TB` must render the TABLE, not one padded element.
+            ExprKind::Index { object, .. } => match &object.kind {
+                ExprKind::Ident(name) => self
+                    .element_pic(name)
+                    .map(|fmt| (fmt, self.field_attrs(name))),
+                _ => self.format_of(object),
+            },
             _ => None,
         }
     }
@@ -1336,6 +1376,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // arrives.
     let mut unit_local_storage: Vec<Statement> = Vec::new();
     let mut units: Vec<(String, Vec<Statement>)> = Vec::new();
+    // `PROGRAM-ID. S1 IS INITIAL PROGRAM.` — an INITIAL program is set to its
+    // initial state EVERY time it is called, so its WORKING-STORAGE VALUE
+    // clauses re-apply on entry. Ordinary storage is static and persists (see
+    // the `data_division` arm), which is the right default and the reason this
+    // has to be re-stated per unit rather than changed there.
+    let mut unit_is_initial = false;
+    let mut unit_storage_inits: Vec<Statement> = Vec::new();
 
     for pair in program.into_inner() {
         match pair.as_rule() {
@@ -1344,6 +1391,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 // new unit for a real `PROGRAM-ID` — a `CLASS-ID` /
                 // `INTERFACE-ID` division declares a TYPE, has no procedure
                 // division and nothing to call.
+                // Read the INITIAL flag BEFORE the pair is consumed.
+                let declares_initial = cobol_program_is_initial(&pair);
                 let declares_program = {
                     if unit_index > 0 {
                         units.push((current_unit_name.clone(), std::mem::take(&mut unit_stmts)));
@@ -1358,6 +1407,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     continue;
                 }
                 unit_index += 1;
+                unit_is_initial = declares_initial;
+                unit_storage_inits.clear();
                 current_unit_name = module.name.clone();
                 // `walk_identification_division` writes `module.name`, so a
                 // multi-unit file would otherwise end up named after its LAST
@@ -1383,6 +1434,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 // putting it inside the function body would reset it per call.
                 let mut storage = Vec::new();
                 walk_data_division(pair, &mut storage, &mut unit_local_storage, &mut ctx)?;
+                if unit_is_initial {
+                    unit_storage_inits.extend(cobol_storage_reinit(&storage));
+                }
                 append_cobol_storage(storage, &mut unit_stmts, &mut module.body, &ctx);
             }
             Rule::procedure_division => {
@@ -1395,6 +1449,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 // though the linker had loaded the file.
                 let params = cobol_procedure_using_params(&pair);
                 let mut unit_body = Vec::new();
+                // An INITIAL program is restored to its initial state on EVERY
+                // entry, so the VALUE clauses run first, ahead of the body.
+                unit_body.extend(unit_storage_inits.iter().cloned());
                 walk_procedure_division(pair, &mut unit_body, &ctx)?;
 
                 // A COBOL paragraph is a FUNCTION OF the unit, not a statement
@@ -1603,10 +1660,22 @@ fn collect_cobol_nested_program_units(
     let mut unit_stmts = Vec::new();
     let mut unit_local_storage = Vec::new();
     let mut nested_programs = Vec::new();
+    // Same rule as the top-level collector: an INITIAL program is restored to
+    // its initial state on every entry. A NESTED program reaches this function
+    // instead, so the flag has to be honoured here too.
+    let mut is_initial = false;
+    let mut storage_inits: Vec<Statement> = Vec::new();
 
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::program_id_paragraph => {
+                is_initial = child.clone().into_inner().any(|o| {
+                    o.as_rule() == Rule::program_id_options
+                        && o.into_inner().any(|opt| {
+                            opt.as_rule() == Rule::program_id_option
+                                && opt.into_inner().any(|k| k.as_rule() == Rule::kw_initial)
+                        })
+                });
                 if let Some(name_pair) = child
                     .into_inner()
                     .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword))
@@ -1620,6 +1689,9 @@ fn collect_cobol_nested_program_units(
             Rule::data_division => {
                 let mut storage = Vec::new();
                 walk_data_division(child, &mut storage, &mut unit_local_storage, ctx)?;
+                if is_initial {
+                    storage_inits.extend(cobol_storage_reinit(&storage));
+                }
                 append_cobol_storage(storage, &mut unit_stmts, &mut module.body, ctx);
             }
             Rule::procedure_division => {
@@ -1631,6 +1703,7 @@ fn collect_cobol_nested_program_units(
                     .partition(|stmt| matches!(stmt.kind, StmtKind::FunctionDecl { .. }));
                 let mut entry_body = std::mem::take(&mut unit_local_storage);
                 entry_body.extend(paragraph_decls);
+                entry_body.extend(storage_inits.iter().cloned());
                 entry_body.extend(entry_statements);
                 unit_stmts.push(Statement::new(StmtKind::Return(Some(Expression::new(
                     ExprKind::Lambda {
@@ -1670,6 +1743,43 @@ fn collect_cobol_nested_program_units(
 /// which are types rather than programs: they have no procedure division and
 /// nothing to call. Treating them as program units gave them an EMPTY name and
 /// synthesized a call to it.
+/// Does this `IDENTIFICATION DIVISION` declare `PROGRAM-ID … IS INITIAL`?
+fn cobol_program_is_initial(pair: &Pair<Rule>) -> bool {
+    fn scan(p: Pair<Rule>) -> bool {
+        if p.as_rule() == Rule::program_id_options {
+            return p.into_inner().any(|o| {
+                o.as_rule() == Rule::program_id_option
+                    && o.into_inner().any(|k| k.as_rule() == Rule::kw_initial)
+            });
+        }
+        p.into_inner().any(scan)
+    }
+    pair.clone().into_inner().any(scan)
+}
+
+/// The statements that put an INITIAL program's storage back to its declared
+/// state. Only items with an explicit initialiser are restored — an item with
+/// no VALUE has no initial state to return to.
+fn cobol_storage_reinit(storage: &[Statement]) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for stmt in storage {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            continue;
+        };
+        for decl in declarations {
+            let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init) else {
+                continue;
+            };
+            out.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(name)],
+                value: init.clone(),
+                by_ref: false,
+            }));
+        }
+    }
+    out
+}
+
 fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result<bool, String> {
     let mut declares_program = false;
     for child in pair.into_inner() {
@@ -2709,6 +2819,8 @@ fn walk_regular_data_item(
     // A plain scalar elementary field (not a group, not an OCCURS table) whose
     // PICTURE gives a fixed display width — record it so DISPLAY of the field pads.
     let is_scalar_elementary = group_children.is_empty() && occurs_count.is_none();
+    // Captured HERE: both operands are consumed further down.
+    let is_table_elementary = group_children.is_empty() && occurs_count.is_some();
 
     // A VALUE clause on a numeric-edited item is edited exactly like a MOVE
     // into it — `01 U PIC ZZ9 VALUE 7.` holds `"  7"` under cobc — so the
@@ -2948,6 +3060,17 @@ fn walk_regular_data_item(
             .and_then(cobol_pic_display_fmt)
             .map(cobol_pic_width);
         ctx.register_storage_alias(&name, target, width);
+    }
+
+    // A table's PICTURE describes ONE element, so it is recorded under a
+    // registry the subscript path reads. Without it `TB(1)` on a `PIC 9(4)`
+    // rendered as `10` where cobc gives `0010` — every element of every table
+    // silently lost its picture.
+    if is_table_elementary
+        && let Some(pic) = pic_str.as_deref()
+        && !cobol_usage_is_computational(usage_str.as_deref())
+    {
+        ctx.register_element_pic(&name, pic);
     }
 
     if is_scalar_elementary {
@@ -3742,6 +3865,30 @@ fn cobol_data_format_expr(
         | CobolPicFmt::ImpliedDecimal { digits, .. }
         | CobolPicFmt::Alpha(digits) => digits,
     };
+    // ⛔ COERCE TO A NUMBER FIRST. A table element nested in a GROUP
+    // (`01 G. 05 E PIC 9 OCCURS 4.`) is a CHARACTER out of the group's storage
+    // string, and `__to_fixed2` is `host:ecma:number:toFixed` — on a string it
+    // yields 0, so `E(1)` holding "1" rendered as `0`. `* 1` is the numeric
+    // mirror of the `"" +` coercion the refmod path needs, and is the identity
+    // on a value that is already a number.
+    // ⛔ ONLY for a SUBSCRIPTED operand. A table element nested in a GROUP
+    // (`01 G. 05 E PIC 9 OCCURS 4.`) is a CHARACTER out of the group's storage
+    // string, and `__to_fixed2` is `host:ecma:number:toFixed` — on a string it
+    // yields 0, so `E(1)` holding "1" rendered as `0`.
+    //
+    // Applying `* 1` to EVERY numeric operand instead turned `01 N PIC 9(5)
+    // VALUE SPACES.` into `00NaN`: a field whose value is genuinely not a
+    // number must keep whatever it has. The coercion belongs to the ONE shape
+    // that is a character by construction, not to the picture.
+    // MEASURED both ways, 2026-08-29. Restricting this to a SUBSCRIPTED operand
+    // is the tidy-looking choice and it is worse: +3/-5 against +8/-6. Numeric
+    // operands arrive as characters from more shapes than a subscript (group
+    // storage slices, REDEFINES views), and the picture is the statement of
+    // what the item IS. So it applies to every numeric picture.
+    let value = match fmt {
+        CobolPicFmt::Alpha(_) => value,
+        _ => binary(BinOp::Mul, value, Expression::int(1)),
+    };
     let original_value = value.clone();
 
     let mut rendered = match (fmt, attrs.sign) {
@@ -3858,10 +4005,19 @@ fn cobol_data_format_expr(
             // sign onto the last one, so `PIC S9(4)` holding 65 is `0065`,
             // never `065`.
             //
-            // The overpunch itself is deliberately NOT reproduced: the corpus
-            // has 47 tests expecting a readable `-`, 20 expecting a leading
-            // `+`, and none expecting `006u`. So the sign is a character of
-            // its own in front of all n digits.
+            // ⛔⛔ STORAGE OVERPUNCHES AND WE DO NOT. TRIED TWICE, REVERTED TWICE.
+            // cobc, `PIC S9(5)` = -28:  DISPLAY -> `-00028`, STRING -> `0002x`
+            // (`p`..`y` = -0..-9 on the LAST digit); `PIC S9(3)` = -12 -> `01r`.
+            // Implementing it (overpunch here, readable in
+            // `cobol_display_format_expr`) matches cobc on a direct probe and
+            // measures **+23 / -32** corpus-wide. 22 of the 32 are wrong tests
+            // cobc also refutes, so the arithmetic looks winnable — it is not
+            // yet, and the reason is NOT what the first attempt assumed:
+            //   ⛔ making MOVE value-preserving for a numeric target (a good
+            //     change, +10 on its own, KEPT) did not move this at all;
+            //   ⛔ nor did guarding `format_of` against numeric-EDITED items.
+            // Something else still reads a signed item's STORAGE where it wants
+            // its VALUE. Find that reader before trying a third time.
             let abs_digits = call(
                 "__pad_start",
                 vec![
@@ -3973,24 +4129,35 @@ fn cobol_data_format_expr(
 struct CobolEditPic {
     /// Character positions in the edited result — the field's storage width.
     width: usize,
-    /// Digit positions the value renders into.
+    /// Digit positions the value renders into, the fraction included.
     digits: usize,
+    /// How many of those are FRACTION digits. The picture's `.` splits the
+    /// value, so the digit string is built to exactly this many decimals.
+    scale: usize,
     /// How many LEADING digit positions are zero-suppressed. COBOL requires
     /// the `Z`/`*` positions to precede every `9`, so this is always a prefix.
     suppress: usize,
     /// What a suppressed position shows: space for `Z`, `*` for `*`.
     fill: char,
-    /// The result's characters, left to right. Empty for a floating-sign
-    /// picture, which is built from `digits`/`width` alone.
+    /// The result's characters, left to right.
     cells: Vec<CobolEditCell>,
-    /// `PIC ---` / `PIC +++`: the sign floats to just left of the first
-    /// significant digit. Holds the sign character the picture was written
-    /// with, which decides what a non-negative value shows.
-    floating: Option<char>,
-    /// A fixed `+`/`-` before the digits.
+    /// `PIC ---` / `PIC +++` / `PIC $$$,$$9`: the symbol floats to just left
+    /// of the first significant digit. Holds the character the picture was
+    /// written with, which for `+`/`-` also decides what a non-negative value
+    /// shows. How far the run reaches is baked into the `Float` cells, which
+    /// carry their own thresholds.
+    float_char: Option<char>,
+    /// A fixed `$`/`+`/`-` before the digits.
     leader: Option<char>,
     /// `CR`, `DB`, or a fixed `+`/`-` after the digits.
     trailer: Option<String>,
+    /// EVERY digit position suppresses and the fill is a space, so a zero
+    /// value blanks the WHOLE field — the decimal point and the floating
+    /// symbol included. `PIC ZZZ.ZZ` on zero is six spaces under cobc, not
+    /// `   .  `, and `PIC $$$$` is four spaces, not `   $`. The `*` fill is
+    /// the documented exception: it keeps the point (`PIC ***.**` is
+    /// `***.**`), which falls out of widening `suppress` instead.
+    blank_all_zero: bool,
     /// BLANK WHEN ZERO. Folded in here rather than left to the DISPLAY-time
     /// wrapper: by the time anything reads the field it holds text, and
     /// `"   " = 0` is not the question COBOL asks.
@@ -4004,57 +4171,90 @@ enum CobolEditCell {
     /// A literal character, with the count of digit positions to its left —
     /// an insertion inside the still-suppressed region shows the fill instead.
     Insert(char, usize),
+    /// One position of the floating-symbol run — which spans the symbol
+    /// characters AND any insertion characters among them, because the symbol
+    /// can land on one: `PIC $$,999` holding 45 is `  $045` under cobc, the
+    /// `$` sitting exactly where the comma is written.
+    ///
+    /// `t` is how many leading digits must be non-zero for the position to
+    /// show its own content, and `next_t` is the same threshold one position
+    /// to the right (`None` at the run's right edge, where the symbol has
+    /// nowhere further to go). The symbol lands on the LAST position that is
+    /// still suppressed, so a position shows its content, else the symbol if
+    /// its right-hand neighbour shows something, else a space.
+    Float {
+        t: usize,
+        next_t: Option<usize>,
+        digit: Option<usize>,
+        literal: char,
+    },
 }
 
 /// Compile a numeric-edited PICTURE, or `None` for one this does not model.
 ///
 /// `None` is the conservative answer: the picture keeps whatever behaviour it
 /// has today rather than getting a half-right edit. Deliberately NOT modelled:
-/// `.`/`V`/`P` (decimal alignment and scaling), `$` (currency), and a floating
-/// sign run followed by more picture characters.
+/// `V`/`P`, which change how the digits are DERIVED from the value (implied
+/// decimal point, scaling) rather than how they are laid out.
 fn cobol_compile_edit_pic(pic: &str) -> Option<CobolEditPic> {
     let chars = cobol_expand_pic(pic)?;
     if chars.is_empty() {
         return None;
     }
-    // Scaling, decimal alignment and currency change how the DIGITS are
-    // derived from the value, not just how they are laid out.
     if chars
         .iter()
-        .any(|c| matches!(c, '.' | 'V' | 'P' | '$' | 'S' | 'X' | 'A' | 'N'))
+        .any(|c| matches!(c, 'V' | 'P' | 'S' | 'X' | 'A' | 'N'))
     {
         return None;
     }
 
-    // A wholly floating picture — `PIC ---`, `PIC +++` — is decided FIRST.
-    // Its last character is a sign too, so the trailing-sign test below would
-    // otherwise claim it and leave a run that parses as nothing.
+    let mut body = chars.as_slice();
+
+    // The leading run is peeled BEFORE the trailing sign, because the last
+    // character of a floating run is a sign too: peeling `+++,+++` from the
+    // right claims its final `+` as a trailer and leaves a six-position run to
+    // render `  + 45+` where cobc gives `    +45`. The run is anchored at
+    // index 0, so taking it first is unambiguous; what it leaves behind is
+    // where a real trailer can be.
     //
-    // The run's leftmost position is the sign's; the rest are suppressed digit
-    // positions. A floating run followed by further picture characters is real
-    // COBOL but is not modelled here, so it falls through to `None`.
-    if chars.len() >= 2
-        && matches!(chars[0], '+' | '-')
-        && chars.iter().all(|c| *c == chars[0])
+    // A leading run of one symbol — `$$$`, `+++`, `---`, insertion characters
+    // allowed inside it (`$$$,$$`) — FLOATS: the symbol prints immediately
+    // left of the first significant digit. The run ends at its LAST symbol
+    // character; everything after it is ordinary body, which is what lets
+    // `$$$,$$9.99` be a floating run of five followed by `9.99`.
+    //
+    // A run of ONE is a fixed symbol position instead: `PIC $9(3)` is `$042`,
+    // the `$` nailed to the left edge.
+    let mut leader = None;
+    let mut float_char = None;
+    let mut float_count = 0usize;
+    let mut run: &[char] = &[];
+    if let Some(&first) = body.first()
+        && matches!(first, '$' | '+' | '-')
     {
-        return Some(CobolEditPic {
-            width: chars.len(),
-            digits: chars.len() - 1,
-            suppress: chars.len() - 1,
-            fill: ' ',
-            cells: Vec::new(),
-            floating: Some(chars[0]),
-            leader: None,
-            trailer: None,
-            blank_when_zero: false,
-        });
+        let mut end = body.len();
+        let mut count = 0usize;
+        for (index, &ch) in body.iter().enumerate() {
+            if ch == first {
+                count += 1;
+            } else if !matches!(ch, ',' | '0' | 'B' | '/') {
+                end = index;
+                break;
+            }
+        }
+        if count > 1 {
+            float_char = Some(first);
+            float_count = count;
+            run = &body[..end];
+            body = &body[end..];
+        } else {
+            leader = Some(first);
+            body = &body[1..];
+        }
     }
 
-    let mut body = chars.as_slice();
-    let mut leader = None;
-    let mut trailer = None;
-
     // Trailing sign: CR / DB / a single + or -.
+    let mut trailer = None;
     if body.len() >= 2 && matches!(&body[body.len() - 2..], ['C', 'R'] | ['D', 'B']) {
         trailer = Some(body[body.len() - 2..].iter().collect::<String>());
         body = &body[..body.len() - 2];
@@ -4063,45 +4263,88 @@ fn cobol_compile_edit_pic(pic: &str) -> Option<CobolEditPic> {
         body = &body[..body.len() - 1];
     }
 
-    // A single leading `+`/`-` is a fixed sign position. A longer run floats,
-    // which only the wholly-floating case above models.
-    if let Some(&first) = body.first()
-        && matches!(first, '+' | '-')
-    {
-        if body.iter().take_while(|c| **c == first).count() > 1 {
-            return None;
-        }
-        leader = Some(first);
-        body = &body[1..];
-    }
-
     let mut cells = Vec::new();
     let mut digits = 0usize;
-    let mut suppress = 0usize;
+    // `Z`/`*` positions anywhere against those before the decimal point: zero
+    // suppression STOPS at the point, but "every position suppresses" is asked
+    // of the whole picture.
+    let mut suppressible = 0usize;
+    let mut suppress_before_point = 0usize;
+    let mut scale = 0usize;
     let mut fill = ' ';
+    let mut seen_point = false;
     let mut seen_plain_digit = false;
-    let mut has_edit_marker = leader.is_some() || trailer.is_some();
+    let mut has_edit_marker = leader.is_some() || trailer.is_some() || float_char.is_some();
+
+    // The floating run: every symbol position but the leftmost is a digit
+    // position too, and a suppressible one. Each position is recorded with the
+    // threshold that makes it show its own content, so the pass below can hand
+    // every position its right-hand neighbour's threshold as well.
+    let mut run_positions: Vec<(usize, Option<usize>, char)> = Vec::new();
+    let mut float_index = 0usize;
+    for &ch in run {
+        if Some(ch) == float_char {
+            if float_index == 0 {
+                run_positions.push((0, None, ' '));
+            } else {
+                run_positions.push((digits + 1, Some(digits), ' '));
+                digits += 1;
+                suppressible += 1;
+                suppress_before_point += 1;
+            }
+            float_index += 1;
+        } else {
+            let literal = if ch == 'B' { ' ' } else { ch };
+            run_positions.push((digits, None, literal));
+        }
+    }
+    for index in 0..run_positions.len() {
+        let (t, digit, literal) = run_positions[index];
+        cells.push(CobolEditCell::Float {
+            t,
+            next_t: run_positions.get(index + 1).map(|next| next.0),
+            digit,
+            literal,
+        });
+    }
 
     for &ch in body {
         match ch {
             '9' => {
                 cells.push(CobolEditCell::Digit(digits));
                 digits += 1;
+                if seen_point {
+                    scale += 1;
+                }
                 seen_plain_digit = true;
             }
             'Z' | '*' => {
-                // Suppression must be a prefix of the digit positions.
-                if seen_plain_digit {
+                // Suppression must be a prefix of the digit positions, and it
+                // is one mechanism per picture: `$$$ZZ9` mixes two.
+                if seen_plain_digit || float_char.is_some() {
                     return None;
                 }
                 let this_fill = if ch == 'Z' { ' ' } else { '*' };
-                if suppress > 0 && this_fill != fill {
+                if suppressible > 0 && this_fill != fill {
                     return None;
                 }
                 fill = this_fill;
                 cells.push(CobolEditCell::Digit(digits));
                 digits += 1;
-                suppress += 1;
+                suppressible += 1;
+                if seen_point {
+                    scale += 1;
+                } else {
+                    suppress_before_point += 1;
+                }
+                has_edit_marker = true;
+            }
+            '.' => {
+                if seen_point {
+                    return None;
+                }
+                seen_point = true;
+                cells.push(CobolEditCell::Insert('.', digits));
                 has_edit_marker = true;
             }
             '/' | ',' | '0' | 'B' => {
@@ -4113,20 +4356,42 @@ fn cobol_compile_edit_pic(pic: &str) -> Option<CobolEditPic> {
         }
     }
 
-    // A plain `999` is not an edited picture; leave it to `Numeric`.
-    if digits == 0 || !has_edit_marker {
+    // A plain `999` is not an edited picture; leave it to `Numeric`. A picture
+    // with no INTEGER position (`PIC .99`) is left alone too: `__to_fixed2`
+    // always writes at least one integer digit, so the offsets the digit
+    // string is cut at below would silently be one place out.
+    if digits == 0 || digits == scale || !has_edit_marker {
         return None;
     }
+
+    // MEASURED against cobc, and the reason `suppress` is not simply
+    // `suppressible`: `PIC ZZZ.99` on zero is `   .00`, so suppression stops
+    // at the point. The exception is a picture whose EVERY digit position
+    // suppresses — `PIC ZZZ.ZZ` is six spaces and `PIC ***.**` is `***.**` —
+    // which is a whole-field blank for `Z` and a widened `suppress` for `*`.
+    let all_suppressible = match float_char {
+        Some(_) => digits + 1 == float_count,
+        None => suppressible == digits,
+    };
+    let suppress = if float_char.is_some() {
+        float_count - 1
+    } else if all_suppressible && fill == '*' {
+        digits
+    } else {
+        suppress_before_point
+    };
 
     Some(CobolEditPic {
         width: cells.len() + leader.map_or(0, |_| 1) + trailer.as_ref().map_or(0, |t| t.len()),
         digits,
+        scale,
         suppress,
         fill,
         cells,
-        floating: None,
+        float_char,
         leader,
         trailer,
+        blank_all_zero: all_suppressible && fill == ' ',
         blank_when_zero: false,
     })
 }
@@ -4169,20 +4434,63 @@ fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
     // measured: `__to_fixed2` on the string `"-5"` answered neither `-5` nor a
     // trap, and every sign test built on it silently read as positive.
     let number = cobol_call("NUMVAL", vec![value]);
-    // The digit string, high-order zeros included. Overflow past the picture's
-    // digit positions is NOT truncated here — fixed-width truncation on store
-    // is its own open item and reaches every numeric verb, not just editing.
-    let dg = cobol_call(
+    // The digit string, high-order zeros included and the decimal point taken
+    // back out: `1234.56` on `PIC 9,9(3).99` is the six characters `123456`,
+    // which is what every cell below indexes into.
+    //
+    // Built two decimals WIDER than the picture and then cut, because COBOL
+    // TRUNCATES a value that does not fit — `PIC 9.99 VALUE 1.256` is `1.25`
+    // under cobc, which warns rather than rounding — while `__to_fixed2`
+    // rounds. Cutting a string needs no multiply, so the extra digits cost no
+    // float error on the way in.
+    //
+    // The padding carries `HEADROOM` integer positions MORE than the picture
+    // has, so the decimal point sits at a known index even when the value
+    // overflows — cutting from a string that has grown to the right reads the
+    // point itself as a digit, and `MOVE 1234.56 TO X` on `PIC 9(5).99` came
+    // out as the visibly corrupt `12345..0`. With the headroom the cut takes
+    // the LOW-order integer digits, which is also what COBOL truncation does.
+    const HEADROOM: usize = 20;
+    let int_digits = pic.digits - pic.scale;
+    let point = HEADROOM + int_digits;
+    let padded = cobol_call(
         "__pad_start",
         vec![
             cobol_call(
                 "__to_fixed2",
-                vec![cobol_call("ABS", vec![number.clone()]), Expression::int(0)],
+                vec![
+                    cobol_call("ABS", vec![number.clone()]),
+                    Expression::int((pic.scale + 2) as i64),
+                ],
             ),
-            Expression::int(pic.digits as i64),
+            Expression::int((point + pic.scale + 3) as i64),
             Expression::string("0"),
         ],
     );
+    let whole = cobol_call(
+        "__refmod",
+        vec![
+            padded.clone(),
+            Expression::int(HEADROOM as i64),
+            Expression::int(point as i64),
+        ],
+    );
+    let dg = if pic.scale == 0 {
+        whole
+    } else {
+        binary(
+            BinOp::Concat,
+            whole,
+            cobol_call(
+                "__refmod",
+                vec![
+                    padded,
+                    Expression::int((point + 1) as i64),
+                    Expression::int((point + 1 + pic.scale) as i64),
+                ],
+            ),
+        )
+    };
     // "the first `n` digit positions are all zero", the test every suppression
     // decision is made on.
     let all_zero = |n: usize| -> Expression {
@@ -4206,55 +4514,68 @@ fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
         )
     };
     let is_negative = binary(BinOp::Lt, number.clone(), Expression::int(0));
-
-    let mut rendered = if let Some(sign_char) = pic.floating {
-        // The sign sits immediately left of the first significant digit, so
-        // strip the leading zeros, prepend the sign and right-align.
-        let mut stripped = dg.clone();
-        for keep in (1..pic.digits).rev() {
-            stripped = Expression::new(ExprKind::Ternary {
-                cond: Box::new(all_zero(pic.digits - keep)),
-                then: Box::new(cobol_call(
-                    "__refmod",
-                    vec![
-                        dg.clone(),
-                        Expression::int((pic.digits - keep) as i64),
-                        Expression::int(pic.digits as i64),
-                    ],
-                )),
-                else_: Box::new(stripped),
-            });
+    // What a symbol position prints. A currency sign carries no sign
+    // information; `+` shows the sign either way; `-` shows a space when the
+    // value is not negative.
+    let symbol = |ch: char| -> Expression {
+        if ch == '$' {
+            return Expression::string("$");
         }
-        let sign = Expression::new(ExprKind::Ternary {
+        Expression::new(ExprKind::Ternary {
             cond: Box::new(is_negative.clone()),
             then: Box::new(Expression::string("-")),
-            else_: Box::new(Expression::string(if sign_char == '+' { "+" } else { " " })),
-        });
-        let placed = cobol_call(
-            "__pad_start",
-            vec![
-                binary(BinOp::Concat, sign, stripped),
-                Expression::int(pic.width as i64),
-                Expression::string(" "),
-            ],
-        );
-        // A wholly floating picture holding zero is blank, sign included —
-        // `MOVE 0 TO X` on `PIC ---` gives three spaces under cobc, not `  0`.
-        Expression::new(ExprKind::Ternary {
-            cond: Box::new(all_zero(pic.digits)),
-            then: Box::new(Expression::string(&" ".repeat(pic.width))),
-            else_: Box::new(placed),
+            else_: Box::new(Expression::string(if ch == '+' { "+" } else { " " })),
         })
-    } else {
+    };
+
+    let mut rendered = {
+        let float_char = pic.float_char.unwrap_or('$');
         let mut parts: Vec<Expression> = Vec::new();
         for cell in &pic.cells {
             parts.push(match *cell {
+                CobolEditCell::Float {
+                    t,
+                    next_t,
+                    digit,
+                    literal,
+                } => {
+                    // Where the symbol goes when this position is suppressed:
+                    // here if the run's right edge or if the neighbour is
+                    // about to show something, a space otherwise. A neighbour
+                    // whose threshold is zero can never show anything, so that
+                    // space is decided at compile time.
+                    let fallback = match next_t {
+                        None => symbol(float_char),
+                        Some(0) => Expression::string(" "),
+                        Some(next) => Expression::new(ExprKind::Ternary {
+                            cond: Box::new(all_zero(next)),
+                            then: Box::new(Expression::string(" ")),
+                            else_: Box::new(symbol(float_char)),
+                        }),
+                    };
+                    if t == 0 {
+                        fallback
+                    } else {
+                        let content = match digit {
+                            Some(index) => digit_at(index),
+                            None => Expression::string(&literal.to_string()),
+                        };
+                        Expression::new(ExprKind::Ternary {
+                            cond: Box::new(all_zero(t)),
+                            then: Box::new(fallback),
+                            else_: Box::new(content),
+                        })
+                    }
+                }
                 CobolEditCell::Digit(i) if i < pic.suppress => Expression::new(ExprKind::Ternary {
                     cond: Box::new(all_zero(i + 1)),
                     then: Box::new(Expression::string(&pic.fill.to_string())),
                     else_: Box::new(digit_at(i)),
                 }),
                 CobolEditCell::Digit(i) => digit_at(i),
+                // The decimal point is never suppressed on its own — only the
+                // whole-field blank below can take it away.
+                CobolEditCell::Insert('.', _) => Expression::string("."),
                 // An insertion still inside the suppressed region shows the
                 // fill: `MOVE 0 TO X` on `PIC ZZ,ZZ9` gives `     0` under
                 // cobc, with the comma blanked out too.
@@ -4273,12 +4594,7 @@ fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
             .reduce(|acc, part| binary(BinOp::Concat, acc, part))
             .unwrap_or_else(|| Expression::string(""));
         if let Some(sign_char) = pic.leader {
-            let sign = Expression::new(ExprKind::Ternary {
-                cond: Box::new(is_negative.clone()),
-                then: Box::new(Expression::string("-")),
-                else_: Box::new(Expression::string(if sign_char == '+' { "+" } else { " " })),
-            });
-            body = binary(BinOp::Concat, sign, body);
+            body = binary(BinOp::Concat, symbol(sign_char), body);
         }
         if let Some(trailer) = &pic.trailer {
             let positive = match trailer.as_str() {
@@ -4294,7 +4610,7 @@ fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
                 BinOp::Concat,
                 body,
                 Expression::new(ExprKind::Ternary {
-                    cond: Box::new(is_negative),
+                    cond: Box::new(is_negative.clone()),
                     then: Box::new(Expression::string(&negative)),
                     else_: Box::new(Expression::string(&positive)),
                 }),
@@ -4302,6 +4618,16 @@ fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
         }
         body
     };
+
+    // Every digit position suppresses to a space, so a zero value takes the
+    // whole field with it — the point and the floating symbol included.
+    if pic.blank_all_zero {
+        rendered = Expression::new(ExprKind::Ternary {
+            cond: Box::new(all_zero(pic.digits)),
+            then: Box::new(Expression::string(&" ".repeat(pic.width))),
+            else_: Box::new(rendered),
+        });
+    }
 
     if pic.blank_when_zero {
         rendered = Expression::new(ExprKind::Ternary {
@@ -4875,17 +5201,68 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         // ── GO TO ───────────────────────────────────────────────────────
         Rule::go_to_stmt => {
             let parts = inner_nokw(pair);
-            let name = parts
-                .into_iter()
-                .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::paragraph_name))
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_default();
-            // GO TO paragraph → call the paragraph
-            StmtKind::Expr(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&name)),
-                args: Vec::new(),
-                optional: false,
-            }))
+            let mut names: Vec<String> = Vec::new();
+            let mut depend_on: Option<String> = None;
+            for part in parts {
+                match part.as_rule() {
+                    Rule::ident_name | Rule::paragraph_name => {
+                        names.push(part.as_str().to_string())
+                    }
+                    Rule::depending_clause => {
+                        depend_on = part
+                            .into_inner()
+                            .find(|c| c.as_rule() == Rule::ident_name)
+                            .map(|c| c.as_str().to_string());
+                    }
+                    _ => {}
+                }
+            }
+            let call = |n: &str| {
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(n)),
+                    args: Vec::new(),
+                    optional: false,
+                })))
+            };
+            match depend_on {
+                // `GO TO a b c DEPENDING ON n` — transfer to the n-th name,
+                // ONE-BASED. n outside 1..=len is not an error: control simply
+                // falls through to the next statement, so there is no else arm.
+                Some(subject) => {
+                    let mut elifs = Vec::new();
+                    for (i, n) in names.iter().enumerate().skip(1) {
+                        elifs.push((
+                            binary(
+                                BinOp::Eq,
+                                Expression::ident(&subject),
+                                Expression::int(i as i64 + 1),
+                            ),
+                            vec![call(n)],
+                        ));
+                    }
+                    match names.first() {
+                        Some(first) => StmtKind::If {
+                            cond: binary(
+                                BinOp::Eq,
+                                Expression::ident(&subject),
+                                Expression::int(1),
+                            ),
+                            then_body: vec![call(first)],
+                            elifs,
+                            else_body: None,
+                        },
+                        None => StmtKind::Empty,
+                    }
+                }
+                // Plain `GO TO paragraph` → call the paragraph, unchanged.
+                None => StmtKind::Expr(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(
+                        names.first().map(String::as_str).unwrap_or_default(),
+                    )),
+                    args: Vec::new(),
+                    optional: false,
+                })),
+            }
         }
 
         // ── STOP RUN ────────────────────────────────────────────────────
@@ -6288,10 +6665,40 @@ fn walk_move_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
             }
         }
 
-        let value = normalize_cobol_storage_source(
-            src_expr.ok_or("MOVE missing source expression")?,
-            ctx,
-        );
+        // ⛔ A NUMERIC TARGET RECEIVES A VALUE, NOT CHARACTERS.
+        // `MOVE A TO B` with an ALPHANUMERIC B moves A's stored characters —
+        // `PIC 9(3)` holding 5 arrives as "005" — which is what
+        // `normalize_cobol_storage_source` renders. With a NUMERIC B it moves
+        // the VALUE, and rendering first is at best redundant and at worst
+        // destructive: the moment a rendering is not round-trippable through
+        // arithmetic (a signed item's overpunched `00u`, an edited `99CR`) the
+        // move produces NaN. Same value-vs-rendering split `pic_of` and
+        // `format_of` already draw.
+        let raw_src = src_expr.ok_or("MOVE missing source expression")?;
+        // ⚠ A numeric-EDITED target (`PIC 99CR`, `PIC -999`) counts as numeric
+        // here on purpose: the editor in `cobol_move_value_for_target` formats a
+        // VALUE. Excluding it left `MOVE Y TO X` reading Y's storage rendering,
+        // and an overpunched `00u` edited to `Na`.
+        //
+        // ⛔ AND IT HAS TO BE ASKED SEPARATELY. An edited item's `pic_of` is
+        // `Alpha` — that is the whole point of `cobol_pic_display_fmt`, since
+        // once stored it IS text — so the numeric arms below never matched one
+        // and the intent above was never in force. Measured: `MOVE NUM TO T`
+        // with `NUM PIC S9(5)V99 VALUE -1234.56` and `T PIC 9(5).99` gave
+        // `12345..0`, the implied decimal point never applied and the source's
+        // own point read as a digit. cobc gives `01234.56`.
+        let numeric_target = targets.len() == 1
+            && (ctx.edit_pic_of(&targets[0]).is_some()
+                || matches!(
+                    ctx.pic_of(&targets[0]),
+                    Some(CobolPicFmt::Numeric(_) | CobolPicFmt::SignedNumeric(_)
+                        | CobolPicFmt::ImpliedDecimal { .. })
+                ));
+        let value = if numeric_target {
+            raw_src
+        } else {
+            normalize_cobol_storage_source(raw_src, ctx)
+        };
         if targets.len() == 1 {
             if let ExprKind::Ident(alias) = &targets[0].kind
                 && let Some(fields) = ctx.rename_alias_fields(alias)
@@ -6399,6 +6806,10 @@ fn build_cobol_group_move(
 }
 
 fn cobol_storage_slice(value: Expression, offset: usize, width: usize) -> Expression {
+    // Same rule as reference modification: slicing STORAGE is a character
+    // operation, and a `PIC 9(n)` member reaches here as a number. Coerce
+    // first — `__refmod` is `common:str_substring` and traps on a non-string.
+    let value = binary(BinOp::Concat, Expression::string(""), value);
     cobol_call(
         "__refmod",
         vec![
@@ -6485,9 +6896,109 @@ fn cobol_move_value_for_target(
                     };
                 }
             }
+            // ⛔ THE PICTURE IS THE STORAGE. `MOVE 1234 TO PIC 9(2)` stores 34
+            // — COBOL truncates the HIGH-ORDER digits, and `cobc` agrees
+            // (measured 2026-08-29: cobc `[34]`, we kept `[1234]`). Nothing
+            // downstream could do this: `cobol_type_hint` has already collapsed
+            // every numeric PICTURE to "Integer"/"Decimal", so the digit count
+            // exists only here, in the frontend that parsed it.
+            if let Some(fmt) = ctx.field_pic(name)
+                && numeric_source(&value, ctx)
+            {
+                return cobol_truncate_to_pic(value, fmt);
+            }
             value
         }
         _ => value,
+    }
+}
+
+/// Is this value safe to put through numeric truncation? A PICTURE says how
+/// many DIGITS the item holds, but `MOVE SPACES TO x` and `MOVE "AB" TO x` also
+/// reach a numeric target, and arithmetic on those would turn a wrong-but-stable
+/// value into NaN. So the truncation applies only where the source is already
+/// numeric by construction.
+fn numeric_source(value: &Expression, ctx: &CobolWalkerContext) -> bool {
+    match &value.kind {
+        ExprKind::Lit(Literal::Int(_) | Literal::Float(_)) => true,
+        ExprKind::Binary { op, .. } => matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::IDiv | BinOp::Mod | BinOp::Pow
+        ),
+        ExprKind::Unary { op: UnaryOp::Neg, .. } => true,
+        ExprKind::Ident(_) | ExprKind::Member { .. } => matches!(
+            ctx.pic_of(value),
+            Some(CobolPicFmt::Numeric(_) | CobolPicFmt::SignedNumeric(_)
+                | CobolPicFmt::ImpliedDecimal { .. })
+        ),
+        _ => false,
+    }
+}
+
+/// Store `value` the way its PICTURE holds it: keep the low-order digits, drop
+/// the excess decimals. Built from `IDiv`/`Mod` rather than a profile builtin —
+/// one arithmetic tree, no host call on a path this hot.
+fn cobol_truncate_to_pic(value: Expression, fmt: CobolPicFmt) -> Expression {
+    let pow10 = |n: u32| Expression::int(10i64.saturating_pow(n));
+    // |v|, without a builtin.
+    let magnitude = |v: Expression| {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(binary(BinOp::Lt, v.clone(), Expression::int(0))),
+            then: Box::new(binary(BinOp::Sub, Expression::int(0), v.clone())),
+            else_: Box::new(v),
+        })
+    };
+    // Re-apply the sign of `src` to `mag`.
+    let resign = |mag: Expression, src: Expression| {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(binary(BinOp::Lt, src, Expression::int(0))),
+            then: Box::new(binary(BinOp::Sub, Expression::int(0), mag.clone())),
+            else_: Box::new(mag),
+        })
+    };
+    match fmt {
+        // An UNSIGNED picture has no sign to keep: `MOVE -1234 TO PIC 9(2)`
+        // stores 34, not -34.
+        CobolPicFmt::Numeric(digits) => binary(
+            BinOp::Mod,
+            binary(BinOp::IDiv, magnitude(value), Expression::int(1)),
+            pow10(digits as u32),
+        ),
+        CobolPicFmt::SignedNumeric(digits) => {
+            let mag = binary(
+                BinOp::Mod,
+                binary(BinOp::IDiv, magnitude(value.clone()), Expression::int(1)),
+                pow10(digits as u32),
+            );
+            resign(mag, value)
+        }
+        // `PIC 9(3)V99`: scale to whole units, truncate to `digits` digits, then
+        // scale back. Both halves are truncation — COBOL never rounds on a MOVE.
+        CobolPicFmt::ImpliedDecimal {
+            digits,
+            frac,
+            signed,
+        } => {
+            let scale = pow10(frac as u32);
+            let scaled = binary(
+                BinOp::IDiv,
+                binary(BinOp::Mul, magnitude(value.clone()), scale.clone()),
+                Expression::int(1),
+            );
+            // `digits` is the TOTAL stored digit count (integer + fraction), so
+            // one Mod after scaling covers both halves.
+            let wrapped = binary(BinOp::Div, binary(BinOp::Mod, scaled, pow10(digits as u32)), scale);
+            if signed {
+                resign(wrapped, value)
+            } else {
+                wrapped
+            }
+        }
+        // Alphanumeric width is already applied on the READ path
+        // (`storage_expr_for_name` -> `cobol_data_format_expr`), and adding a
+        // second truncation at the store would be a change to something that
+        // measurably works. Left alone deliberately.
+        CobolPicFmt::Alpha(_) => value,
     }
 }
 
@@ -7358,6 +7869,10 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
         Rule::perform_until => walk_perform_until(inner, ctx),
         Rule::perform_times => walk_perform_times(inner, ctx),
         Rule::perform_paragraph_until => walk_perform_paragraph_until(inner, ctx),
+        // Out-of-line VARYING / TIMES: identical loop shape to the inline
+        // forms, with a CALL to the paragraph as the whole body.
+        Rule::perform_paragraph_varying => walk_perform_varying(inner, ctx),
+        Rule::perform_paragraph_times => walk_perform_times(inner, ctx),
         Rule::perform_async => {
             let parts = inner_nokw(inner);
             let name = parts
@@ -7422,6 +7937,45 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
     }
 }
 
+/// One `AFTER v FROM a BY b UNTIL c` dimension of a `PERFORM VARYING`.
+struct PerformAfter {
+    var: String,
+    from: Expression,
+    by: Expression,
+    until: Expression,
+}
+
+fn walk_perform_after(
+    pair: Pair<Rule>,
+    ctx: &CobolWalkerContext,
+) -> Result<PerformAfter, String> {
+    let mut var = String::new();
+    let mut from = None;
+    let mut by = None;
+    let mut until = None;
+    let mut state = 0;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident_name if var.is_empty() => var = child.as_str().to_string(),
+            Rule::kw_from => state = 1,
+            Rule::kw_by => state = 2,
+            Rule::expression => match state {
+                1 => from = Some(walk_expression(child)?),
+                2 => by = Some(walk_expression(child)?),
+                _ => {}
+            },
+            Rule::condition => until = Some(walk_condition(child, ctx)?),
+            _ => {}
+        }
+    }
+    Ok(PerformAfter {
+        var,
+        from: from.unwrap_or(Expression::int(0)),
+        by: by.unwrap_or(Expression::int(1)),
+        until: until.unwrap_or(Expression::bool(false)),
+    })
+}
+
 fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
@@ -7430,6 +7984,7 @@ fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<St
     let mut by_expr: Option<Expression> = None;
     let mut until_cond: Option<Expression> = None;
     let mut body = Vec::new();
+    let mut afters: Vec<PerformAfter> = Vec::new();
 
     let mut state = 0; // 0=pre-from, 1=from, 2=by, 3=until
 
@@ -7463,6 +8018,23 @@ fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<St
             Rule::statement_list => {
                 walk_statement_list(child, &mut body, ctx)?;
             }
+            // `AFTER j FROM 1 BY 1 UNTIL j > 2` — an inner dimension. Collected
+            // here and wrapped around the body below, innermost last.
+            Rule::perform_after => {
+                afters.push(walk_perform_after(child, ctx)?);
+            }
+            // Out-of-line form: the body is the named paragraph, not a
+            // statement list. `paragraph_name` never appears in the inline rule,
+            // so one function serves both.
+            Rule::paragraph_name => {
+                body.push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident(child.as_str())),
+                        args: Vec::new(),
+                        optional: false,
+                    },
+                ))));
+            }
             _ => {}
         }
     }
@@ -7471,6 +8043,31 @@ fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<St
     let by = by_expr.unwrap_or(Expression::int(1));
     // COBOL UNTIL = loop while NOT condition
     let cond = negate_expr(until_cond.unwrap_or(Expression::bool(false)));
+
+    // Each AFTER dimension becomes a For nested INSIDE the one before it. The
+    // inner `init` sits in the inner For, so it re-runs every time the outer
+    // advances — which is exactly what the standard says AFTER means, and what
+    // makes `VARYING i … AFTER j …` a full cartesian sweep rather than a single
+    // pass down j.
+    for after in afters.into_iter().rev() {
+        body = vec![Statement::new(StmtKind::For {
+            init: Some(Box::new(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&after.var)],
+                value: after.from,
+                by_ref: false,
+            }))),
+            cond: Some(negate_expr(after.until)),
+            update: Some(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::ident(&after.var)),
+                value: Box::new(binary(
+                    BinOp::Add,
+                    Expression::ident(&after.var),
+                    after.by,
+                )),
+            })),
+            body,
+        })];
+    }
 
     // Lower to a For loop so the BY increment lives in the update clause. This
     // way EXIT PERFORM CYCLE (Continue) still advances the loop variable —
@@ -7610,6 +8207,17 @@ fn walk_perform_times(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
             }
             Rule::statement_list => {
                 walk_statement_list(child, &mut body, ctx)?;
+            }
+            // `PERFORM ADD-TEN 5 TIMES` — the out-of-line form. The paragraph
+            // IS the body; the rest of the loop is identical to the inline one.
+            Rule::paragraph_name => {
+                body.push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident(child.as_str())),
+                        args: Vec::new(),
+                        optional: false,
+                    },
+                ))));
             }
             _ => {}
         }
@@ -9564,6 +10172,13 @@ fn walk_set_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind,
                     target = child.as_str().to_string();
                 }
             }
+            // `SET ADDRESS OF x TO …` / `SET p TO ADDRESS OF x` — the target of
+            // the pointer forms is a qualified name, not a bare `ident_name`.
+            Rule::qualified_ident => {
+                if target.is_empty() {
+                    target = child.as_str().trim().to_string();
+                }
+            }
             Rule::kw_true => {
                 is_true = true;
                 value = Some(Expression::bool(true));
@@ -9767,32 +10382,65 @@ fn walk_json_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .map(|c| c.as_str().to_string())
         .collect();
 
+    // The trailing clauses (`COUNT IN`, `NAME … IS …`, `SUPPRESS …`,
+    // `WITH DETAIL`, `WITH ENCODING`) arrive wrapped in `json_option` nodes, so
+    // the bare `ident_name` children are exactly the statement's operands and
+    // the options cannot be mistaken for them.
+    let count_name = children
+        .iter()
+        .filter(|c| c.as_rule() == Rule::json_option)
+        .find_map(|c| {
+            let mut saw_count = false;
+            for opt in c.clone().into_inner() {
+                match opt.as_rule() {
+                    Rule::kw_count => saw_count = true,
+                    Rule::ident_name if saw_count => return Some(opt.as_str().to_string()),
+                    _ => {}
+                }
+            }
+            None
+        });
+
+    // ⛔ `__json_generate` / `__json_parse`, NOT `json_encode` / `json_decode`.
+    // Those two resolve to `host:ecma:json:*` (imports.rs:99), and a COBOL
+    // RECORD stringified through the bare ECMA surface renders as `{}` — it has
+    // no notion of declared members. The profile routes these to
+    // `primitives/json.rs`, the shared serializer go/pascal/powershell use.
+    let build = |callee: &str, dst: &str, src: &str| StmtKind::Assign {
+        targets: vec![Expression::ident(dst)],
+        value: Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(callee)),
+            args: vec![Argument::positional(Expression::ident(src))],
+            optional: false,
+        }),
+        by_ref: false,
+    };
+
     if has_generate {
-        // JSON GENERATE dst FROM src → dst = json_encode(src)
         let dst = idents.first().cloned().unwrap_or_default();
         let src = idents.get(1).cloned().unwrap_or_default();
-        Ok(StmtKind::Assign {
-            targets: vec![Expression::ident(&dst)],
-            value: Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("json_encode")),
-                args: vec![Argument::positional(Expression::ident(&src))],
-                optional: false,
-            }),
-            by_ref: false,
-        })
+        let generate = Statement::new(build("__json_generate", &dst, &src));
+        // `COUNT IN n` receives the generated document's LENGTH.
+        match count_name {
+            Some(count) => Ok(StmtKind::Block(vec![
+                generate,
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(&count)],
+                    value: Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&dst)),
+                        field: "length".to_string(),
+                        null_safe: false,
+                    }),
+                    by_ref: false,
+                }),
+            ])),
+            None => Ok(generate.kind),
+        }
     } else if has_parse {
-        // JSON PARSE src INTO dst → dst = json_decode(src)
         let src = idents.first().cloned().unwrap_or_default();
-        let dst = idents.get(1).cloned().unwrap_or_default();
-        Ok(StmtKind::Assign {
-            targets: vec![Expression::ident(&dst)],
-            value: Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("json_decode")),
-                args: vec![Argument::positional(Expression::ident(&src))],
-                optional: false,
-            }),
-            by_ref: false,
-        })
+        // `JSON PARSE doc` with no INTO parses in place.
+        let dst = idents.get(1).cloned().unwrap_or_else(|| src.clone());
+        Ok(build("__json_parse", &dst, &src))
     } else {
         Ok(StmtKind::Empty)
     }
@@ -11007,6 +11655,12 @@ fn walk_using_params(pair: Pair<Rule>) -> Vec<Param> {
             Rule::kw_content => {
                 pass_by = PassBy::Const;
             }
+            // `BY VALUE` passes a COPY the callee may write freely without the
+            // caller seeing it — the one spelling where COBOL's default of
+            // aliasing is explicitly overridden. Sticky, like the other two.
+            Rule::kw_value => {
+                pass_by = PassBy::Value;
+            }
             Rule::ident_name => {
                 params.push(Param {
                     name: child.as_str().to_string(),
@@ -11271,12 +11925,37 @@ fn walk_not_condition(pair: Pair<Rule>) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let has_not = children.iter().any(|c| c.as_rule() == Rule::kw_not);
-    let comparison = children
-        .iter()
-        .find(|c| c.as_rule() == Rule::comparison)
-        .ok_or("not_condition without comparison")?;
 
-    let expr = walk_comparison(comparison.clone())?;
+    // Three shapes, and the rule is RECURSIVE, so this must be too:
+    //   `NOT <not_condition>`      — `NOT NOT (N > 0)` stacks
+    //   `( <condition> )`          — a parenthesised condition is NOT an
+    //                                expression; it re-enters the condition
+    //                                grammar, which is the whole reason the
+    //                                rule recurses
+    //   `<comparison>`             — the original, unchanged shape
+    let expr = if let Some(inner) = children
+        .iter()
+        .find(|c| c.as_rule() == Rule::not_condition)
+    {
+        walk_not_condition(inner.clone())?
+    } else if let Some(inner) = children.iter().find(|c| {
+        matches!(c.as_rule(), Rule::condition | Rule::or_condition)
+    }) {
+        // `condition = { or_condition }` is a plain rule, so the parenthesised
+        // form arrives wrapped one level deeper. Accept either.
+        let node = if inner.as_rule() == Rule::condition {
+            inner.clone().into_inner().next().ok_or("empty ( condition )")?
+        } else {
+            inner.clone()
+        };
+        walk_or_condition(node)?
+    } else {
+        let comparison = children
+            .iter()
+            .find(|c| c.as_rule() == Rule::comparison)
+            .ok_or("not_condition without comparison")?;
+        walk_comparison(comparison.clone())?
+    };
 
     if has_not {
         Ok(Expression::new(ExprKind::Unary {
@@ -12097,6 +12776,30 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
     };
     // Format a value COBOL-style for financial intrinsics: truncate to two
     // decimal places and render with a trailing-zero 2-decimal string.
+    // Erase binary-float noise (1.0999999… for 1.10) WITHOUT deciding a
+    // precision. An intrinsic returns a value; the RECEIVING ITEM'S PICTURE
+    // decides how much of it is stored — that is the whole COBOL model, and
+    // `fmt2` below violates it for anything whose result is not money.
+    let denoise = |v: Expression| -> Expression {
+        // 1e-10, not 1e-6. The point is ONLY to erase binary-float noise; the
+        // receiving PICTURE does the rest. Rounding at 1e-6 was itself visible:
+        // `ANNUITY(0.05,3)` is 0.3672086…, and a `PIC 9V9(6)` then showed
+        // 0.367209 where cobc shows 0.367208 — COBOL TRUNCATES, so a denoise
+        // coarse enough to round is a denoise that changes the answer.
+        binary(
+            BinOp::Div,
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("f64_nearest")),
+                args: vec![Argument::positional(binary(
+                    BinOp::Mul,
+                    v,
+                    Expression::float(10_000_000_000.0),
+                ))],
+                optional: false,
+            }),
+            Expression::float(10_000_000_000.0),
+        )
+    };
     let fmt2 = |v: Expression| -> Expression {
         let ncall = |fname: &str, arg: Expression| -> Expression {
             Expression::new(ExprKind::Call {
@@ -12249,7 +12952,10 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
             );
             let general = binary(BinOp::Div, rate.clone(), denom);
             let zero_case = binary(BinOp::Div, Expression::int(1), periods);
-            Some(fmt2(Expression::new(ExprKind::Ternary {
+            // ⛔ NOT `fmt2`. `ANNUITY(0.05, 3)` is 0.367208…; forcing 2 dp
+            // stored 0.36 into a `PIC 9V9(4)` that has room for 0.3672.
+            // Measured against cobc 2026-08-29: cobc 0.367208, we gave 0.360000.
+            Some(denoise(Expression::new(ExprKind::Ternary {
                 cond: Box::new(binary(BinOp::Eq, rate, Expression::int(0))),
                 then: Box::new(zero_case),
                 else_: Box::new(general),
@@ -12270,7 +12976,8 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
                     binary(BinOp::Div, v.clone(), disc)
                 })
                 .collect();
-            Some(fmt2(sum(&terms)))
+            // Same reason as ANNUITY: the receiving PICTURE sets the precision.
+            Some(denoise(sum(&terms)))
         }
         _ => None,
     }
@@ -13365,6 +14072,15 @@ fn apply_cobol_subscript_or_refmod(
 
         let adjusted_start = normalize_array_index_operand(start_expr, COBOL_ARRAY_INDEXING);
         let end_expr = binary(BinOp::Add, adjusted_start.clone(), length_expr);
+
+        // ⛔ REFERENCE MODIFICATION IS A CHARACTER OPERATION. `FULL-DATE(1:4)`
+        // on a `PIC 9(8)` takes the first four CHARACTERS of the item — COBOL
+        // has no notion of slicing a number. Handing the raw numeric value to
+        // `__refmod` trapped with `wasm:js-string.substring — not a string`,
+        // which is how 22 tests died on a construct that is simply spelled on
+        // a numeric item. Concat with "" is the coercion the walker already
+        // uses to build storage strings, and it is the identity on a string.
+        let expr = binary(BinOp::Concat, Expression::string(""), expr);
 
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__refmod")),

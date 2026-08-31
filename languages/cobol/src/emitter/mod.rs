@@ -10,5 +10,6 @@ pub mod data;
 pub mod date;
 pub mod dispatch;
 pub mod files;
+pub mod json;
 
 mod support;

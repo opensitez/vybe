@@ -20,6 +20,16 @@ constructor_name = "NEW"
 # namespaceplan.md: namespace-shaped entry points resolve through the
 # common resolver — same flip as the other languages.
 uses_common_resolver = true
+# ⛔ WITHOUT THIS ROW COBOL SILENTLY TOOK `normalize_from_ast_legacy`, and
+# `normalize_class.rs` — registered on `LanguageDef` and looking live — was
+# DEAD CODE. The legacy path answers three COBOL questions wrongly:
+# `explicit_self_param: true` (COBOL's SELF is implicit, so every method's
+# FIRST USING parameter bound to the receiver), `implicit_self_fields: false`
+# (a bare `WS-X` in a method compiled to `global.get`, never the instance
+# field), and it routes statics on `is_shared` where the COBOL walker marks
+# FACTORY methods `is_static`. flexclassplan.md: a language declares, the
+# compiler decides — COBOL was declaring into a hook nothing called.
+uses_normalize_class = true
 case_sensitive = false
 string_indexing = "one_based"
 # COBOL `ADD`/`+` is numeric only — `STRING`/`&` concatenate. This said `true`
@@ -197,6 +207,11 @@ __sql_rollback      = { emit = "host:wasi:sql:rollback", min_args = 1, max_args 
 __row_values        = { emit = "common:dict.values",     min_args = 1, max_args = 1 }
 # XML PARSE reads the document through the shared xml primitive.
 __xml_parse         = { emit = "common:xml.parse",       min_args = 1, max_args = 2 }
+# JSON GENERATE / PARSE route to `primitives/json.rs`, the shared serializer.
+# ⛔ NOT `host:ecma:json:*`: a COBOL RECORD stringified through the bare ECMA
+# surface renders as `{}` — the shared one walks declared members.
+__json_generate     = { emit = "common:cobol.json_generate", min_args = 1, max_args = 2 }
+__json_parse        = { emit = "common:cobol.json_parse",    min_args = 1, max_args = 2 }
 __exec_cics         = { emit = "noop",                        min_args = 1, max_args = 1 }
 __exec_dli          = { emit = "noop",                        min_args = 1, max_args = 1 }
 
