@@ -2,7 +2,7 @@
 //!
 //! Mirrors `languages/php/src/tree_register.rs`: the LANGUAGE contributes DATA
 //! — its own profile tables, the same ones its emit dispatch executes — to the
-//! shared tree in `vybe_runtime::namespaces`. Resolution logic lives only in
+//! shared tree in `vybe_compiler::primitives::namespaces`. Resolution logic lives only in
 //! the common resolver; nothing in the VM or the common compiler changes.
 //!
 //! The one difference from PHP is what a DOTTED profile key means. PHP skips
@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_runtime::Value;
-use vybe_runtime::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
 use vybe_runtime::profile::{BuiltinEmit, ConstantValue, parse_profile};
 
 /// Insert `leaf` at a dotted path (`["path", "join"]` under root `os`),
@@ -80,6 +80,9 @@ fn register_from_profile() {
     // map rather than claiming roots of their own.
     roots.insert("collections".to_string(), collections_subtree());
     roots.insert("calendar".to_string(), calendar_subtree());
+    for (module, tree) in core_class_subtrees() {
+        roots.entry(module).or_default().extend(tree);
+    }
     let mut add = |key: &str, leaf: NamespaceNode| {
         let segments: Vec<&str> = key.split('.').collect();
         // A bare builtin (`len`, `print`) is not module surface.
@@ -256,4 +259,37 @@ fn calendar_subtree() -> Subtree {
         ),
     );
     root
+}
+
+/// The classes `core_classes` declares, as type nodes under their module.
+///
+/// The name list comes from `core_classes::MODULE_SURFACE`, so the tree cannot
+/// declare a type the AST does not build, or miss one it does — the same
+/// coupling dart's `core_types()` keeps.
+///
+/// ⛔ These are NOT construction leaves. A declared class is compiled into the
+/// module as an ordinary global, so `ipaddress.IPv4Network(x)` constructs
+/// through that global; the tree node is what the MEMBER-READ path and the
+/// static-type hint resolve against (`expressions.rs` reads a registered type's
+/// `methods`/`member_returns`), and what makes the module's surface
+/// enumerable. Receiver dispatch never comes here — that is the prototype the
+/// class compiler stamps.
+fn core_class_subtrees() -> Vec<(String, Subtree)> {
+    let mut by_module: BTreeMap<String, Subtree> = BTreeMap::new();
+    for (module, name, global) in crate::core_classes::MODULE_SURFACE {
+        by_module.entry((*module).to_string()).or_default().insert(
+            (*name).to_string(),
+            NamespaceNode::Type {
+                ctor: None,
+                ctor_call: None,
+                statics: Subtree::new(),
+                methods: Subtree::new(),
+                member_returns: BTreeMap::from([(
+                    "__vybe_declared_global".to_string(),
+                    (*global).to_string(),
+                )]),
+            },
+        );
+    }
+    by_module.into_iter().collect()
 }

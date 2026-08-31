@@ -1152,6 +1152,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.url_unquote_plus" => {
             crate::emitter::url_adapter::emit_unquote_plus(chunks, current, argc, line)
         }
+        "python.lock_acquire" => {
+            crate::emitter::lock_adapter::emit_lock_acquire(chunks, current, argc, line)
+        }
+        "python.lock_release" => {
+            crate::emitter::lock_adapter::emit_lock_release(chunks, current, argc, line)
+        }
         "python.calendar_new" => {
             crate::emitter::calendar_adapter::emit_calendar_new(chunks, current, argc, line)
         }

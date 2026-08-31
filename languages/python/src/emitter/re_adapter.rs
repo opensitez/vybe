@@ -144,7 +144,10 @@ pub fn emit_findall(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         // tuple(m.slice(1))
         lget(&mut chunks[current], m, line);
         chunks[current].emit_i32_const(1, line);
-        call(chunks, current, "ecma:array", "slice", 2, line);
+        // §23.1.3.27 `end` = undefined means `len` — passed explicitly so this
+        // import has ONE arity; a WASM import cannot have an optional argument.
+        vybe_compiler::primitives::expressions::emit_undefined(&mut chunks[current], line);
+        call(chunks, current, "ecma:array", "slice", 3, line);
         tuples::emit_tag(chunks, current, line);
     }
     chunks[current].emit_else(line);

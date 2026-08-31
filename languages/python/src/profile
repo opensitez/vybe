@@ -196,6 +196,24 @@ __py_exception_instance      = { emit = "common:python.exception_instance",     
 __py_exception_message       = { emit = "common:python.exception_message",       min_args = 1, max_args = 1 }
 # Raw filesystem primitives for the `os` prelude (wasi first, node for gaps).
 __os_readdir__  = { emit = "common:filesystem.read_dir_entries", min_args = 1, max_args = 1 }
+
+# `pathlib.Path` — the real filesystem, not the stubs the prelude carried
+# (`read_text` answered `''`, `iterdir` answered `[]`). Every one of these is
+# the SHARED `common:filesystem.*` primitive the `os` surface above already
+# uses; pathlib just never reached them.
+__py_fs_read_text   = { emit = "common:filesystem.read_file",       min_args = 1, max_args = 1 }
+__py_fs_read_bytes  = { emit = "common:filesystem.read_file_bytes", min_args = 1, max_args = 1 }
+__py_fs_write_text  = { emit = "common:filesystem.write_file",      min_args = 2, max_args = 2 }
+__py_fs_exists      = { emit = "common:filesystem.exists",          min_args = 1, max_args = 1 }
+__py_fs_is_file     = { emit = "common:filesystem.is_file",         min_args = 1, max_args = 1 }
+__py_fs_is_dir      = { emit = "common:filesystem.is_dir",          min_args = 1, max_args = 1 }
+__py_fs_stat        = { emit = "common:filesystem.stat",            min_args = 1, max_args = 1 }
+__py_fs_mkdir       = { emit = "common:filesystem.mkdir",           min_args = 1, max_args = 2 }
+__py_fs_mkdir_all   = { emit = "common:filesystem.mkdir_all",       min_args = 1, max_args = 2 }
+__py_fs_rmdir       = { emit = "common:filesystem.rmdir",           min_args = 1, max_args = 1 }
+__py_fs_unlink      = { emit = "common:filesystem.unlink",          min_args = 1, max_args = 1 }
+__py_fs_rename      = { emit = "common:filesystem.rename",          min_args = 2, max_args = 2 }
+__py_fs_list_dir    = { emit = "common:filesystem.list_dir",        min_args = 1, max_args = 1 }
 __os_stat_raw__ = { emit = "common:filesystem.stat", min_args = 1, max_args = 1 }
 __os_isdir__    = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 __os_cpus__     = { emit = "host:node:os:cpus",                   min_args = 0, max_args = 0 }
@@ -317,6 +335,7 @@ bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3
 # the hood both are the one byte-array shape, and Python's immutability of
 # `bytes` is a front-end quirk, not a second representation.
 bytearray       = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
+memoryview      = { emit = "common:python.memoryview", min_args = 0, max_args = 1 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
@@ -742,6 +761,12 @@ _vybe_ip4_mask      = { emit = "common:python.ip4_mask",      min_args = 1, max_
 _vybe_ip4_count     = { emit = "common:python.ip4_count",     min_args = 1, max_args = 1 }
 _vybe_ip4_net_parts = { emit = "common:python.ip4_net_parts", min_args = 1, max_args = 1 }
 
+# The public `ipaddress` surface. DOTTED keys, so `tree_register.rs::
+# register_from_profile` nests them as real module members under the ambient
+# `python.*` root; the `[[esm_default]] tree-mount` below is what binds the
+# source-level name `ipaddress` onto `python.ipaddress`. Together they are
+# what the 147-line prelude could not do: resolve `ipaddress.ip_address`.
+
 # The socket OBJECT, emitted by socket_adapter.rs. The walker rewrites
 # `sock.method(...)` into `__sock_method(sock, ...)` the same way it rewrites
 # sqlite3 cursors, so these are ordinary calls by the time they reach here.
@@ -803,6 +828,8 @@ getaddrinfo            = { emit = "common:python.sock_getaddrinfo",   min_args =
 # registered host function at all.
 _vybe_wait_ns   = { emit = "host:wasi:clocks/monotonic-clock:wait-for", min_args = 1, max_args = 1 }
 __py_thread_start_common = { emit = "common:python.thread_start_with", min_args = 2, max_args = 2 }
+__py_lock_acquire = { emit = "common:python.lock_acquire", min_args = 1, max_args = 3 }
+__py_lock_release = { emit = "common:python.lock_release", min_args = 1, max_args = 1 }
 __py_thread_join_common  = { emit = "common:python.thread_join",       min_args = 1, max_args = 1 }
 urljoin         = { emit = "common:python.url_join",           min_args = 2, max_args = 3 }
 urlsplit        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
@@ -1713,6 +1740,11 @@ path = "python.hmac"
 kind = "tree-mount"
 prefix = "inspect"
 path = "python.inspect"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "ipaddress"
+path = "python.ipaddress"
 
 [[esm_default]]
 kind = "tree-mount"

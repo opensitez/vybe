@@ -703,7 +703,10 @@ pub fn emit_tee(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     core_wasm::i32_const(chunk, line, 0);
     let slice = chunk.add_import("ecma:array", "slice");
-    chunk.emit_call(slice, 2, line);
+    // §23.1.3.27 `end` = undefined means `len`; passed explicitly so the
+    // import has ONE arity (a WASM import cannot have an optional argument).
+    vybe_compiler::primitives::expressions::emit_undefined(chunk, line);
+    chunk.emit_call(slice, 3, line);
     push(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(chunk, line, 1);

@@ -107,6 +107,41 @@ pub fn emit_py_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
     }
 
+    // ⛔ `__int__` FIRST — `ProtocolSlot::Int`, which python's `protocol.rs`
+    // has always mapped (`"__int__" => ("int", Some(Int))`) and which nothing
+    // here ever asked for. `int(x)` went straight to `ecma:number.parseInt`,
+    // so a class defining `__int__` reached `parseInt(<object>)` → NaN → the
+    // "invalid literal for int()" raise below. Measured: a two-line class with
+    // `__int__` returning 7 dies with `RuntimeError: [object]` where CPython
+    // prints 7 — a user-class gap, not an adapter one.
+    //
+    // Same shape as `emit_py_repr`'s `__str__` dispatch: look the method up on
+    // the receiver at runtime and, when present, call it with the receiver as
+    // its single ARGUMENT. A base argument means an explicit radix parse of
+    // text, which `__int__` has no part in.
+    //
+    // ⛔ A VALUE-producing if/else, never a `RETURN` in the true arm: this
+    // emits into the CALLER's chunk, so a return would leave the enclosing
+    // Python function, not this expression.
+    let dunder = (argc < 2).then(|| {
+        let converter = chunk.alloc_scratch(1);
+        vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        chunk.emit_string_const("__int__", line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, converter, line);
+        let test_undef = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::LOCAL_GET, converter, line);
+        chunk.emit_call(test_undef, 1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, converter, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        chunk.emit_else(line);
+        converter
+    });
+
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     if argc >= 2 {
         chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
@@ -129,6 +164,9 @@ pub fn emit_py_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, parsed, line);
+    if dunder.is_some() {
+        chunk.emit_end(line); // close the `__int__` if/else
+    }
 }
 
 pub fn emit_py_raise(chunks: &mut [Chunk], current: usize, argc: u8, exc_name: &str, line: u32) {
@@ -387,6 +425,7 @@ fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
 /// with `argc == 0` and emits just the default end (`"\n"`). Each item is
 /// converted to its Python display form via `emit_py_repr`.
 pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let result_slot = chunk.alloc_scratch(1);
@@ -415,7 +454,7 @@ pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
                 part_count += 1;
             }
             chunk.emit_op_u16(Op::LOCAL_GET, item, line);
-            emit_py_repr(chunk, repr_idx, line);
+            emit_py_repr(chunk, repr_idx, __abi, line);
             part_count += 1;
         }
         chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
@@ -850,7 +889,8 @@ pub fn emit_str(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
-    emit_py_repr(&mut chunks[current], repr_idx, line);
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    emit_py_repr(&mut chunks[current], repr_idx, __abi, line);
     chunks[current].emit_end(line);
 }
 
@@ -872,7 +912,12 @@ pub fn emit_repr(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
 }
 
 /// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
-fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
+fn emit_py_repr(
+    chunk: &mut Chunk,
+    repr_idx: usize,
+    abi: vybe_runtime::chunk::ReceiverAbi,
+    line: u32,
+) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let is_array = chunk.add_import("ecma:array", "isArray");
@@ -922,8 +967,15 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
         "__vybe_bytes_repr",
     )));
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_bytes_repr", line);
+    // ⛔ §10.2.1: the helper is an ordinary compiled function, so under
+    // `ReceiverBinding::UniversalParameter` it DECLARES a receiver at argument
+    // 0. Pushing only the value left `a` bound to the receiver and the bytes
+    // one place late, so the loop saw nothing and every `print(b'…')` answered
+    // `b''` — 243 python tests, all of which had a correct VALUE (`len`, `[0]`,
+    // `list()` and `==` were all right) and a broken repr.
+    let __r = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + __r, line);
     chunk.emit_else(line);
 
     // null → "None"
@@ -1423,6 +1475,7 @@ pub fn emit_py_exception_instance(chunks: &mut [Chunk], current: usize, line: u3
 }
 
 pub fn emit_py_exception_message(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let has_own = chunk.add_import("ecma:object", "hasOwn");
@@ -1456,7 +1509,7 @@ pub fn emit_py_exception_message(chunks: &mut Vec<Chunk>, current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, args, line);
     chunk.emit_i32_const(0, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    emit_py_repr(chunk, repr_idx, line);
+    emit_py_repr(chunk, repr_idx, __abi, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, args, line);
     chunk.emit_i32_const(0, line);
@@ -2212,6 +2265,33 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     }
     if name == "python.id" {
         emit_id_guarded(chunks, current, line);
+        return true;
+    }
+    // `memoryview(x)` — a VIEW over x's buffer, which for every bytes-like x
+    // here IS x: `len`, iteration, `list()` and `bytes()` all read the same
+    // bytes through it, and CPython's memoryview is explicitly a view rather
+    // than a copy. So the value passes through unchanged and the extra
+    // arguments (there are none in practice) are dropped.
+    if name == "python.memoryview" {
+        for _ in 1..argc.max(1) {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        if argc == 0 {
+            chunks[current].emit_array_new_fixed(0, 0, line);
+            let idx = chunks[current].add_import("ecma:uint8array", "from");
+            chunks[current].emit_call(idx, 1, line);
+        }
+        return true;
+    }
+    // ⛔ `bytes()` / `bytearray()` with NO argument is an EMPTY buffer, not a
+    // buffer of the word "undefined". `__vybe_to_bytes` encodes whatever it is
+    // handed, and an omitted argument arrives as `Undefined` (ECMA-262
+    // §10.2.1.1), so `bytearray()` came out as the nine bytes
+    // `u n d e f i n e d` and every `.append` after it operated on those.
+    if argc == 0 && matches!(name, "python.bytes" | "python.encode") {
+        chunks[current].emit_array_new_fixed(0, 0, line);
+        let idx = chunks[current].add_import("ecma:uint8array", "from");
+        chunks[current].emit_call(idx, 1, line);
         return true;
     }
     let global = match name {

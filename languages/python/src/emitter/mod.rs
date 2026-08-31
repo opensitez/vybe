@@ -9,6 +9,7 @@ pub mod array_adapter;
 pub mod base64_adapter;
 pub mod bisect_adapter;
 pub mod calendar_adapter;
+pub mod lock_adapter;
 pub mod collections_adapter;
 pub mod compression_adapter;
 pub mod colorsys_adapter;

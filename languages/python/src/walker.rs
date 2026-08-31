@@ -209,6 +209,21 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // by the next program compiled on this thread.
     let mut __w_owned = PyWalker::default();
     let __w = &mut __w_owned;
+    // ⛔ The `core_classes` names are registered BEFORE the source walk, not
+    // when their declarations are spliced in afterwards. The walker decides how
+    // to lower `a = IPv4Address(…)` — and every later `a.attr` — from
+    // `py_defined_classes` AT THE MOMENT IT SEES THE LINE, so registering at
+    // splice time is too late: construction compiled as a plain call, the
+    // instance was never tracked, and every attribute read on it threw.
+    // ⛔ THE TREE MUST EXIST BEFORE THE WALK ASKS IT. `register_tree` is a
+    // plugin hook the compiler fires on its own schedule, which is AFTER
+    // `parse`; a walk-time `declares_path` therefore saw only whatever another
+    // language had already mounted. Registration is `Once`-guarded and
+    // idempotent, so calling it here costs one atomic on every later parse and
+    // makes the resolver answerable from the frontend — which is what lets
+    // `hasattr` stop keeping a table of its own.
+    crate::emitter::tree_register::register_namespace_tree();
+
     __w.py_imported_modules.clear();
     __w.py_from_imported_modules.clear();
     __w.py_float_returning_imports.clear();
@@ -231,10 +246,46 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_classes_with_init.clear();
     __w.py_class_parents.clear();
     __w.py_class_attrs.clear();
+
+    // ⛔ BELOW the clears, so it is LIVE. Above them it was wiped, and a core
+    // class the walker does not know is not normalised from `ClassName(arg)` to
+    // `ExprKind::New` — the constructor then binds its arguments one slot over
+    // and the first parameter receives the receiver.
+    let needed_core = crate::core_classes::needed_classes(source);
+    for name in &needed_core {
+        __w.py_defined_classes.insert((*name).to_string());
+    }
+    // Every core class declares `__init__`, and `class_has_init` gates the
+    // construction path — without it a `New` takes the no-argument shape.
+    for name in &needed_core {
+        __w.py_classes_with_init.insert((*name).to_string());
+    }
+    for (name, attrs) in crate::core_classes::CLASS_ATTRS {
+        if needed_core.contains(name) {
+            __w.py_class_attrs.insert(
+                (*name).to_string(),
+                attrs.iter().map(|a| (*a).to_string()).collect(),
+            );
+        }
+    }
     __w.py_class_data_attrs.clear();
     __w.py_class_float_data_attrs.clear();
     __w.py_class_slots.clear();
     __w.py_class_properties.clear();
+
+    // ⛔ BELOW `py_class_properties.clear()`. A spliced class is never walked,
+    // so nothing calls `note_class_property_kind` for it — and a property the
+    // walker does not know is read as a plain attribute, so `PurePath("a/b")
+    // .drive` resolved to an absent field instead of invoking the accessor.
+    // Seeding it ABOVE the clear (where the class-name seeding has to live) is
+    // wiped twenty lines later.
+    for (name, props) in crate::core_classes::CLASS_PROPERTIES {
+        if needed_core.contains(name) {
+            for prop in *props {
+                note_class_property_kind(__w, name, prop, "getter");
+            }
+        }
+    }
     __w.py_init_subclass_writes.clear();
     __w.py_dataclass_fields.clear();
     __w.py_dataclass_options.clear();
@@ -298,6 +349,83 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     apply_float_var_repr(__w, &mut body, &mut HashMap::new());
 
+    // The stdlib CLASSES, as ordinary declared AST — `core_classes`. Spliced
+    // BEFORE the passes below, so the class machinery sees them exactly as it
+    // sees a user class: a class inserted afterwards has its members but no
+    // expression using them was ever typed.
+    // Snapshot the user's own class names first: the closure only needs to
+    // READ them, and borrowing `__w` mutably inside it would conflict with the
+    // walker borrow that is live across the splice.
+    // ⛔ FUNCTION METADATA WAS DECORATOR-ONLY. `assign_function_metadata`
+    // has exactly two callers and both are in the decorator path, so a plain
+    // `def f(x: int) -> bool` carried NO `__name__`, `__doc__` or
+    // `__annotations__` at all — `f.__name__` did not read the wrong thing, it
+    // read nothing, and the whole `function_signatures_extended` suite asks for
+    // precisely those three.
+    //
+    // Gated on the source naming one of them, the same shape the `TYPEOBJ`
+    // prelude above is gated on: three extra assignments per function is real
+    // bloat for a program that never introspects, and a substring miss costs
+    // only what is missing today.
+    if source.contains("__annotations__")
+        || source.contains("__name__")
+        || source.contains("__doc__")
+        || source.contains("__qualname__")
+    {
+        // ⛔ IMMEDIATELY AFTER EACH DEF, not appended at the end. A
+        // `FunctionDecl` hoists; the metadata ASSIGNMENTS are ordinary
+        // statements, so collecting them into one trailing block means
+        // `print(f.__annotations__)` on line 3 runs before the assignment that
+        // creates it.
+        let mut rebuilt: Vec<Statement> = Vec::with_capacity(body.len());
+        for stmt in body {
+            let meta = match &stmt.kind {
+                StmtKind::FunctionDecl {
+                    name,
+                    params,
+                    return_type,
+                    body: fn_body,
+                    ..
+                } if !name.starts_with("__py_") && !name.starts_with("__vybe") => {
+                    let mut out = Vec::new();
+                    assign_function_metadata(
+                        &mut out,
+                        name,
+                        params,
+                        return_type.as_ref(),
+                        fn_body,
+                    );
+                    out
+                }
+                _ => Vec::new(),
+            };
+            rebuilt.push(stmt);
+            rebuilt.extend(meta);
+        }
+        body = rebuilt;
+    }
+
+    let user_classes = __w.py_defined_classes.clone();
+    // ⛔ EXCLUDE THE SEEDED NAMES. `is_user_declared` exists so a user's own
+    // `class IPv4Address` wins over the core one — but `py_defined_classes` now
+    // HOLDS the core names (that seeding is what makes `ClassName(arg)`
+    // normalise to `New`), so the guard saw its own seed, skipped every
+    // declaration, and `New` reached a global that was never emitted:
+    // "undefined is not callable". The user's classes are the ones the SOURCE
+    // declared, which is exactly the seeded set removed.
+    let core_classes = crate::core_classes::declarations_for(source, |name| {
+        user_classes.contains(name) && !needed_core.iter().any(|n| *n == name)
+    });
+    if !core_classes.is_empty() {
+        // ⛔ REGISTER THEM. The declarations are spliced AFTER the source walk,
+        // so nothing has called `note_defined_class` for them — and without
+        // that the walker cannot track that `a = ipaddress.IPv4Address(…)`
+        // holds an instance, so `a.version` took the untyped attribute path and
+        // raised. A spliced class has to be as known to the walker as a
+        // source-declared one.
+        body.splice(0..0, core_classes);
+    }
+
     let mut prelude = parse_python_prelude(__w, ITER_PROTOCOL_PRELUDE);
     prelude.append(&mut body);
     body = prelude;
@@ -346,54 +474,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
-    // Pure-Python `logging` module surface (getLogger/Logger + handler/formatter
-    // classes). Constants come from [namespace_constants].
-    if source.contains("import logging") {
-        let mut prelude = parse_python_prelude(__w, LOGGING_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
-    // Pure-Python `warnings` module: warning classes + a recording
-    // `catch_warnings` context manager; the filters are no-ops.
-    if source.contains("import warnings") {
-        let mut prelude = parse_python_prelude(__w, WARNINGS_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
-    // Pure-Python `traceback` module (best-effort formatting; content needing the
-    // live exception is a header stub since `sys.exc_info()` isn't populated).
-    if source.contains("import traceback") {
-        let mut prelude = parse_python_prelude(__w, TRACEBACK_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
-    // `contextlib` context-manager helpers as global names (covers
-    // `from contextlib import nullcontext/closing/suppress`).
-    if source.contains("contextlib") {
-        let mut prelude = parse_python_prelude(__w, CONTEXTLIB_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-    // `http.client` / `ssl` — surface, not transport (see the prelude note).
-    // Gated on either import; both share one prelude because `HTTPSConnection`
-    // and `ssl.wrap_socket` refer to each other.
-    if source.contains("import http") || source.contains("import ssl") {
-        let mut prelude = parse_python_prelude(__w, HTTP_SSL_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-    // `ipaddress` — pure address arithmetic; a prelude because the addresses
-    // and networks are classes.
-    if source.contains("import ipaddress") {
-        let mut prelude = parse_python_prelude(__w, IPADDRESS_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
     // `socket` — the class is genuinely stateful (WASI resource + streams +
     // timeout + option table), which is the one case a prelude is for.
@@ -411,13 +494,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
-    // `csv` — Python's module/classes are a facade, but row parsing/formatting
-    // delegates to the shared common CSV primitive through profile aliases.
-    if source.contains("import csv") || source.contains("from csv") {
-        let mut prelude = parse_python_prelude(__w, CSV_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
     if source.contains("urllib.parse") || source.contains("from urllib") {
         let mut prelude = parse_python_prelude(__w, URLLIB_PARSE_PRELUDE);
         prelude.append(&mut body);
@@ -446,14 +522,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
-    // `pathlib` — PurePath/Path (pure Python; string-only path math + FS-method
-    // stubs). Gated on the bare substring so `from pathlib import PurePath/Path`
-    // and friends all trigger injection, not just `import pathlib`.
-    if source.contains("pathlib") {
-        let mut prelude = parse_python_prelude(__w, PATHLIB_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
     // `os.path` — pure-string POSIX helpers (join/split/normpath/…) are emitter
     // adapters (common:python.ospath_*), emitted at the call site. No prelude.
@@ -494,14 +562,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         prelude.append(&mut body);
         body = prelude;
     }
-    if source.contains("__annotations__")
-        || source.contains("fields(")
-        || source.contains("__class_getitem__")
-    {
-        let mut prelude = parse_python_prelude(__w, TYPEOBJ_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
     if source.contains("|") || source.contains(".update(") {
         let mut prelude = parse_python_prelude(__w, DICT_OP_PRELUDE);
         prelude.append(&mut body);
@@ -519,17 +579,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     if source.contains("types") {
         let mut prelude = parse_python_prelude(__w, TYPES_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("threading")
-        || source.contains("queue")
-        || source.contains("concurrent.futures")
-        || source.contains("multiprocessing")
-        || source.contains("subprocess")
-        || source.contains("import time")
-    {
-        let mut prelude = parse_python_prelude(__w, CONCURRENCY_PRELUDE);
         prelude.append(&mut body);
         body = prelude;
     }
@@ -555,6 +604,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // module whose contract differs from its language's.
         imports,
         directives: Directives {
+            // ⛔ THE RECEIVER IS PARAMETER 0 — ECMA-262 §10.2.1
+            // `[[Call]](thisArgument, argumentsList)`, which is also the only
+            // shape expressible as a wasm functype. Python spells it in its own
+            // syntax already (`def get(self)`), so this states the calling
+            // convention the language was using anyway; leaving it undeclared
+            // stamped every chunk `ReceiverAbi::Ambient` and kept the
+            // `__js_this` module global alive for a language that never
+            // declared an ambient receiver.
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             // Reading a method produces a fresh callable with the receiver
             // already bound — the third dispatch model, distinct from
             // prototype (js/dart) and call-site (php). Replaces the profile
@@ -794,296 +852,10 @@ def __py_exception_group_split(eg, typ):
     return (ExceptionGroup(eg.message, matched), ExceptionGroup(eg.message, rest))
 "#;
 
-/// Pure-Python `logging` module. `import logging` re-binds `logging` to this
-/// object (the import is a recognized no-op for stdlib names). Level constants
-/// resolve via [namespace_constants].
-const LOGGING_PRELUDE: &str = r#"
-class LogRecord:
-    def __init__(self, *a, **k):
-        pass
-class Formatter:
-    def __init__(self, *a, **k):
-        pass
-    def format(self, record):
-        return ""
-class Filter:
-    def __init__(self, *a, **k):
-        pass
-class Handler:
-    def __init__(self, *a, **k):
-        self.level = 0
-    def setLevel(self, l):
-        self.level = l
-    def setFormatter(self, f):
-        pass
-class StreamHandler(Handler):
-    pass
-class FileHandler(Handler):
-    pass
-class __PyLogger:
-    def __init__(self, name):
-        self.name = name
-        self.level = 0
-        self.handlers = []
-    def setLevel(self, l):
-        self.level = l
-    def debug(self, *a, **k):
-        pass
-    def info(self, *a, **k):
-        pass
-    def warning(self, *a, **k):
-        pass
-    def error(self, *a, **k):
-        pass
-    def critical(self, *a, **k):
-        pass
-    def exception(self, *a, **k):
-        pass
-    def log(self, *a, **k):
-        pass
-    def isEnabledFor(self, l):
-        return True
-    def hasHandlers(self):
-        return len(self.handlers) > 0
-    def addHandler(self, h):
-        self.handlers.append(h)
-class __LoggingModule:
-    def __init__(self):
-        self.LogRecord = LogRecord
-        self.Formatter = Formatter
-        self.Filter = Filter
-        self.Handler = Handler
-        self.StreamHandler = StreamHandler
-        self.FileHandler = FileHandler
-        self.NOTSET = 0
-        self.DEBUG = 10
-        self.INFO = 20
-        self.WARNING = 30
-        self.WARN = 30
-        self.ERROR = 40
-        self.CRITICAL = 50
-        self.FATAL = 50
-        self.lastResort = StreamHandler()
-        self.root = __PyLogger("root")
-    def getLogger(self, name="root"):
-        return __PyLogger(name)
-    def basicConfig(self, *a, **k):
-        pass
-    def getLevelName(self, level):
-        names = {0: "NOTSET", 10: "DEBUG", 20: "INFO", 30: "WARNING", 40: "ERROR", 50: "CRITICAL"}
-        if level in names:
-            return names[level]
-        return "Level " + str(level)
-    def addLevelName(self, level, name):
-        pass
-    def debug(self, *a, **k):
-        pass
-    def info(self, *a, **k):
-        pass
-    def warning(self, *a, **k):
-        pass
-    def error(self, *a, **k):
-        pass
-    def critical(self, *a, **k):
-        pass
-    def log(self, *a, **k):
-        pass
-logging = __LoggingModule()
-"#;
 
 /// Pure-Python `warnings` module.
-const WARNINGS_PRELUDE: &str = r#"
-class Warning(Exception):
-    pass
-class UserWarning(Warning):
-    pass
-class DeprecationWarning(Warning):
-    pass
-class PendingDeprecationWarning(Warning):
-    pass
-class SyntaxWarning(Warning):
-    pass
-class RuntimeWarning(Warning):
-    pass
-class FutureWarning(Warning):
-    pass
-class ImportWarning(Warning):
-    pass
-class UnicodeWarning(Warning):
-    pass
-class BytesWarning(Warning):
-    pass
-class ResourceWarning(Warning):
-    pass
-class __WarningRecord:
-    def __init__(self, message, category):
-        self.message = message
-        self.category = category
-class __CatchWarnings:
-    def __init__(self, mod, record):
-        self.mod = mod
-        self.record = record
-        self.entries = []
-    def __enter__(self):
-        if self.record:
-            self.mod.recording = self.entries
-            return self.entries
-        return None
-    def __exit__(self, *a):
-        self.mod.recording = None
-        return False
-class __WarningsModule:
-    def __init__(self):
-        self.recording = None
-    def warn(self, message, category=None, *a, **k):
-        if self.recording is not None:
-            cat = category
-            if cat is None:
-                cat = UserWarning
-            self.recording.append(__WarningRecord(message, cat))
-    def warn_explicit(self, *a, **k):
-        pass
-    def showwarning(self, *a, **k):
-        pass
-    def formatwarning(self, *a, **k):
-        return ""
-    def _filters_mutated(self, *a, **k):
-        pass
-    def filterwarnings(self, *a, **k):
-        pass
-    def simplefilter(self, *a, **k):
-        pass
-    def resetwarnings(self):
-        pass
-    def catch_warnings(self, record=False):
-        return __CatchWarnings(self, record)
-warnings = __WarningsModule()"#;
 
-/// Pure-Python `traceback` module. Formatting returns plausible non-empty output;
-/// content that needs the live exception (`format_exc` → the exception type name)
-/// is a best-effort header since `sys.exc_info()` isn't fully populated.
-const TRACEBACK_PRELUDE: &str = r#"
-class FrameSummary:
-    def __init__(self, *a, **k):
-        pass
-class StackSummary(list):
-    pass
-class TracebackException:
-    def __init__(self, *a, **k):
-        pass
-    def format(self, *a, **k):
-        return ["Traceback (most recent call last):\n"]
-class __TracebackModule:
-    def __init__(self):
-        self.FrameSummary = FrameSummary
-        self.StackSummary = StackSummary
-        self.TracebackException = TracebackException
-    def format_exc(self, *a, **k):
-        return "Traceback (most recent call last):\n"
-    def format_exception(self, *a, **k):
-        return ["Traceback (most recent call last):\n"]
-    def format_exception_only(self, *a, **k):
-        return ["\n"]
-    def format_tb(self, *a, **k):
-        return ["  File \"<unknown>\"\n"]
-    def format_stack(self, *a, **k):
-        return ["  File \"<unknown>\"\n"]
-    def extract_tb(self, *a, **k):
-        return StackSummary()
-    def extract_stack(self, *a, **k):
-        return StackSummary()
-    def print_exc(self, *a, **k):
-        f = k.get("file", None)
-        if f is not None:
-            f.write("Traceback (most recent call last):\n")
-    def print_tb(self, *a, **k):
-        pass
-    def print_stack(self, *a, **k):
-        pass
-    def print_exception(self, *a, **k):
-        pass
-    def clear_frames(self, *a, **k):
-        pass
-    def walk_tb(self, *a, **k):
-        return iter([])
-    def walk_stack(self, *a, **k):
-        return iter([])
-traceback = __TracebackModule()
-"#;
 
-/// `contextlib` helpers. Defined as globals so `from contextlib import X` binds
-/// them, and also collected on a `contextlib` module object.
-const CONTEXTLIB_PRELUDE: &str = r#"
-class __NullContext:
-    def __init__(self, enter_result=None):
-        self.enter_result = enter_result
-    def __enter__(self):
-        return self.enter_result
-    def __exit__(self, *a):
-        return False
-def nullcontext(enter_result=None):
-    return __NullContext(enter_result)
-class __Closing:
-    def __init__(self, thing):
-        self.thing = thing
-    def __enter__(self):
-        return self.thing
-    def __exit__(self, *a):
-        __c = getattr(self.thing, "close")
-        __c()
-        return False
-def closing(thing):
-    return __Closing(thing)
-class __Suppress:
-    def __init__(self, *exc):
-        self.exc = exc
-    def __enter__(self):
-        return None
-    def __exit__(self, exc_type, *a):
-        if exc_type is None:
-            return False
-        for e in self.exc:
-            if issubclass(exc_type, e):
-                return True
-        return False
-def suppress(*exc):
-    return __Suppress(*exc)
-class __GenCM:
-    def __init__(self, gen):
-        self.gen = gen
-    def __enter__(self):
-        return next(self.gen)
-    def __exit__(self, *a):
-        try:
-            next(self.gen)
-        except StopIteration:
-            pass
-        return False
-def contextmanager(func):
-    def __cm_helper(*a, **k):
-        return __GenCM(func(*a, **k))
-    return __cm_helper
-class __RedirectStdout:
-    def __init__(self, target):
-        self.target = target
-    def __enter__(self):
-        return self.target
-    def __exit__(self, *a):
-        return False
-def redirect_stdout(target):
-    return __RedirectStdout(target)
-def redirect_stderr(target):
-    return __RedirectStdout(target)
-class __ContextlibModule:
-    def __init__(self):
-        self.nullcontext = nullcontext
-        self.closing = closing
-        self.suppress = suppress
-        self.contextmanager = contextmanager
-        self.redirect_stdout = redirect_stdout
-        self.redirect_stderr = redirect_stderr
-contextlib = __ContextlibModule()
-"#;
 
 /// `io.StringIO` — an in-memory text buffer implemented in pure Python (string
 /// buffer + cursor). No host I/O; `print(file=buf)` writes here via `.write`.
@@ -1307,327 +1079,7 @@ socket = VybeSocketModule()
 /// whole prelude): no comment inside an indented block, no blank line inside a
 /// class body, no string literal containing `:` inside a subscript, and no
 /// parameter or attribute named `type`.
-const IPADDRESS_PRELUDE: &str = r#"
-class VybeIPv4Address:
-    def __init__(self, value):
-        self.version = 4
-        self._int = value
-        self._text = _vybe_ip4_str(value)
-    def __str__(self):
-        return self._text
-    def __repr__(self):
-        return "IPv4Address('" + self._text + "')"
-    def __int__(self):
-        return self._int
-    def __eq__(self, other):
-        return int(self) == int(other)
-    def __add__(self, n):
-        return VybeIPv4Address(self._int + n)
-    def __sub__(self, n):
-        return VybeIPv4Address(self._int - n)
-    def _octets(self):
-        return _vybe_ip4_octets(self._int)
-    def _prop_compressed(self):
-        return self._text
-    def _prop_exploded(self):
-        return self._text
-    def _prop_packed(self):
-        return bytes(self._octets())
-    def _prop_is_private(self):
-        parts = self._octets()
-        if parts[0] == 10:
-            return True
-        if parts[0] == 127:
-            return True
-        if parts[0] == 192:
-            if parts[1] == 168:
-                return True
-        if parts[0] == 172:
-            if parts[1] >= 16:
-                if parts[1] <= 31:
-                    return True
-        return False
-    def _prop_is_loopback(self):
-        return self._octets()[0] == 127
-    def _prop_is_multicast(self):
-        first = self._octets()[0]
-        if first < 224:
-            return False
-        return first <= 239
-    def _prop_is_global(self):
-        return not self._prop_is_private()
 
-class VybeIPv6Address:
-    def __init__(self, text):
-        self.version = 6
-        self._groups = _vybe_ip6_groups(text)
-    def __str__(self):
-        return _vybe_ip6_compress(self._groups)
-    def __repr__(self):
-        return "IPv6Address('" + str(self) + "')"
-    def __eq__(self, other):
-        return str(self) == str(other)
-    def _prop_compressed(self):
-        return _vybe_ip6_compress(self._groups)
-    def _prop_exploded(self):
-        return _vybe_ip6_explode(self._groups)
-    def _prop_is_loopback(self):
-        return _vybe_ip6_explode(self._groups) == "0000:0000:0000:0000:0000:0000:0000:0001"
-    def _prop_is_multicast(self):
-        return self._groups[0] >= 65280
-    def _prop_is_private(self):
-        return self._groups[0] >= 64512
-    def _prop_is_global(self):
-        return not self._prop_is_private()
-
-class VybeIPv4Network:
-    def __init__(self, text):
-        pair = _vybe_ip4_net_parts(text)
-        self.version = 4
-        self.prefixlen = pair[1]
-        self._mask = _vybe_ip4_mask(pair[1])
-        self.num_addresses = _vybe_ip4_count(pair[1])
-        self._base = int(pair[0] / self.num_addresses) * self.num_addresses
-        self.network_address = VybeIPv4Address(self._base)
-        self.netmask = VybeIPv4Address(self._mask)
-        self.hostmask = VybeIPv4Address(4294967295 - self._mask)
-        self.broadcast_address = VybeIPv4Address(self._base + self.num_addresses - 1)
-    def __str__(self):
-        return str(self.network_address) + "/" + str(self.prefixlen)
-    def __repr__(self):
-        return "IPv4Network('" + str(self) + "')"
-    def __contains__(self, addr):
-        value = int(addr)
-        if value < self._base:
-            return False
-        return value < self._base + self.num_addresses
-    def hosts(self):
-        out = []
-        i = self._base + 1
-        last = self._base + self.num_addresses - 1
-        while i < last:
-            out.append(VybeIPv4Address(i))
-            i = i + 1
-        return out
-    def subnets(self, prefixlen_diff=1):
-        new_len = self.prefixlen + prefixlen_diff
-        step = _vybe_ip4_count(new_len)
-        out = []
-        i = self._base
-        limit = self._base + self.num_addresses
-        while i < limit:
-            out.append(VybeIPv4Network(_vybe_ip4_str(i) + "/" + str(new_len)))
-            i = i + step
-        return out
-    def supernet(self, prefixlen_diff=1):
-        new_len = self.prefixlen - prefixlen_diff
-        return VybeIPv4Network(_vybe_ip4_str(self._base) + "/" + str(new_len))
-
-class VybeIPv4Interface:
-    def __init__(self, text):
-        pair = _vybe_ip4_net_parts(text)
-        self.version = 4
-        self.ip = VybeIPv4Address(pair[0])
-        self.network = VybeIPv4Network(text)
-        self.prefixlen = pair[1]
-    def __str__(self):
-        return str(self.ip) + "/" + str(self.prefixlen)
-
-def ip_address(value):
-    if isinstance(value, int):
-        return VybeIPv4Address(value)
-    if isinstance(value, bytes):
-        total = 0
-        for b in value:
-            total = total * 256 + b
-        return VybeIPv4Address(total)
-    text = str(value)
-    if "." in text:
-        return VybeIPv4Address(_vybe_ip4_parse(text))
-    return VybeIPv6Address(text)
-
-def ip_network(value, strict=True):
-    return VybeIPv4Network(str(value))
-
-def ip_interface(value):
-    return VybeIPv4Interface(str(value))
-
-def collapse_addresses(nets):
-    return list(nets)
-"#;
-
-/// `http.client` and `ssl` — module SURFACE only.
-///
-/// Neither maps onto `wasi:sockets` or `ecma:*`, because neither does any
-/// networking here: what programs read from these modules is the status-code
-/// table, the connection and exception CLASSES, and the protocol constants.
-/// The transport, when one is needed, is the `socket` class above.
-const HTTP_SSL_PRELUDE: &str = r#"
-class VybeHTTPMessage:
-    def __init__(self, headers=None):
-        self._headers = headers if headers is not None else {}
-    def get(self, name, default=None):
-        key = str(name).lower()
-        if key in self._headers:
-            return self._headers[key]
-        return default
-    def items(self):
-        return list(self._headers.items())
-    def keys(self):
-        return list(self._headers.keys())
-
-class VybeHTTPResponse:
-    def __init__(self, status=200, reason="OK", body=""):
-        self.status = status
-        self.reason = reason
-        self._body = body
-        self.headers = VybeHTTPMessage()
-    def read(self, amt=-1):
-        return self._body
-    def getheader(self, name, default=None):
-        return self.headers.get(name, default)
-    def getheaders(self):
-        return self.headers.items()
-    def close(self):
-        return None
-
-class VybeHTTPConnection:
-    def __init__(self, host, port=80, timeout=None):
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self.sock = None
-        self._response = None
-    def connect(self):
-        self.sock = VybeSocketImpl(2, 1)
-        self.sock.connect((self.host, self.port))
-    def request(self, method, url, body=None, headers=None):
-        self._response = VybeHTTPResponse(200, "OK", "")
-    def getresponse(self):
-        if self._response is None:
-            self._response = VybeHTTPResponse(200, "OK", "")
-        return self._response
-    def close(self):
-        if self.sock is not None:
-            self.sock.close()
-
-class VybeHTTPSConnection(VybeHTTPConnection):
-    def __init__(self, host, port=443, timeout=None):
-        VybeHTTPConnection.__init__(self, host, port, timeout)
-
-class VybeHTTPException(Exception):
-    pass
-
-class VybeBadStatusLine(VybeHTTPException):
-    pass
-
-class VybeIncompleteRead(VybeHTTPException):
-    pass
-
-def parse_headers(fp):
-    return VybeHTTPMessage()
-
-class VybeSSLContext:
-    def __init__(self, protocol=2):
-        self.protocol = protocol
-        self.verify_mode = 0
-        self.check_hostname = False
-    def get_ciphers(self):
-        return []
-    def set_ciphers(self, spec):
-        return None
-    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
-        return None
-    def load_default_certs(self, purpose=None):
-        return None
-    def wrap_socket(self, sock, server_hostname=None, server_side=False):
-        return sock
-
-class VybeSSLError(OSError):
-    pass
-
-class VybeCertificateError(VybeSSLError):
-    pass
-
-class VybeTLSVersion:
-    TLSv1 = 769
-    TLSv1_1 = 770
-    TLSv1_2 = 771
-    TLSv1_3 = 772
-
-class VybeSSLPurpose:
-    SERVER_AUTH = "serverAuth"
-    CLIENT_AUTH = "clientAuth"
-
-def create_default_context(purpose=None, cafile=None, capath=None, cadata=None):
-    return VybeSSLContext(2)
-
-def ssl_wrap_socket(sock, keyfile=None, certfile=None, server_side=False):
-    return sock
-
-def match_hostname(cert, hostname):
-    return None
-
-def enum_certificates(store_name="ROOT"):
-    return []
-
-class VybeHttpClientModule:
-    OK = 200
-    CREATED = 201
-    ACCEPTED = 202
-    NO_CONTENT = 204
-    MOVED_PERMANENTLY = 301
-    FOUND = 302
-    NOT_MODIFIED = 304
-    BAD_REQUEST = 400
-    UNAUTHORIZED = 401
-    FORBIDDEN = 403
-    NOT_FOUND = 404
-    METHOD_NOT_ALLOWED = 405
-    REQUEST_TIMEOUT = 408
-    CONFLICT = 409
-    GONE = 410
-    INTERNAL_SERVER_ERROR = 500
-    NOT_IMPLEMENTED = 501
-    BAD_GATEWAY = 502
-    SERVICE_UNAVAILABLE = 503
-    GATEWAY_TIMEOUT = 504
-    HTTPConnection = VybeHTTPConnection
-    HTTPSConnection = VybeHTTPSConnection
-    HTTPResponse = VybeHTTPResponse
-    HTTPMessage = VybeHTTPMessage
-    HTTPException = VybeHTTPException
-    BadStatusLine = VybeBadStatusLine
-    IncompleteRead = VybeIncompleteRead
-    parse_headers = parse_headers
-    responses = {200: "OK", 201: "Created", 202: "Accepted", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 408: "Request Timeout", 409: "Conflict", 410: "Gone", 500: "Internal Server Error", 501: "Not Implemented", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout"}
-
-class VybeHttpModule:
-    client = VybeHttpClientModule()
-
-class VybeSslModule:
-    CERT_NONE = 0
-    CERT_OPTIONAL = 1
-    CERT_REQUIRED = 2
-    PROTOCOL_TLS = 2
-    PROTOCOL_TLS_CLIENT = 16
-    PROTOCOL_TLS_SERVER = 17
-    OP_NO_SSLv2 = 16777216
-    OP_NO_SSLv3 = 33554432
-    HAS_TLSv1_3 = True
-    SSLContext = VybeSSLContext
-    SSLError = VybeSSLError
-    CertificateError = VybeCertificateError
-    TLSVersion = VybeTLSVersion
-    Purpose = VybeSSLPurpose
-    create_default_context = create_default_context
-    wrap_socket = ssl_wrap_socket
-    match_hostname = match_hostname
-    enum_certificates = enum_certificates
-
-http = VybeHttpModule()
-ssl = VybeSslModule()
-"#;
 
 const IO_PRELUDE: &str = r#"
 class StringIO:
@@ -1789,111 +1241,6 @@ class __IOModule:
 io = __IOModule()
 "#;
 
-const CSV_PRELUDE: &str = r#"
-class __PyCsvExcel:
-    delimiter = ','
-    quotechar = '"'
-    lineterminator = chr(13) + chr(10)
-
-class __PyCsvReader:
-    def __init__(self, source, dialect=None):
-        self._rows = []
-        self._index = 0
-        if hasattr(source, 'getvalue'):
-            data = source.getvalue()
-        elif hasattr(source, 'read'):
-            data = source.read()
-        else:
-            data = str(source)
-        lines = data.split(chr(10))
-        for line in lines:
-            if line.endswith(chr(13)):
-                line = line[:-1]
-            if line != '':
-                self._rows.append(__py_csv_parse_line(line, ',', chr(34)))
-    def __iter__(self):
-        return self
-    def __next__(self):
-        if self._index >= len(self._rows):
-            raise StopIteration()
-        row = self._rows[self._index]
-        self._index += 1
-        return row
-
-class __PyCsvWriter:
-    def __init__(self, target, dialect=None):
-        self._target = target
-    def writerow(self, row):
-        text = __py_csv_format_row(row, ',', chr(34))
-        self._target.write(text + chr(13) + chr(10))
-        return len(text)
-    def writerows(self, rows):
-        for row in rows:
-            self.writerow(row)
-
-class __PyCsvDictReader:
-    def __init__(self, source, fieldnames=None, dialect=None):
-        self._reader = __PyCsvReader(source, dialect)
-        if fieldnames is None:
-            self.fieldnames = next(self._reader)
-        else:
-            self.fieldnames = fieldnames
-    def __iter__(self):
-        return self
-    def __next__(self):
-        row = next(self._reader)
-        out = {}
-        i = 0
-        while i < len(self.fieldnames):
-            if i < len(row):
-                out[self.fieldnames[i]] = row[i]
-            else:
-                out[self.fieldnames[i]] = None
-            i += 1
-        return out
-
-class __PyCsvDictWriter:
-    def __init__(self, target, fieldnames, dialect=None):
-        self._writer = __PyCsvWriter(target, dialect)
-        self.fieldnames = fieldnames
-    def writeheader(self):
-        return self._writer.writerow(self.fieldnames)
-    def writerow(self, rowdict):
-        row = []
-        for name in self.fieldnames:
-            if name in rowdict:
-                row.append(rowdict[name])
-            else:
-                row.append('')
-        return self._writer.writerow(row)
-
-class __PyCsvSniffer:
-    def sniff(self, sample, delimiters=None):
-        return __PyCsvExcel()
-    def has_header(self, sample):
-        return True
-
-class __PyCsvModule:
-    QUOTE_MINIMAL = 0
-    QUOTE_ALL = 1
-    QUOTE_NONNUMERIC = 2
-    QUOTE_NONE = 3
-    excel = __PyCsvExcel()
-    Sniffer = __PyCsvSniffer
-    def reader(self, source, dialect=None):
-        return __PyCsvReader(source, dialect)
-    def writer(self, target, dialect=None):
-        return __PyCsvWriter(target, dialect)
-    def DictReader(self, source, fieldnames=None, dialect=None):
-        return __PyCsvDictReader(source, fieldnames, dialect)
-    def DictWriter(self, target, fieldnames, dialect=None):
-        return __PyCsvDictWriter(target, fieldnames, dialect)
-    def list_dialects(self):
-        return ['excel']
-    def field_size_limit(self, new_limit=None):
-        return 131072
-csv = __PyCsvModule()
-"#;
 
 const URLLIB_PARSE_PRELUDE: &str = r#"
 def __py_url_quote_from_bytes(value):
@@ -2151,330 +1498,6 @@ class __ConfigparserModule:
 configparser = __ConfigparserModule()
 "#;
 
-/// `pathlib` — PurePath/Path (pure Python). All path math runs on LOCAL
-/// strings (dodging the self-attr slice/concat bug); only the finished path
-/// string lands in `self._s`. Derived fields are `@property` getters (no
-/// stored slices, no parent-construction recursion). String literals contain
-/// no `#`/`[` (both break the prelude preprocessor) — `/`, `:`, `.` only.
-/// FS predicates (`exists`/`is_dir`/`is_file`) return a conservative `False`:
-/// no `wasi:filesystem` binding is resolvable at load, so existence cannot be
-/// confirmed without a host FS (out of this layer's reach).
-const PATHLIB_PRELUDE: &str = r#"
-import os
-def _pp_str(p):
-    if hasattr(p, '_s'):
-        return p._s
-    return p
-def _pp_norm(s):
-    s2 = s.replace(chr(92), '/')
-    while s2.find('//') >= 0:
-        s2 = s2.replace('//', '/')
-    n = len(s2)
-    if n > 1 and s2[n - 1] == '/':
-        s2 = s2[0:n - 1]
-    return s2
-def _pp_join_one(base, seg):
-    s = _pp_str(seg).replace(chr(92), '/')
-    if len(s) > 0 and s[0] == '/':
-        return _pp_norm(s)
-    if base == '':
-        return _pp_norm(s)
-    n = len(base)
-    if base[n - 1] == '/':
-        return _pp_norm(base + s)
-    return _pp_norm(base + '/' + s)
-def _pp_fnmatch(name, pat):
-    ni = 0
-    pi = 0
-    nlen = len(name)
-    plen = len(pat)
-    star_pi = -1
-    star_ni = 0
-    while ni < nlen:
-        if pi < plen and (pat[pi] == name[ni] or pat[pi] == '?'):
-            ni = ni + 1
-            pi = pi + 1
-        elif pi < plen and pat[pi] == '*':
-            star_pi = pi
-            star_ni = ni
-            pi = pi + 1
-        elif star_pi >= 0:
-            pi = star_pi + 1
-            star_ni = star_ni + 1
-            ni = star_ni
-        else:
-            return False
-    while pi < plen and pat[pi] == '*':
-        pi = pi + 1
-    return pi == plen
-class __PathStat:
-    def __init__(self):
-        self.st_size = 0
-        self.st_mode = 0
-        self.st_mtime = 0
-        self.st_ctime = 0
-        self.st_atime = 0
-class PurePath:
-    def __init__(self, p=''):
-        self._s = _pp_norm(_pp_str(p))
-    def _is_win(self):
-        return False
-    def _make(self, s):
-        return PurePath(s)
-    @property
-    def drive(self):
-        if not self._is_win():
-            return ''
-        s = self._s
-        if len(s) >= 2 and s[1] == ':':
-            return s[0:2]
-        return ''
-    @property
-    def root(self):
-        d = self.drive
-        rest = self._s[len(d):]
-        if len(rest) >= 1 and rest[0] == '/':
-            return '/'
-        return ''
-    @property
-    def anchor(self):
-        d = self.drive
-        r = self.root
-        return d + r
-    @property
-    def name(self):
-        a = self.anchor
-        rest = self._s[len(a):]
-        last = ''
-        for c in rest.split('/'):
-            if c != '':
-                last = c
-        return last
-    @property
-    def stem(self):
-        nm = self.name
-        idx = nm.rfind('.')
-        if idx > 0:
-            return nm[0:idx]
-        return nm
-    @property
-    def suffix(self):
-        nm = self.name
-        idx = nm.rfind('.')
-        if idx > 0:
-            return nm[idx:]
-        return ''
-    @property
-    def suffixes(self):
-        nm = self.name
-        result = []
-        if nm.endswith('.'):
-            return result
-        pieces = nm.split('.')
-        i = 1
-        while i < len(pieces):
-            result.append('.' + pieces[i])
-            i = i + 1
-        return result
-    @property
-    def parts(self):
-        anchor = self.anchor
-        rest = self._s[len(anchor):]
-        result = []
-        if anchor != '':
-            result.append(anchor)
-        for c in rest.split('/'):
-            if c != '':
-                result.append(c)
-        return result
-    @property
-    def parent(self):
-        anchor = self.anchor
-        rest = self._s[len(anchor):]
-        kept = []
-        for c in rest.split('/'):
-            if c != '':
-                kept.append(c)
-        if len(kept) <= 1:
-            if anchor != '':
-                return self._make(anchor)
-            return self._make('.')
-        newrest = ''
-        i = 0
-        while i < len(kept) - 1:
-            if i > 0:
-                newrest = newrest + '/'
-            newrest = newrest + kept[i]
-            i = i + 1
-        return self._make(anchor + newrest)
-    def with_name(self, newname):
-        prt = self.parent
-        ps = prt._s
-        if ps == '.' or ps == '':
-            return self._make(newname)
-        if ps[len(ps) - 1] == '/':
-            return self._make(ps + newname)
-        return self._make(ps + '/' + newname)
-    def with_suffix(self, suf):
-        nm = self.name
-        idx = nm.rfind('.')
-        if idx > 0:
-            base = nm[0:idx]
-        else:
-            base = nm
-        return self.with_name(base + suf)
-    def with_stem(self, newstem):
-        sfx = self.suffix
-        return self.with_name(newstem + sfx)
-    def match(self, pat):
-        nm = self.name
-        return _pp_fnmatch(nm, pat)
-    def joinpath(self, *others):
-        cur = self._s
-        for o in others:
-            cur = _pp_join_one(cur, o)
-        return self._make(cur)
-    def __truediv__(self, other):
-        return self._make(_pp_join_one(self._s, other))
-    def relative_to(self, other):
-        o = _pp_norm(_pp_str(other))
-        s = self._s
-        if s == o:
-            return self._make('.')
-        prefix = o
-        if len(prefix) == 0 or prefix[len(prefix) - 1] != '/':
-            prefix = prefix + '/'
-        if s[0:len(prefix)] == prefix:
-            return self._make(s[len(prefix):])
-        return self._make(s)
-    def is_relative_to(self, other):
-        o = _pp_norm(_pp_str(other))
-        s = self._s
-        if s == o:
-            return True
-        prefix = o
-        if len(prefix) == 0 or prefix[len(prefix) - 1] != '/':
-            prefix = prefix + '/'
-        return s[0:len(prefix)] == prefix
-    def as_posix(self):
-        return self._s
-    def as_uri(self):
-        s = self._s
-        if len(s) == 0 or s[0] != '/':
-            p = '/' + s
-        else:
-            p = s
-        return 'file://' + p
-    def is_absolute(self):
-        r = self.root
-        if self._is_win():
-            d = self.drive
-            return d != '' and r != ''
-        return r == '/'
-    def is_reserved(self):
-        if not self._is_win():
-            return False
-        nm0 = self.name
-        nm = nm0.upper()
-        dot = nm.find('.')
-        if dot >= 0:
-            nm = nm[0:dot]
-        reserved = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'LPT1', 'LPT2']
-        for r in reserved:
-            if nm == r:
-                return True
-        return False
-    @staticmethod
-    def from_uri(uri):
-        u = uri
-        pre = 'file://'
-        if u[0:len(pre)] == pre:
-            u = u[len(pre):]
-        return PurePath(u)
-    def __eq__(self, other):
-        if not hasattr(other, '_s'):
-            return False
-        a = self._s
-        b = other._s
-        return a == b
-    def __hash__(self):
-        h = 0
-        s = self._s
-        for ch in s:
-            h = h * 31 + ord(ch)
-        return h
-    def __str__(self):
-        return self._s
-    def __repr__(self):
-        return self._s
-class PurePosixPath(PurePath):
-    def _is_win(self):
-        return False
-class PureWindowsPath(PurePath):
-    def _is_win(self):
-        return True
-class Path(PurePath):
-    def _make(self, s):
-        return Path(s)
-    def exists(self):
-        return os.path.exists(self._s)
-    def is_dir(self):
-        return os.path.isdir(self._s)
-    def is_file(self):
-        return os.path.isfile(self._s)
-    def resolve(self, strict=False):
-        return self
-    def absolute(self):
-        return self
-    def expanduser(self):
-        return self
-    @staticmethod
-    def home():
-        return Path('/home')
-    @staticmethod
-    def cwd():
-        return Path('.')
-    def stat(self):
-        return __PathStat()
-    def lstat(self):
-        return __PathStat()
-    def iterdir(self):
-        return []
-    def glob(self, pat):
-        return []
-    def rglob(self, pat):
-        return []
-    def read_text(self, encoding=None):
-        return ''
-    def write_text(self, data, encoding=None):
-        return len(data)
-    def read_bytes(self):
-        return None
-    def write_bytes(self, data):
-        return 0
-    def open(self, mode='r', encoding=None):
-        return None
-    def touch(self, mode=438, exist_ok=True):
-        return None
-    def mkdir(self, mode=511, parents=False, exist_ok=False):
-        return None
-    def rmdir(self):
-        return None
-    def unlink(self, missing_ok=False):
-        return None
-    def rename(self, target):
-        return Path(_pp_str(target))
-    def replace(self, target):
-        return Path(_pp_str(target))
-    def hardlink_to(self, target):
-        return None
-    def symlink_to(self, target, target_is_directory=False):
-        return None
-    def chmod(self, mode):
-        return None
-    def samefile(self, other):
-        return self._s == _pp_str(other)
-"#;
 
 /// `random` distributions and range/weight helpers as pure Python over the
 /// working `random.random()` entropy plus `math`. Injected when the source
@@ -3504,13 +2527,6 @@ def wraps(wrapped, assigned=("__module__", "__name__", "__qualname__", "__doc__"
     return decorator
 "#;
 
-const TYPEOBJ_PRELUDE: &str = r#"
-class __py_type_obj:
-    def __init__(self, name):
-        self.__name__ = name
-    def __repr__(self):
-        return "<class '" + self.__name__ + "'>"
-"#;
 
 const DICT_OP_PRELUDE: &str = r#"
 def __py_dict_ior(d, other):
@@ -3541,658 +2557,6 @@ def __py_list_iadd(xs, other):
     return xs
 "#;
 
-const CONCURRENCY_PRELUDE: &str = r#"
-def __py_noop(*args, **kwargs):
-    return None
-
-class __PyLock:
-    def __init__(self):
-        self.locked = False
-    def acquire(self, blocking=True, timeout=-1):
-        self.locked = True
-        return True
-    def release(self):
-        self.locked = False
-    def __enter__(self):
-        self.acquire()
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.release()
-        return False
-
-class RLock(__PyLock):
-    pass
-
-class Lock(__PyLock):
-    pass
-
-class Semaphore:
-    def __init__(self, value=1):
-        self._value = value
-        self._initial_value = value
-    def acquire(self, blocking=True, timeout=None):
-        if self._value > 0:
-            self._value -= 1
-            return True
-        return False
-    def release(self, n=1):
-        self._value += n
-    def __enter__(self):
-        self.acquire()
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.release()
-        return False
-
-class BoundedSemaphore(Semaphore):
-    def release(self, n=1):
-        self._value += n
-        if self._value > self._initial_value:
-            self._value = self._initial_value
-
-class Event:
-    def __init__(self):
-        self._flag = False
-    def is_set(self):
-        return self._flag
-    def set(self):
-        self._flag = True
-    def clear(self):
-        self._flag = False
-    def wait(self, timeout=None):
-        return self._flag
-
-class Condition:
-    def __init__(self, lock=None):
-        self._lock = lock if lock is not None else RLock()
-    def acquire(self, *args):
-        return self._lock.acquire()
-    def release(self):
-        return self._lock.release()
-    def wait(self, timeout=None):
-        return True
-    def notify(self, n=1):
-        return None
-    def notify_all(self):
-        return None
-    def __enter__(self):
-        self.acquire()
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.release()
-        return False
-
-class Barrier:
-    def __init__(self, parties, action=None, timeout=None):
-        self.parties = parties
-        self.n_waiting = 0
-        self.broken = False
-    def wait(self, timeout=None):
-        return 0
-    def reset(self):
-        self.n_waiting = 0
-    def abort(self):
-        self.broken = True
-
-class local:
-    pass
-
-__py_pending_threads = []
-
-def __py_callable_name(fn):
-    try:
-        return fn.__name__
-    except Exception:
-        return ""
-
-def __py_thread_run(thread):
-    if thread._done:
-        return
-    thread._started = True
-    if thread._target is not None:
-        __py_thread_call(thread._target, thread._args, thread)
-    thread._done = True
-
-def __py_thread_call(target, args, thread=None):
-    if target is None:
-        return None
-    if len(args) == 0:
-        target()
-    elif len(args) == 1:
-        target(args[0])
-    elif len(args) == 2:
-        target(args[0], args[1])
-    elif len(args) == 3:
-        target(args[0], args[1], args[2])
-    else:
-        target(*args)
-    if thread is not None:
-        thread._done = True
-    return None
-
-def __py_thread_start(thread):
-    global __py_pending_threads
-    if not thread._started:
-        thread._started = True
-        __py_pending_threads.append((thread._target, thread._args, thread, thread._target_name))
-        __py_thread_start_common(thread, lambda: None)
-
-def __py_thread_join(thread, timeout=None):
-    global __py_pending_threads
-    __py_thread_join_common(thread)
-    if len(__py_pending_threads) == 0:
-        return None
-    pending = __py_pending_threads
-    __py_pending_threads = []
-    for item in pending:
-        if item[3] == "producer":
-            __py_thread_call(item[0], item[1], item[2])
-    for item in pending:
-        if item[3] != "producer":
-            __py_thread_call(item[0], item[1], item[2])
-    return None
-
-class Thread:
-    def __init__(self, group=None, target=None, name=None, args=(), kwargs=None, daemon=None):
-        self.group = group
-        self._target = target
-        if name is None:
-            self.name = "Thread"
-        else:
-            self.name = name
-        self._args = args
-        if kwargs is None:
-            self._kwargs = {}
-        else:
-            self._kwargs = kwargs
-        self.daemon = daemon is True
-        self._started = False
-        self._done = False
-        self.__handle = None
-        self._target_name = ""
-    def start(self):
-        __py_thread_start(self)
-    def run(self):
-        __py_thread_run(self)
-    def join(self, timeout=None):
-        __py_thread_join(self, timeout)
-    def is_alive(self):
-        return self._started and not self._done
-
-def __py_thread_make(group=None, target=None, name=None, args=(), kwargs=None, daemon=None, target_name=""):
-    t = Thread()
-    t.group = group
-    t._target = target
-    if name is None:
-        t.name = "Thread"
-    else:
-        t.name = name
-    t._args = args
-    if kwargs is None:
-        t._kwargs = {}
-    else:
-        t._kwargs = kwargs
-    t.daemon = daemon is True
-    t._started = False
-    t._done = False
-    t.__handle = None
-    t._target_name = target_name
-    return t
-
-class Timer(Thread):
-    def __init__(self, interval, function, args=None, kwargs=None):
-        Thread.__init__(self, target=function, args=args if args is not None else (), kwargs=kwargs)
-        self.interval = interval
-
-__py_main_thread = Thread(None, None, "MainThread")
-__py_main_thread._started = True
-__py_main_thread._done = False
-
-def current_thread():
-    return __py_main_thread
-
-def main_thread():
-    return __py_main_thread
-
-def enumerate():
-    return [__py_main_thread]
-
-def active_count():
-    return 1
-
-def get_ident():
-    return 1
-
-def stack_size(size=None):
-    return 8388608
-
-excepthook = __py_noop
-
-class Empty(Exception):
-    pass
-
-class Full(Exception):
-    pass
-
-class Queue:
-    def __init__(self, maxsize=0):
-        self.maxsize = maxsize
-        self._items = []
-        self._unfinished_tasks = 0
-    def put(self, item, block=True, timeout=None):
-        if item is None:
-            item = "__py_queue_none__"
-        self._items.append(item)
-        self._unfinished_tasks += 1
-    def put_nowait(self, item):
-        return self.put(item, False)
-    def get(self, block=True, timeout=None):
-        if len(self._items) == 0:
-            return None
-        item = self._items.pop(0)
-        if item == "__py_queue_none__":
-            return None
-        return item
-    def get_nowait(self):
-        return self.get(False)
-    def empty(self):
-        return len(self._items) == 0
-    def full(self):
-        return self.maxsize > 0 and len(self._items) >= self.maxsize
-    def qsize(self):
-        return len(self._items)
-    def task_done(self):
-        if self._unfinished_tasks > 0:
-            self._unfinished_tasks -= 1
-    def join(self):
-        return None
-
-class LifoQueue(Queue):
-    def get(self, block=True, timeout=None):
-        if len(self._items) == 0:
-            return None
-        item = self._items.pop()
-        if item == "__py_queue_none__":
-            return None
-        return item
-
-class PriorityQueue(Queue):
-    def get(self, block=True, timeout=None):
-        if len(self._items) == 0:
-            return None
-        best_i = 0
-        best = self._items[0]
-        i = 1
-        while i < len(self._items):
-            if self._items[i] < best:
-                best = self._items[i]
-                best_i = i
-            i += 1
-        self._items.pop(best_i)
-        if best == "__py_queue_none__":
-            return None
-        return best
-
-class SimpleQueue(Queue):
-    def __init__(self):
-        Queue.__init__(self, 0)
-
-class Future:
-    def __init__(self, result=None):
-        self._result = result
-        self._done = True
-    def result(self, timeout=None):
-        return self._result
-    def done(self):
-        return self._done
-    def cancelled(self):
-        return False
-    def cancel(self):
-        return False
-
-__py_executor_futures = []
-
-def __py_executor_map(_executor, fn, iterable):
-    out = []
-    for item in iterable:
-        out.append(fn(item))
-    return out
-
-def __py_executor_submit(_executor, fn, arg=None):
-    global __py_executor_futures
-    if arg is None:
-        f = Future(fn())
-    else:
-        f = Future(fn(arg))
-    __py_executor_futures.append(f)
-    return f
-
-class ThreadPoolExecutor:
-    def __init__(self, max_workers=None):
-        self.max_workers = max_workers
-    def submit(self, fn, *args, **kwargs):
-        global __py_executor_futures
-        f = Future(fn(*args))
-        __py_executor_futures.append(f)
-        return f
-    def map(self, fn, iterable):
-        out = []
-        for item in iterable:
-            out.append(fn(item))
-        return out
-    def shutdown(self, wait=True, cancel_futures=False):
-        return None
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.shutdown()
-        return False
-
-class ProcessPoolExecutor:
-    def __init__(self, max_workers=None):
-        self.max_workers = max_workers
-    def submit(self, fn, *args, **kwargs):
-        global __py_executor_futures
-        f = Future(fn(*args))
-        __py_executor_futures.append(f)
-        return f
-    def map(self, fn, iterable):
-        out = []
-        for item in iterable:
-            out.append(fn(item))
-        return out
-    def shutdown(self, wait=True, cancel_futures=False):
-        return None
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.shutdown()
-        return False
-
-def as_completed(fs, timeout=None):
-    global __py_executor_futures
-    out = []
-    if len(__py_executor_futures) > 0:
-        for f in __py_executor_futures:
-            out.append(f)
-        return out
-    try:
-        items = fs.keys()
-    except Exception:
-        items = fs
-    for f in items:
-        out.append(f)
-    return out
-
-def wait(fs, timeout=None, return_when=None):
-    done = []
-    for f in fs:
-        done.append(f)
-    return (done, [])
-
-class Process(Thread):
-    pass
-
-def __py_process_make(group=None, target=None, name=None, args=(), kwargs=None, daemon=None, target_name=""):
-    t = Process()
-    t.group = group
-    t._target = target
-    if name is None:
-        t.name = "Process"
-    else:
-        t.name = name
-    t._args = args
-    if kwargs is None:
-        t._kwargs = {}
-    else:
-        t._kwargs = kwargs
-    t.daemon = daemon is True
-    t._started = False
-    t._done = False
-    t.__handle = None
-    t._target_name = target_name
-    return t
-
-
-class Pool:
-    def __init__(self, processes=None):
-        self.processes = processes
-    def map(self, fn, iterable, chunksize=None):
-        out = []
-        for item in iterable:
-            out.append(fn(item))
-        return out
-    def starmap(self, fn, iterable, chunksize=None):
-        out = []
-        for args in iterable:
-            out.append(fn(*args))
-        return out
-    def apply(self, fn, args=(), kwds=None):
-        return fn(*args)
-    def close(self):
-        return None
-    def join(self):
-        return None
-    def terminate(self):
-        return None
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-        return False
-
-def __py_mp_pool_factory(processes=None):
-    return Pool(processes)
-
-class __PyValue:
-    def __init__(self, typecode, value=0):
-        self.value = value
-
-def Value(typecode, value=0, *args, **kwargs):
-    return __PyValue(typecode, value)
-
-def Array(typecode, initializer, *args, **kwargs):
-    out = []
-    for item in initializer:
-        out.append(item)
-    return out
-
-class __PyProcessInfo:
-    def __init__(self, name):
-        self.name = name
-
-def cpu_count():
-    return 1
-
-def current_process():
-    return __PyProcessInfo("MainProcess")
-
-def active_children():
-    return []
-
-class Manager:
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        return False
-    def list(self, iterable=None):
-        return list(iterable) if iterable is not None else []
-    def dict(self, mapping=None):
-        return dict(mapping) if mapping is not None else {}
-
-class __PyPipeEnd:
-    def __init__(self):
-        self._items = []
-    def send(self, value):
-        self._items.append(value)
-    def recv(self):
-        if len(self._items) == 0:
-            return None
-        value = self._items[0]
-        del self._items[0]
-        return value
-    def close(self):
-        return None
-
-def Pipe(duplex=True):
-    return (__PyPipeEnd(), __PyPipeEnd())
-
-PIPE = -1
-STDOUT = -2
-DEVNULL = -3
-
-class CompletedProcess:
-    def __init__(self, args, returncode=0, stdout=None, stderr=None):
-        self.args = args
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-    def check_returncode(self):
-        if self.returncode != 0:
-            raise CalledProcessError(self.returncode, self.args, self.stdout, self.stderr)
-
-class CalledProcessError(Exception):
-    def __init__(self, returncode, cmd, output=None, stderr=None):
-        self.returncode = returncode
-        self.cmd = cmd
-        self.output = output
-        self.stderr = stderr
-
-class TimeoutExpired(Exception):
-    def __init__(self, cmd, timeout, output=None, stderr=None):
-        self.cmd = cmd
-        self.timeout = timeout
-        self.output = output
-        self.stderr = stderr
-
-def __py_subprocess_stdout(args, text=False):
-    if len(args) >= 2 and args[0] == "echo":
-        value = str(args[1]) + "\n"
-        return value if text else value
-    return "" if text else ""
-
-def run(args, capture_output=False, timeout=None, check=False, text=False, shell=False, cwd=None, env=None, input=None, stdout=None, stderr=None):
-    cp = CompletedProcess(args, 0, __py_subprocess_stdout(args, text), "")
-    if check:
-        cp.check_returncode()
-    return cp
-
-def call(args, *popenargs, **kwargs):
-    return run(args, **kwargs).returncode
-
-def check_output(args, *popenargs, **kwargs):
-    return run(args, capture_output=True, **kwargs).stdout
-
-def check_call(args, *popenargs, **kwargs):
-    cp = run(args, **kwargs)
-    cp.check_returncode()
-    return 0
-
-class Popen:
-    def __init__(self, args, *popenargs, **kwargs):
-        self.args = args
-        self.returncode = None
-        self.stdout = None
-        self.stderr = None
-        self.pid = 1
-    def communicate(self, input=None, timeout=None):
-        self.returncode = 0
-        return ("", "")
-    def poll(self):
-        return self.returncode
-    def wait(self, timeout=None):
-        self.returncode = 0
-        return 0
-    def terminate(self):
-        self.returncode = -15
-    def kill(self):
-        self.returncode = -9
-
-def sleep(seconds):
-    return None
-
-__name__ = "__main__"
-
-class __ThreadingModule:
-    def __init__(self):
-        self.Thread = Thread
-        self.Timer = Timer
-        self.Lock = Lock
-        self.RLock = RLock
-        self.Semaphore = Semaphore
-        self.BoundedSemaphore = BoundedSemaphore
-        self.Event = Event
-        self.Condition = Condition
-        self.Barrier = Barrier
-        self.local = local
-        self.current_thread = current_thread
-        self.main_thread = main_thread
-        self.enumerate = enumerate
-        self.active_count = active_count
-        self.get_ident = get_ident
-        self.stack_size = stack_size
-        self.excepthook = excepthook
-
-class __QueueModule:
-    def __init__(self):
-        self.Queue = Queue
-        self.LifoQueue = LifoQueue
-        self.PriorityQueue = PriorityQueue
-        self.SimpleQueue = SimpleQueue
-        self.Empty = Empty
-        self.Full = Full
-
-class __FuturesModule:
-    def __init__(self):
-        self.Future = Future
-        self.ThreadPoolExecutor = ThreadPoolExecutor
-        self.ProcessPoolExecutor = ProcessPoolExecutor
-        self.as_completed = as_completed
-        self.wait = wait
-
-class __ConcurrentModule:
-    def __init__(self):
-        self.futures = __FuturesModule()
-
-class __MultiprocessingModule:
-    def __init__(self):
-        self.Process = Process
-        self.Pool = __py_mp_pool_factory
-        self.Queue = Queue
-        self.Lock = Lock
-        self.Manager = Manager
-        self.Pipe = Pipe
-        self.Value = Value
-        self.Array = Array
-        self.cpu_count = cpu_count
-        self.current_process = current_process
-        self.active_children = active_children
-
-class __SubprocessModule:
-    def __init__(self):
-        self.PIPE = PIPE
-        self.STDOUT = STDOUT
-        self.DEVNULL = DEVNULL
-        self.CompletedProcess = CompletedProcess
-        self.CalledProcessError = CalledProcessError
-        self.TimeoutExpired = TimeoutExpired
-        self.Popen = Popen
-        self.run = run
-        self.call = call
-        self.check_output = check_output
-        self.check_call = check_call
-
-class __TimeModule:
-    def __init__(self):
-        self.sleep = sleep
-
-threading = __ThreadingModule()
-queue = __QueueModule()
-concurrent = __ConcurrentModule()
-multiprocessing = __MultiprocessingModule()
-subprocess = __SubprocessModule()
-time = __TimeModule()
-"#;
 
 const BYTES_REPR_PRELUDE: &str = r#"
 def __vybe_bytes_repr(a):
@@ -15530,10 +13894,47 @@ fn is_imported_module(__w: &mut PyWalker, name: &str) -> bool {
 /// prelude (e.g. `io.StringIO`, `configparser.ConfigParser`). Such a
 /// `module.Class(...)` must construct the bare global class rather than compile
 /// to a method call that passes the module object as the first argument.
+/// `<module>.<name>` → the GLOBAL that name denotes.
+///
+/// A class declared in `core_classes` is an ordinary global in the emitted
+/// module, so `ipaddress.ip_address(x)` is `ip_address(x)` and
+/// `ipaddress.ip_network(x)` is `IPv4Network(x)`. That mapping is DATA
+/// (`core_classes::MODULE_SURFACE`), one row per exported name — the "leaves"
+/// half of the conversion, asked here rather than written out per module.
+///
+/// The remaining hardcoded rows are the modules still on a PRELUDE. Each one
+/// disappears with its prelude.
+/// Does python's own profile declare `name` as a builtin?
+///
+/// Read from the profile rather than listed here: the profile is where the
+/// builtin surface is defined, and a second list beside it is a second answer
+/// that drifts. Parsed once per process.
+fn py_profile_declares_builtin(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            vybe_runtime::profile::parse_profile(crate::profile_source())
+                .map(|p| p.builtins.keys().cloned().collect())
+                .unwrap_or_default()
+        })
+        .contains(name)
+}
+
 fn prelude_module_class(receiver: &ExprKind, field: &str) -> Option<String> {
     let ExprKind::Ident(module) = receiver else {
         return None;
     };
+    if let Some(global) = crate::core_classes::module_member(module, field) {
+        return Some(global.to_string());
+    }
+    // `builtins.len` IS `len`. The module exists precisely to name the builtin
+    // namespace, so any name the profile declares as a builtin resolves to the
+    // bare global — no per-name table, and it cannot drift from the profile.
+    if module == "builtins" && py_profile_declares_builtin(field) {
+        return Some(field.to_string());
+    }
     match (module.as_str(), field) {
         ("io", "StringIO")
         | ("io", "BytesIO")
@@ -20696,6 +19097,40 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             return Expression::new(ExprKind::Lit(Literal::Bool(true)));
                         }
                         if dynamic_module_attr(__w, &path, attr.as_ref()).is_some() {
+                            return Expression::new(ExprKind::Lit(Literal::Bool(true)));
+                        }
+                        // ⛔ ASK THE COMMON RESOLVER, not a second table.
+                        // `hasattr(m, "x")`, `from m import x` and `m.x` are
+                        // three spellings of one question, and the tree already
+                        // holds the answer for every module python mounts
+                        // (`python.<module>.<name>`). Keeping a walker-side
+                        // surface list beside it is how `hasattr(logging,
+                        // "FileHandler")` came to answer False while
+                        // `logging.FileHandler` resolved — 12
+                        // `diagnostics_runtime` tests.
+                        //
+                        // The static `py_module_surface` below is the remains of
+                        // that table: it still answers for the modules with no
+                        // tree presence, and it shrinks as each one converts.
+                        // `hasattr(builtins, "len")` asks the same question
+                        // `builtins.len` does, and must not answer differently.
+                        if path == "builtins" {
+                            return Expression::new(ExprKind::Lit(Literal::Bool(
+                                py_profile_declares_builtin(attr.as_ref()),
+                            )));
+                        }
+                        let segments = ["python"]
+                            .into_iter()
+                            .chain(path.split('.'))
+                            .chain(std::iter::once(attr.as_ref()))
+                            .collect::<Vec<_>>();
+                        if vybe_compiler::primitives::namespaces::declares_path(
+                            &segments,
+                            // Python is CASE-SENSITIVE: `None` is the exact
+                            // fold, and folding here would make
+                            // `hasattr(logging, "filehandler")` answer True.
+                            None,
+                        ) {
                             return Expression::new(ExprKind::Lit(Literal::Bool(true)));
                         }
                         if let Some(surface) = py_module_surface(&path) {
