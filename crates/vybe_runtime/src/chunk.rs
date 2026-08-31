@@ -565,6 +565,15 @@ pub struct Chunk {
     /// offset, written by the compiler, read by the writer; the VM never looks
     /// at it.
     pub call_indirect_sigs: std::collections::HashMap<usize, String>,
+    /// Per `call_indirect` offset: the CANONICAL name of the declared functype.
+    ///
+    /// ⛔ SEPARATE FROM `call_indirect_sigs` ON PURPOSE. That table's strings
+    /// are looked up verbatim in the writer's `func_type_by_signature`, so its
+    /// format cannot change. And a signature cannot express iso-recursive
+    /// identity anyway: `type-rec.wast` declares `$f1` and `$f2` both as
+    /// `(func)` in DIFFERENT rec groups — structurally identical, different
+    /// types, and the call must trap.
+    pub call_indirect_canon: std::collections::HashMap<usize, String>,
     /// Type imports — types from other components this chunk needs.
     /// Each entry is (interface_name, type_name).
     pub type_imports: Vec<(String, String)>,
@@ -670,6 +679,20 @@ pub struct Chunk {
     /// Module-level, so only meaningful on `chunks[0]` — same as
     /// `module_receiver_abi`.
     pub module_members_on_prototype: bool,
+    /// Does this module's language make a class's declared instance fields OWN
+    /// PROPERTIES of the instance (ECMA-262 §10.2.11 `CreateDataPropertyOrThrow`)?
+    ///
+    /// When it does, the `properties` map is AUTHORITATIVE FOR EXISTENCE and
+    /// the typed `fields` vector is not storage — `struct.new_default` still
+    /// sizes it from the registry, so it is full of nulls. A read that misses
+    /// `properties` and falls through to that vector therefore RESURRECTS a
+    /// deleted field as `null`: measured, `delete c.v` left `"v" in c` false
+    /// and `Object.keys(c)` correct while `c.v` answered `null` instead of
+    /// `undefined`.
+    ///
+    /// Lowered from the `instance_fields_are_own_properties` DIRECTIVE, per
+    /// unit, exactly like `module_members_on_prototype` above.
+    pub module_instance_fields_are_own_properties: bool,
     /// Number of results this function returns. Default 1 (single
     /// externref) matches the pre-multi-value ABI. A chunk that wants
     /// to take advantage of the multi-value proposal sets this >1; the
@@ -713,6 +736,15 @@ pub struct Chunk {
     /// `$super` and `$sub` with identical signatures and asserts that casting a
     /// `$sub` function to `(ref (exact $super))` TRAPS. Structure cannot tell
     /// them apart, so the declared name is recorded alongside it.
+    /// Canonical func-type name → `"{rec group size}:{position}"`.
+    ///
+    /// Script-wide, on chunk 0: type names are module-qualified, so one map
+    /// covers every module. `call_indirect` reads it for both the call site's
+    /// declared type and the callee's, and only traps on a name mismatch when
+    /// the two shapes DIFFER — a difference there means different types under
+    /// iso-recursive equivalence, while equal shapes mean the name split may
+    /// just be canonicalisation working off source text.
+    pub type_rec_shape: std::collections::HashMap<String, String>,
     pub declared_func_type: Option<String>,
     /// JSPI: this function is `async` in its source language. The
     /// compiler sets this flag when compiling an `async function` /
@@ -858,10 +890,12 @@ impl Chunk {
             takes_receiver: false,
             module_receiver_abi: ReceiverAbi::Ambient,
             module_members_on_prototype: false,
+            module_instance_fields_are_own_properties: false,
             block_i32_results: std::collections::HashSet::new(),
             i64_locals: std::collections::HashSet::new(),
             i64_scratch_slot: None,
             call_indirect_sigs: std::collections::HashMap::new(),
+            call_indirect_canon: std::collections::HashMap::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
             global_inits: Vec::new(),
@@ -882,6 +916,7 @@ impl Chunk {
             is_method: false,
             param_count: 0,
             func_sig: None,
+            type_rec_shape: std::collections::HashMap::new(),
             declared_func_type: None,
             is_async: false,
             is_generator: false,

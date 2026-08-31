@@ -12,7 +12,7 @@ pub(crate) use vybe_runtime::chunk::ReceiverAbi;
 ///
 /// For the emitters that hold `&mut [Chunk]` and no `Compiler` — see the field
 /// docs on [`vybe_runtime::chunk::Chunk::module_receiver_abi`].
-pub(crate) fn module_receiver_abi(chunks: &[Chunk]) -> ReceiverAbi {
+pub fn module_receiver_abi(chunks: &[Chunk]) -> ReceiverAbi {
     chunks
         .first()
         .map_or(ReceiverAbi::Ambient, |m| m.module_receiver_abi)
@@ -32,7 +32,7 @@ pub(crate) fn module_receiver_abi(chunks: &[Chunk]) -> ReceiverAbi {
 /// channel, which is ECMA-262 §10.2.1.
 /// Takes `abi` rather than `&[Chunk]` because every caller has already
 /// destructured `let chunk = &mut chunks[current]` and holds that borrow.
-pub(crate) fn bind_ambient_receiver(
+pub fn bind_ambient_receiver(
     chunk: &mut Chunk,
     abi: ReceiverAbi,
     recv_slot: u16,
@@ -811,11 +811,6 @@ pub(super) enum ReceiverBind {
     /// No receiver protocol at a call in this region — the fourteen
     /// languages whose calls carry no `this` at all.
     None,
-    /// The receiver rides the ambient `__js_this` global; `saved` holds the
-    /// caller's value so the call can put it back. ⛔ Not a WASM concept:
-    /// a mutable module global standing in for a parameter, with a
-    /// hand-rolled shadow stack around every call. M5 deletes this arm.
-    Ambient { saved: u16 },
     /// The receiver is **argument 0** of the call — ECMA-262 §10.2.1
     /// `[[Call]](thisArgument, argumentsList)`. `slot` parks it between the
     /// point it is computed and the point the callee reference is on the
@@ -843,16 +838,10 @@ impl Compiler {
                 .unwrap_or_else(|| self.define_local(local_name));
             return ReceiverBind::Argument { slot };
         }
-        if !self.ambient_this() {
-            return ReceiverBind::None;
-        }
-        let slot = self
-            .scope()
-            .resolve(local_name)
-            .unwrap_or_else(|| self.define_local(local_name));
-        self.emit_global_read("__js_this");
-        self.emit_u16(Op::LOCAL_SET, slot);
-        ReceiverBind::Ambient { saved: slot }
+        // ⛔ NO AMBIENT ARM. It read `__js_this` into a save slot and returned
+        // `Ambient { saved }`; nothing declares that binding any more, so the
+        // whole save/bind/restore triple it anchored is gone with it.
+        ReceiverBind::None
     }
 
     /// Clear the ambient receiver so a CONSTRUCTION allocates instead of
@@ -873,7 +862,7 @@ impl Compiler {
     /// caller's context. Clearing states that, rather than relying on the
     /// caller happening to have no receiver.
     pub(super) fn clear_js_this(&mut self) {
-        if !self.ambient_this() {
+        {
             return;
         }
         let line = self.line;
@@ -890,7 +879,7 @@ impl Compiler {
     /// receiver, must not push one, and must not call this. There is no second
     /// decision here and no silent no-op to fall into.
     ///
-    /// This used to decide for itself — `if !self.ambient_this() { return; }` —
+    /// This used to decide for itself — `if !false { return; }` —
     /// while every caller pushed unconditionally:
     ///
     /// ```ignore
@@ -913,23 +902,24 @@ impl Compiler {
     /// the save/bind/restore triple now agree by construction.
     pub(super) fn bind_receiver_from_stack(&mut self, bind: ReceiverBind) {
         match bind {
-            // The ambient protocol: the receiver leaves the stack and lands in
-            // the global, where the callee reads it. M5 deletes this arm.
-            ReceiverBind::Ambient { .. } => self.emit_global_write("__js_this"),
             // The receiver is an ARGUMENT, so it must end up on the stack ABOVE
             // the callee reference — and it was computed BELOW it. Park it; the
             // call site pushes it back with `push_receiver_argument` once the
             // callee is in place.
             ReceiverBind::Argument { slot } => self.emit_u16(Op::LOCAL_SET, slot),
-            // A site that got `None` is not supposed to reach here — it must
-            // not have computed or pushed a receiver at all. Kept EXACTLY as
-            // the unconditional global write this replaced, rather than
-            // asserted: the arm is reachable only from the fourteen non-ambient
-            // languages, this crate builds in debug, and a `debug_assert!` here
-            // would panic the COMPILER for them instead of showing up as a
-            // test. Behaviour-neutral first; tightening it is its own change
-            // with its own gate.
-            ReceiverBind::None => self.emit_global_write("__js_this"),
+            // ⛔ UNREACHABLE, AND NOW IT EMITS NOTHING RATHER THAN A GLOBAL
+            // WRITE. Every one of the sixteen callers gates this on
+            // `bind.is_active()`, which is `!matches!(self, None)`, so a
+            // `None` bind never arrives — verified by enumerating them, not
+            // assumed. The write was kept only because it was what the
+            // unconditional pre-M5 code did, and it is the last place
+            // `__js_this` could be written by a language that never declared
+            // an ambient receiver.
+            //
+            // Emitting nothing is safe for the same reason it is unreachable:
+            // a caller that does not call this also did not push a receiver,
+            // so there is no operand left stranded on the stack.
+            ReceiverBind::None => {}
         }
     }
 
@@ -942,6 +932,74 @@ impl Compiler {
     /// every non-`Argument` binding, so a site can call it unconditionally and
     /// add the result — which is what keeps the argument count and the receiver
     /// push from ever being decided separately.
+    /// **The** answer to "must this frame mark its receiver as captured so an
+    /// inner closure can reach it, and through which channel".
+    ///
+    /// One function, one answer — the same rule as [`Self::emit_receiver_value`].
+    /// An arrow binds `this` LEXICALLY (§10.2.11) and the capture works BY NAME
+    /// through the shared env, so the ENCLOSING frame has to put its receiver
+    /// in that env. Under the ambient receiver the name must first be created
+    /// from the global; where the receiver is already a PARAMETER the local
+    /// exists and only needs marking.
+    ///
+    /// ⛔ THIS DECISION EXISTED TWICE AND THE COPIES DIVERGED — which is the
+    /// whole reason it is one function now. The class-method site grew both
+    /// arms; the lambda site, which compiles OBJECT-LITERAL methods, kept only
+    /// the ambient one. So under `ReceiverBinding::UniversalParameter` an
+    /// object-literal method never marked its receiver captured, and the result
+    /// was a LAYOUT DISAGREEMENT rather than a missing value: the frame sized
+    /// its shared-env array without the receiver while the arrow inside still
+    /// asked `closure_env_index(self_kw)`, which APPENDS when the name is
+    /// absent — so the arrow read an index past the end and got null.
+    ///
+    /// It hid because with `this` as the ONLY capture the list came out empty,
+    /// no env was built, and the receiver reached the arrow another way. ONE
+    /// other captured name — any local, any global, sync or async — exposed it:
+    ///
+    /// ```text
+    /// const o = { n: "N", m() {
+    ///   const f = () => this.n;
+    ///   const z = 1;
+    ///   queueMicrotask(() => z);   // ← this line breaks the line above
+    ///   return f();                // undefined; "N" without it
+    /// }};
+    /// ```
+    ///
+    /// `declares_own_receiver` is the caller's own fact about ITS frame — a
+    /// static method and a plain closure have no receiver to mark — not a
+    /// language trait; the channel question is answered here from the
+    /// directives, never from a profile flag.
+    pub(crate) fn capture_receiver_for_inner_closures(
+        &mut self,
+        closures_use_this: bool,
+        declares_own_receiver: bool,
+    ) {
+        if !closures_use_this {
+            return;
+        }
+        // ⛔ UNIVERSAL ARM ONLY — THE AMBIENT ARMS STAY AT THEIR SITES.
+        //
+        // Unifying the ambient arm as well cost **156 csharp regressions**
+        // (1765 → 1898, measured by Rook): the three sites genuinely differed —
+        // one created a SOURCE local under the self keyword, two created an
+        // internal `__js_this`, and only one carried a parent-frame guard — and
+        // collapsing them onto one spelling changed what `this` resolved to
+        // inside accessors in every ambient language. An expression-bodied
+        // property reading a field answered `0` instead of `12.57`.
+        //
+        // The genuinely MISSING piece was never the ambient half: it was that
+        // the lambda site — which compiles OBJECT-LITERAL methods — had no
+        // `UniversalParameter` arm at all. That is what this owns, and it is
+        // js-only, so it is gated by a corpus I can actually run. Unifying the
+        // ambient half needs csharp/vb/java/kotlin/php/python evidence that
+        // nobody has yet; until someone does, three spellings that WORK beat
+        // one spelling that is prettier and wrong.
+        let self_kw = self.profile.self_keyword.clone();
+        if declares_own_receiver && self.universal_receiver() {
+            self.current_closure_captured_locals.insert(self_kw);
+        }
+    }
+
     pub(super) fn push_receiver_argument(&mut self, bind: ReceiverBind) -> u8 {
         match bind {
             ReceiverBind::Argument { slot } => {
@@ -995,10 +1053,18 @@ impl Compiler {
         // producer of SYNTHESIZED class AST — dart's `core_classes`, flutter's
         // adapter classes. There is no split to memorise; `This` means the
         // receiver.
-        let receiver_is_a_parameter = self.chunks[self.current]
-            .handled_call_tags
-            .iter()
-            .any(|tag| tag == vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG);
+        // ⛔ ASK THE CHUNK, NOT A CALL TAG. `declare_receiver_first_accessor`
+        // sets `takes_receiver` and the tag together — they state the SAME
+        // fact — and `takes_receiver` is the one that belongs on the function:
+        // a funcref's type IS `[params] → [results]`, so "does argument 0 hold
+        // a receiver" is a property of the SIGNATURE, not a note carried
+        // beside it. A side tag is the same out-of-band channel as
+        // `__bound_args` and the old per-call receiver arity: something a
+        // stock engine cannot see, that the caller must consult to know what
+        // the callee means.
+        //
+        // The tag mechanism is left in place but is no longer read here.
+        let receiver_is_a_parameter = self.chunks[self.current].takes_receiver;
 
         // ▶▶ M5 STEP 1 — A BOUND RECEIVER OUTRANKS THE AMBIENT GLOBAL.
         //
@@ -1037,21 +1103,9 @@ impl Compiler {
             return;
         }
 
-        // No bound receiver in scope — fall back to the ambient global, which
-        // is what M5 removes once every shape passes the receiver as a
-        // parameter.
-        if !receiver_is_a_parameter
-            && self.ambient_this()
-            && self.current_class.is_some()
-            && self.current_func_name.as_deref() != Some("<lambda>")
-            && self.current_func_name.as_deref().is_some_and(|name| {
-                !name.eq_ignore_ascii_case(&self.profile.constructor_name)
-            })
-        {
-            self.emit_global_read("__js_this");
-            return;
-        }
-
+        // ⛔ THE AMBIENT FALLBACK IS GONE. It read `__js_this` when no bound
+        // receiver was in scope; no language declares
+        // `ReceiverBinding::Ambient` any more, so it had no reachable caller.
         if self.scopes.len() > 1 {
             // Arrow function: capture `this` from the enclosing scope.
             if self.resolve_upvalue(self.scopes.len() - 1, &self_kw).is_some() {
@@ -1061,38 +1115,32 @@ impl Compiler {
                 crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
                 return;
             }
-            if self.ambient_this()
-                && self
-                    .resolve_upvalue(self.scopes.len() - 1, "__js_this")
-                    .is_some()
-            {
-                let env = self.closure_env_slot();
-                let idx = self.closure_env_index("__js_this");
-                let l = self.line;
-                crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
-                return;
-            }
+            // ⛔ The `__js_this` upvalue arm is gone with the ambient binding:
+            // an arrow captures the receiver under the SELF KEYWORD above.
         }
 
-        if self.ambient_this() {
-            self.emit_global_read("__js_this");
-        } else {
-            self.emit_null();
-        }
+        // ⛔ EVERY PATH OUT OF HERE MUST LEAVE EXACTLY ONE VALUE. This used to
+        // be the `else` of an `ambient_this()` test whose other arm read the
+        // global; the read is gone, the PUSH is not. Dropping it left the
+        // receiver operand missing and the stack one short — measured as
+        // `super.fetch()` inside an arrow returning the function object
+        // instead of calling it, across 37 class/super/inheritance tests.
+        self.emit_null();
     }
 
-    /// End the binding: put the caller's receiver back.
+    /// End the binding.
     ///
-    /// Only the ambient protocol has anything to undo — a receiver passed as an
-    /// argument was never global, so there is no caller state it could have
-    /// clobbered. That asymmetry is the point of M5: the restore half of every
-    /// pair disappears with the global, not one site at a time.
-    pub(super) fn end_receiver_bind(&mut self, bind: ReceiverBind) {
-        if let ReceiverBind::Ambient { saved } = bind {
-            self.emit_u16(Op::LOCAL_GET, saved);
-            self.emit_global_write("__js_this");
-        }
-    }
+    /// ⛔ THERE IS NOTHING LEFT TO UNDO, AND THAT IS THE POINT OF M5. Only the
+    /// ambient protocol had caller state to restore: it clobbered a module
+    /// global, so every bind needed a matching write-back — a hand-rolled
+    /// shadow stack around every call, which wasm has no concept of. A receiver
+    /// passed as ARGUMENT 0 was never global and clobbers nothing, so the
+    /// restore half of the pair disappears with the global rather than being
+    /// kept as a no-op for symmetry.
+    ///
+    /// Kept as a function because the call sites read as save/bind/restore and
+    /// deleting one third of that shape at 20 sites is a separate change.
+    pub(super) fn end_receiver_bind(&mut self, _bind: ReceiverBind) {}
 
     pub(super) fn save_js_new_target(&mut self, local_name: &str) -> Option<u16> {
         if !self.profile.ecma_new_dispatch {

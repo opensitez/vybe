@@ -192,9 +192,9 @@ pub const CSSOM_MODULE: &str = "web:cssom";
 
 /// The live element type a control's ancestry must end in to carry a real rtt.
 ///
-/// Declared in the tree vocabulary (`vybe_runtime::namespaces`) because it is a
+/// Declared in the tree vocabulary (`crate::primitives::namespaces`) because it is a
 /// PLATFORM's declaration and the platform crates cannot see this one.
-pub use vybe_runtime::namespaces::DOM_ELEMENT_TYPE;
+pub use crate::primitives::namespaces::DOM_ELEMENT_TYPE;
 
 // The live statement of what a control IS lives below, in the emit helpers and
 // the property-role tables. Those emit to `web:*`.
@@ -843,11 +843,11 @@ impl Compiler {
     /// still known.
     pub fn emit_gui_field(
         &mut self,
-        field: &vybe_runtime::namespaces::FieldGui,
+        field: &crate::primitives::namespaces::FieldGui,
         nest_coerce: Option<&str>,
         line: u32,
     ) -> Result<(), String> {
-        use vybe_runtime::namespaces::FieldGui;
+        use crate::primitives::namespaces::FieldGui;
         match field {
             // A child widget nests; a scalar sets the property. Both spellings
             // reach an operation that already exists, so neither needs a new
@@ -885,7 +885,7 @@ impl Compiler {
                     &mut self.chunks,
                     current,
                     value,
-                    vybe_runtime::namespaces::DOM_ELEMENT_TYPE,
+                    crate::primitives::namespaces::DOM_ELEMENT_TYPE,
                     line,
                 );
                 // **Every arm of this match must leave the stack EXACTLY as it
@@ -1394,13 +1394,11 @@ impl Compiler {
                 // ahead of the Event, so VCL reads the control as `Sender` and
                 // WinForms reads `(control, event)`; without it `Sender` IS the
                 // Event and `(Sender as TButton).Caption` reads nothing.
-                let argc = if self.ambient_this() {
-                    2
-                } else {
-                    self.emit_u16(Op::LOCAL_GET, receiver);
-                    self.emit_u16(Op::LOCAL_GET, ctrl);
-                    4
-                };
+                // ⛔ The 2-argument ambient shape is gone; the receiver and
+                // control are always passed positionally.
+                self.emit_u16(Op::LOCAL_GET, receiver);
+                self.emit_u16(Op::LOCAL_GET, ctrl);
+                let argc = 4;
                 let bind_idx = self.import("ecma:function", "bind");
                 self.emit_host_call(bind_idx, argc);
             }
@@ -1801,11 +1799,10 @@ impl ControlElement {
 /// What the REGISTRY says this type's control is — the same authority
 /// `is_framework_control_parent` consults, so the two can never disagree.
 pub fn registered_control_element(
-    type_scopes: &[String],
+    compiler: &crate::primitives::Compiler,
     type_name: &str,
-    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<ControlElement> {
-    let spec = vybe_runtime::namespaces::lookup_type_ctor_spec(type_scopes, type_name, fold)?;
+    let spec = compiler.tree_ctor_spec(type_name)?;
     let inner_html = spec.inner_html.clone();
     let decl = spec.control_fn?;
     let mut element = if decl.starts_with("new_") {
@@ -1857,11 +1854,7 @@ impl Compiler {
         let user_owns_spelling = self.user_owns_type_spelling(type_name);
         if !user_owns_spelling {
             if let Some(element) =
-                registered_control_element(
-                    &self.profile.namespaces.type_scopes,
-                    type_name,
-                    self.tree_fold(),
-                )
+                registered_control_element(self, type_name)
             {
                 return Some(element);
             }
@@ -1871,11 +1864,7 @@ impl Compiler {
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
             if let Some(element) =
-                registered_control_element(
-                    &self.profile.namespaces.type_scopes,
-                    &parent,
-                    self.tree_fold(),
-                )
+                registered_control_element(self, &parent)
             {
                 return Some(element);
             }
@@ -1960,7 +1949,7 @@ impl Compiler {
         if self.shadows_builtin_type(last) || self.defined_functions.contains(&canon_last) {
             return None;
         }
-        vybe_runtime::namespaces::is_registered_type(&self.profile.namespaces.type_scopes, last, self.tree_fold())
+        self.tree_is_registered_type(last)
             .then_some(canon_last)
     }
 
@@ -1982,13 +1971,11 @@ impl Compiler {
     /// does: `TForm1 = class(TForm)` inherits `TForm`'s declarations, and the
     /// receiver's static type is the subclass.
     fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
-        let scopes = &self.profile.namespaces.type_scopes;
-        let fold = self.tree_fold();
         let declared = |name: &str| {
             let target = if setting {
-                vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, name, prop, fold)
+                self.tree_property_setter_target(name, prop)
             } else {
-                vybe_runtime::namespaces::lookup_type_property_target(scopes, name, prop, fold)
+                self.tree_property_target(name, prop)
             }?;
             match target {
                 vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => emit
@@ -2092,25 +2079,15 @@ impl Compiler {
                     && self
                         .resolve_pending_class_name_for_type_hint(&class_name)
                         .is_none()
-                    && vybe_runtime::namespaces::lookup_type_property_target(
-                        scopes,
+                    && self
+                        .tree_property_target(&class_name, field)
+                        .is_none()
+                    && self
+                        .tree_property_setter_target(&class_name, field)
+                        .is_none()
+                    && self.tree_instance_member(
                         &class_name,
                         field,
-                        self.tree_fold(),
-                    )
-                    .is_none()
-                    && vybe_runtime::namespaces::lookup_type_property_setter_target(
-                        scopes,
-                        &class_name,
-                        field,
-                        self.tree_fold(),
-                    )
-                    .is_none()
-                    && vybe_runtime::namespaces::lookup_type_instance_member(
-                        scopes,
-                        &class_name,
-                        field,
-                        self.tree_fold(),
                     )
                     .is_none()
                     && !self.is_declared_instance_field(&class_name, field)
@@ -2238,11 +2215,7 @@ impl Compiler {
         // the ELEMENT rather than of a control list, so a control acquires the
         // behaviour by declaring chrome and nothing has to be kept in step.
         if matches!(role.as_str(), "text" | "caption")
-            && registered_control_element(
-                &self.profile.namespaces.type_scopes,
-                type_name,
-                self.tree_fold(),
-            )
+            && registered_control_element(self, type_name)
             .is_some_and(|element| element.inner_html.is_some())
         {
             role = "unpaintedtext".to_string();
@@ -2259,11 +2232,7 @@ impl Compiler {
         // serialization read. A control that set only `id` would look right
         // and submit nothing, so set both.
         let form_associated =
-            registered_control_element(
-                    &self.profile.namespaces.type_scopes,
-                    type_name,
-                    self.tree_fold(),
-                )
+            registered_control_element(self, type_name)
                 .map(|e| e.is_form_associated())
                 .unwrap_or(false);
         if prop == "name" && form_associated {
@@ -2304,11 +2273,7 @@ impl Compiler {
     ///
     /// Stack on exit: [element]
     pub fn emit_control_element(&mut self, type_name: &str, argc: u8, line: u32) {
-        let element = registered_control_element(
-                    &self.profile.namespaces.type_scopes,
-                    type_name,
-                    self.tree_fold(),
-                )
+        let element = registered_control_element(self, type_name)
             .unwrap_or_else(|| ControlElement::custom(type_name));
         for _ in 0..argc {
             self.chunk().emit_op(Op::DROP, line);

@@ -101,7 +101,7 @@ pub struct Scope {
     ///
     /// ⛔ It carries the ALPHABET, not a bool, because the two folds already in
     /// this pipeline disagree: here it is ASCII, in
-    /// `vybe_runtime::namespaces` it is Unicode `to_lowercase()`. A bool cannot
+    /// `crate::primitives::namespaces` it is Unicode `to_lowercase()`. A bool cannot
     /// state which one a language meant.
     pub fold: Option<vybe_ast::CaseAlphabet>,
     pub depth: u32,
@@ -450,7 +450,7 @@ impl Scope {
 ///
 /// ⛔ ONE function, so the alphabets cannot drift apart the way this pipeline's
 /// two already have: scopes fold ASCII (`eq_ignore_ascii_case`) while
-/// `vybe_runtime::namespaces` folds Unicode (`to_lowercase`), in the same
+/// `crate::primitives::namespaces` folds Unicode (`to_lowercase`), in the same
 /// program, with nothing comparing the two to notice.
 ///
 /// Argument order is `declared, reference` and not the reverse because that is
@@ -491,6 +491,6 @@ pub fn profile_variable_fold(
 /// It reads `callable_fold()` rather than `variable_fold()` because a tree
 /// lookup resolves a TYPE or a MEMBER, never a local — and PHP folds its
 /// callables while its variables are exact.
-pub fn tree_fold(d: &vybe_ast::Directives) -> vybe_runtime::namespaces::Fold {
+pub fn tree_fold(d: &vybe_ast::Directives) -> crate::primitives::namespaces::Fold {
     d.callable_fold()
 }

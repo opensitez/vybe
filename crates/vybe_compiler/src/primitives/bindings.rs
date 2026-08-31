@@ -518,8 +518,15 @@ impl Compiler {
         self.emit_null();
         self.emit_u16(Op::LOCAL_GET, entry);
         self.emit_const(Value::F64(1.0));
+        // §23.1.3.27 `end` = undefined means `len`. Passed explicitly because a
+        // WASM import has ONE signature: an argument present at some call sites
+        // and absent at others cannot be typed, and the writer's arity scan
+        // then declares the max it saw, leaving every shorter site
+        // under-supplied ("not enough arguments on the stack for call").
+        let line = self.line;
+        crate::primitives::expressions::emit_undefined(self.chunk(), line);
         let slice = self.import("ecma:array", "slice");
-        self.emit_host_call(slice, 2);
+        self.emit_host_call(slice, 3);
         let apply = self.import("ecma:function", "apply");
         self.emit_host_call(apply, 3);
         self.emit(Op::DROP);

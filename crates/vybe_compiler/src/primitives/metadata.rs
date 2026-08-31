@@ -172,11 +172,50 @@ impl Compiler {
         }
     }
 
+    /// A declared parameter list, or `arg{i}: System.Object` when the
+    /// descriptor states only an arity.
+    fn seeded_params(
+        &self,
+        arity: u8,
+        declared: Option<&[vybe_runtime::component::ValType]>,
+    ) -> Vec<ReflectionParamMetadata> {
+        (0..arity as usize)
+            .map(|index| ReflectionParamMetadata {
+                name: format!("arg{index}"),
+                decorators: Vec::new(),
+                type_name: Some(
+                    declared
+                        .and_then(|types| types.get(index))
+                        .and_then(Self::valtype_source_name)
+                        .map(|source| self.reflection_runtime_type_name(&source, None))
+                        .unwrap_or_else(|| "System.Object".to_string()),
+                ),
+            })
+            .collect()
+    }
+
+    /// The same list as bare type names — what overload selection matches on.
+    fn seeded_param_types(
+        &self,
+        arity: u8,
+        declared: Option<&[vybe_runtime::component::ValType]>,
+    ) -> Vec<String> {
+        (0..arity as usize)
+            .map(|index| {
+                declared
+                    .and_then(|types| types.get(index))
+                    .and_then(Self::valtype_source_name)
+                    .map(|source| self.reflection_runtime_type_name(&source, None))
+                    .unwrap_or_else(|| "System.Object".to_string())
+            })
+            .collect()
+    }
+
     fn seed_dotnet_reflection_metadata(&mut self) {
         use crate::profile::ReflectionTypeNaming;
         use vybe_runtime::component_model::ComponentItemKind;
 
-        if self.profile.reflection_type_naming != ReflectionTypeNaming::Dotnet {
+        if self.profile.reflection_type_naming != ReflectionTypeNaming::FrameworkQualified {
             return;
         }
 
@@ -207,16 +246,11 @@ impl Compiler {
                     || runtime_name.eq_ignore_ascii_case("System.Enum"),
                 ..ReflectionTypeMetadata::default()
             };
-            if let Some(constructor) = class.constructor {
+            for constructor in class.constructors {
                 metadata.constructors.push(ReflectionConstructorMetadata {
-                    param_types: vec!["System.Object".to_string(); constructor.arity as usize],
-                    params: (0..constructor.arity)
-                        .map(|index| ReflectionParamMetadata {
-                            name: format!("arg{index}"),
-                            decorators: Vec::new(),
-                            type_name: Some("System.Object".to_string()),
-                        })
-                        .collect(),
+                    param_types: self
+                        .seeded_param_types(constructor.arity, constructor.params.as_deref()),
+                    params: self.seeded_params(constructor.arity, constructor.params.as_deref()),
                     decorators: Vec::new(),
                     visibility: Visibility::Public,
                     is_static: false,
@@ -240,13 +274,7 @@ impl Compiler {
                     method.name,
                     ReflectionMethodMetadata {
                         decorators: Vec::new(),
-                        params: (0..method.arity)
-                            .map(|index| ReflectionParamMetadata {
-                                name: format!("arg{index}"),
-                                decorators: Vec::new(),
-                                type_name: Some("System.Object".to_string()),
-                            })
-                            .collect(),
+                        params: self.seeded_params(method.arity, method.params.as_deref()),
                         is_static: method.is_static,
                         return_type: None,
                         visibility: Visibility::Public,
@@ -652,6 +680,40 @@ impl Compiler {
         usage
     }
 
+    /// The SOURCE spelling of a Component Model `ValType`.
+    ///
+    /// ⛔ IT MUST NORMALIZE THROUGH THE SAME PATH AS `typeof(int)`. Overload
+    /// selection compares a declared parameter type against a folded `typeof`
+    /// argument, both via `reflection_type_lookup_name`, so answering `"Int32"`
+    /// here directly would work by luck and break the moment either side's
+    /// normalization changed. Answering the source spelling makes the two sides
+    /// agree by construction.
+    ///
+    /// ⚠ SIGNEDNESS IS NOT RECOVERABLE. `ValType` has `I32`/`I64` and no
+    /// `S32`/`U32`, so `int` and `uint` both arrive as `I32` and both read back
+    /// `int`. A parallel framework-name field would recover it and would defeat
+    /// the point of a CM-typed descriptor, so the limit is stated instead.
+    fn valtype_source_name(ty: &vybe_runtime::component::ValType) -> Option<String> {
+        use vybe_runtime::component::ValType;
+        Some(match ty {
+            ValType::I32 => "int".into(),
+            ValType::I64 => "long".into(),
+            ValType::F64 => "double".into(),
+            ValType::F32 => "float".into(),
+            ValType::Bool => "bool".into(),
+            ValType::String => "string".into(),
+            ValType::Char => "char".into(),
+            ValType::S8 => "sbyte".into(),
+            ValType::U8 => "byte".into(),
+            ValType::S16 => "short".into(),
+            ValType::U16 => "ushort".into(),
+            ValType::Any => "object".into(),
+            ValType::Own(name) | ValType::Borrow(name) => name.clone(),
+            ValType::List(inner) => format!("{}[]", Self::valtype_source_name(inner)?),
+            _ => return None,
+        })
+    }
+
     pub(crate) fn reflection_runtime_type_name(
         &self,
         type_name: &str,
@@ -689,7 +751,7 @@ impl Compiler {
                 }
             }
             // .NET BCL scheme (C#/VB): map primitives and root under `System.`.
-            ReflectionTypeNaming::Dotnet => {
+            ReflectionTypeNaming::FrameworkQualified => {
                 let normalized = match base {
                     "int" | "Integer" | "Int32" => "Int32",
                     "uint" | "UInt32" => "UInt32",
@@ -823,6 +885,24 @@ impl Compiler {
                 .find(|known| known.eq_ignore_ascii_case(system_stripped))
             {
                 return existing.clone();
+            }
+        }
+        // A LEAF NAME, when exactly one registered type owns it.
+        //
+        // `typeof(System.Text.StringBuilder)` folds to the SHORT spelling, which
+        // then qualifies to `System.StringBuilder` — while the descriptor is
+        // registered under its real namespace, `System.Text.StringBuilder`. The
+        // two never met, so the type resolved to no metadata at all and reported
+        // zero constructors. Ambiguity refuses rather than guesses: two types
+        // sharing a leaf leave the name unresolved, as it was.
+        let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
+        if !leaf.is_empty() {
+            let mut matches = self
+                .reflection_types
+                .keys()
+                .filter(|known| known.rsplit('.').next().is_some_and(|k| k.eq_ignore_ascii_case(leaf)));
+            if let (Some(only), None) = (matches.next(), matches.next()) {
+                return only.clone();
             }
         }
         self.reflection_runtime_type_name(type_name, None)
@@ -1248,6 +1328,110 @@ impl Compiler {
         self.js_member_storage_name(field)
     }
 
+    /// The INDEXED slot for an instance member read through `receiver`, or
+    /// `None` to keep whatever key the call site already resolved.
+    ///
+    /// A slot names its DECLARING class so `resolve_slot` can turn it into
+    /// `struct.get <typeidx> <fieldidx>`. A call site that pre-resolves the
+    /// name to a `String` and wraps the finished string in
+    /// `ClassSlot::Internal` hands the seam a key with no structure left in
+    /// it, so the read stays on the string path however well the receiver's
+    /// type is known. Sites resolve that name with several different helpers,
+    /// so this takes the `key` they settled on rather than recomputing one.
+    ///
+    /// Returns a slot only when all three hold, which is what makes adopting
+    /// it at a call site behaviour-preserving rather than merely equivalent:
+    ///
+    /// 1. the receiver is an INSTANCE — a receiver spelling a class name takes
+    ///    the static slot, whose storage name comes from
+    ///    `js_member_storage_name_for_static`, a spelling `storage_key`'s
+    ///    `StaticField` arm does not call;
+    /// 2. the structured slot's storage name is the SAME `key` the site
+    ///    computed, so indexing cannot silently retarget a member a language
+    ///    renamed;
+    /// 3. the seam actually indexes it — asked by resolving the slot, not by
+    ///    restating `indexed_field`'s licence and lookup here, which would be a
+    ///    second copy of the rule to keep in step by hand.
+    pub(super) fn indexed_member_slot(
+        &self,
+        receiver: &Expression,
+        field: &str,
+        key: &str,
+    ) -> Option<class_slots::ClassSlot> {
+        if self.receiver_is_class_name(receiver) {
+            return None;
+        }
+        let hint = self.infer_expr_type_hint(receiver)?;
+        let class = self.resolve_pending_class_name_for_type_hint(&hint)?;
+        // ⛔ A PROPERTY IS REACHED THROUGH ITS ACCESSOR, NOT AS STORAGE.
+        // `compile_class` pushes a property's name into `TypeEntry.fields`
+        // even when it has no backing field, so a name being in that list is
+        // NOT evidence of plain storage. Indexing `total` on
+        // `int get total => _t; set total(int v) { _t = v; }` reads the struct
+        // slot the setter never writes and answers null — the getter is never
+        // called. Auto-properties are refused for the same reason rather than
+        // decided per shape: refusing costs only the string-keyed path that
+        // every read took before, while a wrong index is a silent wrong value.
+        if !self.field_is_plain_storage(&class, field) {
+            return None;
+        }
+        if self.js_member_storage_name_for_class(&class, field) != key {
+            return None;
+        }
+        let slot = class_slots::ClassSlot::instance_of(class, field);
+        matches!(
+            self.resolve_slot(&slot),
+            class_slots::ResolvedSlot::Indexed { .. }
+        )
+        .then_some(slot)
+    }
+
+    /// Whether `field` on `class` is PLAIN STORAGE — safe to reach as a field
+    /// index rather than through an accessor.
+    ///
+    /// The normalized class is the authority: `TypeEntry.fields` cannot answer
+    /// this, because a property's name is pushed there whether or not it has a
+    /// backing field.
+    ///
+    /// ⛔ FAILS CLOSED. A class this cannot find answers `false`, because
+    /// absence of information is not permission. The lookup is by canonical
+    /// name and a NESTED class reached through an alias does not match —
+    /// `using InnerType = Demo.Outer.Inner;` with `public string Name =>
+    /// "inner";` missed, so an expression-bodied PROPERTY was read as a field
+    /// index and answered null. Failing open costs a silent wrong value;
+    /// failing closed costs only the string-keyed path every read used before.
+    fn field_is_plain_storage(&self, class: &str, field: &str) -> bool {
+        let class_key = self.canon(class);
+        let Some(normal) = self.normalized_classes.get(&class_key) else {
+            return false;
+        };
+        let field_canon = self.canon(field);
+        !normal
+            .properties
+            .iter()
+            .any(|p| self.canon(&p.source_name) == field_canon)
+    }
+
+    /// Whether `receiver` spells a class rather than an instance — the
+    /// condition under which a member read is a STATIC slot.
+    fn receiver_is_class_name(&self, receiver: &Expression) -> bool {
+        let parts = self.flatten_member_chain(receiver);
+        if parts.is_empty() {
+            return false;
+        }
+        let full_canon = self.canon(&parts.join("."));
+        if self.defined_classes.contains(&full_canon)
+            || self.pending_classes.contains_key(&full_canon)
+        {
+            return true;
+        }
+        parts.last().is_some_and(|short| {
+            let short_canon = self.canon(short);
+            self.defined_classes.contains(&short_canon)
+                || self.pending_classes.contains_key(&short_canon)
+        })
+    }
+
     /// Whether an instance field named `field_canon` is already declared by
     /// some ancestor (walking `parent` up the already-compiled
     /// `pending_classes` chain) — i.e. this declaration HIDES it. Used only
@@ -1490,7 +1674,22 @@ impl Compiler {
             // `reflection::emit_is_instance_of`.
             self.emit_u16(Op::LOCAL_GET, object_slot);
             self.emit_ref_type_test(Op::REF_TEST, &class, line);
-            self.chunk().emit_if_value(line);
+            // ⛔ AN i32 BLOCK, NOT A VALUE BLOCK. Both arms already leave a
+            // raw `i32` — `emit_i32_const(1)` here and `emit_dyn_to_bool`
+            // below — and the consumer is the `emit_if` after `end`, which
+            // takes an i32 condition. Declaring it `emit_if_value` made the
+            // writer box BOTH arms to `externref` to match the block's
+            // declared type, so every private-field access emitted
+            // `type mismatch: expected i32, found externref`. Visible in the
+            // disassembly as a `wasm:js-number.fromI32` on each arm with
+            // nothing between the `end` and the `if` to undo it.
+            //
+            // The writer's one-instruction `i32_condition_follows` lookahead
+            // cannot rescue this: the `end` sits between the arm's last
+            // instruction and the `if`, so the block type is the only layer
+            // that can carry the answer. This is exactly what `emit_if_i32`
+            // documents itself as being for.
+            self.chunk().emit_if_i32(line);
             self.chunk().emit_i32_const(1, line);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, object_slot);

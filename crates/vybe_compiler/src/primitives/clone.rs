@@ -119,7 +119,24 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
         // reference by nature — deep-copying one shreds it.
         bail_if(chunks, &|c| {
             c.emit_op_u16(Op::LOCAL_GET, value, LINE);
-            recipes::is_func(c, LINE);
+            // ⛔ NOT `recipes::is_func` — `ref.test func` CANNOT ASK THIS.
+            //
+            // Every local in the wasm ABI is `externref`, and `extern` and
+            // `func` are DISJOINT heap hierarchies: there is no conversion
+            // from one to the other, so `ref.test (ref func)` on an externref
+            // is `expected funcref, found externref` and no `any.convert_extern`
+            // can rescue it. Its sibling `recipes::is_object` validates only
+            // because `struct` lives in the ANY hierarchy, which extern DOES
+            // convert into — which is why the two read alike and only one works.
+            // Every module emitting `__vybe_value_copy` was invalid because of
+            // this, and a two-line `Console.WriteLine(1 + 2)` reproduces it.
+            //
+            // "Is this callable" is a question about a JS value, not about a
+            // wasm heap type — ECMA-262 §7.2.3 IsCallable — so it is answered
+            // by the host, which is also the only place that can see a callable
+            // that is not a bare funcref (a bound function, a closure object).
+            crate::primitives::reflection::emit_is_callable_in_chunk(c, LINE);
+            crate::primitives::ops::emit_dyn_to_bool(c, LINE);
         });
         // An aggregate whose declaration never asked for value storage.
         bail_if(chunks, &|c| {

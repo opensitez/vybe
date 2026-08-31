@@ -155,11 +155,22 @@ impl Compiler {
         let iter_fn_slot = self.define_local("__cit_iter_fn");
         self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
 
-        // Call iterator() with __js_this = iter_slot
-        self.emit_u16(Op::LOCAL_GET, iter_slot);
-        self.emit_global_write("__js_this");
+        // Call iterator() with the receiver = iter_slot.
+        // ⛔ THE RECEIVER MUST TRAVEL AS ARGUMENT 0 under
+        // `ReceiverBinding::UniversalParameter`. Writing the ambient global and
+        // invoking with argc 0 left `[Symbol.iterator](){ return this }`
+        // reading an empty slot, so it returned `undefined` and the `.next`
+        // lookup on it threw "undefined is not callable" — from the INLINED
+        // for-of, which is why the explicit protocol looked fine.
+        let recv = self.begin_receiver_bind("__js_prev_this_cit_iter");
+        if recv.is_active() {
+            self.emit_u16(Op::LOCAL_GET, iter_slot);
+            self.bind_receiver_from_stack(recv);
+        }
         self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
-        self.emit_direct_callable_invoke(0);
+        let recv_argc = self.push_receiver_argument(recv);
+        self.emit_direct_callable_invoke(recv_argc);
+        self.end_receiver_bind(recv);
         self.emit_u16(Op::LOCAL_SET, it_slot);
 
         // Emit BLOCK + LOOP
@@ -172,11 +183,17 @@ impl Compiler {
         self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("next"));
         self.emit_u16(Op::LOCAL_SET, next_method_slot);
 
-        // Call next() with __js_this = it
-        self.emit_u16(Op::LOCAL_GET, it_slot);
-        self.emit_global_write("__js_this");
+        // Call next() with the receiver = it. Same rule as the iterator call
+        // above: argument 0 under `UniversalParameter`, ambient otherwise.
+        let recv_next = self.begin_receiver_bind("__js_prev_this_cit_next");
+        if recv_next.is_active() {
+            self.emit_u16(Op::LOCAL_GET, it_slot);
+            self.bind_receiver_from_stack(recv_next);
+        }
         self.emit_u16(Op::LOCAL_GET, next_method_slot);
-        self.emit_direct_callable_invoke(0);
+        let recv_next_argc = self.push_receiver_argument(recv_next);
+        self.emit_direct_callable_invoke(recv_next_argc);
+        self.end_receiver_bind(recv_next);
         self.emit_u16(Op::LOCAL_SET, step_slot);
 
         // ECMA-262 IteratorNext: next() must return an Object. A primitive
@@ -1926,10 +1943,16 @@ impl Compiler {
         inst!(self, core_wasm::string_const, "function");
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
         self.chunk().emit_if(line);
-        self.emit_u16(Op::LOCAL_GET, iterator_slot);
-        self.emit_global_write("__js_this");
+        // §7.4.9 IteratorClose calls `return()` with the iterator as receiver.
+        let recv_ret = self.begin_receiver_bind("__js_prev_this_iter_close");
+        if recv_ret.is_active() {
+            self.emit_u16(Op::LOCAL_GET, iterator_slot);
+            self.bind_receiver_from_stack(recv_ret);
+        }
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
-        self.emit_direct_callable_invoke(0);
+        let recv_ret_argc = self.push_receiver_argument(recv_ret);
+        self.emit_direct_callable_invoke(recv_ret_argc);
+        self.end_receiver_bind(recv_ret);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
     }

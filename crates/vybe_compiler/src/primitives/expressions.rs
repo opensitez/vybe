@@ -2014,10 +2014,36 @@ impl Compiler {
                     inst!(self, core_wasm::undefined);
                     self.chunk().emit_else(undef_line);
                     self.emit_u16(Op::LOCAL_GET, tmp);
+                    // ⛔ ARGUMENT 0 IS THE RECEIVER under
+                    // `ReceiverAbi::Parameter`, and an optional call is an
+                    // ordinary call in every respect but the short-circuit
+                    // (§13.5.9 only decides WHETHER the call happens). With no
+                    // receiver pushed, a member callee — which reads as a
+                    // wrapper carrying `__vybe_method_receiver` — had its
+                    // bound receiver spliced into the argument list against a
+                    // slot the call never reserved: `o.p?.(1, 2)` reached the
+                    // callee as `a = 2, b = undefined`, one argument eaten and
+                    // one lost, while `f?.(1, 2)` on a plain callee was fine.
+                    //
+                    // ⚠ THE VALUE PASSED HERE IS `undefined`, AND §12.3.6 SAYS
+                    // `obj` for `obj.p?.(…)`. It is green because a member read
+                    // produces a wrapper carrying `__vybe_method_receiver`,
+                    // which supplies the real receiver itself — so this slot
+                    // only has to EXIST for the argument positions to line up.
+                    // A change that stops member reads from binding would break
+                    // this site silently; the honest fix is to compile the
+                    // callee as a member with its receiver, as the non-optional
+                    // path does, rather than to widen this.
+                    let implicit_receiver = self.universal_receiver();
+                    if implicit_receiver {
+                        inst!(self, core_wasm::undefined);
+                    }
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_direct_callable_invoke(args.len() as u8);
+                    self.emit_direct_callable_invoke(
+                        args.len() as u8 + u8::from(implicit_receiver),
+                    );
                     self.chunk().emit_end(undef_line);
                     self.chunk().emit_end(line);
                 } else {
@@ -2085,12 +2111,7 @@ impl Compiler {
                     .map(|hint| self.resolve_source_type_alias(&hint))
                     .map(|hint| Self::tree_type_key(&hint))
                     .is_some_and(|hint| {
-                        vybe_runtime::namespaces::lookup_type_instance_member(
-                            &self.profile.namespaces.type_scopes,
-                            &hint,
-                            "Result",
-                            self.tree_fold(),
-                        )
+                        self.tree_instance_member(&hint, "Result")
                         .is_some()
                     });
                 if receiver_declares_result && self.canon(field) == self.canon("Result") {
@@ -2920,7 +2941,12 @@ impl Compiler {
                         } else {
                             let field_name =
                                 self.js_member_storage_name_for_receiver(object, field);
-                            self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(&field_name));
+                            // A slot naming the declaring class where the seam
+                            // will index it; the pre-resolved key otherwise.
+                            let slot = self
+                                .indexed_member_slot(object, field, &field_name)
+                                .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                            self.class_get(class_slots::ObjSource::Local(obj_slot), &slot);
                             let val_slot = self.define_local("__js_member_val");
                             self.emit_u16(Op::LOCAL_SET, val_slot);
                             self.emit_u16(Op::LOCAL_GET, val_slot);
@@ -3015,7 +3041,16 @@ impl Compiler {
                             let invoke = self.import("ecma:value", "invokeMethod");
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_const(Value::String(Arc::from("description")));
-                            self.emit_host_call(invoke, 2);
+                            // §7.3.14 argumentsList — empty, but PRESENT, so
+                            // the import's arity stays constant at 3.
+                            let aline = self.line;
+                            crate::primitives::collections::emit_array_new(
+                                &mut self.chunks,
+                                self.current,
+                                0,
+                                aline,
+                            );
+                            self.emit_host_call(invoke, 3);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.chunk().emit_else(line);
                             Some(line)
@@ -3024,7 +3059,12 @@ impl Compiler {
                         };
 
                         let field_name = self.js_member_storage_name_for_receiver(object, field);
-                        self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(&field_name));
+                        // A slot naming the declaring class where the seam
+                        // will index it; the pre-resolved key otherwise.
+                        let slot = self
+                            .indexed_member_slot(object, field, &field_name)
+                            .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                        self.class_get(class_slots::ObjSource::Local(obj_slot), &slot);
                         let val_slot = self.define_local("__js_member_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
@@ -3228,13 +3268,7 @@ impl Compiler {
                         // registered it. This is what retires the hardcoded
                         // .NET name list that used to live here — a
                         // per-language table inside a twelve-language crate.
-                        if vybe_runtime::namespaces::lookup_type_instance_member(
-                            type_scopes,
-                            type_hint,
-                            "Count",
-                            fold,
-                        )
-                        .is_some()
+                        if self.tree_instance_member(type_hint, "Count").is_some()
                         {
                             return true;
                         }
@@ -3438,12 +3472,7 @@ impl Compiler {
                         if self.user_owns_type_spelling(&class_name) {
                             return None;
                         }
-                        vybe_runtime::namespaces::lookup_type_property_target(
-                            &self.profile.namespaces.type_scopes,
-                            &class_name,
-                            field,
-                            self.tree_fold(),
-                        )
+                        self.tree_property_target(&class_name, field)
                     })
                 {
                     self.compile_expr(object)?;
@@ -3490,13 +3519,7 @@ impl Compiler {
                     {
                         receiver_type_hint.as_deref().and_then(|type_hint| {
                             let class_name = Self::tree_type_key(type_hint);
-                            vybe_runtime::namespaces::lookup_type_instance_target(
-                                &self.profile.namespaces.type_scopes,
-                                &class_name,
-                                field,
-                                0,
-                                self.tree_fold(),
-                            )
+                            self.tree_instance_target(&class_name, field, 0)
                         })
                     } else {
                         None
@@ -3724,7 +3747,12 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         self.chunk().emit_end(line);
                     } else {
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&field_name));
+                        // A slot naming the declaring class where the seam will
+                        // index it; the pre-resolved key otherwise.
+                        let slot = self
+                            .indexed_member_slot(object, field, &field_name)
+                            .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                        self.class_get(class_slots::ObjSource::Stack, &slot);
                     }
                 }
             }
@@ -4514,7 +4542,12 @@ impl Compiler {
                         if name == "Set" && args.len() <= 1 {
                             if let Some(arg) = args.first() {
                                 self.compile_expr(&arg.value)?;
-                                common::collections::emit_spread_iterable(
+                                // ⛔ §24.2.1.1 step 3: `new Set(undefined)` and
+                                // `new Set(null)` are EMPTY sets, not errors —
+                                // the constructor returns before `GetIterator`.
+                                // Spread does not share that step, which is why
+                                // this is the constructor-only helper.
+                                common::collections::emit_spread_iterable_for_constructor(
                                     &mut self.chunks,
                                     self.current,
                                     self.line,
@@ -4983,11 +5016,7 @@ impl Compiler {
                     // `lookup_known_type` at the fallback further down, so the
                     // only behaviour change is that registered types now carry
                     // their declared ancestry.
-                    let dotnet_constructor = vybe_runtime::namespaces::lookup_type_ctor_target(
-                        &self.profile.namespaces.type_scopes,
-                        bare_src_str,
-                        self.tree_fold(),
-                    );
+                    let dotnet_constructor = self.tree_ctor_target(bare_src_str);
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args {
                             self.compile_expr(&a.value)?;
@@ -5047,11 +5076,7 @@ impl Compiler {
                         // carried a hardcoded ~30-name list plus a
                         // `__java_class_is_instance` helper for exactly this.
                         // The ancestry is data the platform already declares.
-                        if let Some(spec) = vybe_runtime::namespaces::lookup_type_ctor_spec(
-                            &self.profile.namespaces.type_scopes,
-                            bare_src_str,
-                            self.tree_fold(),
-                        ) {
+                        if let Some(spec) = self.tree_ctor_spec(bare_src_str) {
                             if !spec.ancestry.is_empty() {
                                 let line = self.line;
                                 inst!(self, core_wasm::dup);
@@ -6031,55 +6056,6 @@ impl Compiler {
                                 // where `this` comes from, and bundling them
                                 // meant a language could not have ECMA literals
                                 // without also having ambient accessors.
-                                if self.ambient_this() {
-                                    self.compile_lambda_with_flags(
-                                        params,
-                                        &LambdaBody::Block(body.clone()),
-                                        &[],
-                                        *is_async,
-                                        *is_generator,
-                                        false,
-                                    )?;
-                                } else {
-                                    // Accessors receive `this` as first arg
-                                    let mut accessor_params = vec![Param {
-                                        name: self.profile.self_keyword.clone(),
-                                        type_hint: None,
-                                        default: None,
-                                        pass_by: PassBy::Value,
-                                        is_rest: false,
-                                        is_kwargs: false,
-                                        is_optional: false,
-                                        is_nullable: false,
-                                    }];
-                                    accessor_params.extend(params.iter().cloned());
-                                    // An object-literal accessor is compiled as
-                                    // a lambda with the receiver PREPENDED, so
-                                    // it is receiver-first like a class
-                                    // accessor — and anonymous, so the fact has
-                                    // to ride on the chunk rather than a name.
-                                    self.last_lambda_body_chunk = None;
-                                    self.compile_lambda_with_flags(
-                                        &accessor_params,
-                                        &LambdaBody::Block(body.clone()),
-                                        &[],
-                                        *is_async,
-                                        *is_generator,
-                                        false,
-                                    )?;
-                                    // The BODY chunk, not the factory — the
-                                    // factory's index is what `chunks.len()`
-                                    // before the call would have given, and
-                                    // stamping that tags the wrong function.
-                                    let accessor_chunk =
-                                        self.last_lambda_body_chunk.unwrap_or(usize::MAX);
-                                    if let Some(c) = self.chunks.get_mut(accessor_chunk) {
-                                        c.is_method = true;
-                                        c.handled_call_tags.push(
-                                            vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG.to_string(),
-                                        );
-                                    }
-                                }
                             } else {
                                 self.emit_null();
                             }
@@ -6315,6 +6291,37 @@ impl Compiler {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
+                        // ⛔ THESE TWO HAD NO ARM AND FELL THROUGH — and the
+                        // general reflection path below is what made ~79% of
+                        // the js corpus emit an INVALID module. It compares
+                        // `typeof x` as a STRING through the abstract-equality
+                        // ladder, whose `(result i32)` leaves through enclosing
+                        // non-i32 blocks, gets boxed on the way out, and then
+                        // reaches an `if` that needs a raw i32 condition:
+                        // `type mismatch: expected i32, found externref`.
+                        //
+                        // Every self-checking test carries `__fmt`, which opens
+                        // `typeof v === "bigint"`, so the whole corpus inherited
+                        // it. `"number"` and the six others were always fine —
+                        // they have arms here and feed `if` directly.
+                        //
+                        // No new host function: `test` is what the
+                        // js-primitive-builtins proposal exposes for both
+                        // (`wasm:js-bigint` exposes ONLY `test`), so this is
+                        // the proposal's own type predicate rather than a
+                        // reflection walk over `__types`.
+                        "bigint" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            fn_call!(self, "wasm:js-bigint", "test", 1);
+                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
+                        "symbol" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            fn_call!(self, "wasm:js-symbol", "test", 1);
+                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            return Ok(());
+                        }
                         _ => {} // fall through to the general reflection path
                     }
                 }
@@ -6506,7 +6513,12 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.chunk().emit_end(line);
                 // matched_slot holds I32(0) or I32(1); convert to Bool for Go type assertions.
+                // ⛔ BOXED: `emit_const` stores a VALUE and every wasm-ABI local
+                // is `externref`, so branching raw is `expected i32, found
+                // externref`. The VM applies truthiness at `if` and never checks
+                // the condition's type, so the corpus could not see it.
                 self.emit_u16(Op::LOCAL_GET, matched_slot);
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 inst!(self, core_wasm::bool_const, true);
                 self.chunk().emit_else(line);
@@ -6880,6 +6892,11 @@ impl Compiler {
                                             self.chunk().emit_end(object_line);
                                         }
                                         self.emit_u16(Op::LOCAL_GET, match_slot);
+                                        // ⛔ BOXED — see `matched_slot` above.
+                                        crate::primitives::ops::emit_dyn_to_bool(
+                                            self.chunk(),
+                                            object_line,
+                                        );
                                         self.chunk().emit_if(object_line);
                                         self.emit_u16(Op::LOCAL_GET, value_slot);
                                         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -7496,31 +7513,24 @@ impl Compiler {
                         self.emit_var_get(&parent_canon);
                         self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
 
-                        if self.ambient_this() {
-                            let saved_js_this = self.begin_receiver_bind("__js_prev_this_super_expr");
-                            if let Some(self_slot) = self.scope().resolve(&self_kw) {
-                                self.emit_u16(Op::LOCAL_GET, self_slot);
-                            } else {
-                                self.emit_global_read("__js_this");
-                            }
-                            self.bind_receiver_from_stack(saved_js_this);
-                            for a in args {
-                                self.compile_expr(&a.value)?;
-                            }
-                            self.emit_direct_callable_invoke(args.len() as u8);
-                            let result_slot = self.define_local("__js_super_expr_result");
-                            self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.end_receiver_bind(saved_js_this);
-                            self.emit_u16(Op::LOCAL_GET, result_slot);
-                        } else if let Some(self_slot) = self.scope().resolve(&self_kw) {
-                            self.emit_u16(Op::LOCAL_GET, self_slot);
-                            for a in args {
-                                self.compile_expr(&a.value)?;
-                            }
-                            self.emit_direct_callable_invoke((args.len() + 1) as u8);
+                        // ⛔ RESOLVING THE METHOD IS NOT CALLING IT. The read
+                        // above leaves the parent's function on the stack;
+                        // without the invoke `MyBase.G()` evaluated to the
+                        // FUNCTION. The receiver is parameter 0, so it is bound
+                        // ahead of the arguments and the count includes it.
+                        // (`Call { callee: Super }` in `calls.rs` carries the
+                        // same rule for the languages that spell it that way.)
+                        if let Some(slot) = self.scope().resolve(&self_kw) {
+                            self.emit_u16(Op::LOCAL_GET, slot);
                         } else {
                             self.emit_null();
                         }
+                        for arg in args.iter() {
+                            self.compile_expr(&arg.value)?;
+                        }
+                        self.emit_direct_callable_invoke(
+                            (args.len() as u8).saturating_add(1),
+                        );
                     } else {
                         self.emit_null();
                     }
@@ -7937,11 +7947,8 @@ impl Compiler {
                 // constructs null. Class names are language-agnostic here.
                 self.declare_class_identity(&class_name);
                 let parents: Vec<String> = parent_name.into_iter().collect();
-                let saved_expr_js_this = if self.ambient_this() {
-                    Some(self.begin_receiver_bind(&format!("__js_prev_this_class_expr_{}", class_name)))
-                } else {
-                    None
-                };
+                // ⛔ Ambient bind removed — no declarants remain.
+                let saved_expr_js_this = None;
                 crate::primitives::class_normalize::emit::emit_class_from_ast(
                     self,
                     expr.span.clone(),
@@ -8421,10 +8428,8 @@ impl Compiler {
         // Registering one of those names elsewhere BREAKS that, and the fix
         // then is to declare the operators as members and read the emit out of
         // the tree, the way the StringBuilder indexer does.
-        let scopes = &self.profile.namespaces.type_scopes;
-        let fold = self.tree_fold();
-        if !vybe_runtime::namespaces::is_registered_type(scopes, &left_type, fold)
-            || !vybe_runtime::namespaces::is_registered_type(scopes, &right_type, fold)
+        if !self.tree_is_registered_type(&left_type)
+            || !self.tree_is_registered_type(&right_type)
         {
             return Ok(false);
         }
@@ -8927,7 +8932,19 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
+    // ⛔ A VALUE BLOCK, NOT A VOID ONE. Both arms leave one value — the
+    // `ToString` slot's return on the then side, `ecma:string.String`'s on the
+    // else — and this helper's own contract above says `Stack after: [value]`.
+    // Emitted as a void `if`, that is `values remaining on stack at end of
+    // block`, and it made EVERY module that stringifies through the rich path
+    // invalid: a two-line C# `Console.WriteLine(1 + 2)` reproduces it.
+    //
+    // ⛔ The CONDITION here is already correct (`REF_IS_NULL; I32_EQZ` leaves a
+    // raw i32). That is why this site survives a scan for boxed conditions —
+    // the defect is the BLOCK TYPE, the same distinction that separated the
+    // private-field fix (arms already i32, block wrongly declared a value)
+    // from the `toString` ladder (arms fine, condition wrongly boxed).
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);

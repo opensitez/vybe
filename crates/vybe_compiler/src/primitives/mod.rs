@@ -114,7 +114,14 @@ pub mod canonical;
 mod case_insensitive_collections;
 pub mod channels;
 mod class_augmentation;
-mod class_context;
+// ⛔ PUBLIC SO A LANGUAGE EMITTER CAN BIND A RECEIVER THE NORMALIZED WAY.
+// While this was private the only reachable spelling was
+// `globals::emit_write(chunk, "__js_this", …)`, so dart hand-rolled an
+// UNCONDITIONAL ambient store in its own iterator lowering and kept emitting
+// `__js_this` after its directive was flipped to `UniversalParameter`. The
+// ABI-guarded bind has to be reachable from where receivers are actually
+// bound, or every frontend re-invents the ambient channel.
+pub mod class_context;
 pub mod class_slots;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
 pub mod classes;
@@ -905,7 +912,7 @@ pub struct Compiler {
     /// unqualified source lookup.
     source_namespace_imports: Vec<String>,
     /// The `user.<unit>.*` root of namespaceplan.md, held per COMPILATION UNIT
-    /// instead of in `vybe_runtime::namespaces`.
+    /// instead of in `crate::primitives::namespaces`.
     ///
     /// User declarations are a *mount*, not tree data. The global registry is
     /// process-global, merges on registration and never unregisters, while
@@ -2124,7 +2131,7 @@ fn stmt_has_closure_with_this(stmt: &Statement) -> bool {
     }
 }
 
-fn expr_has_closure_with_this(expr: &Expression) -> bool {
+pub(crate) fn expr_has_closure_with_this(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Block(stmts) => body_contains_this(stmts),
@@ -3451,6 +3458,41 @@ impl Compiler {
             }
         }
 
+        // ▶▶ SEAM 3 ORDERING. The pass below compiles every top-level
+        // FunctionDecl BODY, and `ClassDecl` is not reached until the pass
+        // after it. So a field read inside a top-level function resolved
+        // against a type slot whose field list was still empty and whose
+        // licence had not been granted, and fell back to a string key —
+        // correct, but permanently inert, exactly the shape
+        // `publish_class_storage`'s own comment describes one scope down. A
+        // language with no top-level functions (C#, Java) never shows it,
+        // which is why this reads as a per-language defect and is not one.
+        //
+        // PARENTLESS classes only, and that is the entire eligible set: the
+        // licence already requires `!has_parent`, and a parentless class's
+        // field order is a function of the class alone — `field_hides_ancestor`
+        // returns false with no parent to walk — so it cannot disagree with
+        // what `compile_class` publishes later. Publication is idempotent, so
+        // the second call verifies rather than rewrites.
+        // ⛔ SORTED BY KEY, AND THE SORT IS LOAD-BEARING. `normalized_classes`
+        // is a `HashMap`, whose iteration order Rust randomises per PROCESS —
+        // so publishing in that order handed out a different `typeidx` on every
+        // run and the emitted module stopped being reproducible. Measured: the
+        // csharp repro produced three different type assignments in three
+        // consecutive runs, while a one-class dart file looked stable and hid
+        // it. Any deterministic order will do; the key order is the one that
+        // needs no extra state.
+        let mut parentless_classes: Vec<_> = self
+            .normalized_classes
+            .iter()
+            .filter(|(_, class)| class.parent.is_none())
+            .map(|(key, class)| (key.clone(), class.clone()))
+            .collect();
+        parentless_classes.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (_, class) in &parentless_classes {
+            self.publish_class_storage(class);
+        }
+
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
                 self.compile_stmt(stmt)?;
@@ -3584,9 +3626,11 @@ impl Compiler {
             vybe_runtime::chunk::ReceiverAbi::Ambient
         };
         let unit_members_on_prototype = self.members_on_prototype();
+        let unit_fields_are_own_properties = self.instance_fields_are_own_properties();
         for chunk in &mut self.chunks {
             chunk.module_receiver_abi = unit_abi;
             chunk.module_members_on_prototype = unit_members_on_prototype;
+            chunk.module_instance_fields_are_own_properties = unit_fields_are_own_properties;
         }
         // The canon section, published to every chunk on the same principle as
         // the global index space above: a chunk carrying a canonidx must be

@@ -412,11 +412,7 @@ impl Compiler {
             return false;
         }
         self.user_owns_type_spelling(name)
-            || vybe_runtime::namespaces::is_registered_type(
-                &self.profile.namespaces.type_scopes,
-                &Self::tree_type_key(name),
-                self.tree_fold(),
-            )
+            || self.tree_is_registered_type(&Self::tree_type_key(name))
     }
 
     pub(super) fn normalize_type_hint(type_hint: &str) -> String {

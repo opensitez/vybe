@@ -18,6 +18,26 @@ use crate::vm::{
 };
 use std::collections::HashMap;
 
+// ── Task protocol ───────────────────────────────────────────────────────────
+//
+// The VM's language-neutral vocabulary for a task object. A plugin stamps these
+// from its own adapter and translates them back into its surface names
+// (`platforms/dotnet` maps `__state` onto `TaskStatus`). The VM never spells a
+// language's status names itself.
+
+/// Settled state of a task, in the same vocabulary the promise objects use.
+pub(crate) const TASK_STATE: &str = "__state";
+pub(crate) const TASK_STATE_FULFILLED: &str = "fulfilled";
+pub(crate) const TASK_STATE_REJECTED: &str = "rejected";
+/// Base of a spawned task's `wasi:threads` argument block. The STATUS WORD is
+/// at `+ 4` — 1 done, 2 faulted, 0 still running — stamped and notified by the
+/// child at thread exit. It is the single source of truth for a thread's
+/// outcome; nothing mirrors it.
+pub(crate) const TASK_FUTEX: &str = "__futex";
+/// The cancellation token a task carries, and the flag the VM reads off it.
+pub(crate) const TASK_CANCEL_TOKEN: &str = "__cancel_token";
+pub(crate) const TASK_CANCELLED: &str = "__cancelled";
+
 impl VM {
     /// Whether `o` is a WASM GC array (spec trap-on-out-of-bounds) rather than a
     /// dynamic-language array (lenient subscript).
@@ -199,6 +219,19 @@ impl VM {
         });
         self.thread_handles.insert(tid, handle);
         Ok(tid)
+    }
+
+    /// Pop an i32 operand that the spec reads as UNSIGNED.
+    ///
+    /// ⛔ CLAMPING A NEGATIVE TO ZERO SUPPRESSES THE TRAP IT SHOULD CAUSE.
+    /// Every offset, index and count in the bulk and GC-array instructions is
+    /// an unsigned i32, so `0x8000_0000` means 2147483648, not "negative, call
+    /// it 0" — and calling it 0 turns the most out-of-bounds request there is
+    /// into the most in-bounds one. `gc/array.wast`'s `new-overflow` asks for
+    /// `0x8000_0000` elements at offset `0x8000_0000` and must trap; clamped,
+    /// it allocated an empty array and returned.
+    fn pop_u32_operand(&mut self) -> usize {
+        self.pop().as_i32() as u32 as usize
     }
 
     pub(crate) fn resolve_gc_rtt(&self, type_imm: usize) -> usize {
@@ -926,12 +959,12 @@ impl VM {
     ) -> Result<(), VMError> {
         self.join_task_object_if_needed(&task_obj);
 
-        let delay_token_cancelled = self.task_delay_token_cancelled(&task_obj);
-        let (status, result, exception) = {
+        let token_cancelled = self.task_token_cancelled(&task_obj);
+        let (state, result, exception) = {
             let task = task_obj.lock().unwrap();
-            let status = task
+            let state = task
                 .properties
-                .get("status")
+                .get(TASK_STATE)
                 .map(|v| format!("{}", v))
                 .unwrap_or_default();
             let result = task
@@ -940,19 +973,24 @@ impl VM {
                 .cloned()
                 .unwrap_or(Value::Null);
             let exception = task.properties.get("exception").cloned();
-            (status, result, exception)
+            (state, result, exception)
         };
 
-        let faulted = delay_token_cancelled
-            || status.eq_ignore_ascii_case("Faulted")
-            || status.eq_ignore_ascii_case("Canceled")
+        // ⛔ SETTLED STATE, NOT A LANGUAGE'S STATUS NAMES. This branched on
+        // `Faulted`/`Canceled` — `System.Threading.Tasks.TaskStatus` members —
+        // which made the VM's await path .NET-shaped. `__state` is the same
+        // pending/fulfilled/rejected vocabulary the promise objects already
+        // carry, and a plugin maps its own status names onto it (dotnet's
+        // `emit_task_status` does exactly that).
+        let faulted = token_cancelled
+            || state.eq_ignore_ascii_case(TASK_STATE_REJECTED)
             || exception
                 .as_ref()
                 .is_some_and(|v| !matches!(v, Value::Null | Value::Undefined));
 
         if faulted {
             let reason = exception.unwrap_or_else(|| {
-                if delay_token_cancelled || status.eq_ignore_ascii_case("Canceled") {
+                if token_cancelled {
                     make_operation_cancelled_error()
                 } else {
                     Value::String(Arc::from("Task faulted"))
@@ -981,54 +1019,68 @@ impl VM {
         Ok(())
     }
 
-    fn task_delay_token_cancelled(&self, task_obj: &Arc<Mutex<Object>>) -> bool {
+    /// Whether the task carries a cancellation token that has been triggered.
+    ///
+    /// The token is read LIVE: it can be cancelled after the task was created,
+    /// which is the whole point of handing one to a delay. Both keys belong to
+    /// the VM's task protocol, not to any language — a plugin that wants a task
+    /// cancellable stamps them from its own adapter.
+    fn task_token_cancelled(&self, task_obj: &Arc<Mutex<Object>>) -> bool {
         let token = {
             let task = task_obj.lock().unwrap();
-            task.properties.get("__dotnet_delay_token").cloned()
+            task.properties.get(TASK_CANCEL_TOKEN).cloned()
         };
         let Some(Value::Object(token_obj)) = token else {
             return false;
         };
         let token = token_obj.lock().unwrap();
-        ["__dotnet_cancelled", "IsCancellationRequested"]
-            .iter()
-            .any(|key| {
-                token
-                    .properties
-                    .get(*key)
-                    .is_some_and(|value| matches!(value, Value::Bool(true)))
-            })
+        token
+            .properties
+            .get(TASK_CANCELLED)
+            .is_some_and(|value| matches!(value, Value::Bool(true)))
     }
 
     fn join_task_object_if_needed(&mut self, task_obj: &Arc<Mutex<Object>>) {
-        let tid = {
+        let (tid, futex) = {
             let task = task_obj.lock().unwrap();
-            task.properties
-                .get("__thread_id")
-                .map(|v| v.as_f64() as i32)
-                .unwrap_or(-1)
+            (
+                task.properties
+                    .get("__thread_id")
+                    .map(|v| v.as_f64() as i32)
+                    .unwrap_or(-1),
+                task.properties
+                    .get(TASK_FUTEX)
+                    .map(|v| v.as_f64() as usize),
+            )
         };
         if let Some(handle) = self.thread_handles.remove(&tid) {
             self.memory.mark_parked();
-            let success = match handle.join() {
+            let joined_ok = match handle.join() {
                 Ok(result) => result.first().copied().unwrap_or(1) == 0,
                 Err(_) => false,
             };
             self.memory.unmark_parked();
+            // ⛔ THE STATUS IS THE `wasi:threads` STATUS WORD, NOT A SECOND
+            // COPY OF IT. At thread exit the child stamps `__futex + 4` — 1
+            // done, 2 faulted — and notifies joiners; that is the proposal's
+            // own thread-exit contract and what `__stdlib_task_wait` waits on.
+            // Reading it here leaves ONE status in the system. The OS handle
+            // join only waits for the thread to be gone; a thread whose object
+            // carries no futex (nothing spawned it through the wasi path)
+            // falls back to what the join answered.
+            let ok = futex
+                .map(|base| self.memory.atomic_load_i32(base + 4) == 1)
+                .unwrap_or(joined_ok);
             let mut task = task_obj.lock().unwrap();
             task.properties
                 .insert("iscompleted".into(), Value::Bool(true));
             task.properties.insert("isalive".into(), Value::Bool(false));
-            task.properties
-                .insert("hasexited".into(), Value::Bool(true));
-            task.properties
-                .insert("exitcode".into(), Value::I32(if success { 0 } else { -1 }));
             task.properties.insert(
-                "status".into(),
-                Value::String(Arc::from(if success {
-                    "RanToCompletion"
+                TASK_STATE.into(),
+                Value::String(Arc::from(if ok {
+                    TASK_STATE_FULFILLED
                 } else {
-                    "Faulted"
+                    TASK_STATE_REJECTED
                 })),
             );
         }
@@ -3789,6 +3841,129 @@ impl VM {
         }
     }
 
+    /// The spec's `call_indirect` runtime type check (§4.4.8, step 10): the
+    /// funcref taken from the table must have THE TYPE the instruction names.
+    ///
+    /// ⛔ ARITY IS NOT A TYPE, AND WASM IS NOT UNTYPED HERE. This used to
+    /// compare `param_count`/`result_arity` only — two `u8` counts — so
+    /// `(func (result i32))` satisfied a call declared `(func (result i64))`:
+    /// same 0→1 shape, different type, no trap. `Comptype_sub/func` compares
+    /// the parameter and result TYPES, which is exactly what `test_concrete`
+    /// already does for `ref.test`/`ref.cast` on a funcref. The counts stay as
+    /// a cheap first test; the declared signature settles it.
+    ///
+    /// The expected signature is the DECLARED functype the wast walker emits
+    /// as a fourth argument and the compiler files under this opcode's own
+    /// offset (`Chunk::call_indirect_sigs`); the callee's is the structural
+    /// one `__wast_register_func_sig` records on its chunk. Both are built by
+    /// the same spelling normalisation, so they are comparable as written.
+    ///
+    /// ⛔ A MISSING SIGNATURE MUST NOT TRAP. `func_sig` is recorded for every
+    /// function a module DEFINES; an imported or host function may have none,
+    /// and trapping there would break every legitimate host call. `ref.test`
+    /// answers `false` in that case because a failed TEST is harmless — a
+    /// failed CALL is not, so this falls back to the count check instead.
+    ///
+    /// ⛔ ONE HELPER, BOTH SPELLINGS. `call_indirect` and
+    /// `return_call_indirect` had drifted: only the former trapped on a null
+    /// slot, and only the former spelled its out-of-bounds trap the way the
+    /// spec does. Two near-identical arms is how that happens.
+    fn indirect_call_type_check(
+        &self,
+        funcref: &Value,
+        argc: usize,
+        expected_results: usize,
+        opcode_start: usize,
+        tail: bool,
+    ) -> Result<(), VMError> {
+        let Value::Object(o) = funcref else { return Ok(()) };
+        let ob = o.lock().unwrap();
+        let crate::value::ObjectKind::Function(f) = &ob.kind else { return Ok(()) };
+        let ch = &self.chunks[f.chunk_index];
+        let how = if tail { " (return_call_indirect)" } else { "" };
+        if ch.param_count as usize != argc || ch.result_arity as usize != expected_results {
+            return Err(VMError::new(format!(
+                "trap: indirect call type mismatch{} (callee {}→{}, expected {}→{})",
+                how, ch.param_count, ch.result_arity, argc, expected_results
+            )));
+        }
+        let ci = self.frame().chunk_index;
+        // ⛔ IDENTITY FIRST, SHAPE SECOND. Iso-recursive equivalence is not
+        // structural equality: `type-rec.wast` declares `$f1` and `$f2` both as
+        // `(func)` in DIFFERENT rec groups, and the call must trap even though
+        // the signatures are character-for-character equal. Only the
+        // CANONICALISED name separates them, and it is canonical on both sides
+        // — `qualify_type_name` at the call site, `declared_func_type` on the
+        // callee — so the comparison is meaningful.
+        //
+        // Both must be present: a function declared with an inline signature
+        // has no type name, and a name compared against nothing is a guess.
+        //
+        // ⛔ ONE MODULE ONLY. Canonicalisation is per-module here (names carry
+        // an `m#<seq>#` prefix and the map is rebuilt for each module), while
+        // the spec canonicalises across the whole store — so two modules that
+        // declare the SAME type still get different names, and comparing them
+        // would trap a call the spec says succeeds. Across that boundary the
+        // structural check below is the answer; a name means nothing there.
+        //
+        // ⛔ AND A NAME MISMATCH IS NOT ENOUGH ON ITS OWN. Canonicalisation
+        // merges by the composite's source TEXT, so it splits types that are
+        // equal — `(param f32 f32)` from `(param $x f32) (param $y f32)`, and
+        // `(ref $r1)` from `(ref $r2)` when `$r1` and `$r2` are themselves
+        // equal. Trapping on the name alone therefore rejects valid programs.
+        // The REC GROUP's size and the member's position come from the tree
+        // rather than the text, and under iso-recursive equivalence a type is
+        // identified by its whole group plus its position in it — so a
+        // difference there is a real difference, and it is the only part of
+        // the identity precise enough to trap on.
+        let same_module = |a: &str, b: &str| {
+            let seq =
+                |n: &str| n.strip_prefix("m#").and_then(|r| r.split_once('#')).map(|(s, _)| s.to_string());
+            matches!((seq(a), seq(b)), (Some(x), Some(y)) if x == y)
+        };
+        if let (Some(want), Some(got)) = (
+            self.chunks[ci].call_indirect_canon.get(&opcode_start),
+            &ch.declared_func_type,
+        ) {
+            let shape = |n: &String| self.chunks[0].type_rec_shape.get(n);
+            let shapes_differ = match (shape(want), shape(got)) {
+                (Some(a), Some(b)) => a != b,
+                _ => false,
+            };
+            if same_module(want, got) && want != got && shapes_differ {
+                return Err(VMError::new(format!(
+                    "trap: indirect call type mismatch{how} (callee {got}, expected {want})"
+                )));
+            }
+        }
+        let declared = self.chunks[ci].call_indirect_sigs.get(&opcode_start);
+        if let (Some(want), Some((params, results))) = (declared, &ch.func_sig) {
+            // ⛔ ONLY TRUST A SIGNATURE THAT AGREES WITH THE COUNTS. The
+            // declared string and the three count immediates are produced by
+            // DIFFERENT readers of the same typeuse, and they do not always
+            // read it the same way — a plain `call_indirect (type $t)` reaches
+            // one of them wrapped in an `instr_arg` and comes back empty while
+            // the counts are right. An empty `"->"` compared against a real
+            // `->i32` callee then trapped a perfectly valid call.
+            //
+            // So the counts, which are already checked above and known good,
+            // gate the string: if the two disagree about arity, this reader did
+            // not see the same typeuse and abstains. That makes an over-fire
+            // impossible — the check can only ever add traps the counts missed.
+            let want_arity = (
+                want.split("->").next().unwrap_or("").split(',').filter(|s| !s.is_empty()).count(),
+                want.split("->").nth(1).unwrap_or("").split(',').filter(|s| !s.is_empty()).count(),
+            );
+            let got = format!("{params}->{results}");
+            if want_arity == (argc, expected_results) && *want != got {
+                return Err(VMError::new(format!(
+                    "trap: indirect call type mismatch{how} (callee {got}, expected {want})"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Pop a memory-op count/index operand, widening per the memory's index
     /// type: i64 for a 64-bit memory, i32 otherwise. Used by
     /// `memory.size/grow/copy/fill` — all standard opcodes; memory64 adds none.
@@ -4158,7 +4333,14 @@ impl VM {
                     if let Value::Object(ref o) = obj {
                         let needs_join = {
                             let o_ref = o.lock().unwrap();
-                            (name == "result" || name == "exitcode")
+                            // ⛔ ONE MEMBER, AND IT IS THE PROTOCOL'S. This also
+                            // fired on `exitcode` — `System.Diagnostics.Process`'s
+                            // spelling — which no object reaching this guard can
+                            // even have: `__thread_id` is written ONLY by
+                            // `primitives/channels.rs`, and a `Process` built by
+                            // the dotnet adapter carries neither. The arm named a
+                            // framework member the VM cannot see.
+                            name == "result"
                                 && o_ref.properties.contains_key("__thread_id")
                                 && !o_ref
                                     .properties
@@ -4313,8 +4495,21 @@ impl VM {
                             // and restore after — invoke_callback leaks the
                             // return value and intermediate locals on the stack.
                             let stack_save = self.stack.len();
+                            // ⛔ ONE RECEIVER, PASSED ONCE. Passing the pair
+                            // `[obj, val]` to `invoke_callback` is a receiver
+                            // in the ARGUMENT LIST, and `invoke_callback`
+                            // ALSO prepends one for any callee whose chunk
+                            // declares `takes_receiver` — which every
+                            // receiver-first accessor does, in every language,
+                            // not only under `ReceiverAbi::Parameter`. The
+                            // setter then ran with `this` = the prepended
+                            // receiver and its VALUE parameter = the receiver
+                            // again. Measured on dart: `c.count = 5` reached
+                            // the setter as `v = [object Counter]` and the
+                            // backing field kept its initial value, across 36
+                            // getter/setter tests.
                             let _result =
-                                self.invoke_callback(&setter_fn, &[obj.clone(), val.clone()]);
+                                self.invoke_with_receiver(&setter_fn, obj.clone(), &[val.clone()]);
                             self.stack.truncate(stack_save);
                         } else {
                             // Set property in properties HashMap
@@ -5770,15 +5965,10 @@ impl VM {
                     obj.type_id = self.resolve_gc_rtt(typeidx);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
-                // `array.new_data $t $d` / `array.new_elem $t $e` — allocate
-                // a new array initialised from a data or element segment.
-                // Our VM doesn't (yet) model data/element segments, so we
-                // produce an empty array rather than silently returning
-                // garbage. Emitted WASM still carries the spec-correct
-                // opcode bytes, so engines with real segment support
-                // execute these correctly.
+                // `array.new_data $t $d` — allocate a new array of `size`
+                // ELEMENTS read from a data segment at a byte offset.
                 Op::ARRAY_NEW_DATA => {
-                    let _typeidx = self.read_u16();
+                    let typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
                     // ⚠ A DROPPED segment is an EMPTY one, not an error of
                     // its own. The spec drops the payload and leaves the
@@ -5789,22 +5979,44 @@ impl VM {
                     // the fixture asserts must return. `MEMORY_INIT` already
                     // modelled it this way; these did not.
                     let dropped = self.dropped_data.contains(&dataidx);
-                    let size = self.pop().as_i32().max(0) as usize;
-                    let offset = self.pop().as_i32().max(0) as usize;
+                    let size = self.pop_u32_operand();
+                    let offset = self.pop_u32_operand();
+                    // ⛔ THE COUNT IS IN ELEMENTS, THE SEGMENT IS IN BYTES.
+                    // The value model stores i32/f32/f64 all as f64, so the
+                    // width cannot come from the value — it comes from the
+                    // array type's element storage type, which the typeidx
+                    // immediate names. Treating the count as bytes made
+                    // `(array i32)` read one byte per element: the bound
+                    // passed where 4 bytes were needed, and a segment of 1
+                    // byte satisfied a request the spec traps.
+                    //
+                    // An unregistered type keeps the byte-wide reading; a
+                    // width invented for it would be a guess.
+                    let type_id = self.resolve_gc_rtt(typeidx as usize);
+                    let (elem_size, kind) = self
+                        .type_registry
+                        .get(type_id)
+                        .and_then(|td| td.field_defs.first())
+                        .and_then(|f| array_elem_storage_kind(&f.name))
+                        .unwrap_or((1, 4));
                     let data = self
                         .data_segments
                         .get(dataidx as usize)
                         .ok_or_else(|| VMError::new("trap: array.new_data: missing data segment"))?;
                     let seg_len = if dropped { 0 } else { data.len() };
-                    let end = offset.saturating_add(size);
+                    let end = offset.saturating_add(size.saturating_mul(elem_size));
                     if end > seg_len {
                         return Err(VMError::new("trap: out of bounds memory access (array.new_data)"));
                     }
-                    let elems = data[offset..end]
-                        .iter()
-                        .map(|b| Value::I32(*b as i32))
+                    let elems: Vec<Value> = (0..size)
+                        .map(|i| {
+                            let base = offset + i * elem_size;
+                            decode_le_numeric(kind, &data[base..base + elem_size])
+                        })
                         .collect();
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(elems))))?;
+                    let mut obj = Object::new_array(elems);
+                    obj.type_id = type_id;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
@@ -5818,8 +6030,8 @@ impl VM {
                     // the fixture asserts must return. `MEMORY_INIT` already
                     // modelled it this way; these did not.
                     let dropped = self.dropped_elems.contains(&elemidx);
-                    let size = self.pop().as_i32().max(0) as usize;
-                    let offset = self.pop().as_i32().max(0) as usize;
+                    let size = self.pop_u32_operand();
+                    let offset = self.pop_u32_operand();
                     let elems = self
                         .elem_segments
                         .get(elemidx as usize)
@@ -5936,9 +6148,9 @@ impl VM {
                     let dataidx = self.read_u16() as u32;
                     // A dropped segment is an EMPTY one — see ARRAY_NEW_DATA.
                     let dropped = self.dropped_data.contains(&dataidx);
-                    let size = self.pop().as_i32().max(0) as usize;
-                    let src_offset = self.pop().as_i32().max(0) as usize;
-                    let dst_offset = self.pop().as_i32().max(0) as usize;
+                    let size = self.pop_u32_operand();
+                    let src_offset = self.pop_u32_operand();
+                    let dst_offset = self.pop_u32_operand();
                     let array = self.pop();
                     let data = self
                         .data_segments
@@ -6013,9 +6225,9 @@ impl VM {
                     let elemidx = self.read_u16() as u32;
                     // A dropped segment is an EMPTY one — see ARRAY_NEW_DATA.
                     let dropped = self.dropped_elems.contains(&elemidx);
-                    let size = self.pop().as_i32().max(0) as usize;
-                    let src_offset = self.pop().as_i32().max(0) as usize;
-                    let dst_offset = self.pop().as_i32().max(0) as usize;
+                    let size = self.pop_u32_operand();
+                    let src_offset = self.pop_u32_operand();
+                    let dst_offset = self.pop_u32_operand();
                     let array = self.pop();
                     let source = self
                         .elem_segments
@@ -7171,29 +7383,35 @@ impl VM {
                         let table = self.table_ref(tableidx).ok_or_else(|| {
                             VMError::new("trap: return_call_indirect unknown table")
                         })?;
+                        // ⛔ THE SAME TRAP AS `call_indirect`, SPELLED THE SAME
+                        // WAY. An out-of-range table index is "undefined
+                        // element" in the spec, and this arm said "invalid
+                        // table index" — so three fixtures asserting the spec
+                        // wording failed against a module that trapped
+                        // correctly, for the wrong reason.
                         if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
                             return Err(VMError::new(format!(
-                                "trap: return_call_indirect: invalid table index {}",
+                                "trap: undefined element: table index {} out of bounds",
                                 raw_idx
                             )));
                         }
                         table[raw_idx as usize].clone()
                     };
-                    if let Value::Object(o) = &funcref {
-                        let ob = o.lock().unwrap();
-                        if let crate::value::ObjectKind::Function(f) = &ob.kind {
-                            let ch = &self.chunks[f.chunk_index];
-                            if ch.param_count as usize != argc
-                                || ch.result_arity as usize != expected_results
-                            {
-                                return Err(VMError::new(format!(
-                                    "trap: indirect call type mismatch (return_call_indirect) \
-                                     (callee {}→{}, expected {}→{})",
-                                    ch.param_count, ch.result_arity, argc, expected_results
-                                )));
-                            }
-                        }
+                    // A NULL slot traps before the call, exactly as in
+                    // `call_indirect` — this arm never had the check.
+                    if funcref.is_null_ref() || matches!(funcref, Value::Undefined) {
+                        return Err(VMError::new(format!(
+                            "trap: uninitialized element {} (table slot is null)",
+                            raw_idx
+                        )));
                     }
+                    self.indirect_call_type_check(
+                        &funcref,
+                        argc,
+                        expected_results,
+                        opcode_start,
+                        true,
+                    )?;
                     // Splice the funcref in below the args, then reuse the frame.
                     let callee_idx = self.stack.len() - argc;
                     self.stack.insert(callee_idx, funcref);
@@ -7691,25 +7909,16 @@ impl VM {
                             raw_idx
                         )));
                     }
-                    // Spec runtime type check: the funcref's declared type shape
-                    // (params → results) must match the call's static `(type
-                    // $sig)`. The VM is untyped, so equality is over the
-                    // param/result COUNTS carried on the callee's chunk.
-                    if let Value::Object(o) = &funcref {
-                        let ob = o.lock().unwrap();
-                        if let crate::value::ObjectKind::Function(f) = &ob.kind {
-                            let ch = &self.chunks[f.chunk_index];
-                            if ch.param_count as usize != argc
-                                || ch.result_arity as usize != expected_results
-                            {
-                                return Err(VMError::new(format!(
-                                    "trap: indirect call type mismatch \
-                                     (callee {}→{}, expected {}→{})",
-                                    ch.param_count, ch.result_arity, argc, expected_results
-                                )));
-                            }
-                        }
-                    }
+                    // Spec §4.4.8 step 10: the funcref's TYPE must match the
+                    // call's static `(type $sig)` — see
+                    // `indirect_call_type_check` for why arity alone is not it.
+                    self.indirect_call_type_check(
+                        &funcref,
+                        argc,
+                        expected_results,
+                        opcode_start,
+                        false,
+                    )?;
                     // ▶▶ CALL TAGS, Design §Instructions: "call_indirect
                     // $table $functype is now shorthand for (call_with_tag
                     // (call_tag.canon $functype) (table.get $table))".

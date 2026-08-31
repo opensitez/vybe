@@ -62,7 +62,6 @@ pub mod project;
 // the process-global language/hook registry, and the language `profile`.
 // Language-agnostic class IR lives in `vybe_ast::class_normalize`.
 pub mod framework;
-pub mod namespaces;
 pub mod profile;
 pub mod registry;
 pub use component::{

@@ -17,19 +17,72 @@ impl Compiler {
     /// that.
     pub(crate) fn is_declared_instance_field(&self, class_name: &str, field: &str) -> bool {
         let canon_field = self.canon(field);
-        let mut current = Some(self.canon(class_name));
-        while let Some(name) = current {
-            let Some(pending) = self.pending_classes.get(&name) else {
-                return false;
-            };
-            if pending.instance_field_types.contains_key(&canon_field)
+        self.pending_class_ancestry(class_name).any(|pending| {
+            pending.instance_field_types.contains_key(&canon_field)
                 || pending.fields.iter().any(|f| self.canon(f) == canon_field)
-            {
-                return true;
-            }
-            current = pending.parent.as_ref().map(|parent| self.canon(parent));
-        }
-        false
+        })
+    }
+
+    /// One pending class, by whatever spelling reaches here.
+    fn pending_class_entry(&self, class_name: &str) -> Option<&PendingClass> {
+        self.pending_classes
+            .get(&self.canon(class_name))
+            .or_else(|| self.pending_classes.get(class_name))
+    }
+
+    /// Every `PendingClass` in a class's ancestry, nearest first.
+    ///
+    /// ⛔ ONE ORDER, THREE QUESTIONS — AND THE THIRD HAD NO WALK AT ALL.
+    /// `is_declared_instance_field` asks *is this a field*,
+    /// `lookup_implicit_self_field_type_hint` asks *what is a bare name's
+    /// declared type*, and the `ExprKind::Member` arm of `infer_expr_type_hint`
+    /// asks that same question through an explicit receiver. The first two each
+    /// wrote their own loop up `parent`; the third looked only in the
+    /// receiver's OWN map, so
+    ///
+    ///     class B { public Action H; }
+    ///     class D : B { }
+    ///     d.H += handler;
+    ///
+    /// inferred nothing, fell to the arithmetic arm of `+=` and trapped with
+    /// `toF64 — not a number`, while the identical line on a `B` instance
+    /// worked. Only a lowering that BRANCHES ON THE DECLARED TYPE could see it:
+    /// the field's storage, its reads and its plain writes were already
+    /// correct, so nothing about the value was wrong — only the compile-time
+    /// question *what was this declared as*.
+    ///
+    /// ⛔ The two existing copies also DISAGREED about canonicalization: one
+    /// folded the parent's name at every step, the other did not. `canon` is
+    /// the policy the field KEYS already use, so folding is the correct half —
+    /// un-folded, an inherited field was unreachable in a case-insensitive
+    /// scope whenever a parent was spelled differently from its declaration.
+    ///
+    /// The walk STOPS at the first ancestor this compilation has no pending
+    /// class for — a framework or catalog parent. That is what both copies
+    /// already did, and it is deliberate: nothing further up can be answered
+    /// from this table, and a `None` that means *stop* must not be confused
+    /// with one that means *no such field*.
+    fn pending_class_ancestry<'a>(
+        &'a self,
+        class_name: &str,
+    ) -> impl Iterator<Item = &'a PendingClass> + 'a {
+        std::iter::successors(self.pending_class_entry(class_name), move |pending| {
+            pending
+                .parent
+                .as_deref()
+                .and_then(|parent| self.pending_class_entry(parent))
+        })
+    }
+
+    /// The declared type of an instance field, looked up through the ancestry.
+    pub(super) fn lookup_instance_field_type(
+        &self,
+        class_name: &str,
+        field: &str,
+    ) -> Option<&FieldType> {
+        let canon_field = self.canon(field);
+        self.pending_class_ancestry(class_name)
+            .find_map(|pending| pending.instance_field_types.get(&canon_field))
     }
 
     /// The declared parent of a user class, by whatever spelling reaches here.
@@ -46,16 +99,9 @@ impl Compiler {
             return None;
         }
 
-        let canon_name = self.canon(name);
-        let mut current = self.current_class.as_deref();
-        while let Some(class_name) = current {
-            let pending = self.pending_classes.get(class_name)?;
-            if let Some(field_type) = pending.instance_field_types.get(&canon_name) {
-                return Some(field_type.hint.as_str());
-            }
-            current = pending.parent.as_deref();
-        }
-        None
+        let class_name = self.current_class.as_deref()?;
+        self.lookup_instance_field_type(class_name, name)
+            .map(|field_type| field_type.hint.as_str())
     }
 
     /// Unused since case folding became a scope policy: its only caller
@@ -126,12 +172,7 @@ impl Compiler {
             return Some("Graphics".into());
         }
         let class_name = Self::expr_terminal_type_name(object)?;
-        vybe_runtime::namespaces::lookup_type_member_return(
-            &self.profile.namespaces.type_scopes,
-            &class_name,
-            field,
-            self.tree_fold(),
-        )
+        self.tree_member_return(&class_name, field)
     }
 
     pub(super) fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {
@@ -460,12 +501,7 @@ impl Compiler {
                             {
                                 let class_name = Self::tree_type_key(&receiver_type);
                                 if let Some(return_type) =
-                                    vybe_runtime::namespaces::lookup_type_member_return(
-                                        &self.profile.namespaces.type_scopes,
-                                        &class_name,
-                                        field,
-                                        self.tree_fold(),
-                                    )
+                                    self.tree_member_return(&class_name, field)
                                 {
                                     return Some(return_type);
                                 }
@@ -493,12 +529,11 @@ impl Compiler {
                     if let Some(class_name) =
                         self.resolve_pending_class_name_for_type_hint(&receiver_type)
                     {
-                        if let Some(field_type) = self
-                            .pending_classes
-                            .get(class_name.as_str())
-                            .and_then(|pending| {
-                                pending.instance_field_types.get(&self.canon(field))
-                            })
+                        // Through the ANCESTRY, not the receiver's own map —
+                        // see `pending_class_ancestry` for what a single-level
+                        // lookup here cost.
+                        if let Some(field_type) =
+                            self.lookup_instance_field_type(class_name.as_str(), field)
                         {
                             return Some(field_type.hint.clone());
                         }
@@ -517,12 +552,7 @@ impl Compiler {
                         {
                             let class_name = Self::tree_type_key(&receiver_type);
                             if let Some(return_type) =
-                                vybe_runtime::namespaces::lookup_type_member_return(
-                                    &self.profile.namespaces.type_scopes,
-                                    &class_name,
-                                    field,
-                                    self.tree_fold(),
-                                )
+                                self.tree_member_return(&class_name, field)
                             {
                                 return Some(return_type);
                             }

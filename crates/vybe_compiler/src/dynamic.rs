@@ -22,6 +22,49 @@ thread_local! {
 
 static NEXT_JS_DYNAMIC_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Drop every `new Function(...)` backing state and restart the id counter.
+///
+/// ⛔ THIS FILE WAS MISSED BY THE STATIC-STATE CONVERSION. Every other walker
+/// owns its per-compilation registries in one struct built by `parse` and
+/// dropped when it returns (`PyWalker` — "71 process-global statics across
+/// eight `thread_local!` blocks"; the php and wast walkers say the same). These
+/// two could not follow that pattern, because a dynamic function's state must
+/// OUTLIVE the compilation — the host fn registered below calls into it at run
+/// time — so its real owner is the VM, not the compile.
+///
+/// Nothing reclaimed it. `CONSTRUCTED_JS_FUNCTIONS` grew a `Box::into_raw`
+/// entry per `new Function(...)`, each holding a WHOLE `VM`, and no site ever
+/// removed one: a warm worker leaked every dynamic function every program had
+/// ever built, for the life of the process. `NEXT_JS_DYNAMIC_ID` never
+/// restarted either, so `__vybe_dynamic_function_<n>` depended on how many
+/// dynamic functions had been compiled BEFORE — the same source lowered to
+/// different names as the 1st and the 100th program on a worker. That is
+/// exactly the defect the python conversion called out in its own comment.
+///
+/// ⚠ SAFETY. The first version of this comment said the closures are dropped
+/// by `VM::reset_to` before this runs. THAT IS FALSE — `host_fns` is a `Vec`
+/// that `reset_to` never truncates, so every host closure a program registers
+/// outlives the reset. The real argument is narrower and does hold: a pointer
+/// is reachable ONLY through this map, `drain` removes and yields it in one
+/// step, and the surviving closure re-reads the map on every call. After a
+/// reset it finds no entry and takes the `backing state missing for id` path
+/// that already exists — an error, not a dangling deref. Nothing else holds a
+/// copy, so freeing the drained box is sound.
+///
+/// ⛔ Do not "simplify" this by keeping the pointer anywhere outside the map.
+/// The single point of reachability is the whole proof.
+pub fn reset_dynamic_compilation_state() {
+    CONSTRUCTED_JS_FUNCTIONS.with(|slot| {
+        for (_, ptr) in slot.borrow_mut().drain() {
+            if !ptr.is_null() {
+                // Reclaims the `Box::into_raw` at the registration site.
+                drop(unsafe { Box::from_raw(ptr) });
+            }
+        }
+    });
+    NEXT_JS_DYNAMIC_ID.store(1, Ordering::Relaxed);
+}
+
 #[derive(Debug)]
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
@@ -1098,6 +1141,21 @@ impl JsDynamicRuntime {
     }
 
     fn handle_eval(&mut self, ctx: &mut HostContext, args: &[Value]) -> Value {
+        // ⛔ INDIRECT EVAL ARRIVES WITH A RECEIVER AT ARGUMENT 0. §19.2.1
+        // makes `eval` a VALUE as well as a call: `const g = eval; g("3+4")`,
+        // `(0, eval)("…")`, `({ eval }).eval("…")`. Those are ordinary dynamic
+        // calls, so under `ReceiverAbi::Parameter` argument 0 is the receiver
+        // and the source is argument 1 — reading it at a fixed index returned
+        // the receiver itself (`obj.eval("g")` printed `[object Object]`, the
+        // aliased forms `undefined`).
+        //
+        // DIRECT `eval(...)` is emitted as a `CallHost`, which never runs
+        // `call_value_inner`, so its `call_receiver_argc` stays 0 and this
+        // strips nothing — the two shapes disagree about the argument list and
+        // `user_args` is exactly the question "which one am I in". Verified on
+        // both forms, not assumed: this is the same reasoning the numeric-stub
+        // registration in `platforms/ecma/src/global.rs` already relies on.
+        let args = ctx.user_args(args, 0);
         // ECMA-262 §18.2.1: if arg is not a String, return it unchanged.
         let source = match args.first() {
             Some(Value::String(s)) => s.to_string(),
@@ -1575,7 +1633,12 @@ impl JsDynamicRuntime {
         let host_module = "vybe:js.dynamic";
         let host_name = symbol.clone();
         let dynamic_id = id;
-        vm.register_host_fn(
+        // ⛔ A `Function(...)`-CONSTRUCTED FUNCTION HAS NO RECEIVER
+        // PARAMETER. Its declared parameters are the ones the caller named
+        // (`Function("x","return x*2")`), so a receiver in front of them binds
+        // `x` and the body answers NaN. Declaring the type receiverless drops
+        // the slot at the call instead of making the body compensate.
+        vm.register_free_fn(
             host_module,
             &host_name,
             Box::new(move |ctx, args| {
@@ -1603,7 +1666,34 @@ impl JsDynamicRuntime {
                     ensure_js_runtime_registered(&mut state.vm);
                     let mut nested_runtime = JsDynamicRuntime::new(state.caps.clone());
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
-                    let result = match state.vm.invoke(&state.function, args) {
+// ⛔ THE RECEIVER IS THIS WRAPPER'S ARGUMENT 0, NOT THE DYNAMIC
+                    // FUNCTION'S. Under `ReceiverAbi::Parameter` the call site
+                    // hands a host callee its receiver at argument 0, so the
+                    // compiled body must not see it: without this,
+                    // `Function("x","return x*2")(9)` is `NaN` because `x`
+                    // binds the receiver.
+                    //
+                    // ⛔ THIS WAS WRONG ONCE, FOR A REASON WORTH KEEPING. The
+                    // strip is only sound if EVERY call site actually pushes a
+                    // receiver, and `receiver_argc()` cannot tell you that — it
+                    // is computed from the module ABI and from who dispatched,
+                    // never from the argument list. The two construction forms
+                    // used to disagree: a function from `Function(...)` was
+                    // called through the ordinary receiver-carrying path, while
+                    // one from `new Function(...)` got a `Function` type hint
+                    // and was lowered as a MULTICAST DELEGATE, whose ladder
+                    // passes handler arguments only. Stripping on a number that
+                    // read 1 for both fixed 3 tests and broke 6 (corpus-
+                    // measured, net -4), so it was withdrawn.
+                    //
+                    // It is correct now because the disagreement is gone at the
+                    // source: the delegate lowering is no longer selected under
+                    // `Parameter` (see `calls.rs`), so both forms pass a
+                    // receiver and `receiver_argc()` is finally describing the
+                    // list it claims to describe. Fix the emitter, THEN trust
+                    // the number — never the other way round.
+                    let inner_args = ctx.user_args(args, 0);
+                    let result = match state.vm.invoke(&state.function, inner_args) {
                         Ok(value) => value,
                         Err(err) => throw_dynamic_compile_error(ctx, err.to_string()),
                     };
@@ -1872,7 +1962,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
         return;
     }
 
-    vm.register_host_fn(
+    vm.register_free_fn(
         "vybe:js",
         "function_constructor",
         Box::new(|ctx, args| {
@@ -1892,7 +1982,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    vm.register_free_fn(
         "ecma:global",
         "eval",
         Box::new(|ctx, args| {
@@ -1912,7 +2002,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
     // The universal `vybe:eval:eval` compiler-as-a-service — what PHP `eval`
     // and Python `eval`/`exec` bind to (language injected as arg 1). Routed
     // through the always-active JS runtime, which carries the outer VM + caps.
-    vm.register_host_fn(
+    vm.register_free_fn(
         "vybe:eval",
         "eval",
         Box::new(|ctx, args| {

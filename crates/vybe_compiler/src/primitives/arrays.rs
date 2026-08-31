@@ -92,10 +92,9 @@ impl Compiler {
             .infer_expr_type_hint(object)
             .as_deref()
             .map(Self::tree_type_key)?;
-        let scopes = &self.profile.namespaces.type_scopes;
         let (Target::Common { emit: get }, Target::Common { emit: set }) = (
-            vybe_runtime::namespaces::lookup_type_property_target(scopes, &hint, "Item", self.tree_fold())?,
-            vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, &hint, "Item", self.tree_fold())?,
+            self.tree_property_target(&hint, "Item")?,
+            self.tree_property_setter_target(&hint, "Item")?,
         ) else {
             return None;
         };
@@ -114,11 +113,7 @@ impl Compiler {
     pub(super) fn type_hint_is_delegate_like(&self, type_hint: &str) -> bool {
         let normalized = Self::tree_type_key(type_hint);
         !self.defined_classes.contains(&self.canon(&normalized))
-            && !vybe_runtime::namespaces::is_registered_type(
-                &self.profile.namespaces.type_scopes,
-                &normalized,
-                self.tree_fold(),
-            )
+            && !self.tree_is_registered_type(&normalized)
             && !matches!(
                 normalized.to_ascii_lowercase().as_str(),
                 "object"

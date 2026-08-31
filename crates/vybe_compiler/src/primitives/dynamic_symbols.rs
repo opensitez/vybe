@@ -150,7 +150,10 @@ pub fn emit_resolver_list(chunk: &mut Chunk, stack: ResolverStack<'_>, line: u32
     // live queue through the returned value.
     emit_stack_load(chunk, stack.stack_global, line);
     chunk.emit_i32_const(0, line);
-    array_call(chunk, "slice", 2, line);
+    // §23.1.3.27 `end` = undefined means `len` — passed explicitly so this
+    // import has ONE arity; a WASM import cannot have an optional argument.
+    crate::primitives::expressions::emit_undefined(chunk, line);
+    array_call(chunk, "slice", 3, line);
 }
 
 /// Run resolvers in order against a symbol name, stopping as soon as

@@ -132,27 +132,25 @@ fn is_dotnet_linq_method_name(name: &str) -> bool {
 }
 
 fn dotnet_factory_return_type(
-    scope: &[String],
+    compiler: &crate::primitives::Compiler,
     callee: &Expression,
-    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field, fold)
+    compiler.tree_member_return(&class_name, field)
 }
 
 fn dotnet_static_member_return_type(
-    scope: &[String],
+    compiler: &crate::primitives::Compiler,
     expr: &Expression,
-    fold: vybe_runtime::namespaces::Fold,
 ) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &expr.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field, fold)
+    compiler.tree_member_return(&class_name, field)
 }
 
 fn js_dynamic_import_alias(module: &str) -> String {
@@ -416,11 +414,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Member { object, field, .. } => {
             if let Some(type_name) =
-                dotnet_static_member_return_type(
-                    &compiler.profile.namespaces.type_scopes,
-                    recv,
-                    compiler.tree_fold(),
-                )
+                dotnet_static_member_return_type(compiler, recv)
             {
                 return Some(type_name);
             }
@@ -472,17 +466,8 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                     .resolve_pending_class_name_for_type_hint(&receiver_type)
                     .unwrap_or_else(|| Compiler::tree_type_key(&receiver_type));
                 loop {
-                    if vybe_runtime::namespaces::is_registered_type(
-                        &compiler.profile.namespaces.type_scopes,
-                        &current,
-                        compiler.tree_fold(),
-                    ) {
-                        return vybe_runtime::namespaces::lookup_type_member_return(
-                            &compiler.profile.namespaces.type_scopes,
-                            &Compiler::tree_type_key(&current),
-                            field,
-                            compiler.tree_fold(),
-                        );
+                    if compiler.tree_is_registered_type(&current) {
+                        return compiler.tree_member_return(&Compiler::tree_type_key(&current), field);
                     }
                     let pending = compiler.pending_classes.get(&current)?;
                     let key = compiler.js_member_storage_name_for_class(&current, field);
@@ -562,11 +547,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         // no `type_scopes` at all cannot reach a different answer.
         ExprKind::Cast { type_name, .. } => {
             let resolved = compiler.resolve_source_type_alias(type_name);
-            vybe_runtime::namespaces::is_registered_type(
-                &compiler.profile.namespaces.type_scopes,
-                &Compiler::tree_type_key(&resolved),
-                compiler.tree_fold(),
-            )
+            compiler.tree_is_registered_type(&Compiler::tree_type_key(&resolved))
             .then_some(resolved)
         }
         // Element type of an indexed receiver. Every step is language-blind and
@@ -601,12 +582,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         {
                             let class_name = Compiler::tree_type_key(&receiver_type);
                             if let Some(return_type) =
-                                vybe_runtime::namespaces::lookup_type_member_return(
-                                    &compiler.profile.namespaces.type_scopes,
-                                    &class_name,
-                                    field,
-                                    compiler.tree_fold(),
-                                )
+                                compiler.tree_member_return(&class_name, field)
                             {
                                 return Some(return_type);
                             }
@@ -618,29 +594,17 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             let inferred = compiler
                 .infer_function_return_type(callee)
                 .or_else(|| {
-                    dotnet_factory_return_type(
-                        &compiler.profile.namespaces.type_scopes,
-                        callee,
-                        compiler.tree_fold(),
-                    )
+                    dotnet_factory_return_type(compiler, callee)
                 })
                 .or_else(|| match &callee.kind {
                     ExprKind::Ident(name) => {
                         let resolved = compiler.resolve_source_type_alias(name);
-                        vybe_runtime::namespaces::lookup_type_ctor_target(
-                            &compiler.profile.namespaces.type_scopes,
-                            &resolved,
-                            compiler.tree_fold(),
-                        )
+                        compiler.tree_ctor_target(&resolved)
                         .map(|_| resolved)
                     }
                     ExprKind::Member { field, .. } => {
                         let resolved = compiler.resolve_source_type_alias(field);
-                        vybe_runtime::namespaces::lookup_type_ctor_target(
-                            &compiler.profile.namespaces.type_scopes,
-                            &resolved,
-                            compiler.tree_fold(),
-                        )
+                        compiler.tree_ctor_target(&resolved)
                         .map(|_| resolved)
                     }
                     _ => None,
@@ -686,11 +650,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         // Ruby `.select` and JS array HOFs keep their own semantics because
         // their profiles declare no `type_scopes` at all.
         ExprKind::Array(_)
-            if vybe_runtime::namespaces::is_registered_type(
-                &compiler.profile.namespaces.type_scopes,
-                "IEnumerable",
-                compiler.tree_fold(),
-            ) =>
+            if compiler.tree_is_registered_type("IEnumerable") =>
         {
             Some("IEnumerable".to_string())
         }
@@ -1195,16 +1155,11 @@ impl Compiler {
         // chain with its own members, and a user class that DECLARES the member
         // stops it (the override is the class's business, not the framework's).
         for current in self.resolution_chain(&start) {
-            if vybe_runtime::namespaces::is_registered_type(scope, &current, self.tree_fold()) {
+            if self.tree_is_registered_type(&current) {
                 // Platform class — its registered members finish the chain.
-                return vybe_runtime::namespaces::lookup_type_instance_target(
-                    scope,
-                    &current,
-                    method_name,
-                    arg_count,
-                    self.tree_fold(),
-                )
-                .map(|_| current);
+                return self
+                    .tree_instance_target(&current, method_name, arg_count)
+                    .map(|_| current);
             }
             let pending = self.pending_classes.get(&current)?;
             let key = self.js_member_storage_name_for_class(&current, method_name);
@@ -1518,12 +1473,19 @@ impl Compiler {
     /// arguments arrive one place late — see the argument's own comment in
     /// `platforms/ecma/src/value.rs`. Answered from the directive, once, here.
     fn emit_method_lookup_bind_arg(&mut self) -> u8 {
-        if self.universal_receiver() {
-            self.emit_const(Value::Bool(false));
-            3
-        } else {
-            2
-        }
+        // ⛔ ALWAYS THREE. A WASM import has ONE signature, so an argument that
+        // is present at some call sites and absent at others cannot be typed:
+        // the writer declares the max arity it saw and every shorter site then
+        // UNDER-SUPPLIES, which V8 reports as "not enough arguments on the
+        // stack for call" at the short site, nowhere near the cause. Measured:
+        // this was one of only three multi-arity imports left in the tree, and
+        // the programs with none are exactly the ones that compile.
+        //
+        // `true` is the host's own default for a missing third argument
+        // (`args.get(2).map_or(true, …)` in `ecma:value.getMethodForCall`), so
+        // stating it changes no behaviour — it only makes the arity constant.
+        self.emit_const(Value::Bool(!self.universal_receiver()));
+        3
     }
 
     /// Bind the receiver for a CALL — the one place that answers "what does a
@@ -1602,8 +1564,22 @@ impl Compiler {
         // explicit-receiver path below is unchanged; under `Argument` it IS
         // that path, which is why the two are exclusive rather than additive.
         let recv_argc = self.push_receiver_argument(saved_js_this);
+        // ⛔ NO RECEIVER FROM ANY SOURCE STILL MEANS `undefined`, NOT ABSENT.
+        // §10.2.1.1 binds `undefined` as the thisArgument of an ordinary call,
+        // and under `ReceiverAbi::Parameter` that IS argument 0 — nothing
+        // downstream supplies it, because the VM only prepends for calls it
+        // originates itself. Reached when the receiver expression evaluated to
+        // null/undefined (`emit_call_ref_with_arg_slots` routes those here
+        // with no slot at all): `new Function("x","return x")(7)` called the
+        // compiled body with `x` bound to the receiver slot and returned the
+        // wrong value, while the same function built by `Function(...)` took
+        // the receiver-carrying branch and was correct.
+        let implicit_receiver =
+            recv_argc == 0 && receiver_slot.is_none() && self.universal_receiver();
         if recv_argc == 0 && let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        } else if implicit_receiver {
+            inst!(self, core_wasm::undefined);
         }
         for slot in arg_slots {
             self.emit_u16(Op::LOCAL_GET, *slot);
@@ -1613,10 +1589,12 @@ impl Compiler {
             && arg_slots.len() == 1
         {
             inst!(self, core_wasm::undefined);
-            self.emit_direct_callable_invoke(2 + recv_argc);
+            self.emit_direct_callable_invoke(2 + recv_argc + u8::from(implicit_receiver));
         } else {
             self.emit_direct_callable_invoke(
-                (arg_slots.len() + usize::from(recv_argc == 0 && receiver_slot.is_some())) as u8
+                (arg_slots.len()
+                    + usize::from(recv_argc == 0 && receiver_slot.is_some())
+                    + usize::from(implicit_receiver)) as u8
                     + recv_argc,
             );
         }
@@ -1638,12 +1616,21 @@ impl Compiler {
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         let recv_argc = self.push_receiver_argument(saved_js_this);
+        // Same rule as `emit_normal_call_from_arg_slots` above: argument 0 is
+        // the receiver under `ReceiverAbi::Parameter`, and an ordinary call
+        // with no receiver passes `undefined` there rather than leaving the
+        // slot to be filled by the first declared parameter.
+        let implicit_receiver =
+            recv_argc == 0 && receiver_slot.is_none() && self.universal_receiver();
         if recv_argc == 0 && let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        } else if implicit_receiver {
+            inst!(self, core_wasm::undefined);
         }
         let argc = fixed_count
             + 1
             + usize::from(recv_argc == 0 && receiver_slot.is_some())
+            + usize::from(implicit_receiver)
             + usize::from(recv_argc);
         for index in 0..fixed_count {
             if let Some(slot) = arg_slots.get(index) {
@@ -1844,11 +1831,33 @@ impl Compiler {
         known_len: Option<usize>,
         fixed_count: usize,
     ) {
-        let argc = fixed_count + 1 + usize::from(receiver_slot.is_some());
+        // ⛔ A PLAIN CALL STILL PASSES A RECEIVER under
+        // `ReceiverBinding::UniversalParameter` — §10.2.1.1 binds `undefined`,
+        // and "absent" and "undefined" are not the same slot. Without one the
+        // callee's own parameters all arrive one place early: `rest(...arr)`
+        // read its rest array out of the empty receiver slot and joined
+        // nothing. `receiver_slot` here is the EXPLICIT method receiver, which
+        // is a different question and already occupies argument 0 when present.
+        // ⛔ A PLAIN CALL STILL PASSES A RECEIVER under
+        // `ReceiverAbi::Parameter` — §10.2.1.1 binds `undefined`, and "absent"
+        // and "undefined" are not the same SLOT. Without it the callee's own
+        // parameters arrive one place early: `rest(...arr)` read its rest array
+        // out of the empty receiver slot and returned `undefined`.
+        //
+        // Read from the MODULE chunk, not `self.universal_receiver()` — the
+        // directive stack is not this region's, the same reason
+        // `invoke.rs` reads it here.
+        let implicit_receiver = receiver_slot.is_none()
+            && crate::primitives::class_context::module_receiver_abi(&self.chunks)
+                == vybe_runtime::chunk::ReceiverAbi::Parameter;
+        let argc =
+            fixed_count + 1 + usize::from(receiver_slot.is_some()) + usize::from(implicit_receiver);
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         if let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        } else if implicit_receiver {
+            inst!(self, core_wasm::undefined);
         }
 
         match known_len {
@@ -2297,7 +2306,19 @@ impl Compiler {
         for slot in arg_slots {
             self.emit_u16(Op::LOCAL_GET, *slot);
         }
-        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+        // Spreading them flat made this import's arity vary per call site,
+        // which a WASM import cannot express: the writer types host imports
+        // by an arity SCAN (max argc), so every shorter site under-supplied
+        // and V8 reported it at the SHORT site, nowhere near the cause.
+        let aline = self.line;
+        common::collections::emit_array_new(
+            &mut self.chunks,
+            self.current,
+            arg_slots.len() as u16,
+            aline,
+        );
+        self.emit_host_call(invoke, 3);
     }
 
     fn emit_js_invoke_method_from_args_array(
@@ -2731,11 +2752,31 @@ impl Compiler {
         signature: &CallSignature,
     ) -> Result<(), String> {
         let fixed_count = signature.param_names.len().saturating_sub(1);
-        let argc = fixed_count + 1 + usize::from(receiver_slot.is_some());
+        // ⛔ A PLAIN CALL STILL PASSES A RECEIVER under `ReceiverAbi::Parameter`
+        // — §10.2.1.1 binds `undefined` as the thisArgument, and "absent" and
+        // "undefined" are not the same SLOT. This is the STATICALLY-KNOWN
+        // callee path, and it was the one rest emitter never converted: with no
+        // receiver pushed, argument 0 of `mix(x, ...a)` was the first FIXED
+        // argument, so `mix(...[4,5,6])` ran with `this === 4`, `x === [5,6]`
+        // and `a === undefined` — every parameter one place early. The plain
+        // (non-spread) call to the same function was correct because it is
+        // emitted elsewhere, which is exactly why this hid.
+        //
+        // Keyed on THIS REGION'S directive stack, not `chunks[0]` — that slot
+        // is one answer for the whole BUNDLE, and a wast export must not move
+        // because a js unit declared `UniversalParameter` (see the unit-ABI
+        // stamp in `mod.rs`).
+        let implicit_receiver = receiver_slot.is_none() && self.universal_receiver();
+        let argc = fixed_count
+            + 1
+            + usize::from(receiver_slot.is_some())
+            + usize::from(implicit_receiver);
 
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         if let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        } else if implicit_receiver {
+            inst!(self, core_wasm::undefined);
         }
 
         if fixed_count == 0 && args.len() == 1 && args[0].spread {
@@ -3047,6 +3088,20 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from("")));
         }
         self.emit_js_exception_ctor_from_message_value(type_name)?;
+
+        // `Exception(message, innerException)` in .NET, `Error(message, {cause})`
+        // in ECMA — one argument position, two meanings, told apart by the
+        // shared primitive rather than by who is compiling.
+        if let Some(second) = args.get(1) {
+            let exc_slot = self.define_local("__exc_with_inner");
+            self.emit_u16(Op::LOCAL_SET, exc_slot);
+            self.compile_expr(second)?;
+            let arg_slot = self.define_local("__exc_second_arg");
+            self.emit_u16(Op::LOCAL_SET, arg_slot);
+            let line = self.line;
+            common::errors::emit_attach_second_ctor_arg(self.chunk(), exc_slot, arg_slot, line);
+            self.emit_u16(Op::LOCAL_GET, exc_slot);
+        }
 
         if let Some(opts_arg) = args.get(1) {
             let exc_tmp = self.define_local("__exc_with_opts");
@@ -3912,12 +3967,98 @@ impl Compiler {
                         }
                         return Ok(());
                     }
+                    // ▶▶ M5, ALLOCATION HALF: THE MOST-DERIVED CONSTRUCTOR
+                    // ALLOCATES. WASM GC fixes an object's type AT allocation
+                    // and offers no way to retype it afterwards, so whoever
+                    // allocates decides the type. This site used to let the
+                    // BASE allocate and hand the object up ("store result as
+                    // this"), which left every derived instance carrying its
+                    // PARENT's rtt: for `class Sub extends Base`, the module
+                    // held exactly two `struct.new_default`, both Base's
+                    // typeidx, both inside `__Base_ctor_0`, and `__Sub_ctor_0`
+                    // had no allocation instruction at all. `instanceof` still
+                    // answered correctly only because identity also travels in
+                    // a `__type` string, so the wrong rtt was invisible.
+                    //
+                    // Inverted: allocate with THIS class's type first, then
+                    // pass the instance DOWN as the trailing receiver so the
+                    // base INITIALISES what it is given. That is the same
+                    // protocol the explicit-base-clause and forwarding shapes
+                    // already use (`classes.rs`, `emit_new_typed_object` —
+                    // which allocates only when no receiver was handed in, so
+                    // a `Sub` used as a base in turn correctly does NOT
+                    // allocate). What was missing was only the ROUTING for a
+                    // `super()` that the ctor BODY drives, which is the JS
+                    // shape; there is no new machinery here.
+                    //
+                    // Gated on `js_derived_ctor_ctx` matching the current
+                    // chunk — the same marker the §13.3.7.2 once-guard above
+                    // uses, set only for `ecma_new_dispatch() && parent &&
+                    // ctor_body`. Its slot IS the trailing receiver slot
+                    // (`this_slot = user_arity`), so no separate lookup can
+                    // disagree with it.
+                    let derived_alloc = match self.js_derived_ctor_ctx {
+                        Some((ctx_chunk, ctx_slot)) if ctx_chunk == self.current => Some(ctx_slot),
+                        _ => None,
+                    };
+                    // ⛔ ALLOCATE INTO A TEMPORARY, NOT INTO `this`. §10.2.2
+                    // step 13 / §9.1.1.3.4: `this` is bound by the SuperCall
+                    // COMPLETING, and a derived constructor that returns
+                    // without binding it must throw a ReferenceError. Writing
+                    // the allocation straight into `this_slot` made the slot
+                    // non-null before the base ran, so when the base THREW the
+                    // constructor-return TDZ guard no longer fired and the
+                    // ReferenceError was lost. Measured:
+                    // `class D extends B { constructor(){ try { super(); }
+                    // catch(e){…} } }` with a throwing `B` — `new D()` stopped
+                    // reporting `e instanceof ReferenceError`.
+                    //
+                    // The temp is SEEDED from `this_slot` first, so the
+                    // allocate-only-if-null guard inside `emit_new_typed_object`
+                    // still sees a receiver that was handed to US: when this
+                    // class is itself a base in a longer chain, it must pass
+                    // that receiver down rather than allocate a second object.
+                    let alloc_tmp = if let Some(slot) = derived_alloc {
+                        // The SAME spelling `reserve_type_slot` was called with
+                        // when the class was compiled (`canon(class.name)`, and
+                        // `current_class` already holds that canon form). A
+                        // different spelling would silently push a SECOND type
+                        // entry rather than find the existing one.
+                        let canon_name = self.canon(class_name);
+                        let type_slot = crate::primitives::classes::reserve_type_slot(
+                            &mut self.chunks,
+                            &canon_name,
+                        );
+                        let tmp = self.define_local("__derived_ctor_alloc");
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        self.emit_u16(Op::LOCAL_SET, tmp);
+                        let l = self.line;
+                        crate::primitives::classes::emit_new_typed_object(
+                            self.chunk(),
+                            tmp,
+                            &canon_name,
+                            type_slot,
+                            l,
+                        );
+                        Some(tmp)
+                    } else {
+                        None
+                    };
                     self.emit_var_get(&parent_name);
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
-                    // Store result as this
+                    let mut super_argc = arg_exprs.len() as u8;
+                    if let Some(tmp) = alloc_tmp {
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        super_argc = super_argc.saturating_add(1);
+                    }
+                    self.emit_direct_callable_invoke(super_argc);
+                    // Store result as this. Unchanged, and still correct under
+                    // derived allocation: the base returns the very object it
+                    // was handed, so the store is a no-op there — while the
+                    // paths that do NOT pre-allocate (no `js_derived_ctor_ctx`)
+                    // keep depending on it.
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw) {
                         inst!(self, core_wasm::dup);
@@ -3988,7 +4129,18 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(cur_canon.as_str())));
                         self.emit_const(Value::String(Arc::from(canon_field.as_str())));
                         self.emit_direct_callable_invoke(3);
-                    } else if self.ambient_this() {
+                    } else if self.universal_receiver() {
+                        // ⛔ GATED ON "IS THIS ECMA-STYLE SUPER", NOT ON HOW THE
+                        // RECEIVER TRAVELS. Keyed on `ambient_this` alone this
+                        // path simply STOPPED being selected once the receiver
+                        // became a parameter, and js fell through to the
+                        // typed-language branch below — which reads
+                        // `__base_<Class>$<m>` off the receiver and, finding
+                        // nothing, falls back to the member on the receiver
+                        // ITSELF. For `static s(){ return super.s() }` that is
+                        // `B.s` again: infinite recursion. Same defect the
+                        // §15.4.4 brand check already carries a warning for.
+                        //
                         // ECMA `super` resolves from the method's
                         // [[HomeObject]].[[Prototype]] at call time. For
                         // instance methods that is `C.prototype.__proto__`,
@@ -4080,37 +4232,25 @@ impl Compiler {
                         self.chunk().emit_end(line);
                     }
 
-                    if self.ambient_this() {
-                        let method_slot = self.define_local("__js_super_method_fn");
-                        self.emit_u16(Op::LOCAL_SET, method_slot);
-                        self.emit_js_current_this_value();
-                        let receiver_slot = self.define_local("__js_super_method_receiver");
-                        self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                        for (index, a) in arg_exprs.iter().enumerate() {
-                            self.compile_expr(a)?;
-                            let arg_slot =
-                                self.define_local(&format!("__js_super_method_arg_{}", index));
-                            self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            arg_slots.push(arg_slot);
-                        }
-                        self.emit_js_receiver_host_or_bound_this_call(
-                            method_slot,
-                            receiver_slot,
-                            &arg_slots,
-                        );
+                    // ⛔ THE THREE BRANCHES ABOVE RESOLVE THE PARENT METHOD;
+                    // NONE OF THEM CALLS IT. Each leaves the resolved function
+                    // on the stack, so without this `base.Greet()` evaluated to
+                    // the FUNCTION — printing `function Greet$sig0() { [native
+                    // code] }` and making `base.Greet() + " World"` take the
+                    // numeric `+`. The receiver is parameter 0, so it is bound
+                    // ahead of the arguments and the count includes it.
+                    if let Some(s) = self_slot {
+                        self.emit_u16(Op::LOCAL_GET, s);
                     } else {
-                        // Typed-language method ABI passes receiver as arg0.
-                        if let Some(slot) = self_slot {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            self.emit_null();
-                        }
-                        for a in &arg_exprs {
-                            self.compile_expr(a)?;
-                        }
-                        self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
+                        self.emit_null();
                     }
+                    for a in &arg_exprs {
+                        self.compile_expr(a)?;
+                    }
+                    self.emit_direct_callable_invoke(
+                        (arg_exprs.len() as u8).saturating_add(1),
+                    );
+
                     return Ok(());
                 }
 
@@ -4216,12 +4356,7 @@ impl Compiler {
             // `lookup_type_instance_target` below resolves it from the tree.
             if field.eq_ignore_ascii_case("Reverse")
                 && arg_exprs.len() == 2
-                && vybe_runtime::namespaces::scope_declares_member_arity(
-                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                    field,
-                    2,
-                    self.tree_fold(),
-                )
+                && self.tree_collection_declares(field, 2)
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
                 self.compile_expr(object)?;
@@ -4241,25 +4376,14 @@ impl Compiler {
                     // like `Stack`, `Queue`, or `Dictionary`.
                 } else {
                     let class_name = Self::tree_type_key(&class_name);
-                    if let Some(target) = vybe_runtime::namespaces::lookup_type_instance_target(
-                        &self.profile.namespaces.type_scopes,
-                        &class_name,
-                        field,
-                        arg_exprs.len() as u8,
-                        self.tree_fold(),
-                    ) {
+                    if let Some(target) = self.tree_instance_target(&class_name, field, arg_exprs.len() as u8) {
                         // `owner[key].Add(v)` — the element is read, appended to,
                         // and written back. The profile's own collection scope
                         // is the gate, matching every other collection site
                         // here; the surrounding `lookup_type_instance_target`
                         // has already agreed the receiver type declares `Add`.
                         if field.eq_ignore_ascii_case("Add")
-                            && vybe_runtime::namespaces::scope_declares_member_arity(
-                                &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                                field,
-                                arg_exprs.len() as u8,
-                                self.tree_fold(),
-                            )
+                            && self.tree_collection_declares(field, arg_exprs.len() as u8)
                         {
                             if let ExprKind::Index {
                                 object: indexed_owner,
@@ -4963,14 +5087,9 @@ impl Compiler {
 
                 if early_static_class_canon.is_some() && self.profile.uses_namespace_resolver() {
                     super::resolver::register_platform_trees();
-                    let arity_tree_backed = vybe_runtime::namespaces::lookup_type_static_member(
-                        &self.profile.namespaces.type_scopes,
-                        &class_parts.join("."),
-                        &method_name,
-                        self.tree_fold(),
-                    )
+                    let arity_tree_backed = self.tree_static_member(&class_parts.join("."), &method_name)
                     .and_then(|member| {
-                        vybe_runtime::namespaces::select_overload(&member, arg_exprs.len() as u8)
+                        crate::primitives::namespaces::select_overload(&member, arg_exprs.len() as u8)
                             .cloned()
                     })
                     .is_some();
@@ -5432,12 +5551,7 @@ impl Compiler {
                                 let is_const = ns_parts
                                     .last()
                                     .map(|name| {
-                                        vybe_runtime::namespaces::lookup_type_static_member(
-                                            &self.profile.namespaces.type_scopes,
-                                            name,
-                                            name,
-                                            self.tree_fold(),
-                                        )
+                                        self.tree_static_member(name, name)
                                         .is_some()
                                     })
                                     .unwrap_or(false);
@@ -5842,10 +5956,15 @@ impl Compiler {
                                 }
 
                                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                                // The receiver is the class object; under
+                                // `UniversalParameter` it is argument 0.
+                                let recv_argc = self.push_receiver_argument(saved_js_this);
                                 for slot in &arg_slots {
                                     self.emit_u16(Op::LOCAL_GET, *slot);
                                 }
-                                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
+                                self.emit_direct_callable_invoke(
+                                    arg_exprs.len() as u8 + recv_argc,
+                                );
                                 let pack_slot = self.define_local("__js_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                                 self.end_receiver_bind(saved_js_this);
@@ -6200,12 +6319,7 @@ impl Compiler {
             // `lookup_type_instance_target` below resolves it from the tree.
             if field.eq_ignore_ascii_case("Reverse")
                 && arg_exprs.len() == 2
-                && vybe_runtime::namespaces::scope_declares_member_arity(
-                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                    field,
-                    2,
-                    self.tree_fold(),
-                )
+                && self.tree_collection_declares(field, 2)
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
                 self.compile_expr(object)?;
@@ -6252,20 +6366,11 @@ impl Compiler {
                 // Same structural test as the array-literal arm in
                 // `resolve_receiver_type_hint`: the surface exists if the
                 // language's registered tree declares `IEnumerable`.
-                None if vybe_runtime::namespaces::is_registered_type(
-                    &self.profile.namespaces.type_scopes,
-                    "IEnumerable",
-                    self.tree_fold(),
-                ) && !self.direct_receiver_has_own_pending_method(object, field)
+                None if self.tree_is_registered_type("IEnumerable") && !self.direct_receiver_has_own_pending_method(object, field)
                     && (is_dotnet_linq_method_name(field)
                         || !self.defined_class_methods.contains(&self.canon(field)))
                     && (is_dotnet_linq_method_name(field)
-                        || !vybe_runtime::namespaces::scope_declares_member_arity(
-                            &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                            field,
-                            arg_exprs.len() as u8,
-                            self.tree_fold(),
-                        )) =>
+                        || !self.tree_collection_declares(field, arg_exprs.len() as u8)) =>
                 {
                     Some("IEnumerable".to_string())
                 }
@@ -6288,33 +6393,15 @@ impl Compiler {
                             || owner.ends_with("[]")
                             || owner.ends_with("()"));
                     let target = if prefer_linq_extension {
-                        vybe_runtime::namespaces::lookup_type_instance_target(
-                            &self.profile.namespaces.type_scopes,
-                            "IEnumerable",
-                            field,
-                            arg_exprs.len() as u8,
-                            self.tree_fold(),
-                        )
+                        self.tree_instance_target("IEnumerable", field, arg_exprs.len() as u8)
                     } else {
-                        vybe_runtime::namespaces::lookup_type_instance_target(
-                            &self.profile.namespaces.type_scopes,
-                            &owner,
-                            field,
-                            arg_exprs.len() as u8,
-                            self.tree_fold(),
-                        )
+                        self.tree_instance_target(&owner, field, arg_exprs.len() as u8)
                     }
                     .or_else(|| {
                         if is_dotnet_linq_method_name(field)
                             && !owner.eq_ignore_ascii_case("IEnumerable")
                         {
-                            vybe_runtime::namespaces::lookup_type_instance_target(
-                                &self.profile.namespaces.type_scopes,
-                                "IEnumerable",
-                                field,
-                                arg_exprs.len() as u8,
-                                self.tree_fold(),
-                            )
+                            self.tree_instance_target("IEnumerable", field, arg_exprs.len() as u8)
                         } else {
                             None
                         }
@@ -6743,12 +6830,7 @@ impl Compiler {
                 // `runtime_collection_scope` IS the gate: `scope_declares_member_arity`
                 // answers false on an empty scope, and only a language that declares
                 // that scope has one.
-            } else if vybe_runtime::namespaces::scope_declares_member_arity(
-                &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                field,
-                arg_exprs.len() as u8,
-                self.tree_fold(),
-            ) && !prefer_dotnet_adapter
+            } else if self.tree_collection_declares(field, arg_exprs.len() as u8) && !prefer_dotnet_adapter
                 && !(receiver_is_known_string && matched_value_method.is_some())
             {
                 // Let the generic member-call path consult the runtime type
@@ -7797,10 +7879,19 @@ impl Compiler {
                     self.bind_receiver_from_stack(saved_js_this);
                 }
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                // ⛔ THE PRIVATE-CALL SITE HAD NO `push_receiver_argument`.
+                // It bound the receiver ambiently and never passed it, so under
+                // `ReceiverBinding::UniversalParameter` `#m()` was invoked with
+                // NOTHING in slot 0 — and the callee's own §15.4.4 brand check
+                // then read a null receiver and threw "Cannot read private
+                // member from an object whose class did not declare it" from
+                // INSIDE the method it was already inside. Returns 0 under the
+                // ambient binding, so this is inert there.
+                let recv_argc = self.push_receiver_argument(saved_js_this);
                 for arg in &arg_exprs {
                     self.compile_expr(arg)?;
                 }
-                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
+                self.emit_direct_callable_invoke(arg_exprs.len() as u8 + recv_argc);
                 let result_slot = self.define_local("__js_private_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.end_receiver_bind(saved_js_this);
@@ -8466,7 +8557,19 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
+                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+                        // Spreading them flat made this import's arity vary per call site,
+                        // which a WASM import cannot express: the writer types host imports
+                        // by an arity SCAN (max argc), so every shorter site under-supplied
+                        // and V8 reported it at the SHORT site, nowhere near the cause.
+                        let aline = self.line;
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            arg_slots.len() as u16,
+                            aline,
+                        );
+                        self.emit_host_call(invoke, 3);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.chunk().emit_else(line);
@@ -8499,7 +8602,19 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
+                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+                        // Spreading them flat made this import's arity vary per call site,
+                        // which a WASM import cannot express: the writer types host imports
+                        // by an arity SCAN (max argc), so every shorter site under-supplied
+                        // and V8 reported it at the SHORT site, nowhere near the cause.
+                        let aline = self.line;
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            arg_slots.len() as u16,
+                            aline,
+                        );
+                        self.emit_host_call(invoke, 3);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.chunk().emit_else(line);
@@ -8591,10 +8706,13 @@ impl Compiler {
                         let line = self.line;
                         self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
                         self.chunk().emit(0, line);
+                        // The receiver is the class; under `UniversalParameter`
+                        // it is argument 0. 0 under the ambient binding.
+                        let recv_argc = self.push_receiver_argument(saved_js_this);
                         for arg in &arg_exprs {
                             self.compile_expr(arg)?;
                         }
-                        self.emit_direct_callable_invoke(arg_exprs.len() as u8);
+                        self.emit_direct_callable_invoke(arg_exprs.len() as u8 + recv_argc);
                         let result_slot = self.define_local("__js_private_static_call_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.end_receiver_bind(saved_js_this);
@@ -8746,12 +8864,7 @@ impl Compiler {
                 // Gated by the declared scope alone — see the note above.
                 if arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("sort")
-                    && vybe_runtime::namespaces::scope_declares_member_arity(
-                        &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                        field,
-                        0,
-                        self.tree_fold(),
-                    )
+                    && self.tree_collection_declares(field, 0)
                 {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let line = self.line;
@@ -8992,7 +9105,19 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+                        // Spreading them flat made this import's arity vary per call site,
+                        // which a WASM import cannot express: the writer types host imports
+                        // by an arity SCAN (max argc), so every shorter site under-supplied
+                        // and V8 reported it at the SHORT site, nowhere near the cause.
+                        let aline = self.line;
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            arg_slots.len() as u16,
+                            aline,
+                        );
+                        self.emit_host_call(invoke, 3);
                     } else {
                         self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                     }
@@ -9177,12 +9302,7 @@ impl Compiler {
             // Gated by the declared scope alone — see the note above.
             if arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("sort")
-                && vybe_runtime::namespaces::scope_declares_member_arity(
-                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                    field,
-                    0,
-                    self.tree_fold(),
-                )
+                && self.tree_collection_declares(field, 0)
             {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let line = self.line;
@@ -9639,7 +9759,19 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+                        // Spreading them flat made this import's arity vary per call site,
+                        // which a WASM import cannot express: the writer types host imports
+                        // by an arity SCAN (max argc), so every shorter site under-supplied
+                        // and V8 reported it at the SHORT site, nowhere near the cause.
+                        let aline = self.line;
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            arg_slots.len() as u16,
+                            aline,
+                        );
+                        self.emit_host_call(invoke, 3);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.chunk().emit_else(line);
@@ -9661,7 +9793,19 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
+                        // Spreading them flat made this import's arity vary per call site,
+                        // which a WASM import cannot express: the writer types host imports
+                        // by an arity SCAN (max argc), so every shorter site under-supplied
+                        // and V8 reported it at the SHORT site, nowhere near the cause.
+                        let aline = self.line;
+                        common::collections::emit_array_new(
+                            &mut self.chunks,
+                            self.current,
+                            arg_slots.len() as u16,
+                            aline,
+                        );
+                        self.emit_host_call(invoke, 3);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.chunk().emit_else(line);
@@ -10068,10 +10212,35 @@ impl Compiler {
             }
 
             if !is_known_func {
-                let is_delegate_typed = self.lookup_var_type_hint(name).is_some_and(|type_hint| {
-                    Self::is_callable_type_hint(type_hint)
-                        || self.type_hint_is_delegate_like(type_hint)
-                });
+                // ⛔ THE MULTICAST LADDER PASSES NO RECEIVER, so it cannot be
+                // the lowering where a receiver is mandatory.
+                // `delegates::emit_invoke` distributes only the handler
+                // arguments to each handler — correct for a .NET multicast
+                // delegate, which has no `this` of its own — but under
+                // `ReceiverAbi::Parameter` argument 0 IS the receiver, so every
+                // declared parameter arrived one place early.
+                //
+                // It was reached in js because `type_hint_is_delegate_like` is
+                // a broad NEGATIVE filter (not a defined class, not a
+                // registered type, not a primitive name), which a `Function`
+                // hint passes. `const f = new Function("x","return x")` gives
+                // the variable that hint, so `f(7)` took this path while the
+                // identical function built by `Function(...)` — no hint, no
+                // delegate branch — took the ordinary receiver-carrying call
+                // and was correct. Same function, same call, opposite answers,
+                // switched by how it was CONSTRUCTED.
+                //
+                // Gated on the receiver ABI rather than on a language name or
+                // a new profile flag: the statement being made is exactly
+                // "this lowering does not implement the parameter receiver
+                // ABI", which is what `universal_receiver()` asks. The ambient
+                // languages that actually have multicast delegates (C#, VB)
+                // are unaffected.
+                let is_delegate_typed = !self.universal_receiver()
+                    && self.lookup_var_type_hint(name).is_some_and(|type_hint| {
+                        Self::is_callable_type_hint(type_hint)
+                            || self.type_hint_is_delegate_like(type_hint)
+                    });
                 if is_delegate_typed {
                     self.emit_var_get(name);
                     for arg in &arg_exprs {
@@ -10195,13 +10364,7 @@ impl Compiler {
                                 name,
                                 arg_exprs.len() as u8,
                             ) {
-                                let target = vybe_runtime::namespaces::lookup_type_instance_target(
-                                    &self.profile.namespaces.type_scopes,
-                                    &owner,
-                                    name,
-                                    arg_exprs.len() as u8,
-                                    self.tree_fold(),
-                                );
+                                let target = self.tree_instance_target(&owner, name, arg_exprs.len() as u8);
                                 if let Some(target) = target {
                                     if self.emit_self_ref() {
                                         for arg in &arg_exprs {
@@ -10913,22 +11076,44 @@ impl Compiler {
                 self.chunk().emit_end(line);
 
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
-                for a in &arg_exprs {
-                    self.compile_expr(a)?;
-                }
-                // Bind `this` = receiver for the call only. Stack is
-                // [callee, ..args, receiver]; GLOBAL_SET pops the receiver,
-                // leaving [callee, ..args] for CALL_REF.
+                // ⛔ THE RECEIVER GOES BEFORE THE ARGUMENTS, NOT AFTER.
                 //
-                // Which is why the push has to be gated: without an ambient
-                // receiver nothing emits the GLOBAL_SET, the receiver stays on
-                // the stack, and CALL_REF reads [callee, ..args, receiver] with
-                // everything shifted by one.
-                if saved_js_this.is_active() {
+                // Under the ambient binding the receiver was pushed LAST and
+                // the GLOBAL_SET popped it again, leaving [callee, ..args] for
+                // CALL_REF — the ordering never mattered because the value did
+                // not survive to the call. Under `UniversalParameter` it does:
+                // the receiver IS argument 0, so pushing it after the arguments
+                // put it last and every declared parameter arrived one place
+                // early. Measured: `fns[0](5)` returned NaN because the arrow's
+                // `x` bound the receiver.
+                // ⛔ `push_receiver_argument` READS THE PARKED SLOT — SOMETHING
+                // HAS TO PARK IT. Under `ReceiverAbi::Parameter`
+                // `begin_receiver_bind` only reserves the slot; the bind below
+                // is gated on `recv_argc == 0`, so it fires under the AMBIENT
+                // protocol and never here. The slot therefore went to the call
+                // uninitialised and `this` inside the callee was null:
+                // `t["m"]()` threw on `this.v` while `t.m()` was fine, and
+                // `target[m](...args)` — the delegation idiom — could not reach
+                // a private field.
+                //
+                // Parked BEFORE the arguments are compiled, unlike the ambient
+                // arm: a local slot is invisible to them, so §13.3.7 (the key
+                // and the arguments see the CALLER's `this`) is unaffected.
+                // Writing the ambient GLOBAL this early would break it, which
+                // is why that arm stays where it is.
+                if saved_js_this.is_active() && self.universal_receiver() {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.bind_receiver_from_stack(saved_js_this);
                 }
-                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
+                let recv_argc = self.push_receiver_argument(saved_js_this);
+                for a in &arg_exprs {
+                    self.compile_expr(a)?;
+                }
+                if recv_argc == 0 && saved_js_this.is_active() {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.bind_receiver_from_stack(saved_js_this);
+                }
+                self.emit_direct_callable_invoke(arg_exprs.len() as u8 + recv_argc);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.end_receiver_bind(saved_js_this);
@@ -11066,6 +11251,19 @@ impl Compiler {
         {
             let line = self.line;
             self.emit_u16(Op::LOCAL_GET, invoke_matched);
+            // ⛔ THE FLAG IS BOXED — `emit_const(Value::I32(0))` above stores a
+            // VALUE, and every local in the wasm ABI is `externref`. `if` takes
+            // an i32 condition, so branching on it raw is
+            // `type mismatch: expected i32, found externref` and the whole
+            // module is invalid. Our VM never caught it: it applies truthiness
+            // at `if` and does not check the condition's type.
+            //
+            // `runtime_index_matched` four lines above already unboxes (with
+            // `I32_EQZ`, because it wants the negation); this is the same flag
+            // pattern wanting the positive, so it takes ECMA §7.1.2 ToBoolean
+            // — the same `emit_dyn_to_bool` the rest-arity dispatch uses before
+            // its own `emit_if`.
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, invoke_receiver);
             self.emit_u16(Op::LOCAL_SET, receiver_slot);

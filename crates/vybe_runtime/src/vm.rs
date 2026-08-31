@@ -116,7 +116,6 @@ pub struct HostContext<'a> {
     /// the CALL: a JS call from bytecode under `ReceiverAbi::Parameter`
     /// carries a receiver, and host plumbing invoking the same function with
     /// arguments it built itself does not.
-    pub(crate) call_receiver_argc: usize,
     /// Raw pointer to VM.pending_exit_code — the status `wasi:cli/exit` was
     /// given. Null when no VM is attached (`HostContext::empty()`).
     exit_code_slot: *mut i32,
@@ -149,6 +148,22 @@ pub struct HostContext<'a> {
     /// `defineProperty` `set(v)` are the same wasm signature and opposite
     /// conventions. Declarations are resolved at load, before any host call, so
     /// a read-only view is enough.
+    /// The VM's `TypeRegistry`, for reading a typed object's DECLARED FIELD
+    /// NAMES.
+    ///
+    /// ⛔ `[[OwnPropertyKeys]]` COULD NOT SEE A TYPED OBJECT'S FIELDS. The
+    /// host's key walk reads `ObjectKind` and the `properties` map, so a class
+    /// whose fields live in indexed GC storage enumerated as EMPTY —
+    /// `Object.keys`, `getOwnPropertyNames`, `in`, `for…in` and
+    /// `JSON.stringify` all missed them, while `o.a` read back fine. That is
+    /// why `instance_fields_are_own_properties` has to WITHHOLD indexed
+    /// storage from js today (`classes.rs:2548`): the optimization is correct
+    /// and unobservable at the same time.
+    ///
+    /// A raw slot, not a `&VM` — same contract as the neighbours above: valid
+    /// for the duration of one host call, read-only, and null when no VM is
+    /// attached (`HostContext::empty()`).
+    type_registry_slot: *const crate::typedef::TypeRegistry,
     call_tag_registry_slot: *const HashMap<String, u32>,
     func_call_tags_slot: *const HashMap<usize, Vec<u32>>,
     /// Raw pointer to the chunk table, so the receiver query can fall back to
@@ -168,6 +183,39 @@ impl<'a> HostContext<'a> {
     /// the receiver?" — asked rather than inferred. A func that declares
     /// nothing answers `false`, which is the ambient-receiver case: its
     /// receiver comes from the call, not from an argument.
+    /// The DECLARED fields of a typed object's class as `(name, enumerable)`,
+    /// in declaration order — the half of `[[OwnPropertyKeys]]` that lives in
+    /// the type rather than in the object.
+    ///
+    /// ⚠ ENUMERABILITY IS RETURNED, NOT APPLIED. `Object.keys` and `for…in`
+    /// take only the enumerable ones (§20.1.2.17); `getOwnPropertyNames` takes
+    /// all of them (§20.1.2.10). Filtering here would make one of the two
+    /// wrong, and the descriptor is the type's to state — `field_descriptors`
+    /// already carries it (WASM Annotations, `@ecma262` namespace).
+    ///
+    /// Empty for `type_id == 0` (an untyped/dynamic object, whose keys are all
+    /// in the `properties` map already) and when no VM is attached. Order is
+    /// the type's own field order, which is the order ECMA-262 §10.2.11
+    /// created them in, so a caller can concatenate without sorting.
+    pub fn declared_fields(&self, type_id: usize) -> Vec<(String, bool)> {
+        if type_id == 0 || self.type_registry_slot.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: valid for the duration of this host call — same contract as
+        // every other slot on this struct.
+        let registry = unsafe { &*self.type_registry_slot };
+        let Some(t) = registry.types.get(type_id) else {
+            return Vec::new();
+        };
+        t.fields()
+            .into_iter()
+            .map(|name| {
+                let enumerable = t.get_field_descriptor(&name).enumerable;
+                (name, enumerable)
+            })
+            .collect()
+    }
+
     pub fn func_handles_call_tag(&self, func: &Value, tag: &str) -> bool {
         if self.call_tag_registry_slot.is_null() || self.func_call_tags_slot.is_null() {
             return false;
@@ -204,35 +252,40 @@ impl<'a> HostContext<'a> {
         // unrelated reasons, and treating that as receiver-first hands a
         // one-parameter setter the receiver as its VALUE. Require the arity to
         // agree with a receiver-first setter as well.
-        // ⛔ `arity >= 2` IS AN ABI-DEPENDENT HEURISTIC. It was written when an
-        // `is_method` chunk had NO receiver parameter, so "arity of at least 2"
-        // meant "more parameters than a plain one-value setter" and excluded
-        // the accessor this guard exists to exclude. Under
-        // `ReceiverAbi::Parameter` that same setter GAINS a real slot-0
-        // receiver, its arity goes 1 → 2, and the test starts admitting
-        // precisely the case it was added to reject. Compare against the
-        // receiver-inclusive threshold instead, so the question stays "does it
-        // take a receiver AND a value" under either ABI.
-        let receiver_params = u8::from(self.module_uses_host_receiver_channel());
-        chunks
-            .get(chunk_index)
-            .is_some_and(|c| c.is_method && c.arity >= 2 + receiver_params)
+        // ⛔ `arity >= 2` IS A GUESS, AND UNDER `ReceiverAbi::Parameter` THERE
+        // IS NO NEED TO GUESS. The heuristic was written when an `is_method`
+        // chunk had NO receiver parameter, so "at least two parameters" stood
+        // in for "receiver-first" and excluded a plain one-value setter. Under
+        // `Parameter` the chunk STATES the answer in `takes_receiver`, so ask
+        // it — a declaration always beats an arity inference.
+        //
+        // ⛔ And do NOT raise the threshold to 3 there instead: a receiver-first
+        // setter is `(receiver, value)`, arity 2, so `>= 3` rejects exactly the
+        // accessor this must accept. Measured — `defineProperty(o,"v",{set})`
+        // then `o.v = 9` wrote nowhere and `this._x` stayed undefined.
+        let chunk = chunks.get(chunk_index);
+        if self.module_uses_host_receiver_channel() {
+            return chunk.is_some_and(|c| c.takes_receiver);
+        }
+        chunk.is_some_and(|c| c.is_method && c.arity >= 2)
     }
 
-    /// How many leading argument slots the RECEIVER occupies in a call.
+
+    /// Does THIS MODULE pass receivers as parameters?
     ///
-    /// 1 under [`crate::chunk::ReceiverAbi::Parameter`], where ECMA-262
-    /// §10.2.1 `[[Call]](thisArgument, argumentsList)` is taken literally and
-    /// EVERY call passes a receiver — including one that lands on a host
-    /// function, which is why host functions have to know about it. 0 under
-    /// `Ambient`, where the receiver travels in a module global instead.
+    /// ⛔ NOT the same question as [`Self::receiver_argc`], and mixing them up
+    /// is measurable. `receiver_argc` asks "did the call that reached ME carry
+    /// a receiver slot" — a property of one invocation, and 0 whenever host
+    /// plumbing built the arguments. This asks "will a callee I invoke expect
+    /// one", which is a property of the module and true regardless of how the
+    /// current host function was itself reached.
     ///
-    /// ⛔ The receiver slot is always PRESENT under `Parameter`, sometimes
-    /// holding `undefined` (§10.2.1.1 OrdinaryCallBindThis, for a non-object
-    /// thisArgument). "Absent" and "undefined" must not be the same thing, or
-    /// the uniform rule is back to being a special case.
-    pub fn receiver_argc(&self) -> usize {
-        self.call_receiver_argc
+    /// Using `receiver_argc` for the second question left an object-literal
+    /// setter being handed the receiver TWICE — once explicitly by the call
+    /// site and once prepended by the VM — so `this` was `undefined` and the
+    /// value parameter got the receiver.
+    pub fn receiver_is_parameter(&self) -> bool {
+        self.module_receiver_abi == crate::chunk::ReceiverAbi::Parameter
     }
 
     /// The USER arguments of a host call: the leading `captures` bound values
@@ -243,9 +296,148 @@ impl<'a> HostContext<'a> {
     /// it built them — while the receiver slot is the module's ABI, which the
     /// function cannot know. Asking here keeps the second half in one place
     /// rather than in every settler's index arithmetic.
+    /// Invoke `target` with an EXPLICIT receiver, exactly once.
+    ///
+    /// ⛔ THE PRIMITIVE HOST CODE WAS MISSING. `invoke` prepends a receiver it
+    /// INFERS, which is right when the host has none — a `map` callback, a
+    /// microtask — and wrong wherever the host knows it. An accessor knows the
+    /// object it is reading; passing it through the argument list on top of the
+    /// inferred one handed the callee TWO, so `this` took the inferred value
+    /// and the first declared parameter took the real receiver.
+    ///
+    /// Works under BOTH bindings without a branch at the call site: setting the
+    /// receiver is what the ambient binding needs, and under `Parameter` it is
+    /// also the channel `invoke` prepends FROM — so the callee is handed
+    /// `[receiver, args…]` either way.
+    pub fn invoke_with_receiver(
+        &mut self,
+        target: &Value,
+        receiver: Value,
+        args: &[Value],
+    ) -> Value {
+        // ⛔ A HOST callee reads its receiver as ARGUMENT 0 and never consults
+        // the ambient channel — `ecma:array.map` opens `array_of(args, 0)`.
+        // Setting the receiver and invoking would hand a host setter only its
+        // value: measured as `u.pathname = "/z"` on a `URL` silently doing
+        // nothing while the getters were fine. A BYTECODE callee is the
+        // opposite: `invoke` prepends from the channel, so setting it is
+        // exactly right and prepending here as well would give it two.
+        // ⛔ A BOUND WRAPPER IS A HOST FUNCTION THAT MUST *NOT* BE PREPENDED
+        // TO. Its `__bound_args` captures are prepended by the dispatch and it
+        // reads them at fixed offsets, so an extra leading value shifts them —
+        // and §20.2.3.2 says a bound function IGNORES the thisArg of a later
+        // call anyway, because it already closed over one. Measured:
+        // `f.bind(null, 1).apply(null, [2])` called `f(1, null)` instead of
+        // `f(1, 2)`, the prepended receiver landing between the partial and the
+        // real argument.
+        let host_callee = Self::is_unbound_host_fn(target);
+        // ⛔ DO NOT PREPEND HERE. The receiver slot is filled in exactly ONE
+        // place — `call_value_inner`, which puts it at argument 0 of every host
+        // callee — so prepending again hands the callee two and shifts every
+        // real argument: measured, `u.pathname = "/z"` on a `URL` silently did
+        // nothing. This function's job is to say WHICH receiver, not to place
+        // it; binding the channel is the whole of it, for host and bytecode
+        // callees alike.
+        let previous = self.current_js_this();
+        self.set_js_this(receiver.clone());
+        // ⛔ WHO FILLS THE SLOT DEPENDS ON THE ABI, AND ONLY ON THE ABI.
+        //
+        // Under `ReceiverAbi::Parameter` `call_value_inner` puts the receiver
+        // at argument 0 of EVERY host callee, so prepending here as well hands
+        // it two and shifts every real argument (`u.pathname = "/z"` on a
+        // `URL` silently did nothing).
+        //
+        // Under the AMBIENT ABI that site pushes nothing at all, so this is
+        // the only thing that places a receiver for a host callee — removing
+        // it dropped the receiver for every ambient language and cost 156
+        // csharp regressions, an expression-bodied property answering `0`.
+        //
+        // This is a placement decision made by the CALLER from the module's
+        // ABI, which is uniform for the whole module. It is NOT the per-call
+        // arity flag that was removed: under either ABI a host callee's
+        // argument list has one shape, and the callee is never asked which
+        // kind of call it was in.
+        let placed = self.place_receiver(host_callee, receiver, args);
+        let out = match &placed {
+            Some(all) => self.invoke(target, all),
+            None => self.invoke(target, args),
+        };
+        self.set_js_this(previous);
+        out
+    }
+
+    /// Like [`Self::invoke_with_receiver`], but surfaces a thrown value
+    /// instead of swallowing it.
+    ///
+    /// The receiver placement is [`Self::place_receiver`] in both, so the two
+    /// entry points can never disagree about who fills the slot.
+    pub fn try_invoke_with_receiver(
+        &mut self,
+        target: &Value,
+        receiver: Value,
+        args: &[Value],
+    ) -> Result<Value, Value> {
+        let host_callee = Self::is_unbound_host_fn(target);
+        let previous = self.current_js_this();
+        self.set_js_this(receiver.clone());
+        let placed = self.place_receiver(host_callee, receiver, args);
+        let out = match &placed {
+            Some(all) => self.try_invoke(target, all),
+            None => self.try_invoke(target, args),
+        };
+        self.set_js_this(previous);
+        out
+    }
+
+    /// A host callee that is not a bound wrapper — the only kind whose
+    /// receiver slot the AMBIENT ABI leaves for the caller to fill.
+    fn is_unbound_host_fn(target: &Value) -> bool {
+        matches!(
+            target,
+            Value::Object(o)
+                if matches!(
+                    o.lock().map(|g| matches!(g.kind, crate::value::ObjectKind::HostFunction(_))
+                        && !g.properties.contains_key("__bound_args")),
+                    Ok(true)
+                )
+        )
+    }
+
+    /// `Some(args)` when the CALLER must place the receiver, `None` when the
+    /// VM already does.
+    ///
+    /// Under `ReceiverAbi::Parameter` the answer is always `None`:
+    /// `call_value_inner` puts the receiver at argument 0 of every host callee,
+    /// so one signature means one thing. Under the AMBIENT ABI that site pushes
+    /// nothing, and only a host callee that declares a receiver gets one —
+    /// handing it to the rest shifts their arguments.
+    fn place_receiver(
+        &self,
+        host_callee: bool,
+        receiver: Value,
+        args: &[Value],
+    ) -> Option<Vec<Value>> {
+        if !host_callee || self.receiver_is_parameter() {
+            return None;
+        }
+        let mut all = Vec::with_capacity(args.len() + 1);
+        all.push(receiver);
+        all.extend_from_slice(args);
+        Some(all)
+    }
+
+    /// Capture `i` of a BOUND host function (`__bound_args`).
+    ///
+    /// The captures sit after the receiver slot, which the VM places first for
+    /// a host callee under [`crate::chunk::ReceiverAbi::Parameter`]. Reading
+    /// them at a fixed index is correct only under the ambient binding, and
+    /// silently reads the receiver as capture 0 otherwise.
+    pub fn capture(&self, args: &[Value], i: usize) -> Value {
+        args.get(i).cloned().unwrap_or(Value::Undefined)
+    }
+
     pub fn user_args<'v>(&self, args: &'v [Value], captures: usize) -> &'v [Value] {
-        let base = (captures + self.receiver_argc()).min(args.len());
-        &args[base..]
+        &args[captures.min(args.len())..]
     }
 
     /// Call a VM function reference from host code.
@@ -719,7 +911,6 @@ impl<'a> HostContext<'a> {
             last_exception_slot: std::ptr::null_mut(),
             host_receiver_slot: std::ptr::null_mut(),
             module_receiver_abi: crate::chunk::ReceiverAbi::Ambient,
-            call_receiver_argc: 0,
             exit_slot: std::ptr::null_mut(),
             exit_code_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
@@ -727,6 +918,7 @@ impl<'a> HostContext<'a> {
             stack_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null_mut(),
             shared_memory_slot: std::ptr::null(),
+            type_registry_slot: std::ptr::null(),
             call_tag_registry_slot: std::ptr::null(),
             func_call_tags_slot: std::ptr::null(),
             chunks_slot: std::ptr::null(),
@@ -1237,6 +1429,21 @@ pub struct HostFnDecl {
     pub sig: Option<crate::component::FuncSig>,
     /// The resource this function is a member of, when it is one.
     pub resource: Option<ResourceBinding>,
+    /// Does this function's type have a RECEIVER as parameter 0?
+    ///
+    /// ⛔ A PROPERTY OF THE CALLEE'S TYPE, NEVER OF THE CALL. `[[Call]]`
+    /// (§10.2.1) passes a thisArgument to every function, but a host builtin
+    /// either declares a slot for it (`ecma:array.join` is
+    /// `(receiver, separator)` — `array_of(args, 0)` opens the receiver) or has
+    /// no receiver at all (`encodeURIComponent(s)`). Asking the CALL instead
+    /// gave one function two shapes — one argument when called directly, a
+    /// receiver and then one when handed to `map` — which is what
+    /// `receiver_argc`, `user_args` and `capture` existed to paper over.
+    ///
+    /// Default `true`: the overwhelming majority of registrations are methods
+    /// and have always read their receiver at argument 0, so a registration
+    /// that says nothing keeps exactly the shape it had.
+    pub takes_receiver: bool,
 }
 
 impl HostFnDecl {
@@ -1252,7 +1459,15 @@ impl HostFnDecl {
             call,
             sig: None,
             resource: None,
+            takes_receiver: true,
         }
+    }
+
+    /// Declare that this function's type has NO receiver parameter — a free
+    /// function, not a method. See [`HostFnDecl::takes_receiver`].
+    pub fn without_receiver(mut self) -> Self {
+        self.takes_receiver = false;
+        self
     }
 
     pub fn with_sig(mut self, sig: crate::component::FuncSig) -> Self {
@@ -1291,6 +1506,9 @@ pub struct VM {
     /// itself makes is ordinary bytecode and must NOT inherit "this came from
     /// host plumbing".
     pub(crate) host_originated_call: bool,
+    /// Set only by `invoke_with_receiver`: the caller has already placed the
+    /// receiver at argument 0, so `invoke_callback` must not add another.
+    pub(crate) suppress_receiver_prepend: bool,
     pub chunks: Vec<Chunk>,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) stack: Vec<Value>,
@@ -1312,6 +1530,10 @@ pub struct VM {
     pub global_index: HashMap<String, u32>,
     pub(crate) open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     pub(crate) host_fns: Vec<HostFn>,
+    /// Parallel to `host_fns`: does that function's TYPE have a receiver as
+    /// parameter 0? See [`HostFnDecl::takes_receiver`]. Defaults to `true`, so
+    /// a plain `register_host_fn` keeps the shape it has always had.
+    pub(crate) host_fn_takes_receiver: Vec<bool>,
     /// Registry: (module, name) → index into host_fns.
     ///
     /// Flat cache of module exports; lookup-optimized shadow of
@@ -1879,6 +2101,7 @@ impl VM {
         VM {
             host_receiver: Value::Undefined,
             host_originated_call: false,
+            suppress_receiver_prepend: false,
             chunks: Vec::new(),
             frames: Vec::new(),
             stack: Vec::with_capacity(256),
@@ -1891,6 +2114,7 @@ impl VM {
             },
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
+            host_fn_takes_receiver: Vec::new(),
             host_registry: HashMap::new(),
             modules: HashMap::new(),
             import_table: Vec::<ImportTarget>::new(),
@@ -2953,6 +3177,7 @@ impl VM {
             call,
             sig,
             resource,
+            takes_receiver,
         } = decl;
         if let Some(sig) = sig {
             // PROCESS-GLOBAL, not a VM field: the consumer is the COMPILER,
@@ -2962,6 +3187,39 @@ impl VM {
             crate::declare_host_signature(&module, &name, sig, resource);
         }
         self.register_host_fn(&module, &name, call);
+        if let Some(idx) = self.host_registry.get(&(module, name)).copied() {
+            self.host_fn_takes_receiver[idx] = takes_receiver;
+        }
+    }
+
+    /// Register a host function whose TYPE HAS NO RECEIVER — a free function
+    /// (`encodeURIComponent(s)`, `Number(v)`), not a method spelled as a call.
+    ///
+    /// The receiver slot is then never filled for it, on either call path, so
+    /// it has ONE shape: called directly and handed to `map` look identical to
+    /// the callee. See [`HostFnDecl::takes_receiver`].
+    pub fn register_free_fn(
+        &mut self,
+        module: &str,
+        name: &str,
+        f: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+    ) {
+        self.register_host_fn(module, name, f);
+        if let Some(idx) = self
+            .host_registry
+            .get(&(module.to_string(), name.to_string()))
+            .copied()
+        {
+            self.host_fn_takes_receiver[idx] = false;
+        }
+    }
+
+    /// Does the host function at `idx` declare a receiver parameter?
+    ///
+    /// Unknown indices answer `true` — the historical shape — so a lookup that
+    /// races registration cannot silently drop a method's receiver.
+    pub(crate) fn host_fn_declares_receiver(&self, idx: usize) -> bool {
+        self.host_fn_takes_receiver.get(idx).copied().unwrap_or(true)
     }
 
     // ── Call tags (proposals/call-tags) ──────────────────────────────────
@@ -3101,6 +3359,7 @@ impl VM {
     ) {
         let idx = self.host_fns.len();
         self.host_fns.push(Arc::from(f));
+        self.host_fn_takes_receiver.push(true);
         self.host_registry
             .insert((module.to_string(), name.to_string()), idx);
         // Add to function table — func_table index == host_fns index for host functions
@@ -3274,9 +3533,28 @@ impl VM {
         let host_receiver_ptr = &mut self.host_receiver as *mut Value;
         // The module chunk's ABI, read BEFORE the raw borrows below — it
         // decides which receiver channel the two accessors use.
+        // ⛔ THE CALLING FRAME'S CHUNK, NOT `chunks[0]`. `chunks.first()` is ONE
+        // answer for the whole BUNDLE: the per-unit stamp writes every chunk of
+        // its own unit, so in a multi-language bundle chunk 0 belongs to
+        // whichever unit happens to be first. A dart, csharp or powershell
+        // frame then reported `ReceiverAbi::Parameter` because a js unit was
+        // bundled alongside, and every host-callee path that asks
+        // `receiver_is_parameter()` took the js branch — skipping the ambient
+        // prepend and dropping the receiver.
+        //
+        // Measured: dart `for (var c in "abc".split(""))` regressed 99 tests,
+        // csharp `a.SetEquals(b)` answered False, powershell `$s.ToUpper()`
+        // returned empty — three languages, one wrong question. Forcing the
+        // INVARIANT off fixed none of them, which is what finally pointed here:
+        // the invariant reads the calling frame (correct) while this read the
+        // bundle (wrong), so they disagreed about the same call.
+        //
+        // Same rule as `VM::module_receiver_abi`. With no frame the caller is
+        // host code, which keeps the previous default.
         let module_abi = self
-            .chunks
-            .first()
+            .frames
+            .last()
+            .and_then(|f| self.chunks.get(f.chunk_index))
             .map_or(crate::chunk::ReceiverAbi::Ambient, |c| {
                 c.module_receiver_abi
             });
@@ -3295,12 +3573,12 @@ impl VM {
             exit_code_slot: exit_code_ptr,
             host_receiver_slot: host_receiver_ptr,
             module_receiver_abi: module_abi,
-            call_receiver_argc: 0,
             globals_slot: globals_ptr,
             global_index_slot: global_index_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
             handle_table_slot: &mut self.handle_table as *mut crate::handle_table::HandleTable,
             shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
+            type_registry_slot: &self.type_registry as *const crate::typedef::TypeRegistry,
             call_tag_registry_slot: &self.call_tag_registry as *const HashMap<String, u32>,
             func_call_tags_slot: &self.func_call_tags as *const HashMap<usize, Vec<u32>>,
             chunks_slot: &self.chunks as *const Vec<crate::chunk::Chunk>,
@@ -3363,6 +3641,15 @@ impl VM {
     /// [`Self::module_receiver_abi`] does: in a multi-language bundle
     /// `chunks[0]` belongs to whichever unit happens to be first. With no frame
     /// the caller is host code, which keeps the existing behaviour.
+    /// Does the CALLING frame's language make declared instance fields own
+    /// properties? See [`crate::chunk::Chunk::module_instance_fields_are_own_properties`].
+    pub(crate) fn calling_module_fields_are_own_properties(&self) -> bool {
+        self.frames
+            .last()
+            .and_then(|f| self.chunks.get(f.chunk_index))
+            .is_some_and(|c| c.module_instance_fields_are_own_properties)
+    }
+
     pub(crate) fn calling_module_members_on_prototype(&self) -> bool {
         self.frames
             .last()
@@ -3418,6 +3705,59 @@ impl VM {
     ///
     /// Usage from a host function:
     ///   let result = vm.invoke_callback(&predicate, &[element]);
+    /// Invoke with an EXPLICIT receiver and suppress the automatic prepend.
+    ///
+    /// ⛔ THE MISSING PRIMITIVE. `invoke_callback` prepends a receiver it
+    /// infers, which is right when host code has none to give — a `map`
+    /// callback, a microtask. It is wrong wherever the host DOES know the
+    /// receiver: an accessor knows the object it is reading, and passing it
+    /// through the argument list on top of the inferred one handed the callee
+    /// TWO, so `this` became the inferred value and the first declared
+    /// parameter got the real receiver.
+    ///
+    /// Host code that knows the receiver calls this; host code that does not
+    /// calls `invoke_callback`. Under the ambient binding the receiver is bound
+    /// to the module global instead, exactly as before.
+    pub fn invoke_with_receiver(
+        &mut self,
+        func_ref: &Value,
+        receiver: Value,
+        args: &[Value],
+    ) -> Value {
+        if self.module_receiver_abi() != crate::chunk::ReceiverAbi::Parameter {
+            // ⛔ WRITE THE CHANNEL THE PREPEND ACTUALLY READS. Under the
+            // ambient ABI `invoke_callback` resolves the receiver it prepends
+            // from the `__js_this` GLOBAL, falling back to `host_receiver`
+            // only when no such global exists — so writing `host_receiver`
+            // unconditionally here left the global in force and the callee
+            // was handed whatever receiver happened to be bound last. Same
+            // selection as the read at the prepend site, or the write and the
+            // read disagree.
+            if self.global("__js_this").is_some() {
+                let previous = self.global("__js_this").cloned().unwrap_or(Value::Undefined);
+                self.set_global("__js_this", receiver);
+                let out = self.invoke_callback(func_ref, args);
+                self.set_global("__js_this", previous);
+                return out;
+            }
+            let previous = self.host_receiver.clone();
+            self.host_receiver = receiver;
+            let out = self.invoke_callback(func_ref, args);
+            self.host_receiver = previous;
+            return out;
+        }
+        // Under `Parameter` the receiver IS argument 0. Hand it over directly
+        // and let `invoke_callback` add nothing: it only prepends for a callee
+        // that declares one, and this callee has just been given it.
+        let saved = std::mem::replace(&mut self.suppress_receiver_prepend, true);
+        let mut all = Vec::with_capacity(args.len() + 1);
+        all.push(receiver);
+        all.extend_from_slice(args);
+        let out = self.invoke_callback(func_ref, &all);
+        self.suppress_receiver_prepend = saved;
+        out
+    }
+
     pub fn invoke_callback(&mut self, func_ref: &Value, args: &[Value]) -> Value {
         let saved_frame_depth = self.frames.len();
         // Save the stack height so we can restore it after the callback returns,
@@ -3450,7 +3790,9 @@ impl VM {
         // 6 → 141. Every internal settler had its arguments shifted.
         // `call_value_inner` tells the host function which of the two it was,
         // via `HostContext::call_receiver_argc`.
-        let receiver_argc = usize::from(self.callee_takes_receiver(func_ref));
+        let receiver_argc = usize::from(
+            !self.suppress_receiver_prepend && self.callee_takes_receiver(func_ref),
+        );
         if receiver_argc == 1 {
             // WHICH receiver — not a hard-coded `undefined`.
             //
@@ -3469,12 +3811,28 @@ impl VM {
             // where the host holds a receiver and the callee declares a
             // parameter for it. An unset slot reads as null, which becomes the
             // `undefined` thisArgument §10.2.1.1 gives an ordinary call.
-            let this_arg = match self.global("__js_this") {
-                Some(Value::Null) | None => match &self.host_receiver {
-                    Value::Null => Value::Undefined,
-                    other => other.clone(),
-                },
-                Some(other) => other.clone(),
+            // ⛔ SAME CHANNEL SELECTION AS `set_js_this`, OR THE WRITE AND
+            // THE READ DISAGREE. Under `Parameter` the host writes
+            // `VM::host_receiver`, so consulting the `__js_this` global FIRST
+            // picked up a stale value whenever that global existed for any
+            // other reason — measured as an object-literal
+            // `set v(x){ this._v = x }` assigning into the wrong object while
+            // the getter half of the same accessor worked.
+            let this_arg = if self.module_receiver_abi()
+                == crate::chunk::ReceiverAbi::Parameter
+            {
+                // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
+                // thisArgument through UNCHANGED in strict mode, so
+                // `f.call(null)` must see `this === null`. `host_receiver`
+                // already defaults to `Undefined`, so a `Null` here can only
+                // be one someone set deliberately — collapsing it lost exactly
+                // the distinction the spec draws.
+                self.host_receiver.clone()
+            } else {
+                match self.global("__js_this") {
+                    None => self.host_receiver.clone(),
+                    Some(other) => other.clone(),
+                }
             };
             self.stack.push(this_arg);
         }
@@ -4151,12 +4509,28 @@ impl VM {
         let receiver_argc = usize::from(self.callee_takes_receiver(callee));
         self.push(callee.clone())?;
         if receiver_argc == 1 {
-            let this_arg = match self.global("__js_this") {
-                Some(Value::Null) | None => match &self.host_receiver {
-                    Value::Null => Value::Undefined,
-                    other => other.clone(),
-                },
-                Some(other) => other.clone(),
+            // ⛔ SAME CHANNEL SELECTION AS `set_js_this`, OR THE WRITE AND
+            // THE READ DISAGREE. Under `Parameter` the host writes
+            // `VM::host_receiver`, so consulting the `__js_this` global FIRST
+            // picked up a stale value whenever that global existed for any
+            // other reason — measured as an object-literal
+            // `set v(x){ this._v = x }` assigning into the wrong object while
+            // the getter half of the same accessor worked.
+            let this_arg = if self.module_receiver_abi()
+                == crate::chunk::ReceiverAbi::Parameter
+            {
+                // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
+                // thisArgument through UNCHANGED in strict mode, so
+                // `f.call(null)` must see `this === null`. `host_receiver`
+                // already defaults to `Undefined`, so a `Null` here can only
+                // be one someone set deliberately — collapsing it lost exactly
+                // the distinction the spec draws.
+                self.host_receiver.clone()
+            } else {
+                match self.global("__js_this") {
+                    None => self.host_receiver.clone(),
+                    Some(other) => other.clone(),
+                }
             };
             self.push(this_arg)?;
         }
@@ -4180,7 +4554,19 @@ impl VM {
 
     pub(crate) fn push(&mut self, value: Value) -> Result<(), VMError> {
         if self.stack.len() >= MAX_STACK {
-            return Err(VMError::new("Stack overflow"));
+            // ⛔ `trap: ` IS LOAD-BEARING, NOT DECORATION. `VMError::is_trap`
+            // classifies solely on that prefix, and only a message carrying it
+            // is offered to a handler — so a bare "Stack overflow" escaped
+            // UNCAUGHT and killed the run. The spec says exhausting the call
+            // stack traps, and `(assert_exhaustion (invoke "runaway")
+            // "call stack exhausted")` asserts exactly that it is catchable.
+            // Even `assert_trap` quoting our own old wording could not catch
+            // it, which is how the prefix rather than the text was identified
+            // as the defect. Same lesson `Op::REF_CAST` records one file over.
+            //
+            // The wording is the reference interpreter's, so the fixture's
+            // expected message matches as well.
+            return Err(VMError::new("trap: call stack exhausted"));
         }
         self.stack.push(value);
         Ok(())

@@ -127,3 +127,206 @@ pub fn emit_reinterpret(chunk: &mut Chunk, to: NumericRepr, line: u32) {
 pub fn shift_needs_guard(policy: ShiftOverflow) -> bool {
     policy == ShiftOverflow::Zero
 }
+
+// ── Elementwise bit operations over a boolean ARRAY ────────────────────────
+//
+// A bit set is a boolean sequence, and combining two of them elementwise is the
+// same operation the scalar helpers above perform on one word: .NET's
+// `BitArray`, Java's `BitSet`, Python's `bitarray`, C++'s `vector<bool>`.
+//
+// The operators mutate the receiver and return it, which is what those APIs
+// document and what lets calls chain.
+
+use crate::primitives::collections::emit_import_call as bits_import_call;
+
+/// The combining instruction for one elementwise pass, or `None` to negate.
+fn emit_elementwise(chunks: &mut [Chunk], current: usize, op: Option<Op>, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let me = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+
+    if op.is_some() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, other, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, me, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, me, line);
+    bits_import_call(chunks, current, "ecma:array", "length", 1, line);
+    // `| 0` is the narrowing every i32 site in this file uses: the `I32_*`
+    // instructions coerce their operands dynamically.
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    let done = chunks[current].emit_block(line);
+    let (again, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, me, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, me, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    bits_import_call(chunks, current, "ecma:array", "get", 2, line);
+    bits_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
+    match op {
+        Some(instr) => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, other, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+            bits_import_call(chunks, current, "ecma:array", "get", 2, line);
+            bits_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
+            chunks[current].emit_op(instr, line);
+        }
+        None => chunks[current].emit_op(Op::I32_EQZ, line),
+    }
+    // A real boolean, not the i32: under `materialize_bool_results` an i32 1
+    // does not compare equal to the language's `true`.
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+
+    bits_import_call(chunks, current, "ecma:array", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, me, line);
+}
+
+/// Elementwise AND, in place. Stack: `[a, b]` → `[a]`.
+pub fn emit_array_and(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_elementwise(chunks, current, Some(Op::I32_AND), line);
+}
+
+/// Elementwise OR, in place. Stack: `[a, b]` → `[a]`.
+pub fn emit_array_or(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_elementwise(chunks, current, Some(Op::I32_OR), line);
+}
+
+/// Elementwise XOR, in place. Stack: `[a, b]` → `[a]`.
+pub fn emit_array_xor(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_elementwise(chunks, current, Some(Op::I32_XOR), line);
+}
+
+/// Elementwise NOT, in place. Stack: `[a]` → `[a]`.
+pub fn emit_array_not(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_elementwise(chunks, current, None, line);
+}
+
+/// Position of the highest set bit — `31 - clz` in the 32-bit lane.
+///
+/// An integer operation, not a floating-point logarithm: `log2(64)` is exactly
+/// 6 where `ln(64)/ln(2)` can land a fraction below it.
+///
+/// Stack: `[x]` → `[n]`.
+pub fn emit_log2(chunks: &mut [Chunk], current: usize, line: u32) {
+    let tmp = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_CLZ, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tmp, line);
+    chunk.emit_i32_const(31, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
+    chunk.emit_op(Op::I32_SUB, line);
+}
+
+/// Whether exactly one bit is set. Zero is NOT a power of two, which the
+/// `x & (x - 1)` test alone would report as one.
+///
+/// Stack: `[x]` → `[bool]`.
+pub fn emit_is_pow2(chunks: &mut [Chunk], current: usize, line: u32) {
+    let x = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_end(line);
+}
+
+/// The smallest power of two at or above `x`.
+///
+/// 0 and 1 are returned unchanged: 0 has no power of two at or above it that
+/// fits the lane, and both would otherwise shift by the lane's full 32, which
+/// wasm takes modulo the width and turns into a shift of zero.
+///
+/// Stack: `[x]` → `[n]`.
+pub fn emit_round_up_pow2(chunks: &mut [Chunk], current: usize, line: u32) {
+    let x = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_LE_S, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_i32_const(32, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_op(Op::I32_CLZ, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_op(Op::I32_SHL, line);
+    chunk.emit_end(line);
+}
+
+/// Reinterpret the 32-bit lane's signed result as unsigned.
+///
+/// The lane's instructions are signed, so a value with the high bit set comes
+/// back negative. Languages whose bit types are unsigned — .NET's `uint`,
+/// Java's `Integer.toUnsignedLong`, JS `>>> 0` — need the other reading, which
+/// is what `f64.convert_i32_u` performs.
+///
+/// Stack: `[i32]` → `[n]`.
+pub fn emit_as_unsigned32(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
+}
+
+/// 32-bit rotate with an UNSIGNED result. Stack: `[value, count]` → `[n]`.
+pub fn emit_rotl32_unsigned(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rotate(&mut chunks[current], BitLane::W32, true, line);
+    emit_as_unsigned32(&mut chunks[current], line);
+}
+
+/// 32-bit rotate right with an UNSIGNED result. Stack: `[value, count]` → `[n]`.
+pub fn emit_rotr32_unsigned(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rotate(&mut chunks[current], BitLane::W32, false, line);
+    emit_as_unsigned32(&mut chunks[current], line);
+}

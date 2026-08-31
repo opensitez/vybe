@@ -701,6 +701,9 @@ impl crate::Compiler {
     /// Read a slot, leaving the value on the stack.
     pub(crate) fn class_get(&mut self, obj: ObjSource, slot: &ClassSlot) {
         let line = self.line;
+        if self.emit_guarded_indexed_get(obj, slot, Dest::Stack, line) {
+            return;
+        }
         let slot = self.resolve_slot(slot);
         emit_class_get(&mut self.chunks[self.current], obj, &slot, Dest::Stack, line);
     }
@@ -708,6 +711,9 @@ impl crate::Compiler {
     /// Read a slot into a local.
     pub(crate) fn class_get_to(&mut self, obj: ObjSource, slot: &ClassSlot, dest: u16) {
         let line = self.line;
+        if self.emit_guarded_indexed_get(obj, slot, Dest::Local(dest), line) {
+            return;
+        }
         let slot = self.resolve_slot(slot);
         emit_class_get(
             &mut self.chunks[self.current],
@@ -716,6 +722,72 @@ impl crate::Compiler {
             Dest::Local(dest),
             line,
         );
+    }
+
+    /// An indexed READ, guarded by `ref.test` against the declaring class.
+    ///
+    /// ⛔ A DECLARED TYPE IS NOT A GUARANTEE ABOUT THE RUNTIME OBJECT, and an
+    /// unguarded `struct.get <typeidx>` on something that is not that type
+    /// TRAPS rather than answering `undefined`. `seam3_indexable` rules out
+    /// subclassing (`!has_parent`) and nothing else — not a `with`-expression
+    /// copy built by a helper, not a platform value, not `null`. Measured: 11
+    /// csharp tests, `trap: struct.get field index out of range` and
+    /// `trap: struct.get on a non-struct`.
+    ///
+    /// The WRITE side needs no guard: it runs inside the constructor, where the
+    /// receiver is `this` and therefore exact and non-null.
+    ///
+    /// `ref.test` is the spec instruction for exactly this question, so the
+    /// fast path stays a real `struct.get` and the miss falls back to the
+    /// string key the read would have used anyway.
+    ///
+    /// Returns whether it emitted; `false` means the caller takes the ordinary
+    /// path.
+    fn emit_guarded_indexed_get(
+        &mut self,
+        obj: ObjSource,
+        slot: &ClassSlot,
+        dest: Dest,
+        line: u32,
+    ) -> bool {
+        let ClassSlot::InstanceField { class: Some(class), field } = slot else {
+            return false;
+        };
+        let ResolvedSlot::Indexed { typeidx, field: fieldidx } = self.resolve_slot(slot) else {
+            return false;
+        };
+        let class = class.clone();
+        // The key this read would have used without indexing — the SAME answer
+        // `storage_key` gives, so the miss path is byte-for-byte the old one.
+        let fallback = self.resolve_slot_interned(&ClassSlot::internal(
+            self.js_member_storage_name_for_class(&class, field),
+        ));
+        // A named local, not `alloc_scratch`: the receiver is read twice (once
+        // to test, once to load) and scratch shares an index space with the
+        // walker's named locals.
+        let recv = self.define_local("__seam3_recv");
+        push_obj(&mut self.chunks[self.current], obj, line);
+        self.emit_u16(Op::LOCAL_SET, recv);
+
+        self.emit_u16(Op::LOCAL_GET, recv);
+        self.emit_ref_type_test(Op::REF_TEST, &class, line);
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, recv);
+        self.chunk()
+            .emit_struct_field_op(Op::STRUCT_GET, typeidx, fieldidx, line);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, recv);
+        emit_class_get(
+            &mut self.chunks[self.current],
+            ObjSource::Stack,
+            &fallback,
+            Dest::Stack,
+            line,
+        );
+        self.chunk().emit_end(line);
+
+        finish_dest(&mut self.chunks[self.current], dest, line);
+        true
     }
 
     /// Write a slot.
@@ -873,10 +945,15 @@ impl crate::Compiler {
         // that got a real typeidx. Four hand-written probes passed first, which
         // is why this is gated on a corpus and not on a repro.
         //
-        // Both sides now name the declaring class, so a registered type uses
-        // indexed access on reads AND writes. `indexed_field` resolves BY NAME
-        // and returns `None` for anything the type does not declare, which is
-        // what keeps dynamic objects on the string path.
+        // A slot arrives here naming its declaring class from exactly two
+        // places: the field initializer (`classes.rs`) on the write, and
+        // `member_slot_for_receiver` (`metadata.rs`) on the read. Every OTHER
+        // member site pre-resolves its key to a string and arrives as
+        // `Internal`, which has no class to index against and therefore stays
+        // on the string path by construction — that is the shape to look for
+        // when a read the type clearly declares is still string-keyed.
+        // `indexed_field` resolves BY NAME and returns `None` for anything the
+        // type does not declare, which is what keeps dynamic objects there.
         if let ClassSlot::InstanceField { class: Some(class), field } = slot {
             if let Some(indexed) = self.indexed_field(class, field) {
                 return indexed;

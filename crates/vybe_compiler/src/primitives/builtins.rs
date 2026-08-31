@@ -848,6 +848,44 @@ impl Compiler {
                         let idx = self.import(module, func);
                         self.emit_host_call(idx, args.len() as u8);
                     }
+                    crate::primitives::imports::CommonImport::HostGlobal(module, func) => {
+                        // ⛔ THE RECEIVER SLOT IS PART OF THE CALLEE'S TYPE, SO
+                        // IT IS FILLED HERE TOO. Under
+                        // `ReceiverAbi::Parameter` argument 0 of every host
+                        // callee is its receiver; a free function has none of
+                        // its own, and §10.2.1.1 OrdinaryCallBindThis binds
+                        // `undefined` for exactly that case. Emitting the call
+                        // without the slot gave one function TWO shapes —
+                        // `encodeURIComponent(s)` one argument, but
+                        // `["a b"].map(encodeURIComponent)` a receiver and
+                        // then `s` — and a funcref's type is `[params] →
+                        // [results]`, which cannot mean two things.
+                        //
+                        // Under the AMBIENT ABI there is no slot on the stack
+                        // at all, so this pushes nothing and the shape is
+                        // unchanged.
+                        // ⛔ ASK THE DIRECTIVE STACK, NOT `chunks[0]`.
+                        // `module_receiver_abi` reads a slot that is assigned
+                        // during module compilation, so at an expression emit
+                        // it still answers `Ambient` for a universal language —
+                        // measured, the receiver push never fired while the
+                        // argument count had already been raised, and every
+                        // direct call popped one value too many.
+                        // `universal_receiver()` reads the binding in force
+                        // HERE, which is the same question this site is asking.
+                        let receiver_slot = self.universal_receiver();
+                        if receiver_slot {
+                            crate::primitives::expressions::emit_undefined(
+                                &mut self.chunks[self.current],
+                                line,
+                            );
+                        }
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, args.len() as u8 + u8::from(receiver_slot));
+                    }
                     crate::primitives::imports::CommonImport::Intrinsic(intrinsic_name) => {
                         self.emit_intrinsic(intrinsic_name, args)?;
                     }
@@ -1189,7 +1227,12 @@ impl Compiler {
                     let parent = expr_str_lit(args.get(1).copied());
                     let params = expr_str_lit(args.get(2).copied());
                     let results = expr_str_lit(args.get(3).copied());
+                    // The rec group's size and this type's position in it.
+                    let rec_shape = expr_str_lit(args.get(4).copied());
                     if !name.is_empty() {
+                        if !rec_shape.is_empty() {
+                            self.chunks[0].type_rec_shape.insert(name.clone(), rec_shape);
+                        }
                         let parent_idx = if parent.is_empty() {
                             0u16
                         } else {
@@ -2852,7 +2895,23 @@ impl Compiler {
                         for a in args.iter().skip(2) {
                             self.compile_expr(a)?;
                         }
-                        let imm1 = expr_const_u16(args.first().copied());
+                        // ⛔ THE GC ARRAY OPS NAME THEIR TYPE, THEY DON'T NUMBER
+                        // IT. `array.new_data $T $d` reaches here with `$T`
+                        // already qualified to an IDENT, which reads as the
+                        // constant 0 — so the VM had no type and fell back to a
+                        // byte-wide element, and `(array i32)` read one byte per
+                        // element instead of four. Resolve the name to the same
+                        // 1-based type-table index `array.new` emits, so
+                        // `resolve_gc_rtt` recovers the rtt on the other side.
+                        // The segment ops (`memory.init`, `table.copy`, …) share
+                        // this format and pass numbers, which are untouched.
+                        let imm1 = match args.first().map(|a| &a.kind) {
+                            Some(ExprKind::Ident(n)) => {
+                                let n = n.clone();
+                                self.resolve_gc_array_type_id(&n) as u16
+                            }
+                            _ => expr_const_u16(args.first().copied()),
+                        };
                         let imm2 = expr_const_u16(args.get(1).copied());
                         self.chunk().emit_op_u16(op, imm1, l);
                         self.chunk().emit((imm2 >> 8) as u8, l);
@@ -2923,7 +2982,20 @@ impl Compiler {
                             Some(ExprKind::Lit(Literal::Str(s))) => Some(s.to_string()),
                             _ => None,
                         };
-                        let operands_from = if sig.is_some() { 4 } else { 3 };
+                        // A FIFTH argument, for the same reason as the fourth
+                        // and carrying what it cannot: the CANONICAL name of
+                        // the declared functype. Two `(func)` types in
+                        // different rec groups have equal signatures and are
+                        // different types, so identity needs the name.
+                        let canon = match args.get(4).map(|a| &a.kind) {
+                            Some(ExprKind::Lit(Literal::Str(s))) => Some(s.to_string()),
+                            _ => None,
+                        };
+                        let operands_from = match (sig.is_some(), canon.is_some()) {
+                            (true, true) => 5,
+                            (true, false) => 4,
+                            _ => 3,
+                        };
                         for a in args.get(operands_from..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
@@ -2934,6 +3006,9 @@ impl Compiler {
                         self.chunk().emit(expr_const_u8(args.get(2).copied()), l);
                         if let Some(sig) = sig.filter(|s| !s.is_empty()) {
                             self.chunk().call_indirect_sigs.insert(offset, sig);
+                        }
+                        if let Some(c) = canon.filter(|s| !s.is_empty()) {
+                            self.chunk().call_indirect_canon.insert(offset, c);
                         }
                     }
                     // i8x16.shuffle: 16 lane-index immediates, then two vectors.
@@ -3043,7 +3118,15 @@ impl Compiler {
         inst!(self, core_wasm::i32_const, 0);
         self.emit_u16(Op::LOCAL_SET, result_slot);
 
+        // ⛔ A BOXED FLAG IS NOT AN i32 CONDITION. The slot is filled by
+        // `emit_const`/`bool_const`, and every wasm-ABI local is
+        // `externref`, so branching on it raw is
+        // `type mismatch: expected i32, found externref`. The VM applies
+        // truthiness at `if` and never type-checks the condition, so this
+        // was invisible to the corpus. ECMA §7.1.2 ToBoolean, via the same
+        // helper the other truth-sites use.
         self.emit_u16(Op::LOCAL_GET, back_slot);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, len_slot);

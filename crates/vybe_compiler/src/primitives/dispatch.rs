@@ -589,6 +589,9 @@ pub fn emit_common(
         "collections.shift" => collections::emit_shift(chunks, current, line),
         "collections.concat" => collections::emit_concat(chunks, current, line),
         "collections.fill" => collections::emit_fill(chunks, current, line),
+        "collections.fill_all" => collections::emit_fill_all(chunks, current, line),
+        "collections.copy_to" => collections::emit_copy_to(chunks, current, line),
+        "collections.repeat_value" => collections::emit_repeat_value(chunks, current, line),
         "collections.sort" => collections::emit_sort(chunks, current, line),
         "collections.identity" => collections::emit_identity(chunks, current, line),
         "collections.first_of_two" => collections::emit_first_of_two(chunks, current, line),
@@ -770,6 +773,22 @@ pub fn emit_common(
         // resolution gives it — so it routes here rather than being folded in a
         // walker. The AST operator nodes call the same functions, so there is
         // one implementation with two entry points.
+        // Elementwise over a boolean SEQUENCE — a bit set. See `bits.rs`.
+        "bits.log2" => crate::primitives::bits::emit_log2(chunks, current, line),
+        // The UNSIGNED 32-bit view of an i32 result — `F64_CONVERT_I32_U`.
+        // A language whose declared type is unsigned needs this after any
+        // bitwise op, whose lane is signed: `Not 0UI` is `4294967295`, not −1.
+        "bits.as_unsigned32" => {
+            crate::primitives::bits::emit_as_unsigned32(&mut chunks[current], line)
+        }
+        "bits.rotl32u" => crate::primitives::bits::emit_rotl32_unsigned(chunks, current, line),
+        "bits.rotr32u" => crate::primitives::bits::emit_rotr32_unsigned(chunks, current, line),
+        "bits.is_pow2" => crate::primitives::bits::emit_is_pow2(chunks, current, line),
+        "bits.round_up_pow2" => crate::primitives::bits::emit_round_up_pow2(chunks, current, line),
+        "bits.array_and" => crate::primitives::bits::emit_array_and(chunks, current, line),
+        "bits.array_or" => crate::primitives::bits::emit_array_or(chunks, current, line),
+        "bits.array_xor" => crate::primitives::bits::emit_array_xor(chunks, current, line),
+        "bits.array_not" => crate::primitives::bits::emit_array_not(chunks, current, line),
         "bits.popcnt32" => {
             crate::primitives::bits::emit_pop_count(&mut chunks[current], BitLane::W32, line)
         }

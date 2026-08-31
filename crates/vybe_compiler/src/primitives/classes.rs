@@ -40,6 +40,14 @@ impl Compiler {
         self.chunks[accessor_chunk]
             .handled_call_tags
             .push(vybe_runtime::RECEIVER_FIRST_ACCESSOR_TAG.to_string());
+        // ⛔ THE TAG AND `takes_receiver` STATE THE SAME FACT — say both, or
+        // the VM's own question gets the wrong answer. "Receiver-first
+        // accessor" IS "argument 0 is the receiver", and
+        // `VM::callee_takes_receiver` reads `takes_receiver`, not the tag. With
+        // only the tag set, `invoke_with_receiver` declined to hand the
+        // accessor a receiver and a class setter was entered with just its
+        // value — `this` undefined, the assignment lost.
+        self.chunks[accessor_chunk].takes_receiver = true;
     }
 
     fn qualified_nested_type_name(enclosing: &str, nested: &str) -> String {
@@ -377,7 +385,7 @@ impl Compiler {
         {
             self.c3_linearize(class)
         } else {
-            vybe_runtime::namespaces::ancestry_of(class, |c| {
+            crate::primitives::namespaces::ancestry_of(class, |c| {
                 self.pending_classes.get(c).and_then(|pc| pc.parent.clone())
             })
         }
@@ -635,20 +643,12 @@ impl Compiler {
         // This is the INHERITANCE twin of the standalone-construction site in
         // `calls.rs` (`New Button()`), which already asks exactly this pair —
         // the two guard the same hazard and answer the same way.
-        vybe_runtime::namespaces::is_registered_type(
-            &self.profile.namespaces.type_scopes,
-            parent_name,
-            self.tree_fold(),
-        ) && !common::gui::canonical_control_name(parent_name).is_empty()
+        self.tree_is_registered_type(parent_name) && !common::gui::canonical_control_name(parent_name).is_empty()
     }
 
     /// The parent is a registered type whose construction is a GUI control.
     fn registered_control_parent(&self, parent_name: &str) -> bool {
-        vybe_runtime::namespaces::lookup_type_ctor_spec(
-            &self.profile.namespaces.type_scopes,
-            parent_name,
-            self.tree_fold(),
-        )
+        self.tree_ctor_spec(parent_name)
         .is_some_and(|spec| spec.control_fn.is_some())
     }
 
@@ -666,11 +666,7 @@ impl Compiler {
     /// scopes this narrows nothing, and outside one it narrows exactly the
     /// language-family check that used to be spelled as a flag.
     fn dotnet_descriptor_parent_has_no_user_ctor(&self, parent_name: &str) -> bool {
-        vybe_runtime::namespaces::is_registered_type(
-            &self.profile.namespaces.type_scopes,
-            parent_name,
-            self.tree_fold(),
-        ) && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
+        self.tree_is_registered_type(parent_name) && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
             && !self.is_framework_control_parent(parent_name)
             && !self.defined_classes.contains(&self.canon(parent_name))
     }
@@ -697,12 +693,7 @@ impl Compiler {
         // `TForm` canonicalised to "" and this bailed: the derived
         // constructor then never allocated `this`, every field write landed
         // on null, and every field read came back `undefined`.
-        let registered = common::gui::registered_control_element(
-            &self.profile.namespaces.type_scopes,
-            parent_name,
-            self.tree_fold(),
-        )
-        .is_some();
+        let registered = common::gui::registered_control_element(self, parent_name).is_some();
         if !registered && common::gui::canonical_control_name(parent_name).is_empty() {
             return Ok(false);
         }
@@ -752,31 +743,31 @@ impl Compiler {
         // inherited its parent's type and had to overwrite it — something WASM
         // GC cannot express, which is why it needed a 0xFF custom opcode.
         //
-        // ⛔⛔ THE PARAGRAPH BELOW IS NOT TRUE YET. MEASURED 2026-08-28.
+        // ✅ TRUE AS OF 2026-08-30. The paragraph below describes what the
+        // compiler now does; the "NOT TRUE YET" correction that stood here is
+        // itself retired.
         //
-        // It describes the INTENDED end state as though it had landed, and it
-        // contradicts `:2402` in this same file ("the most-derived constructor
-        // does not allocate: it delegates to the base"). `:2402` is the true
-        // one. For `class Sub extends Base`, the whole module contains exactly
-        // TWO `struct.new_default`, both `typeidx 1` (Base's), both inside
-        // `__Base_ctor_0`; `__Sub_ctor_0` has NO allocation instruction at all.
-        // A `Sub` instance is allocated by the BASE and carries the BASE's rtt.
+        // It was accurate when written: for `class Sub extends Base` the whole
+        // module held exactly TWO `struct.new_default`, both Base's typeidx,
+        // both inside `__Base_ctor_0`, and `__Sub_ctor_0` had no allocation
+        // instruction at all. What was missing was never machinery —
+        // `emit_new_typed_object` already allocated only when no receiver was
+        // handed in, and the explicit-base-clause and forwarding shapes already
+        // used it — but ROUTING for a `super()` driven by the ctor BODY, which
+        // is the JS shape. That routing now exists in `calls.rs`
+        // (`ExprKind::Call { callee: Super }`), gated on `js_derived_ctor_ctx`.
+        // Measured after: A=1, B=2, C=3 each allocate their OWN typeidx.
         //
-        // ⇒ This is why `seam3_indexable` / `rtt_testable` still carry the
-        // `!has_parent` clause, and why allocation-move and widening are ONE
-        // commit: widening first would make `ref.test` authoritative over
-        // instances that do not yet carry their own rtt.
+        // ⛔ ALLOCATION IS NOT INITIALISATION. The allocation goes into a
+        // TEMPORARY seeded from `this_slot`, never into `this_slot` directly:
+        // §10.2.2 step 13 binds `this` when the SuperCall COMPLETES, so a
+        // pre-filled slot silently disarms the derived-constructor
+        // ReferenceError when the base THROWS.
         //
-        // ⇒ What IS already built is the mechanism: `emit_new_typed_object`
-        // allocates only when no receiver was handed in. What is missing is
-        // that nothing routes a DERIVED `new` through it — the base ctor is
-        // still the site that finds `this_slot` empty. M5 is that routing
-        // change, not new machinery.
-        //
-        // A comment describing an UNBUILT mechanism as live is worse than one
-        // describing a RETIRED mechanism as live: the retired kind is caught
-        // when someone greps for it and finds nothing, while this kind reads as
-        // completed design and gets BUILT ON. Left in place, corrected here.
+        // ⇒ `seam3_indexable` / `rtt_testable` and condition (2) of the
+        // `indexed_field` licence can now drop `!has_parent` — but allocation
+        // -move and widening are still ONE commit, and the move is the half
+        // that has landed. Gate before widening.
         //
         // The constructor protocol is inverted now: the most-derived class
         // allocates via `struct.new_default $T` and passes the receiver DOWN, so
@@ -789,31 +780,31 @@ impl Compiler {
         // inherited its parent's type and had to overwrite it — something WASM
         // GC cannot express, which is why it needed a 0xFF custom opcode.
         //
-        // ⛔⛔ THE PARAGRAPH BELOW IS NOT TRUE YET. MEASURED 2026-08-28.
+        // ✅ TRUE AS OF 2026-08-30. The paragraph below describes what the
+        // compiler now does; the "NOT TRUE YET" correction that stood here is
+        // itself retired.
         //
-        // It describes the INTENDED end state as though it had landed, and it
-        // contradicts `:2402` in this same file ("the most-derived constructor
-        // does not allocate: it delegates to the base"). `:2402` is the true
-        // one. For `class Sub extends Base`, the whole module contains exactly
-        // TWO `struct.new_default`, both `typeidx 1` (Base's), both inside
-        // `__Base_ctor_0`; `__Sub_ctor_0` has NO allocation instruction at all.
-        // A `Sub` instance is allocated by the BASE and carries the BASE's rtt.
+        // It was accurate when written: for `class Sub extends Base` the whole
+        // module held exactly TWO `struct.new_default`, both Base's typeidx,
+        // both inside `__Base_ctor_0`, and `__Sub_ctor_0` had no allocation
+        // instruction at all. What was missing was never machinery —
+        // `emit_new_typed_object` already allocated only when no receiver was
+        // handed in, and the explicit-base-clause and forwarding shapes already
+        // used it — but ROUTING for a `super()` driven by the ctor BODY, which
+        // is the JS shape. That routing now exists in `calls.rs`
+        // (`ExprKind::Call { callee: Super }`), gated on `js_derived_ctor_ctx`.
+        // Measured after: A=1, B=2, C=3 each allocate their OWN typeidx.
         //
-        // ⇒ This is why `seam3_indexable` / `rtt_testable` still carry the
-        // `!has_parent` clause, and why allocation-move and widening are ONE
-        // commit: widening first would make `ref.test` authoritative over
-        // instances that do not yet carry their own rtt.
+        // ⛔ ALLOCATION IS NOT INITIALISATION. The allocation goes into a
+        // TEMPORARY seeded from `this_slot`, never into `this_slot` directly:
+        // §10.2.2 step 13 binds `this` when the SuperCall COMPLETES, so a
+        // pre-filled slot silently disarms the derived-constructor
+        // ReferenceError when the base THROWS.
         //
-        // ⇒ What IS already built is the mechanism: `emit_new_typed_object`
-        // allocates only when no receiver was handed in. What is missing is
-        // that nothing routes a DERIVED `new` through it — the base ctor is
-        // still the site that finds `this_slot` empty. M5 is that routing
-        // change, not new machinery.
-        //
-        // A comment describing an UNBUILT mechanism as live is worse than one
-        // describing a RETIRED mechanism as live: the retired kind is caught
-        // when someone greps for it and finds nothing, while this kind reads as
-        // completed design and gets BUILT ON. Left in place, corrected here.
+        // ⇒ `seam3_indexable` / `rtt_testable` and condition (2) of the
+        // `indexed_field` licence can now drop `!has_parent` — but allocation
+        // -move and widening are still ONE commit, and the move is the half
+        // that has landed. Gate before widening.
         //
         // The constructor protocol is inverted now: the most-derived class
         // allocates via `struct.new_default $T` and passes the receiver DOWN, so
@@ -1756,22 +1747,17 @@ impl Compiler {
             self.frame_cf_mut().active_async_try_depth += 1;
         }
 
-        if crate::primitives::closures_in_body_reference_this(body) {
-            if self.ambient_this() {
-                self.emit_global_read("__js_this");
-                let this_local = self.define_local("__js_this");
-                self.emit_u16(Op::LOCAL_SET, this_local);
-                self.current_closure_captured_locals
-                    .insert("__js_this".to_string());
-            } else if self.universal_receiver() {
-                // Argument 0 already holds it under the self keyword — mark it
-                // captured so an inner arrow reaches it through the shared env.
-                let self_kw = self.profile.self_keyword.clone();
-                if self.scope().resolve(&self_kw).is_some() {
-                    self.current_closure_captured_locals.insert(self_kw);
-                }
-            }
-        }
+        // One decision, one place — see `capture_receiver_for_inner_closures`.
+        // This is the THIRD site that made it: functions and function
+        // expressions. It carried both arms but spelled each differently again
+        // (an internal `__js_this` local rather than a source local under the
+        // self keyword, and no guard against an enclosing frame already
+        // holding one), which is exactly the drift that let the lambda copy
+        // lose its universal arm unnoticed.
+        let closures_use_this = crate::primitives::closures_in_body_reference_this(body);
+        let self_kw_for_capture = self.profile.self_keyword.clone();
+        let declares_own_receiver = self.scope().resolve(&self_kw_for_capture).is_some();
+        self.capture_receiver_for_inner_closures(closures_use_this, declares_own_receiver);
 
         if !self.current_closure_captured_locals.is_empty() {
             let mut fn_scope_names: HashSet<String> =
@@ -2244,12 +2230,6 @@ impl Compiler {
         // Canonicalisation happens once here rather than at every caller.
         let cname = self.canon(&class.name);
         let name: &str = &cname;
-        // Reserve the type-table slot NOW, before the constructor is compiled,
-        // so `struct.new_default $T` inside it can name this class. Registration
-        // used to happen after the ctor was emitted, which is precisely why
-        // identity had to be stamped post-allocation instead of at it.
-        // `register_type` fills this entry in at the end of the function.
-        let type_slot = crate::primitives::classes::reserve_type_slot(&mut self.chunks, &cname);
         let parent_canonical = class.parent.as_ref().map(|p| self.canon(p));
         let parent: &Option<String> = &parent_canonical;
 
@@ -2270,302 +2250,16 @@ impl Compiler {
         let ctor_name = self.profile.constructor_name.clone();
         let result_style = self.profile.function_return.clone();
 
-        // Pass 1 (ported to NormalClass): collect fields + initialisers
-        // from instance_fields / static_fields, then add backing fields
-        // for auto-properties. Reads NormalClass directly; no longer
-        // iterates the reconstructed member list.
-        // When properties and methods share the object namespace only in
-        // some languages, a property whose name collides with a method needs
-        // a distinct slot (see `separate_property_method_namespace`).
-        let colliding_method_names: std::collections::HashSet<String> =
-            if self.separate_property_method_namespace() {
-                class
-                    .instance_methods
-                    .iter()
-                    .map(|method| self.canon(&method.source_name))
-                    .collect()
-            } else {
-                std::collections::HashSet::new()
-            };
-        let mut field_storage_names: HashMap<String, String> = HashMap::new();
-        let field_storage_slot_name = |compiler: &Self,
-                                       field_name: &str,
-                                       method_names: &std::collections::HashSet<String>|
-         -> String {
-            let canon = compiler.canon(field_name);
-            if compiler.separate_property_method_namespace() && method_names.contains(&canon)
-            {
-                format!("__prop${}", canon)
-            } else {
-                compiler.js_member_storage_name_for_class(&class.name, field_name)
-            }
-        };
-
-        let mut fields: Vec<String> = Vec::new();
-        let mut field_inits: Vec<(
-            String,
-            Option<String>,
-            Option<Expression>,
-            Option<Vec<Expression>>,
-        )> = Vec::new();
-        let mut static_field_inits: Vec<(
-            String,
-            Option<String>,
-            Option<Expression>,
-            Option<Vec<Expression>>,
-        )> = Vec::new();
-        for f in &class.instance_fields {
-            let field_canon = self.canon(&f.name);
-            // Field hiding (java/C#/VB): a field that shadows an ancestor's
-            // gets a declaring-class-qualified slot so both survive on the
-            // object and access resolves by the reference's declared type.
-            //
-            // A PRIVATE field takes the same slot for a different reason, and
-            // in every language that has private rather than only the ones
-            // opting into `new`-hiding: an ancestor's private field is not
-            // visible to this class at all, so a same-named field here is a
-            // DIFFERENT field and must not share storage. Without this, `B`'s
-            // `private $x` and `D`'s `private $x` collapsed into one slot —
-            // php printed `D D` where php prints `B D`, and java/C#/VB read
-            // the same way.
-            //
-            // This is the first reader `Access::Private` has ever had. Five
-            // normalizers (php/java/csharp/vb/ruby) have been computing it
-            // from `modifiers.visibility` and the compiler discarded it —
-            // §1a of flexclassplan, in a different field.
-            //
-            // ⛔ Unless the language's OWN private storage already claimed the
-            // field. A JS `#x` resolves to `__js_private_<class>.x`, which is
-            // ALREADY class-keyed — and it is a separate namespace with its
-            // own accessors and brand check, not a visibility level. Taking it
-            // over here renamed the slot out from under that path and threw on
-            // any subclass redeclaring the same `#x`. Storage identity and
-            // reflective hiding are two properties; this owns only the first.
-            let already_class_keyed = self
-                .js_private_member_storage_name_for_class(&class.name, &f.name)
-                .is_some();
-            let fname = if (self.directives().field_shadowing
-                == Some(vybe_ast::FieldShadowing::Hide)
-                || (f.access == Access::Private && !already_class_keyed))
-                && self.field_hides_ancestor(class.parent.as_deref(), &field_canon)
-            {
-                format!("__hide_{}${}", self.canon(&class.name), field_canon)
-            } else {
-                field_storage_slot_name(self, &f.name, &colliding_method_names)
-            };
-            if fname != field_canon {
-                field_storage_names.insert(field_canon.clone(), fname.clone());
-            }
-            fields.push(fname.clone());
-            field_inits.push((
-                fname,
-                f.type_hint.clone(),
-                f.init.clone(),
-                f.array_bounds.clone(),
-            ));
-        }
-
-        // ▶▶ CONSTRUCTOR-ASSIGNED FIELDS — `this.<literal> = …` IS a declared
-        // shape, and leaving it out is why an engine rejects our classes.
-        //
-        // Measured: `class A { constructor(x){ this.x = x; } }` published
-        // `TypeEntry.fields` EMPTY, so the emitted struct type had zero fields
-        // while its own code wrote `x` — V8: `invalid field index: 0`. A class
-        // that declares `a = 1` in the body was already fine (`emitted: a, b`),
-        // so this is the one shape the census was missing, not "js is dynamic".
-        //
-        // Only a LITERAL member name is added. `this[k] = v` is a computed key
-        // with no static shape and stays out — that is the genuine property-bag
-        // case, and it is far narrower than a whole language.
-        for ctor in &class.constructors {
-            let mut assigned: Vec<String> = Vec::new();
-            collect_this_assigned_fields(&ctor.body, &mut assigned);
-            for a in assigned {
-                let canon_a = self.canon(&a);
-                let stored = field_storage_names
-                    .get(&canon_a)
-                    .cloned()
-                    .unwrap_or(canon_a);
-                if !fields.contains(&stored) {
-                    fields.push(stored);
-                }
-            }
-        }
-        for f in &class.static_fields {
-            // The DECLARATION side of the same distinction — both ends must
-            // agree on the key or the static slot is written under one name and
-            // read under another.
-            let fname = self.js_member_storage_name_for_static(&class.name, &f.name);
-            static_field_inits.push((
-                fname,
-                f.type_hint.clone(),
-                f.init.clone(),
-                f.array_bounds.clone(),
-            ));
-        }
-        for p in &class.properties {
-            let prop_canon = self.canon(&p.source_name);
-            let prop_is_override = p
-                .getter
-                .as_ref()
-                .is_some_and(|getter| getter.is_override || getter.raw_modifiers.is_override)
-                || p.setter
-                    .as_ref()
-                    .is_some_and(|setter| setter.is_override || setter.raw_modifiers.is_override);
-            let property_storage_name = if self.directives().field_shadowing == Some(vybe_ast::FieldShadowing::Hide)
-                && !p.is_static
-                && !prop_is_override
-                && self.field_hides_ancestor(class.parent.as_deref(), &prop_canon)
-            {
-                format!("__hide_{}${}", self.canon(&class.name), prop_canon)
-            } else {
-                prop_canon.clone()
-            };
-            if property_storage_name != prop_canon {
-                field_storage_names.insert(prop_canon.clone(), property_storage_name.clone());
-            }
-
-            // Auto-properties get a backing field named like the property;
-            // the runtime reads/writes through auto-emitted __get_/__set_
-            // chunks bound later.
-            if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon = if property_storage_name != prop_canon {
-                    property_storage_name.clone()
-                } else {
-                    field_storage_slot_name(self, auto_field_name, &colliding_method_names)
-                };
-                if pname_canon != self.canon(auto_field_name) {
-                    field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
-                }
-                // The PROPERTY name also resolves to the backing slot — an
-                // auto-property has plain storage and default accessors, so a
-                // direct store there IS its write semantics. Without this row
-                // `val y: Int` + `init { y = … }` found no storage for `y`
-                // and the write fell through to a global. Only auto
-                // properties: a custom accessor has no `auto_field`, so its
-                // reads/writes keep going through the accessor path.
-                if pname_canon != prop_canon {
-                    field_storage_names
-                        .entry(prop_canon.clone())
-                        .or_insert_with(|| pname_canon.clone());
-                }
-                if p.is_static {
-                    if !static_field_inits
-                        .iter()
-                        .any(|(n, _, _, _)| n == &pname_canon)
-                    {
-                        static_field_inits.push((pname_canon, None, None, None));
-                    }
-                } else if !fields.contains(&pname_canon) {
-                    fields.push(pname_canon.clone());
-                    field_inits.push((pname_canon, None, None, None));
-                }
-            } else if !p.is_static && !fields.contains(&property_storage_name) {
-                fields.push(property_storage_name.clone());
-            }
-        }
-
-        // Events need backing storage on instances so method bodies can
-        // read/invoke them via implicit-self resolution (`if (Click != null)
-        // Click();`) and subscriptions (`obj.Click += handler`) persist.
-        for m in &class.raw_extra_members {
-            if let ClassMember::Event { name: ename, .. } = m {
-                let fname = self.canon(ename);
-                if !fields.contains(&fname) {
-                    fields.push(fname.clone());
-                    field_inits.push((fname, None, None, None));
-                }
-            }
-        }
-
-        // ▶▶ SEAM 3 PREREQUISITE — publish the field list to the RESERVED type
-        // slot as soon as it is complete.
-        //
-        // `reserve_type_slot` (above) hands out the typeidx that
-        // `struct.new_default` allocates with, but pushes an entry whose
-        // `fields` is EMPTY; `register_type` fills it thousands of lines later,
-        // AFTER constructor and method bodies have been emitted. So every field
-        // access compiled in between looked the field up, found an empty list,
-        // and fell back to a string key — correct, but permanently inert.
-        //
-        // Publishing here makes the declared order visible to everything
-        // downstream. `register_type` still runs and still owns the rest of the
-        // entry; this only fills in what is already known.
-        if type_slot != 0 {
-            let idx = type_slot as usize - 1;
-            let published = match self.chunks[0].types.get_mut(idx) {
-                Some(entry) if entry.fields.is_empty() => {
-                    entry.fields = fields.clone();
-                    true
-                }
-                Some(entry) => entry.fields == fields,
-                None => false,
-            };
-            // ⛔ TWO conditions, and the second is the one that bites.
-            //
-            // 1. THIS compiler authored the field order (`published`).
-            // 2. The class has NO PARENT.
-            //
-            // (2) is not about fields at all — it is about ALLOCATION. Under
-            // the base-constructor model the most-derived constructor does not
-            // allocate: it delegates to the base, which allocates with the
-            // BASE's typeidx. So a derived class's instance carries the base's
-            // arity while its own constructor indexes against the derived
-            // type's field list. `Dog(name)` allocates as `Animal`
-            // (`struct.new_default 23`) and then writes `struct.set type=24
-            // field=0` — a slot the object does not have.
-            //
-            // Measured by Rook: 23 regressions across VB and C#, every one
-            // inheritance-shaped, zero exceptions. dart and js — the corpora
-            // this was gated on — exercise far less class inheritance, so the
-            // gate was blind to the axis rather than wrong.
-            //
-            // ⚠ Since the indexed write now GROWS rather than traps, this would
-            // be a SILENT wrong-slot write rather than a failure. Withholding
-            // the licence is not a conservatism, it is the difference between a
-            // caught bug and a corrupt object.
-            //
-            // ▶▶ Destination is the invariant `indexed_field`'s docstring
-            // already states: grant the licence on a fact about the
-            // ALLOCATION — "the class's own typeidx is what
-            // `struct.new_default` actually used". M5 moves allocation to the
-            // most-derived constructor, at which point a parent stops
-            // disqualifying anything and this becomes one condition again.
-            // 3. The language does not require the field to be an own
-            //    ENUMERABLE property.
-            //
-            // ⛔ (3) is not a third kind of caution — it is the difference
-            // between two storage locations and one. Indexed storage puts the
-            // value in the GC struct's `fields`, while every reflective
-            // surface (`Object.keys`, `in`, `for…in`, `JSON.stringify`, and
-            // the host's own key walk) reads the `properties` map. For a
-            // language whose declared fields ARE own properties — ECMA-262
-            // §10.2.11 performs `CreateDataPropertyOrThrow` — taking the
-            // licence makes the field readable (`d.a` is 1) and invisible
-            // (`Object.keys(d)` was `[]`, against node's `["a"]`).
-            //
-            // The tell was that adding a PARENT fixed it: same field, same
-            // initializer, opposite answers, switched by condition (2). Found
-            // by Kestrel, who measured 10 of 12 remaining js regressions on
-            // this one defect.
-            //
-            // ▶▶ This condition disappears when the host can enumerate a typed
-            // object's declared fields from `TypeEntry.fields` and merge them
-            // into the key walk. Then indexed storage is observable and the
-            // optimization comes back for every language at once. Withholding
-            // it is the correct answer only while enumeration cannot see it.
-            let has_parent = class.parent.is_some();
-            // Conditions (1) and (2) alone are ALLOCATION IDENTITY — the
-            // class's own typeidx is what `struct.new_default` used — which is
-            // all a `ref.test` needs. Recorded separately because a storage
-            // decision must not be able to withdraw it.
-            if published && !has_parent {
-                self.rtt_testable.insert(cname.clone());
-            }
-            if published && !has_parent && !self.instance_fields_are_own_properties() {
-                self.seam3_indexable.insert(cname.clone());
-            }
-        }
+        // The declared field order and the type slot it publishes. Shared with
+        // the declaration pre-pass so a read compiled BEFORE this class — a
+        // top-level function body — sees the same shape.
+        let ClassStorageLayout {
+            type_slot,
+            mut fields,
+            mut field_inits,
+            mut static_field_inits,
+            mut field_storage_names,
+        } = self.publish_class_storage(class);
 
         // Store field list for implicit self resolution
         let static_field_names: Vec<String> = static_field_inits
@@ -2921,9 +2615,17 @@ impl Compiler {
             // The receiver (`this`) is bound ambiently from the call context
             // (`__js_this`) rather than passed as an explicit first positional
             // parameter. Capability-driven — not gated on the language name.
-            let ambient_this = cc.ambient_this();
+            let ambient_this = false;
+            // ⛔ `arguments` IS NOT A FACT ABOUT HOW `this` ARRIVES. This
+            // used to carry `&& ambient_this`, so flipping the receiver to
+            // `ReceiverBinding::UniversalParameter` silently switched the
+            // arguments object OFF in every class method: `typeof arguments`
+            // answered "undefined" and `arguments[0]` threw, while the
+            // identical body in a plain function was fine. §10.4.4 ties the
+            // arguments object to the callee's ARGUMENT LIST; the receiver
+            // channel is a different question, and the arity computed below
+            // already accounts for the receiver via `has_receiver`.
             let uses_js_arguments = cc.has_arguments_object()
-                && ambient_this
                 && !m.is_generator
                 && (user_params
                     .iter()
@@ -3067,6 +2769,30 @@ impl Compiler {
             } else {
                 None
             };
+            // ⛔ DEFINING THE REST SLOT IS NOT BINDING THE NAME. The method
+            // path reserved `__vybe_js_arguments_array` and registered the
+            // rest arity — so the CALLER packed the arguments correctly — but
+            // never bound `arguments` to it, which the function path does.
+            // `arguments` was therefore plain `undefined` inside every class
+            // method: `typeof arguments` answered "undefined" and
+            // `arguments[0]` threw, while the identical body in a plain
+            // function worked. Measured on
+            // `super.add(arguments[0], arguments[1])`.
+            //
+            // §10.4.4: a class body is strict code, so this is an UNMAPPED
+            // arguments object — it does not alias the named parameters, which
+            // is why none of the function path's aliasing machinery is ported
+            // with it. §10.4.4.6: it still reports "[object Arguments]".
+            if let Some(source_slot) = js_arguments_source_slot {
+                let slot = cc.define_source_local("arguments");
+                cc.emit_u16(Op::LOCAL_GET, source_slot);
+                cc.emit_u16(Op::LOCAL_SET, slot);
+                cc.class_set(
+                    class_slots::ObjSource::Local(slot),
+                    &class_slots::ClassSlot::TypeIdentity,
+                    class_slots::ValueSource::ConstStr("Arguments".to_string()),
+                );
+            }
             for p in &user_params {
                 cc.define_source_local_typed(&p.name, p.type_hint.clone());
                 let normalized_type_hint =
@@ -3226,16 +2952,20 @@ impl Compiler {
             // exists and only needs marking as captured — dropping the marking
             // with the global read is what left `[1].map(x => this.v)` inside a
             // method reading nothing.
-            if !is_static && crate::primitives::closures_in_body_reference_this(&m.body) {
-                if ambient_this {
-                    cc.emit_global_read("__js_this");
-                    let this_local = cc.define_source_local(&self_kw);
-                    cc.emit_u16(Op::LOCAL_SET, this_local);
-                    cc.current_closure_captured_locals.insert(self_kw.clone());
-                } else if has_receiver && cc.universal_receiver() {
-                    cc.current_closure_captured_locals.insert(self_kw.clone());
-                }
+            // One decision, one place — see `capture_receiver_for_inner_closures`.
+            let closures_use_this =
+                !is_static && crate::primitives::closures_in_body_reference_this(&m.body);
+            if closures_use_this && ambient_this {
+                // ⛔ THIS SITE'S OWN AMBIENT SPELLING — a SOURCE local under
+                // the self keyword, no parent guard. Differs deliberately from
+                // the function and lambda sites; see
+                // `capture_receiver_for_inner_closures`.
+                cc.emit_global_read("__js_this");
+                let this_local = cc.define_source_local(&self_kw);
+                cc.emit_u16(Op::LOCAL_SET, this_local);
+                cc.current_closure_captured_locals.insert(self_kw.clone());
             }
+            cc.capture_receiver_for_inner_closures(closures_use_this, has_receiver);
 
             // Shared env for closures inside class methods: if the
             // method body has inner closures that capture the method's
@@ -3245,7 +2975,25 @@ impl Compiler {
                 let mut captured_names: Vec<String> = cc
                     .current_closure_captured_locals
                     .iter()
-                    .filter(|name| !cc.defined_globals.contains(name.as_str()))
+                    // ⛔ THE RECEIVER IS A LOCAL, NEVER A MODULE GLOBAL, so the
+                    // defined-globals filter must not reach it. It was being
+                    // dropped here, which left the shared env sized WITHOUT the
+                    // receiver while the arrow inside still asked
+                    // `closure_env_index(self_kw)` — and that APPENDS when the
+                    // name is missing, handing back an index past the end of
+                    // the array. Two lists, one layout.
+                    //
+                    // It only showed when the method captured something ELSE as
+                    // well: with `this` the sole capture the list came out
+                    // empty, no env was built here at all, and the receiver
+                    // reached the arrow by another route. Add any second
+                    // captured name and the arrow read index 1 of a
+                    // one-element array and got null. Measured: an arrow's
+                    // `this` was correct until an unrelated closure appeared in
+                    // the same method — sync or async, local or global name.
+                    .filter(|name| {
+                        name.as_str() == self_kw || !cc.defined_globals.contains(name.as_str())
+                    })
                     .cloned()
                     .collect();
                 captured_names.sort();
@@ -3928,10 +3676,6 @@ impl Compiler {
                 Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
             );
             let this_slot = user_arity as u16;
-            if self.ambient_this() {
-                self.emit_global_read("__js_this");
-                self.emit_u16(Op::LOCAL_SET, this_slot);
-            }
             // §9.1.1.3.4 (JS): derived-constructor `this` TDZ context.
             // While this chunk's body compiles, `this` reads and `super()`
             // calls emit runtime guards against this_slot (null until
@@ -5292,14 +5036,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, ctor_local);
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
 
-        let saved_static_js_this = if self.ambient_this() {
-            let saved = self.begin_receiver_bind("__js_prev_this_static_init");
-            self.emit_u16(Op::LOCAL_GET, ctor_local);
-            self.bind_receiver_from_stack(saved);
-            Some(saved)
-        } else {
-            None
-        };
+        // ⛔ The ambient bind for a static initialiser is GONE: no language
+        // declares `ReceiverBinding::Ambient` any more, so this only ever took
+        // the `None` arm.
+        let saved_static_js_this: Option<super::class_context::ReceiverBind> = None;
 
         // Initialize static fields on the constructor object
         for (fname, type_hint, init, array_bounds) in &static_field_inits {
@@ -5577,7 +5317,10 @@ impl Compiler {
             }
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
-            self.emit_direct_callable_invoke(0);
+            // §15.7.10: `this` in a static initializer is the constructor.
+            // Under `UniversalParameter` it is argument 0, not the global.
+            let recv_argc = self.push_receiver_argument(saved_js_this);
+            self.emit_direct_callable_invoke(recv_argc);
             let result_slot = self.define_local("__js_static_init_result");
             self.emit_u16(Op::LOCAL_SET, result_slot);
             self.end_receiver_bind(saved_js_this);
@@ -7250,9 +6993,6 @@ pub fn emit_set_field_from_stack(chunk: &mut Chunk, this_slot: u16, field_name: 
     // Use emit_init_field_start + emit_init_field_end with value compilation in between.
 }
 
-// ── Type registration ───────────────────────────────────────────────────
-
-/// Register a type entry in chunk 0's type table.
 /// Collect `this.<literal> = …` target names from a constructor body.
 ///
 /// The census half of wasm-compliant classes: a constructor assignment to a
@@ -7266,6 +7006,19 @@ pub fn emit_set_field_from_stack(chunk: &mut Chunk, this_slot: u16, field_name: 
 /// static shape, and it is the only genuinely dynamic case — far narrower than
 /// "js classes are dynamic", which is what an earlier reading of
 /// `--dump-classes` wrongly concluded.
+///
+/// ⛔⛔ AND SO IS PYTHON'S `self.a = 1` — WHICH IS A LITERAL-KEYED SUBSCRIPT,
+/// NOT A COMPUTED ONE. It walks to `Index { Ident("self"), Lit(Str("a")) }`
+/// because python desugars every attribute access
+/// ([[project_python_attributes_bypass_shared_classes]]), so matching `Member`
+/// alone means **python classes declare no instance fields at all** — the only
+/// indexed op emitted is `struct.set field=0` for `__class__`.
+///
+/// ⛔ Accepting that form here is necessary for python and NOT sufficient: the
+/// declared slot and the string-keyed store disagree. The VM mirrors a named
+/// `struct.set` into `fields` once `type_id > 0`, but python READS through
+/// `__py_obj_get__` → `host:ecma:object:get`, which sees only the property bag.
+/// Both sides convert in one change or neither does.
 ///
 /// ⚠ UNDER-COLLECTING IS SAFE, OVER-COLLECTING IS NOT. A field this misses is
 /// simply absent from the type, which is exactly today's behaviour. A field it
@@ -7310,6 +7063,9 @@ fn collect_this_assigned_fields(body: &[Statement], out: &mut Vec<String>) {
     }
 }
 
+// ── Type registration ───────────────────────────────────────────────────
+
+/// Register a type entry in chunk 0's type table.
 pub fn register_type(
     chunks: &mut [Chunk],
     name: &str,
@@ -7853,7 +7609,7 @@ impl Compiler {
         };
         let depth: Vec<usize> = names
             .iter()
-            .map(|n| vybe_runtime::namespaces::ancestry_of(n, &parent_of).len() - 1)
+            .map(|n| crate::primitives::namespaces::ancestry_of(n, &parent_of).len() - 1)
             .collect();
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|i| depth[*i]);
@@ -7992,3 +7748,353 @@ impl Compiler {
         }
     }
 }
+
+/// The storage shape of a class: its reserved type slot and the declared
+/// field order that slot publishes.
+///
+/// Computed in ONE place. A second derivation of the field order would be the
+/// `protocol_slot_key` mistake again — two spellings that agree today and
+/// silently diverge later — and here the divergence would mis-shape the
+/// emitted struct, not merely miss an optimisation.
+pub(crate) struct ClassStorageLayout {
+    pub type_slot: u16,
+    pub fields: Vec<String>,
+    pub field_inits: Vec<(
+            String,
+            Option<String>,
+            Option<Expression>,
+            Option<Vec<Expression>>,
+        )>,
+    pub static_field_inits: Vec<(
+            String,
+            Option<String>,
+            Option<Expression>,
+            Option<Vec<Expression>>,
+        )>,
+    pub field_storage_names: HashMap<String, String>,
+}
+
+impl crate::Compiler {
+    /// Reserve this class's type slot and publish its declared field order,
+    /// granting the SEAM 3 licence when the class qualifies.
+    ///
+    /// Idempotent by construction: `reserve_type_slot` returns the existing
+    /// slot, publication fills an empty field list or verifies the one already
+    /// there, and both licence sets are `HashSet`s. So this may run in the
+    /// declaration pre-pass AND again from `compile_class` without the second
+    /// call changing anything.
+    pub(crate) fn publish_class_storage(
+        &mut self,
+        class: &crate::primitives::class_normalize::NormalClass,
+    ) -> ClassStorageLayout {
+        let cname = self.canon(&class.name);
+        // Reserve the type-table slot NOW, before the constructor is compiled,
+        // so `struct.new_default $T` inside it can name this class.
+        // `register_type` fills the rest of this entry in later.
+        let type_slot = crate::primitives::classes::reserve_type_slot(&mut self.chunks, &cname);
+        // Pass 1 (ported to NormalClass): collect fields + initialisers
+        // from instance_fields / static_fields, then add backing fields
+        // for auto-properties. Reads NormalClass directly; no longer
+        // iterates the reconstructed member list.
+        // When properties and methods share the object namespace only in
+        // some languages, a property whose name collides with a method needs
+        // a distinct slot (see `separate_property_method_namespace`).
+        let colliding_method_names: std::collections::HashSet<String> =
+            if self.separate_property_method_namespace() {
+                class
+                    .instance_methods
+                    .iter()
+                    .map(|method| self.canon(&method.source_name))
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+        let mut field_storage_names: HashMap<String, String> = HashMap::new();
+        let field_storage_slot_name = |compiler: &Self,
+                                       field_name: &str,
+                                       method_names: &std::collections::HashSet<String>|
+         -> String {
+            let canon = compiler.canon(field_name);
+            if compiler.separate_property_method_namespace() && method_names.contains(&canon)
+            {
+                format!("__prop${}", canon)
+            } else {
+                compiler.js_member_storage_name_for_class(&class.name, field_name)
+            }
+        };
+
+        let mut fields: Vec<String> = Vec::new();
+        let mut field_inits: Vec<(
+            String,
+            Option<String>,
+            Option<Expression>,
+            Option<Vec<Expression>>,
+        )> = Vec::new();
+        let mut static_field_inits: Vec<(
+            String,
+            Option<String>,
+            Option<Expression>,
+            Option<Vec<Expression>>,
+        )> = Vec::new();
+        for f in &class.instance_fields {
+            let field_canon = self.canon(&f.name);
+            // Field hiding (java/C#/VB): a field that shadows an ancestor's
+            // gets a declaring-class-qualified slot so both survive on the
+            // object and access resolves by the reference's declared type.
+            //
+            // A PRIVATE field takes the same slot for a different reason, and
+            // in every language that has private rather than only the ones
+            // opting into `new`-hiding: an ancestor's private field is not
+            // visible to this class at all, so a same-named field here is a
+            // DIFFERENT field and must not share storage. Without this, `B`'s
+            // `private $x` and `D`'s `private $x` collapsed into one slot —
+            // php printed `D D` where php prints `B D`, and java/C#/VB read
+            // the same way.
+            //
+            // This is the first reader `Access::Private` has ever had. Five
+            // normalizers (php/java/csharp/vb/ruby) have been computing it
+            // from `modifiers.visibility` and the compiler discarded it —
+            // §1a of flexclassplan, in a different field.
+            //
+            // ⛔ Unless the language's OWN private storage already claimed the
+            // field. A JS `#x` resolves to `__js_private_<class>.x`, which is
+            // ALREADY class-keyed — and it is a separate namespace with its
+            // own accessors and brand check, not a visibility level. Taking it
+            // over here renamed the slot out from under that path and threw on
+            // any subclass redeclaring the same `#x`. Storage identity and
+            // reflective hiding are two properties; this owns only the first.
+            let already_class_keyed = self
+                .js_private_member_storage_name_for_class(&class.name, &f.name)
+                .is_some();
+            let fname = if (self.directives().field_shadowing
+                == Some(vybe_ast::FieldShadowing::Hide)
+                || (f.access == Access::Private && !already_class_keyed))
+                && self.field_hides_ancestor(class.parent.as_deref(), &field_canon)
+            {
+                format!("__hide_{}${}", self.canon(&class.name), field_canon)
+            } else {
+                field_storage_slot_name(self, &f.name, &colliding_method_names)
+            };
+            if fname != field_canon {
+                field_storage_names.insert(field_canon.clone(), fname.clone());
+            }
+            fields.push(fname.clone());
+            field_inits.push((
+                fname,
+                f.type_hint.clone(),
+                f.init.clone(),
+                f.array_bounds.clone(),
+            ));
+        }
+
+        // ▶▶ CONSTRUCTOR-ASSIGNED FIELDS — `this.<literal> = …` IS a declared
+        // shape, and leaving it out is why an engine rejects our classes.
+        //
+        // Measured: `class A { constructor(x){ this.x = x; } }` published
+        // `TypeEntry.fields` EMPTY, so the emitted struct type had zero fields
+        // while its own code wrote `x` — V8: `invalid field index: 0`. A class
+        // that declares `a = 1` in the body was already fine (`emitted: a, b`),
+        // so this is the one shape the census was missing, not "js is dynamic".
+        //
+        // Only a LITERAL member name is added. `this[k] = v` is a computed key
+        // with no static shape and stays out — that is the genuine property-bag
+        // case, and it is far narrower than a whole language.
+        for ctor in &class.constructors {
+            let mut assigned: Vec<String> = Vec::new();
+            collect_this_assigned_fields(&ctor.body, &mut assigned);
+            for a in assigned {
+                let canon_a = self.canon(&a);
+                let stored = field_storage_names
+                    .get(&canon_a)
+                    .cloned()
+                    .unwrap_or(canon_a);
+                if !fields.contains(&stored) {
+                    fields.push(stored);
+                }
+            }
+        }
+        for f in &class.static_fields {
+            // The DECLARATION side of the same distinction — both ends must
+            // agree on the key or the static slot is written under one name and
+            // read under another.
+            let fname = self.js_member_storage_name_for_static(&class.name, &f.name);
+            static_field_inits.push((
+                fname,
+                f.type_hint.clone(),
+                f.init.clone(),
+                f.array_bounds.clone(),
+            ));
+        }
+        for p in &class.properties {
+            let prop_canon = self.canon(&p.source_name);
+            let prop_is_override = p
+                .getter
+                .as_ref()
+                .is_some_and(|getter| getter.is_override || getter.raw_modifiers.is_override)
+                || p.setter
+                    .as_ref()
+                    .is_some_and(|setter| setter.is_override || setter.raw_modifiers.is_override);
+            let property_storage_name = if self.directives().field_shadowing == Some(vybe_ast::FieldShadowing::Hide)
+                && !p.is_static
+                && !prop_is_override
+                && self.field_hides_ancestor(class.parent.as_deref(), &prop_canon)
+            {
+                format!("__hide_{}${}", self.canon(&class.name), prop_canon)
+            } else {
+                prop_canon.clone()
+            };
+            if property_storage_name != prop_canon {
+                field_storage_names.insert(prop_canon.clone(), property_storage_name.clone());
+            }
+
+            // Auto-properties get a backing field named like the property;
+            // the runtime reads/writes through auto-emitted __get_/__set_
+            // chunks bound later.
+            if let Some(auto_field_name) = &p.auto_field {
+                let pname_canon = if property_storage_name != prop_canon {
+                    property_storage_name.clone()
+                } else {
+                    field_storage_slot_name(self, auto_field_name, &colliding_method_names)
+                };
+                if pname_canon != self.canon(auto_field_name) {
+                    field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
+                }
+                // The PROPERTY name also resolves to the backing slot — an
+                // auto-property has plain storage and default accessors, so a
+                // direct store there IS its write semantics. Without this row
+                // `val y: Int` + `init { y = … }` found no storage for `y`
+                // and the write fell through to a global. Only auto
+                // properties: a custom accessor has no `auto_field`, so its
+                // reads/writes keep going through the accessor path.
+                if pname_canon != prop_canon {
+                    field_storage_names
+                        .entry(prop_canon.clone())
+                        .or_insert_with(|| pname_canon.clone());
+                }
+                if p.is_static {
+                    if !static_field_inits
+                        .iter()
+                        .any(|(n, _, _, _)| n == &pname_canon)
+                    {
+                        static_field_inits.push((pname_canon, None, None, None));
+                    }
+                } else if !fields.contains(&pname_canon) {
+                    fields.push(pname_canon.clone());
+                    field_inits.push((pname_canon, None, None, None));
+                }
+            } else if !p.is_static && !fields.contains(&property_storage_name) {
+                fields.push(property_storage_name.clone());
+            }
+        }
+
+        // Events need backing storage on instances so method bodies can
+        // read/invoke them via implicit-self resolution (`if (Click != null)
+        // Click();`) and subscriptions (`obj.Click += handler`) persist.
+        for m in &class.raw_extra_members {
+            if let ClassMember::Event { name: ename, .. } = m {
+                let fname = self.canon(ename);
+                if !fields.contains(&fname) {
+                    fields.push(fname.clone());
+                    field_inits.push((fname, None, None, None));
+                }
+            }
+        }
+
+        // ▶▶ SEAM 3 PREREQUISITE — publish the field list to the RESERVED type
+        // slot as soon as it is complete.
+        //
+        // `reserve_type_slot` (above) hands out the typeidx that
+        // `struct.new_default` allocates with, but pushes an entry whose
+        // `fields` is EMPTY; `register_type` fills it thousands of lines later,
+        // AFTER constructor and method bodies have been emitted. So every field
+        // access compiled in between looked the field up, found an empty list,
+        // and fell back to a string key — correct, but permanently inert.
+        //
+        // Publishing here makes the declared order visible to everything
+        // downstream. `register_type` still runs and still owns the rest of the
+        // entry; this only fills in what is already known.
+        if type_slot != 0 {
+            let idx = type_slot as usize - 1;
+            let published = match self.chunks[0].types.get_mut(idx) {
+                Some(entry) if entry.fields.is_empty() => {
+                    entry.fields = fields.clone();
+                    true
+                }
+                Some(entry) => entry.fields == fields,
+                None => false,
+            };
+            // ⛔ TWO conditions, and the second is the one that bites.
+            //
+            // 1. THIS compiler authored the field order (`published`).
+            // 2. The class has NO PARENT.
+            //
+            // (2) is not about fields at all — it is about ALLOCATION. Under
+            // the base-constructor model the most-derived constructor does not
+            // allocate: it delegates to the base, which allocates with the
+            // BASE's typeidx. So a derived class's instance carries the base's
+            // arity while its own constructor indexes against the derived
+            // type's field list. `Dog(name)` allocates as `Animal`
+            // (`struct.new_default 23`) and then writes `struct.set type=24
+            // field=0` — a slot the object does not have.
+            //
+            // Measured by Rook: 23 regressions across VB and C#, every one
+            // inheritance-shaped, zero exceptions. dart and js — the corpora
+            // this was gated on — exercise far less class inheritance, so the
+            // gate was blind to the axis rather than wrong.
+            //
+            // ⚠ Since the indexed write now GROWS rather than traps, this would
+            // be a SILENT wrong-slot write rather than a failure. Withholding
+            // the licence is not a conservatism, it is the difference between a
+            // caught bug and a corrupt object.
+            //
+            // ▶▶ Destination is the invariant `indexed_field`'s docstring
+            // already states: grant the licence on a fact about the
+            // ALLOCATION — "the class's own typeidx is what
+            // `struct.new_default` actually used". M5 moves allocation to the
+            // most-derived constructor, at which point a parent stops
+            // disqualifying anything and this becomes one condition again.
+            // 3. The language does not require the field to be an own
+            //    ENUMERABLE property.
+            //
+            // ⛔ (3) is not a third kind of caution — it is the difference
+            // between two storage locations and one. Indexed storage puts the
+            // value in the GC struct's `fields`, while every reflective
+            // surface (`Object.keys`, `in`, `for…in`, `JSON.stringify`, and
+            // the host's own key walk) reads the `properties` map. For a
+            // language whose declared fields ARE own properties — ECMA-262
+            // §10.2.11 performs `CreateDataPropertyOrThrow` — taking the
+            // licence makes the field readable (`d.a` is 1) and invisible
+            // (`Object.keys(d)` was `[]`, against node's `["a"]`).
+            //
+            // The tell was that adding a PARENT fixed it: same field, same
+            // initializer, opposite answers, switched by condition (2). Found
+            // by Kestrel, who measured 10 of 12 remaining js regressions on
+            // this one defect.
+            //
+            // ▶▶ This condition disappears when the host can enumerate a typed
+            // object's declared fields from `TypeEntry.fields` and merge them
+            // into the key walk. Then indexed storage is observable and the
+            // optimization comes back for every language at once. Withholding
+            // it is the correct answer only while enumeration cannot see it.
+            let has_parent = class.parent.is_some();
+            // Conditions (1) and (2) alone are ALLOCATION IDENTITY — the
+            // class's own typeidx is what `struct.new_default` used — which is
+            // all a `ref.test` needs. Recorded separately because a storage
+            // decision must not be able to withdraw it.
+            if published && !has_parent {
+                self.rtt_testable.insert(cname.clone());
+            }
+            if published && !has_parent && !self.instance_fields_are_own_properties() {
+                self.seam3_indexable.insert(cname.clone());
+            }
+        }
+        ClassStorageLayout {
+            type_slot,
+            fields,
+            field_inits,
+            static_field_inits,
+            field_storage_names,
+        }
+    }
+}
+

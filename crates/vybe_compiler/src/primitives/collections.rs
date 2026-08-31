@@ -19,7 +19,7 @@ use vybe_runtime::opcode::Op;
 // Vybe's built-in handlers, on v8 (native JS glue), or on plain
 // wasmtime with the polyfill module.
 
-fn emit_import_call(
+pub(crate) fn emit_import_call(
     chunks: &mut [Chunk],
     current: usize,
     module: &str,
@@ -370,6 +370,36 @@ pub fn emit_iter_for_of(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: [value] → [array].
 /// Generators (Continuations) use stack-switching drain (emit_next/resume).
 /// Everything else goes through iterForOf.
+/// §24.2.1.1 step 3 (`new Set`) and §24.1.1.1 step 5 (`new Map`): when the
+/// iterable is **undefined or null** the constructor returns an EMPTY
+/// collection, and `GetIterator` is never reached.
+///
+/// ⛔ SPREAD AND DESTRUCTURING DO NOT GET THIS GUARD. `[...null]` and
+/// `const [x] = null` are a TypeError (§7.4.2) — the two are different
+/// contracts and sharing one emitter is what made a missing constructor step
+/// look like a drain bug. Use this from collection CONSTRUCTORS only.
+pub fn emit_spread_iterable_for_constructor(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+
+    // null?
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    // undefined?
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let undef = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undef, 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_spread_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
     let slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
@@ -727,9 +757,91 @@ pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
+/// A NEW array of `count` copies of `value`. Stack: `[value, count]` → `[array]`.
+///
+/// The counterpart to [`emit_fill`], which needs an array to already exist.
+/// Sized-collection constructors want this: .NET's `BitArray(n, v)` and
+/// `new bool[n]`, Python's `[v] * n`, PowerShell's `@(1,2) * 3`.
+pub fn emit_repeat_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    let done = chunks[current].emit_block(line);
+    let (again, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// Fill an EXISTING array end to end. Stack: `[array, value]` → `[array]`.
+///
+/// [`emit_fill`] takes an explicit range; this is the whole-array case, which
+/// is the shape every `SetAll` member wants.
+pub fn emit_fill_all(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_i32_const(i32::MAX, line);
+    emit_import_call(chunks, current, "vybe:js-array", "fill", 4, line);
+}
+
 /// Array fill. Stack: [array, value, start, end] → [array] via `vybe:js-array.fill`.
 pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "vybe:js-array", "fill", 4, line);
+}
+
+/// Copy every element of `source` into `dest` starting at `index`.
+///
+/// Stack: `[source, dest, index]` → `[dest]`.
+///
+/// The shape every `CopyTo(array, index)` member wants, and language-neutral:
+/// a source, a destination and an offset are the whole of it. `dest` is
+/// mutated in place and handed back, so a caller that wants the collection
+/// instead drops this and reloads it.
+pub fn emit_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    // `__vybe_array_set_range(arr, index, src)` IS this loop — it already
+    // writes `arr[index + i] = src[i]` for every element of `src`. Only the
+    // operand order differs: a `CopyTo` member arrives receiver-first, so the
+    // three values are re-seated rather than a second loop being emitted.
+    let index = chunks[current].alloc_scratch(3);
+    let dest = index + 1;
+    let source = index + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dest, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dest, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_set_range", 3, line);
 }
 
 /// Array sort (in-place). Stack: [array] → [array] via the shared

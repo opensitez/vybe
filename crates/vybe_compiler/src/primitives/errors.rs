@@ -405,6 +405,13 @@ pub fn is_exception_type(name: &str) -> bool {
         | "nosuchmethoderror" | "unimplementederror" | "overflowexception"
         | "operationcanceledexception" | "taskcanceledexception"
         | "uriformatexception"
+        // These six are declared by `platforms/dotnet`'s own
+        // `EXCEPTION_HIERARCHY` and were missing here, so the two tables
+        // disagreed about the same types: `AggregateException::new(…)`
+        // answered `undefined is not callable` in every .NET frontend that
+        // reaches the intrinsic constructor rather than a synthesized class.
+        | "aggregateexception" | "arithmeticexception" | "invalidcastexception"
+        | "timeoutexception" | "argumentoutofrangeexception" | "objectdisposedexception"
         // PHP
         | "runtimeexception" | "logicexception" | "domainexception"
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
@@ -544,6 +551,75 @@ pub fn emit_exception_new_finalize_linked(
     let kind = exc_name.trim();
     if ecma_error_shape && has_js_error_anchor(kind) {
         emit_finish_js_error_instance(chunk, kind, line);
+    }
+}
+
+/// The SECOND constructor argument, attached to an exception already in
+/// `exc_slot`.
+///
+/// The languages disagree about what it is: .NET's
+/// `Exception(message, innerException)` hands over an exception, ECMA-262
+/// §20.5.1.1 hands over an options object carrying `cause`. The two are
+/// DISJOINT at run time — an options bag is not an exception — so the test is
+/// the same question the compiler's overload resolution asks, just later, and
+/// no directive or language name has to decide it.
+///
+/// An exception is recognised by the `__exception_type` stamp every exception
+/// built here carries. It is stored under BOTH names because they are one
+/// concept with two spellings: `.NET` reads `InnerException`, ECMA reads
+/// `cause`, and a program that catches across the boundary reads whichever its
+/// own language spells.
+pub fn emit_attach_second_ctor_arg(chunk: &mut Chunk, exc_slot: u16, arg_slot: u16, line: u32) {
+    let type_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__exception_type"),
+        &class_slots::PlainNames,
+    );
+    let cause_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("cause"),
+        &class_slots::PlainNames,
+    );
+    let inner_key = class_slots::resolve(
+        &class_slots::ClassSlot::internal("InnerException"),
+        &class_slots::PlainNames,
+    );
+
+    let payload = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &type_key,
+        class_slots::Dest::Stack,
+        line,
+    );
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    // An exception: it IS the inner one.
+    chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    chunk.emit_else(line);
+    // An options bag: the inner one is its `cause`, if it has one.
+    chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &cause_key,
+        class_slots::Dest::Stack,
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, payload, line);
+
+    for key in [&inner_key, &cause_key] {
+        chunk.emit_op_u16(Op::LOCAL_GET, exc_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, payload, line);
+        class_slots::emit_class_set(
+            chunk,
+            class_slots::ObjSource::Stack,
+            key,
+            class_slots::ValueSource::Stack,
+            line,
+        );
     }
 }
 

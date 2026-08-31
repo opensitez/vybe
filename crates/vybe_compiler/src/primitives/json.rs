@@ -132,6 +132,64 @@ fn push_is_object(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
 }
 
+/// Push the RFC 8259 KIND of the value in `value_slot`, as one of the six
+/// canonical lowercase tags: `object` `array` `string` `number` `boolean`
+/// `null`. Consumes nothing; leaves a string.
+///
+/// The tag set is the JSON data model's own, not any language's vocabulary —
+/// .NET spells the same six (and splits `boolean` into `True`/`False`), Python
+/// spells them `dict`/`list`/`str`/`int|float`/`bool`/`None`, PHP spells them
+/// differently again. A caller maps the tag to whatever its dialect calls it;
+/// putting any one of those spellings here would be the per-language table this
+/// crate exists to avoid.
+///
+/// ⛔ ORDER MATTERS. `null` is tested FIRST because every other predicate below
+/// answers false for it and the fallthrough would call it an object. `array` is
+/// tested before the object fallthrough for the same reason — an array IS an
+/// object to `push_is_object`.
+pub fn emit_value_kind(chunk: &mut Chunk, value_slot: u16, line: u32) {
+    fn test_kind(chunk: &mut Chunk, value_slot: u16, module: &str, line: u32) {
+        lget(chunk, value_slot, line);
+        let idx = chunk.add_import(format!("wasm:js-{module}"), "test");
+        chunk.emit_call(idx, 1, line);
+    }
+    // null?
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "null", line);
+    chunk.emit_else(line);
+    // string?
+    test_kind(chunk, value_slot, "string", line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "string", line);
+    chunk.emit_else(line);
+    // number?
+    test_kind(chunk, value_slot, "number", line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "number", line);
+    chunk.emit_else(line);
+    // boolean?
+    test_kind(chunk, value_slot, "boolean", line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "boolean", line);
+    chunk.emit_else(line);
+    // array?
+    lget(chunk, value_slot, line);
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    chunk.emit_call(is_array, 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "array", line);
+    chunk.emit_else(line);
+    push_str(chunk, "object", line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 // ── normalize helper ─────────────────────────────────────────────────────────
 
 /// Build the recursive `__json_normalize(value, default, sortKeys, props)`

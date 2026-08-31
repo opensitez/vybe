@@ -171,7 +171,63 @@ fn make_runtime_error(message: &str) -> Value {
     Value::Object(crate::heap::alloc(obj))
 }
 
+/// A catchable ECMA `TypeError`.
+///
+/// ⛔ ECMA-262 §7.3.14 Call: *"If IsCallable(F) is false, throw a TypeError
+/// exception."* A **throw**, not a trap — user code catches it and execution
+/// continues. Returning a `VMError` here made `Object.create(null)()`
+/// unreachable by any `catch`, which is a language-level error escaping as a
+/// VM condition. Same shape as `make_runtime_error` above, which exists for
+/// exactly this reason.
+fn make_type_error(message: &str) -> Value {
+    let mut obj = Object::new();
+    let name = Value::String(Arc::from("TypeError"));
+    obj.properties.insert("name".into(), name.clone());
+    obj.properties.insert("__type".into(), name.clone());
+    obj.properties.insert("__exception_type".into(), name);
+    obj.properties
+        .insert("message".into(), Value::String(Arc::from(message)));
+    Value::Object(crate::heap::alloc(obj))
+}
+
 impl VM {
+    /// A catchable ECMA `TypeError`, linked to the real `TypeError.prototype`.
+    ///
+    /// ⛔ THE PROTOTYPE LINK IS NOT DECORATION — it is what `instanceof` reads.
+    /// Naming the object `TypeError` without it gives `e.constructor.name ===
+    /// "TypeError"` while `e instanceof TypeError` is FALSE, which is a
+    /// different object than the spec describes and breaks the ordinary way
+    /// user code discriminates errors. The constructor is an ordinary global,
+    /// so the prototype is reachable from here.
+    pub(crate) fn make_ecma_type_error(&self, message: &str) -> Value {
+        let err = make_type_error(message);
+        // ⛔ THE PROTOTYPE LINK IS WHAT `instanceof` READS, AND THE ANCHOR IS
+        // `__ctor_TypeError`, NOT `TypeError`. `js_instanceof` is
+        // OrdinaryHasInstance (§7.3.22): it walks `[[GetPrototypeOf]]` and
+        // compares identity with `ctor.prototype`. An error that merely NAMES
+        // itself `TypeError` answers `e.constructor.name === "TypeError"` while
+        // `e instanceof TypeError` is FALSE.
+        //
+        // ⛔ DO NOT STAMP `__type` / `__types` INSTEAD. That short-circuit used
+        // to stand in `js_instanceof` and was deleted as a forgery — the
+        // properties are ordinary and writable, so `({__type:"A"}) instanceof A`
+        // was true — and as a layering violation, since they are vybe stamps
+        // and that file implements ECMA only. Adding them back here would
+        // reintroduce it from the other side.
+        let proto = self
+            .global("__ctor_TypeError")
+            .and_then(|ctor| match ctor {
+                Value::Object(o) => o.lock().ok()?.properties.get("prototype").cloned(),
+                _ => None,
+            });
+        if let (Value::Object(obj), Some(proto)) = (&err, proto) {
+            if let Ok(mut guard) = obj.lock() {
+                guard.properties.insert("__proto__".into(), proto);
+            }
+        }
+        err
+    }
+
     /// Legacy raise — every value-shaped throw (host `throw_value`, RETHROW,
     /// VM-internal errors) is a `throw` of the host `vybe:exception` tag
     /// (entity 0) with the value as its 1-ary payload.
@@ -683,28 +739,122 @@ impl VM {
                             _ => Vec::new(),
                         };
                         drop(o);
-                        let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc);
+                        // ⛔ RECEIVER FIRST, THEN THE BOUND CAPTURES, THEN THE
+                        // CALL'S OWN ARGUMENTS. Appending the stack after the
+                        // captures buried the receiver in the MIDDLE, at an
+                        // index no host function could compute: `bind` stores
+                        // `[target, this, proto, ...partials]`, so the capture
+                        // count varies with how many arguments were bound.
+                        // Measured: `f.bind(o,1)(2)` returned NaN because the
+                        // receiver was read as the target's first argument.
+                        // At the front its position is always known, and a host
+                        // function with no captures sees the same layout as
+                        // before.
+                        // ⛔ RECEIVER FIRST, THEN THE BOUND CAPTURES, THEN THE
+                        // CALL'S OWN ARGUMENTS.
+                        //
+                        // Appending the stack after the captures buries the
+                        // receiver in the MIDDLE, at an index no host function
+                        // can compute: `bind` stores
+                        // `[target, this, proto, ...partials]`, so the capture
+                        // count varies with how many arguments were bound, and
+                        // `f.bind(o,1)(2)` read the receiver as the target's
+                        // first argument.
+                        //
+                        // At the FRONT the position is always known. Every bound
+                        // host function therefore reads its captures at
+                        // `ctx.receiver_argc() + i` — `HostContext::capture` —
+                        // and a host function with no captures sees the layout
+                        // it always saw.
+                        // ▶▶ THE RECEIVER IS ARGUMENT 0, ON EVERY CALL, WITHOUT
+                        // EXCEPTION. Under `ReceiverAbi::Parameter` a host
+                        // callee's argument 0 is its receiver — always, not
+                        // sometimes. A call that has no receiver of its own
+                        // supplies `undefined`, which is what §10.2.1.1
+                        // OrdinaryCallBindThis binds for an ordinary call;
+                        // "absent" and "undefined" are not the same slot.
+                        //
+                        // ⛔ THIS USED TO VARY PER CALL, AND THAT WAS NOT
+                        // COMPLIANT. A bytecode call site pushed a receiver
+                        // while host plumbing invoking the same function with
+                        // arguments it built itself did not, so one funcref
+                        // signature meant two different things and the callee
+                        // was handed a side flag telling it which. A funcref's
+                        // type IS `[params] → [results]` and `call_ref`
+                        // type-checks against exactly that: an argument whose
+                        // meaning depends on the caller is the same untypeable
+                        // hidden prepend as `__bound_args`, and no stock engine
+                        // can represent it. It is not ECMA either — §7.3.14
+                        // `Call(F, V, argumentsList)` passes the thisArgument
+                        // SEPARATELY from the argument list, never as a
+                        // positional slot that might be something else.
+                        //
+                        // `from_host` survives ONLY as the caller's own
+                        // bookkeeping about what is on the STACK — whether a
+                        // receiver is already there to move, or one must be
+                        // synthesised. It no longer reaches the callee, and the
+                        // callee no longer has a question to ask.
+                        // ⛔ THE CALLEE'S TYPE DECIDES, NOT THE CALL. A host
+                        // function either declares a receiver as parameter 0
+                        // (`ecma:array.join` opens `array_of(args, 0)`) or has
+                        // none at all (`encodeURIComponent(s)`). Filling the
+                        // slot for a function whose type has no such parameter
+                        // is what gave one function TWO shapes — one argument
+                        // when called directly, a receiver and then one when
+                        // handed to `map` — and the callee then had to ask the
+                        // CALL which reality it was in. That question is now
+                        // answered once, here, from the declaration.
+                        let universal = self.module_receiver_abi()
+                            == crate::chunk::ReceiverAbi::Parameter;
+                        let declares_receiver = self.host_fn_declares_receiver(idx);
+                        let param_abi = universal && declares_receiver;
+                        let receiver_on_stack = !from_host && argc > 0;
+                        // ⛔ THE LEADING STACK VALUE IS ALWAYS CONSUMED. Under
+                        // the universal ABI the call site fills a receiver slot
+                        // on EVERY call (§10.2.1.1 binds `undefined` when there
+                        // is no receiver of its own), so a callee whose type
+                        // declares none does not keep that value — it is
+                        // DROPPED, not passed on as a first argument. Gating
+                        // this on the declaration instead left the receiver in
+                        // front of the real arguments and `const g = eval;
+                        // g("3+4")` evaluated the receiver.
+                        let stack_args: Vec<Value> =
+                            self.stack[self.stack.len() - argc..].to_vec();
+                        let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc + 1);
+                        if param_abi {
+                            // A bytecode call site put the receiver on the
+                            // stack. Host plumbing did not, so the receiver is
+                            // whatever the host explicitly bound for this call
+                            // (`VM::host_receiver`), which defaults to
+                            // `Undefined` — the §10.2.1.1 thisArgument of an
+                            // ordinary call. Either way the SLOT is filled
+                            // exactly once, here, and nothing downstream has to
+                            // ask which kind of call it was.
+                            args.push(if receiver_on_stack {
+                                stack_args[0].clone()
+                            } else {
+                                self.host_receiver.clone()
+                            });
+                        }
                         args.extend(bound);
-                        args.extend(self.stack[self.stack.len() - argc..].iter().cloned());
+                        args.extend(
+                            stack_args
+                                .iter()
+                                .skip(usize::from(receiver_on_stack))
+                                .cloned(),
+                        );
                         for _ in 0..argc {
                             self.stack.pop();
                         }
                         self.stack.pop();
-                        // ⛔ THE RECEIVER IS A PROPERTY OF THE CALL. A bytecode
-                        // call site under `ReceiverAbi::Parameter` pushed one as
-                        // argument 0 (ECMA-262 §10.2.1); host plumbing invoking
-                        // this same function with arguments it constructed did
-                        // not. The host function cannot tell those apart from the
-                        // argument list, so it is told.
-                        let call_receiver_argc = usize::from(
-                            !from_host
-                                && self.module_receiver_abi()
-                                    == crate::chunk::ReceiverAbi::Parameter,
-                        );
+                        // Constant under a given module ABI, because the
+                        // layout above is now invariant. Kept only so the
+                        // remaining `user_args`/`capture` readers keep
+                        // compiling while they are converted to fixed indices;
+                        // it describes a CONSTANT, not a per-call fact.
                         let host_fn = self.host_fns[idx].clone();
                         let result = {
                             let mut ctx = self.make_host_context();
-                            ctx.call_receiver_argc = call_receiver_argc;
                             host_fn(&mut ctx, &args)
                         };
                         if let Some(exc) = self.last_exception.take() {
@@ -756,10 +906,15 @@ impl VM {
                         } else {
                             "?".into()
                         };
-                        return Err(VMError::new(format!(
-                            "Not a function in chunk '{}' (kind: {})",
-                            chunk_name, kind_name
-                        )));
+                        // §7.3.14: a non-callable callee is a THROWN
+                        // TypeError, catchable by user code — not a trap.
+                        let _ = (&chunk_name, &kind_name);
+                        let err = self.make_ecma_type_error(&format!(
+                            "{} is not a function",
+                            chunk_name
+                        ));
+                        self.raise_exception_value(err)?;
+                        return Ok(());
                     }
                 }
             }
@@ -951,8 +1106,25 @@ impl VM {
                 }
 
                 // 1b. Typed fields from TypeDef (for typed objects like Error with field layout)
+                //
+                // ⛔ NOT WHERE `properties` IS AUTHORITATIVE FOR EXISTENCE.
+                // Under a language whose declared instance fields are OWN
+                // PROPERTIES (§10.2.11 `CreateDataPropertyOrThrow`), the typed
+                // `fields` vector is not storage — `struct.new_default` sizes
+                // it from the registry, so it is a row of nulls that the
+                // property map shadows. Falling through to it after a MISS
+                // therefore resurrects a deleted field: measured, `delete c.v`
+                // left `"v" in c` false and `Object.keys(c)` correct while
+                // `c.v` answered `null` where §6.1.1 requires `undefined`.
+                //
+                // Read from the CALLING frame's chunk, not `chunks[0]`, for
+                // the same reason `module_receiver_abi` is: in a
+                // multi-language bundle `chunks[0]` belongs to whichever unit
+                // happens to be first, and a language that DOES keep its
+                // fields in that vector must not lose them because js was
+                // bundled alongside.
                 let type_id = ob.type_id;
-                if type_id > 0 {
+                if type_id > 0 && !self.calling_module_fields_are_own_properties() {
                     if let Some(td) = self.type_registry.get(type_id) {
                         if let Some(field_idx) = td.field_index(name) {
                             if let Some(v) = ob.fields.get(field_idx) {
@@ -1029,7 +1201,7 @@ impl VM {
                 // vtable keep it, and js (where members are real prototype
                 // properties) does not. Builtin receivers are unaffected — an
                 // array's methods are reached through its own prototype.
-                if type_id > 0 && !self.calling_module_members_on_prototype() {
+                if type_id > 0 {
                     if let Some(method) = self.type_registry.resolve_method(type_id, name) {
                         return Ok(self.method_to_value(method));
                     }
@@ -1055,9 +1227,8 @@ impl VM {
                     });
                 drop(ob);
 
-                let class_vtable_silenced =
-                    explicit_type && self.calling_module_members_on_prototype();
-                if !inferred_type.is_empty() && !class_vtable_silenced {
+                let _ = explicit_type;
+                if !inferred_type.is_empty() {
                     if let Some(tid) = self.type_registry.get_id(&inferred_type) {
                         if let Some(method) = self.type_registry.resolve_method(tid, name) {
                             return Ok(self.method_to_value(method));

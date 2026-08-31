@@ -101,8 +101,17 @@ pub struct ClassType {
     /// failure family as flexclassplan §1b's `cross_language_aliases`, which
     /// was deleted for the same reason.
     pub methods: Vec<MethodDef>,
-    /// Constructor definition.
-    pub constructor: Option<ConstructorDef>,
+    /// Constructor definitions, in registration order.
+    ///
+    /// ⛔ A LIST, BECAUSE A TYPE HAS OVERLOADED CONSTRUCTORS. This was a single
+    /// `Option` and `with_constructor` OVERWROTE, so every type registering more
+    /// than one kept only the last — invisible to dispatch, which asks the tree
+    /// for one backing, and fatal to reflection, which must match
+    /// `GetConstructor(Type[])` against the real set.
+    ///
+    /// [`ClassType::constructor`] answers the LAST, which is exactly what the
+    /// overwriting field held, so dispatch is unchanged by the widening.
+    pub constructors: Vec<ConstructorDef>,
     /// Optional destructor/finalizer-like method.
     pub destructor: Option<MethodDef>,
 }
@@ -123,6 +132,20 @@ pub struct MethodDef {
     /// User-visible arity. For instance methods this excludes the implicit `this`.
     pub arity: u8,
     pub body: MethodBody,
+    /// Declared parameter types, in Component Model `ValType`s.
+    ///
+    /// An arity says how MANY, never WHAT — and a descriptor that states only a
+    /// count is not a typed interface member. Overload selection by type
+    /// (`GetMethod(name, Type[])`) and reflection's `ParameterType` both need
+    /// the types, so a platform that has them declares them here rather than in
+    /// a table beside the descriptor: the seeder reads descriptors as DATA
+    /// across a crate boundary and cannot call back into the platform.
+    ///
+    /// `None` means undeclared — the arity is all this leaf carries, which is
+    /// what every registration starts as.
+    pub params: Option<Vec<super::component::ValType>>,
+    /// Declared result type, when the platform states one.
+    pub result: Option<super::component::ValType>,
 }
 
 /// The body for a class method.
@@ -142,6 +165,8 @@ pub struct ConstructorDef {
     pub arity: u8,
     /// Optional backing that materializes the runtime object.
     pub backing: Option<ConstructorTarget>,
+    /// Declared parameter types. See [`MethodDef::params`].
+    pub params: Option<Vec<super::component::ValType>>,
 }
 
 /// A constructor backing can either be a host import or a canonical
@@ -334,9 +359,15 @@ impl ClassType {
             fields: Vec::new(),
             properties: Vec::new(),
             methods: Vec::new(),
-            constructor: None,
+            constructors: Vec::new(),
             destructor: None,
         }
+    }
+
+    /// The constructor dispatch uses — the LAST registered, which is what the
+    /// overwriting `Option` field held.
+    pub fn constructor(&self) -> Option<&ConstructorDef> {
+        self.constructors.last()
     }
 
     pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
@@ -368,7 +399,7 @@ impl ClassType {
     }
 
     pub fn with_constructor(mut self, constructor: ConstructorDef) -> Self {
-        self.constructor = Some(constructor);
+        self.constructors.push(constructor);
         self
     }
 
@@ -405,6 +436,8 @@ impl MethodDef {
             is_static: false,
             arity,
             body,
+            params: None,
+            result: None,
         }
     }
 
@@ -414,15 +447,39 @@ impl MethodDef {
             is_static: true,
             arity,
             body,
+            params: None,
+            result: None,
         }
+    }
+
+    /// Declare this method's parameter types. The arity is taken from them, so
+    /// the count and the types cannot disagree.
+    pub fn with_params(mut self, params: Vec<super::component::ValType>) -> Self {
+        self.arity = params.len() as u8;
+        self.params = Some(params);
+        self
+    }
+
+    /// Declare this method's result type.
+    pub fn with_result(mut self, result: super::component::ValType) -> Self {
+        self.result = Some(result);
+        self
     }
 }
 
 impl ConstructorDef {
+    /// Declare this constructor's parameter types. See [`MethodDef::with_params`].
+    pub fn with_params(mut self, params: Vec<super::component::ValType>) -> Self {
+        self.arity = params.len() as u8;
+        self.params = Some(params);
+        self
+    }
+
     pub fn new(arity: u8) -> Self {
         ConstructorDef {
             arity,
             backing: None,
+            params: None,
         }
     }
 
@@ -732,11 +789,11 @@ mod tests {
         );
 
         comp.add_import_class(
-            "dotnet.System.Windows.Forms",
+            "my:ui/widgets",
             "Button",
             button_class.clone(),
         );
-        comp.add_export_class("dotnet.System.Windows.Forms", "Button", button_class);
+        comp.add_export_class("my:ui/widgets", "Button", button_class);
 
         assert_eq!(comp.imports.len(), 2);
         assert_eq!(comp.exports.len(), 2);

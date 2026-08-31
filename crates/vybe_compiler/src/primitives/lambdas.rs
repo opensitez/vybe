@@ -156,11 +156,6 @@ impl Compiler {
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
             if !by_ref {
-                if self.ambient_this() && capture_name == "__js_this" {
-                    self.compile_expr(&Expression::new(ExprKind::This))?;
-                } else {
-                    self.emit_var_get(capture_name);
-                }
             }
         }
         self.emit_direct_callable_invoke(capture_bindings.len() as u8);
@@ -196,19 +191,23 @@ impl Compiler {
         // existing upvalue resolution is the capture; otherwise snapshot
         // the current globals into enclosing locals the arrow body's
         // upvalue resolution will find by name.
-        if self.ambient_this() && is_arrow {
-            let self_kw = self.profile.self_keyword.clone();
+        // ⛔ `new.target` IS NOT THE RECEIVER, so it must not ride the
+        // receiver's gate. This snapshot used to sit inside the
+        // `ambient_this()` block above, so flipping to
+        // `ReceiverBinding::UniversalParameter` silently stopped arrows
+        // capturing `new.target` — while `this`, which the flip genuinely does
+        // move, is correctly handled there and by
+        // `capture_receiver_for_inner_closures`. M5 moves the RECEIVER out of
+        // a module global; `__js_new_target` is a different global and M5 does
+        // not touch it.
+        //
+        // Measured: `function NT(){ this.t = (() => new.target)(); }` then
+        // `new NT().t === NT` answered false, because the arrow read the
+        // call-time global — null by then — instead of the value snapshotted
+        // where it was created. §15.3: an arrow has no `new.target` binding of
+        // its own and sees the enclosing one.
+        if is_arrow && self.ecma_new_dispatch() {
             let scope_idx = self.scopes.len() - 1;
-            let this_reachable = self.scope().resolve(&self_kw).is_some()
-                || self.scope().resolve("__js_this").is_some()
-                || (scope_idx > 0
-                    && (self.resolve_upvalue(scope_idx, &self_kw).is_some()
-                        || self.resolve_upvalue(scope_idx, "__js_this").is_some()));
-            if !this_reachable {
-                let slot = self.define_local("__js_this");
-                self.emit_global_read("__js_this");
-                self.emit_u16(Op::LOCAL_SET, slot);
-            }
             let nt_reachable = self.scope().resolve("__js_new_target").is_some()
                 || (scope_idx > 0 && self.resolve_upvalue(scope_idx, "__js_new_target").is_some());
             if !nt_reachable {
@@ -225,7 +224,25 @@ impl Compiler {
         // ACCEPT the argument to keep one uniform arity even though §10.2.11
         // says it may not observe it.
         let universal_receiver = self.universal_receiver();
-        let arity = params.len() as u8 + u8::from(universal_receiver);
+        // ⛔ ONE RECEIVER, NOT TWO. Some callers PREPEND an explicit receiver
+        // param of their own — an object-literal accessor is compiled that way
+        // so it is receiver-first like a class accessor. Under
+        // `UniversalParameter` adding another on top declared the receiver
+        // TWICE: the chunk took arity 2 for a zero-parameter getter while the
+        // caller pushed one value, so `this` resolved to slot 1 and read the
+        // shared-env slot. Measured as `get n(){ return this._n }` throwing
+        // "Cannot read properties of undefined".
+        //
+        // Deciding it HERE rather than at each call site is the point: this is
+        // the one place that knows whether a receiver local is about to be
+        // created, so no caller has to reason about the ABI.
+        let self_kw_for_params = self.profile.self_keyword.clone();
+        let receiver_already_a_param = universal_receiver
+            && params
+                .first()
+                .is_some_and(|p| p.name == self_kw_for_params);
+        let declares_own_receiver = universal_receiver && !receiver_already_a_param;
+        let arity = params.len() as u8 + u8::from(declares_own_receiver);
         let ci = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk("<lambda>", arity);
         chunk.takes_receiver = universal_receiver;
@@ -246,6 +263,26 @@ impl Compiler {
         let saved = self.current;
         self.current = ci;
         let saved_fn = self.current_func_name.replace("<lambda>".into());
+        // ⛔ BEFORE `enter_closure_frame`, WHICH TAKES SLOT 0 FOR THE SHARED
+        // ENV. Argument binding is POSITIONAL: the receiver is argument 0, so
+        // it must be the frame's FIRST local. Declared after the closure frame
+        // it landed on slot 1 while the caller still pushed it at 0, and an
+        // object-literal `get n(){ return this._n }` read the shared-env slot
+        // as its receiver — measured as "Cannot read properties of undefined".
+        //
+        // An arrow binds it to a name NOTHING resolves: §10.2.11 says `this`
+        // inside an arrow is the ENCLOSING one, reached through the existing
+        // upvalue/shared-env capture. Giving the slot the self keyword would
+        // shadow that capture with the caller's receiver and silently invert
+        // the one rule arrows exist to state.
+        if declares_own_receiver {
+            let receiver_name = if is_arrow {
+                "__js_arrow_ignored_receiver".to_string()
+            } else {
+                self.profile.self_keyword.clone()
+            };
+            self.define_local(&receiver_name);
+        }
         let frame_books = self.enter_closure_frame(&parent_shared_env_names);
         // ECMA-262 §11.2.2: strict mode is inherited by nested functions and
         // additionally turned on by a `"use strict"` directive prologue in
@@ -269,22 +306,8 @@ impl Compiler {
                 );
             }
         }
-        // ⛔ BEFORE the parameters — argument binding is positional, and the
-        // receiver is argument 0.
-        //
-        // An arrow binds it to a name NOTHING resolves: §10.2.11 says `this`
-        // inside an arrow is the ENCLOSING one, reached through the existing
-        // upvalue/shared-env capture below. Giving the slot the self keyword
-        // would shadow that capture with the caller's receiver and silently
-        // invert the one rule arrows exist to state.
-        if universal_receiver {
-            let receiver_name = if is_arrow {
-                "__js_arrow_ignored_receiver".to_string()
-            } else {
-                self.profile.self_keyword.clone()
-            };
-            self.define_local(&receiver_name);
-        }
+        // The receiver was declared above, ahead of `enter_closure_frame`, so
+        // that it occupies slot 0. Parameters follow it.
         for p in params {
             self.define_source_local_typed(&p.name, p.type_hint.clone());
             if let Some(ref default) = p.default {
@@ -328,24 +351,17 @@ impl Compiler {
         self.closure_env_slot();
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
-        if self.ambient_this() && self.scopes.len() > 1 {
-            let parent_has_this = self.scopes.len() > 2
-                && self.scopes[self.scopes.len() - 2]
-                    .resolve("__js_this")
-                    .is_some();
-            if !parent_has_this {
-                let body_has_this = match body {
-                    LambdaBody::Block(stmts) => crate::primitives::body_contains_this(stmts),
-                    LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr),
-                };
-                if body_has_this {
-                    self.emit_global_read("__js_this");
-                    let this_local = self.define_local("__js_this");
-                    self.emit_u16(Op::LOCAL_SET, this_local);
-                    self.current_closure_captured_locals
-                        .insert("__js_this".to_string());
+        // One decision, one place — see `capture_receiver_for_inner_closures`.
+        // This site compiles OBJECT-LITERAL methods, and it is the copy that
+        // was missing the `UniversalParameter` arm.
+        if self.scopes.len() > 1 {
+            let closures_use_this = match body {
+                LambdaBody::Block(stmts) => {
+                    crate::primitives::closures_in_body_reference_this(stmts)
                 }
-            }
+                LambdaBody::Expr(expr) => crate::primitives::expr_has_closure_with_this(expr),
+            };
+            self.capture_receiver_for_inner_closures(closures_use_this, declares_own_receiver);
         }
 
         if !self.current_closure_captured_locals.is_empty() {
@@ -651,17 +667,12 @@ impl Compiler {
         if parts.len() >= 2 {
             let method_name = parts.last().expect("parts len checked");
             let class_name = parts[..parts.len() - 1].join(".");
-            if let Some(member) = vybe_runtime::namespaces::lookup_type_static_member(
-                &self.profile.namespaces.type_scopes,
-                &class_name,
-                method_name,
-                self.tree_fold(),
-            ) {
+            if let Some(member) = self.tree_static_member(&class_name, method_name) {
                 if let Some(target) =
-                    vybe_runtime::namespaces::select_overload(&member, args.len() as u8)
+                    crate::primitives::namespaces::select_overload(&member, args.len() as u8)
                 {
                     match target {
-                        vybe_runtime::namespaces::NamespaceNode::CommonEmit(emit) => {
+                        crate::primitives::namespaces::NamespaceNode::CommonEmit(emit) => {
                             if (emit.eq_ignore_ascii_case("dotnet.console_writeline")
                                 || emit.eq_ignore_ascii_case("dotnet.console_write"))
                                 && args.len() == 1
@@ -676,7 +687,7 @@ impl Compiler {
                             self.emit_common(emit, args.len() as u8, line);
                             return Ok(true);
                         }
-                        vybe_runtime::namespaces::NamespaceNode::Fn {
+                        crate::primitives::namespaces::NamespaceNode::Fn {
                             module,
                             func,
                             arity,

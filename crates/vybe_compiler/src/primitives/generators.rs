@@ -917,9 +917,36 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
         line,
     );
     chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line); // reuse done_slot for length
+    // ⛔ §7.4.2 GetIterator: a value with NO @@iterator and NO `length` is NOT
+    // ITERABLE, and spreading or destructuring it is a TypeError — never an
+    // empty array. Exiting the outer block here returned `result` untouched, so
+    // `[...5]`, `[...{}]` and `[...null]` all answered `[]` and `const [x] = 5`
+    // bound `undefined`, where V8 throws. The emitted module has to behave the
+    // same under V8 as under the VM, so a silent exit is a DIVERGENCE, not a
+    // leniency.
+    //
+    // ⛔ COLLECTION CONSTRUCTORS DO NOT COME THROUGH HERE UNGUARDED.
+    // §24.2.1.1 step 3 returns an EMPTY set for an undefined/null iterable
+    // before `GetIterator` is ever reached; that step lives in
+    // `collections::emit_spread_iterable_for_constructor`, which every `new
+    // Set` / `new Map` path uses. Putting it here instead would make
+    // `[...null]` wrongly succeed — the two are different contracts.
+    //
+    // ⛔ AND IT SURFACES LATENT ARITY BUGS RATHER THAN CAUSING THEM.
+    // `ClassType::with_constructor` OVERWRITES, so a class registering two
+    // arities keeps only the last body and runs it for both. `new HashSet<T>()`
+    // reached the arity-1 draining body with nothing on the stack; the silent
+    // exit swallowed it and the corpus went green on a fake pass. 21 classes
+    // still register more than one constructor.
     chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_br_if(1, line); // no length → exit outer_block (this-if=0, outer_block=1)
+    chunk.emit_if(line);
+    crate::primitives::class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const("value is not iterable", line);
+    crate::primitives::errors::emit_exception_new_finalize(chunk, "TypeError", line);
+    crate::primitives::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
 
     // Loop from 0 to length
     let idx_slot = step_slot; // reuse step_slot for index counter

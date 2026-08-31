@@ -22,21 +22,10 @@ impl Compiler {
     /// — the language folds case, so the tree may retry a miss folded. Both
     /// answers come from the `callable_case` directive, never from a language
     /// name, so a new folding language needs no code here.
-    pub(crate) fn tree_fold(&self) -> vybe_runtime::namespaces::Fold {
+    pub(crate) fn tree_fold(&self) -> crate::primitives::namespaces::Fold {
         super::scope::tree_fold(self.directives())
     }
 
-    /// Is the receiver ambient `this` here, rather than an explicit leading
-    /// parameter?
-    ///
-    /// Reads the directive in force, so the program declares it and reflection
-    /// can see it. This replaced `profile.ambient_this_binding`; keeping the
-    /// question behind one accessor is what stops the 19 call sites that ask it
-    /// from each spelling the comparison themselves — the failure mode
-    /// `case_sensitive` had, where 23 of 33 sites forgot.
-    pub(crate) fn ambient_this(&self) -> bool {
-        self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::Ambient)
-    }
 
     /// Does EVERY callable in this region take a leading receiver parameter —
     /// ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`?
@@ -162,6 +151,37 @@ impl Compiler {
     /// of slots cached beyond the scope that declared them — everything else either lives
     /// below `scope.next_slot` or is allocated and consumed inside one
     /// statement.
+    /// Lower `local_count` back to `mark`, honouring the same floors
+    /// `compile_stmt`'s wrapper does.
+    ///
+    /// ⛔ SCRATCH LOCALS ARE RECLAIMED PER STATEMENT, and anything that
+    /// compiles a sequence WITHOUT going through `compile_stmt` has to do it
+    /// itself. The iterative elif chain compiles each branch's CONDITION
+    /// directly, so without this the scratch from 16154 branches accumulated
+    /// and `alloc_scratch` overflowed its `u16` — "attempt to add with
+    /// overflow" rather than a diagnostic.
+    fn reclaim_scratch_to(&mut self, mark: u16) {
+        let cur = self.current;
+        let floor = self.scopes.last().map_or(0, |s| s.next_slot);
+        let mut restore = mark.max(floor);
+        if let Some(dup_slot) = self.chunks[cur].dup_slot {
+            restore = restore.max(dup_slot + 1);
+        }
+        if let Some(&max_capture) = self.capture_locals.values().max() {
+            restore = restore.max(max_capture + 1);
+        }
+        if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
+            restore = restore.max(i64_slot + 1);
+        }
+        let peak = self.chunks[cur].local_count;
+        if peak > self.chunks[cur].scratch_high_water {
+            self.chunks[cur].scratch_high_water = peak;
+        }
+        if restore < peak {
+            self.chunks[cur].local_count = restore;
+        }
+    }
+
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         // The chunk is captured BEFORE the statement: a nested function or
         // lambda declaration switches `self.current` while it compiles, so
@@ -205,228 +225,28 @@ impl Compiler {
         result
     }
 
-    fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), String> {
-        self.line = stmt.span.start_line;
-        // Runtime-prelude boundary marker: a frontend that prepends a prelude
-        // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
-        // before the user's own code. Record the current bytecode offset on the
-        // chunk (the `<script>`) for the debugger's prelude-skip, and emit
-        // nothing. Generic — not gated on any language name.
-        if let StmtKind::Expr(expr) = &stmt.kind {
-            if let ExprKind::Lit(Literal::Str(s)) = &expr.kind {
-                if s == "__vybe_user_code_start__" {
-                    let off = self.chunks[self.current].code.len() as u32;
-                    self.chunks[self.current].user_code_offset = Some(off);
-                    return Ok(());
-                }
-            }
-        }
-        match &stmt.kind {
-            StmtKind::Select { arms, default } => {
-                self.emit_select(arms, default.as_deref())?;
-            }
+    /// The `Assign` arm of `compile_stmt_inner`, lifted out of it.
+    ///
+    /// ⛔ THE RECURSIVE FRAME IS THE UNION OF EVERY ARM. `compile_stmt_inner`
+    /// is one 3937-line function with 67 arms and 433 locals, and it recurses
+    /// into itself for every nested statement — so in a debug build (where
+    /// rustc does not reuse slots across arms) each AST level cost ~115 KB and
+    /// 80 nested `(block …)` aborted the process. Lifting an arm out removes
+    /// its locals from that union for EVERY level of the recursion, not just
+    /// the one executing it.
+    ///
+    /// `#[inline(never)]` is load-bearing: inlining would fold the frame
+    /// straight back in and undo the extraction.
+    #[inline(never)]
+    #[allow(clippy::ptr_arg)]
+    fn compile_assign_stmt(
+        &mut self,
+        // `&Vec`, not `&[…]`: the arm's body calls `targets.as_slice()`, which
+        // only exists on the Vec.
+        targets: &Vec<Expression>,
+        value: &Expression,
+    ) -> Result<(), String> {
 
-            // ── Declared policy ─────────────────────────────────────────
-            // Emits no code: it changes how the statements after it compile.
-            StmtKind::Directive { set, scope } => {
-                self.apply_directive(set, *scope);
-            }
-            // ── Expression statement ────────────────────────────────────
-            StmtKind::Expr(expr) => {
-                match &expr.kind {
-                    ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_named_type")
-                            && args.len() == 2 =>
-                    {
-                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
-                            let type_name = match &args[1].value.kind {
-                                ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
-                                ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-                                _ => None,
-                            };
-                            if let Some(type_name) = type_name {
-                                self.source_type_aliases.insert(self.canon(name), type_name);
-                            }
-                        }
-                        return Ok(());
-                    }
-                    ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt")
-                            && args.len() == 2 =>
-                    {
-                        return self.compile_vb_fixed_string_stmt(
-                            &args[0].value,
-                            &args[1].value,
-                            false,
-                        );
-                    }
-                    ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_rset_stmt")
-                            && args.len() == 2 =>
-                    {
-                        return self.compile_vb_fixed_string_stmt(
-                            &args[0].value,
-                            &args[1].value,
-                            true,
-                        );
-                    }
-                    ExprKind::Call { callee, args, .. }
-                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt")
-                            && args.len() == 4 =>
-                    {
-                        return self.compile_vb_mid_stmt(
-                            &args[0].value,
-                            &args[1].value,
-                            &args[2].value,
-                            &args[3].value,
-                        );
-                    }
-                    ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") =>
-                    {
-                        return self.compile_vb_err_raise_stmt(args);
-                    }
-// Bare identifier that's a known function → call with 0 args
-                    ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
-                        let saved_js_this = self.begin_receiver_bind("__js_stmt_prev_this");
-                        if self.ambient_this() {
-                            let line = self.line;
-                            common::expressions::emit_undefined(self.chunk(), line);
-                            self.bind_receiver_from_stack(saved_js_this);
-                        }
-                        self.emit_var_get(name);
-                        self.emit_direct_callable_invoke(0);
-                        if saved_js_this.is_active() {
-                            let result_slot = self.define_local("__js_stmt_result");
-                            self.emit_u16(Op::LOCAL_SET, result_slot);
-                            self.end_receiver_bind(saved_js_this);
-                            self.emit_u16(Op::LOCAL_GET, result_slot);
-                        }
-                        self.emit(Op::DROP);
-                    }
-                    // JS bare member statements evaluate the property access
-                    // and discard the result; they are not implicit calls.
-                    ExprKind::Member { object, field, .. } => {
-                        if self.profile.dynamic_member_access {
-                            self.compile_expr(expr)?;
-                            self.emit(Op::DROP);
-                            return Ok(());
-                        }
-                        self.compile_expr(object)?;
-                        let field_name = self.canon(field);
-                        let prop = self
-                            .resolve_slot_interned(&class_slots::ClassSlot::internal(field_name));
-                        inst!(self, core_wasm::dup);
-                        let line = self.line;
-                        class_slots::emit_class_get(
-                            self.chunk(),
-                            class_slots::ObjSource::Stack,
-                            &prop,
-                            class_slots::Dest::Stack,
-                            line,
-                        );
-                        let fn_tmp = self.define_local("__fn");
-                        self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                        let obj_tmp = self.define_local("__obj");
-                        self.reserve_local_slot(obj_tmp);
-                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_direct_callable_invoke(1);
-                        self.emit(Op::DROP);
-                    }
-                    _ => {
-                        // ⛔ THE `DROP` IS CONDITIONAL ON SOMETHING HAVING BEEN
-                        // PUSHED. An expression statement discards its value,
-                        // but a compile-time DIRECTIVE spelled as a call —
-                        // `__wast_register_struct_type`, `__wast_register_func_type`,
-                        // and the rest of that family — emits no bytecode at
-                        // all, so there is no value to discard and the `DROP`
-                        // underflows the stack.
-                        //
-                        // Our VM tolerated it (a pop on an empty operand stack
-                        // is a no-op there), which is why every wast module we
-                        // emitted carried one unbalanced `drop` per registered
-                        // struct type and no test could see it. A spec engine
-                        // rejects the module outright: V8 gives
-                        // `not enough arguments on the stack for drop (need 1,
-                        // got 0)` before it reaches anything else.
-                        //
-                        // Zero bytes emitted means zero stack effect — a value
-                        // can only reach the stack via an instruction — so the
-                        // emitted LENGTH is the honest signal, and it is
-                        // language-agnostic: no name check, and every
-                        // emit-nothing directive present or future is covered
-                        // without being enumerated here.
-                        let before = self.chunks[self.current].code.len();
-                        self.compile_expr(expr)?;
-                        if self.chunks[self.current].code.len() != before {
-                            self.emit(Op::DROP);
-                        }
-                    }
-                }
-            }
-
-            // ── Block ───────────────────────────────────────────────────
-            StmtKind::Block(stmts) => {
-                let all_decls = stmts.iter().all(|s| {
-                    matches!(
-                        s.kind,
-                        StmtKind::VarDecl { .. }
-                            | StmtKind::FunctionDecl { .. }
-                            | StmtKind::ClassDecl { .. }
-                            | StmtKind::EnumDecl { .. }
-                    )
-                });
-                let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
-                // A block that declares a lexical binding (`let`/`const`/
-                // `class`) is its own scope even when it contains *only*
-                // declarations — otherwise `{ let x = 42; }` would leak `x` to
-                // the enclosing scope. (`var` is function-scoped and correctly
-                // skips this.) Driven by the profile capability, not a language
-                // name.
-                let has_lexical = self.profile.lexical_block_scope
-                    && stmts.iter().any(|s| {
-                        matches!(
-                            &s.kind,
-                            StmtKind::VarDecl {
-                                kind: VarDeclKind::Let | VarDeclKind::Const,
-                                ..
-                            } | StmtKind::ClassDecl { .. }
-                        )
-                    });
-                let make_scope = (!all_decls && !hoisted_deconstruction) || has_lexical;
-                if make_scope {
-                    self.scope_mut().begin_scope();
-                }
-                let saved_strict = self.in_strict;
-                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(stmts) {
-                    self.in_strict = true;
-                }
-                let framed = Self::stmts_have_directive(stmts);
-                if framed {
-                    self.push_directive_frame();
-                }
-                for s in stmts {
-                    self.compile_stmt(s)?;
-                }
-                if framed {
-                    self.pop_directive_frame();
-                }
-                self.in_strict = saved_strict;
-                if make_scope {
-                    self.scope_mut().end_scope();
-                }
-            }
-
-            // ── Variable declarations ───────────────────────────────────
-            StmtKind::VarDecl { declarations, kind } => {
-                for decl in declarations {
-                    self.compile_var_declarator(decl, kind)?;
-                }
-            }
-
-            // ── Assignment ──────────────────────────────────────────────
-            StmtKind::Assign { targets, value, .. } => {
                 // Rebinding a name to the null literal drops what it held —
                 // Python's `x = None`. Scoped to the literal ON PURPOSE:
                 // finalising on every rebind would fire in loops and
@@ -651,277 +471,683 @@ impl Compiler {
                         self.compile_assign_target(target)?;
                     }
                 }
-            }
+                    Ok(())
+    }
 
-            StmtKind::CompoundAssign { target, op, value } => {
-                // Same question as the `h = h + handler` form above: the
-                // TARGET decides whether `+=` is a delegate combine.
-                if matches!(op, CompoundOp::Add | CompoundOp::Sub)
-                    && self.expr_is_delegate_typed(target)
-                    && self.is_csharp_delegate_handler_expr(value)
-                {
-                    match op {
-                        CompoundOp::Add => {
-                            self.compile_expr(target)?;
-                            self.compile_expr(value)?;
-                            common::delegates::emit_combine(
-                                &mut self.chunks,
-                                self.current,
-                                self.line,
-                            );
-                            self.compile_assign_target(target)?;
-                            return Ok(());
+    /// The `StmtKind::ModuleDecl { name, members, .. }` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why: the recursive frame is the UNION of
+    /// every arm's locals, so removing one shrinks it at every nesting level.
+    #[allow(clippy::ptr_arg)]
+    #[inline(never)]
+    fn compile_module_decl_stmt(&mut self, name: &String, members: &Vec<ClassMember>) -> Result<(), String> {
+
+                let module_name = self.canon(name);
+                self.declare_class_identity(&module_name);
+                self.register_module_static_container(&module_name, members);
+                let mut member_names: Vec<(String, String)> = Vec::new();
+
+                // First pass: compile all members as globals + collect names
+                for m in members {
+                    match m {
+                        ClassMember::Method(stmt) => {
+                            if let StmtKind::FunctionDecl {
+                                name: mname,
+                                modifiers,
+                                ..
+                            } = &stmt.kind
+                            {
+                                let mn = self.canon(mname);
+                                // A module member is published under its BARE
+                                // name only when the declaration makes it
+                                // reachable from OUTSIDE the module. A bare
+                                // global is reachable from everywhere, so
+                                // publishing one for a module-private member
+                                // discards the visibility the AST already
+                                // carries on `modifiers`.
+                                //
+                                // Measured against VB.NET (dotnet SDK):
+                                //   Private member, called from another module
+                                //     -> BC30390 "not accessible in this
+                                //        context because it is 'Private'"
+                                //   Friend member, same call -> allowed
+                                // so `Friend`/`Internal` contributes and only
+                                // `Private` is withheld. `Visibility` defaults
+                                // to `Public`, so a walker that declares
+                                // nothing is unaffected.
+                                //
+                                // Qualifying instead of skipping keeps the
+                                // member fully functional: the second pass
+                                // below reads `global_name` and stamps it onto
+                                // the module object under `mn`, and calls from
+                                // inside the module resolve through that
+                                // container (`current_class` is set while
+                                // members compile) rather than through the
+                                // bare global. Only outside reachability
+                                // changes.
+                                let contributes_unqualified = matches!(
+                                    modifiers.visibility,
+                                    Visibility::Public | Visibility::Internal
+                                );
+                                let global_name =
+                                    if module_name.contains('.') || !contributes_unqualified {
+                                        format!("{module_name}.{mn}")
+                                    } else {
+                                        mn.clone()
+                                    };
+                                let mut module_stmt = stmt.clone();
+                                if let StmtKind::FunctionDecl { name, .. } = &mut module_stmt.kind {
+                                    *name = global_name.clone();
+                                }
+                                let saved_class = self.current_class.clone();
+                                let saved_implicit_self = self.current_class_implicit_self;
+                                let saved_member_static = self.current_member_is_static;
+                                self.current_class = Some(module_name.clone());
+                                self.current_class_implicit_self = false;
+                                self.current_member_is_static = true;
+                                self.compile_stmt(&module_stmt)?;
+                                self.current_class = saved_class;
+                                self.current_class_implicit_self = saved_implicit_self;
+                                self.current_member_is_static = saved_member_static;
+                                member_names.push((mn, global_name));
+                            }
                         }
-                        CompoundOp::Sub => {
-                            self.compile_expr(target)?;
+                        ClassMember::Field {
+                            name: fname, init, ..
+                        } => {
+                            if let Some(init_expr) = init {
+                                self.compile_expr(init_expr)?;
+                            } else {
+                                self.emit_null();
+                            }
+                            let cname = self.canon(fname);
+                            self.emit_global_write(&cname);
+                            self.defined_globals.insert(cname.clone());
+                            member_names.push((cname.clone(), cname));
+                        }
+                        ClassMember::Const {
+                            name: cname, value, ..
+                        } => {
+                            // Compile value once, install as global
+                            // `<Class>.<Const>` (legacy access path)
+                            // AND stamp on the class object so PHP
+                            // `Class::Const` static access (struct_get
+                            // on class) resolves to the value.
                             self.compile_expr(value)?;
-                            common::delegates::emit_remove(
-                                &mut self.chunks,
-                                self.current,
-                                self.line,
-                            );
-                            self.compile_assign_target(target)?;
-                            return Ok(());
+                            let val_slot = self.define_local("__class_const_val");
+                            self.emit_u16(Op::LOCAL_SET, val_slot);
+
+                            let cn = self.canon(cname);
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            self.emit_global_write(&cn);
+                            self.defined_globals.insert(cn.clone());
+                            member_names.push((cn.clone(), cn.clone()));
+
+                            // Stamp on class object for static access.
+                            // `name` here is the enclosing class name; on
+                            // module-level Const blocks it's the module
+                            // name, but the class object lookup will
+                            // miss harmlessly in that case.
+                            let class_canon = self.canon(name);
+                            if self.defined_globals.contains(&class_canon) {
+                                self.emit_global_read(&class_canon);
+                                self.emit_u16(Op::LOCAL_GET, val_slot);
+                                self.class_set(
+                                    class_slots::ObjSource::Stack,
+                                    &class_slots::ClassSlot::internal(cname),
+                                    class_slots::ValueSource::Stack,
+                                );
+                            }
+                        }
+                        ClassMember::NestedType(stmt) => {
+                            // Nested types get their own globals; attach them to the
+                            // module object so `Module.Type.Member` resolves through the
+                            // same shared namespace path used by classes.
+                            if let Some(cn) = match &stmt.kind {
+                                StmtKind::ClassDecl { name: cname, .. }
+                                | StmtKind::StructDecl { name: cname, .. }
+                                | StmtKind::EnumDecl { name: cname, .. }
+                                | StmtKind::InterfaceDecl { name: cname, .. }
+                                | StmtKind::ModuleDecl { name: cname, .. } => {
+                                    Some(self.canon(cname))
+                                }
+                                _ => None,
+                            } {
+                                member_names.push((cn.clone(), cn));
+                            }
+                            self.compile_stmt(stmt)?;
+                        }
+                        ClassMember::Constructor { params, body, .. } => {
+                            // Module-level constructor — compile as a function named after constructor_name
+                            let ctor_stmt = Statement::new(StmtKind::FunctionDecl {
+                                name: self.profile.constructor_name.clone(),
+                                params: params.clone(),
+                                return_type: None,
+                                body: body.clone(),
+                                modifiers: Modifiers::default(),
+                                handles: Vec::new(),
+                                is_async: false,
+                                is_generator: false,
+                                is_sub: true,
+                            });
+                            let saved_class = self.current_class.clone();
+                            let saved_implicit_self = self.current_class_implicit_self;
+                            let saved_member_static = self.current_member_is_static;
+                            self.current_class = Some(module_name.clone());
+                            self.current_class_implicit_self = false;
+                            self.current_member_is_static = true;
+                            self.compile_stmt(&ctor_stmt)?;
+                            self.current_class = saved_class;
+                            self.current_class_implicit_self = saved_implicit_self;
+                            self.current_member_is_static = saved_member_static;
+                            let ctor = self.canon(&self.profile.constructor_name);
+                            member_names.push((ctor.clone(), ctor));
                         }
                         _ => {}
                     }
                 }
-                if matches!(op, CompoundOp::NullCoalesce) {
-                    self.compile_expr(target)?;
-                    let current_slot = self.define_local("__null_coalesce_current");
-                    self.emit_u16(Op::LOCAL_SET, current_slot);
 
-                    self.emit_u16(Op::LOCAL_GET, current_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if_value(line);
-                    self.compile_expr(value)?;
-                    self.chunk().emit_else(line);
-                    self.emit_u16(Op::LOCAL_GET, current_slot);
-                    self.chunk().emit_end(line);
-                    self.compile_assign_target(target)?;
-                    return Ok(());
-                }
-                // Dynamic-typed languages: desugar `t OP= v` → `t = t OP v`
-                // and reuse the full type-aware binary routing so compound
-                // assignment dispatches BigInt/number/string identically to
-                // the plain operator (e.g. `exp >>= 1n` hits the bigint path).
-                if self.profile.dynamic_numeric_dispatch {
-                    if let Some(binop) = compound_op_to_binop(op) {
-                        let binexpr = Expression::new(ExprKind::Binary {
-                            op: binop,
-                            left: Box::new(target.clone()),
-                            right: Box::new(value.clone()),
-                        });
-                        self.compile_expr(&binexpr)?;
-                        self.compile_assign_target(target)?;
-                        return Ok(());
-                    }
-                }
-                // Load current value
-                self.compile_expr(target)?;
-                let prefer_numeric_add =
-                    matches!(op, CompoundOp::Add) && self.expr_prefers_numeric_add(target);
-                self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;
-                if prefer_numeric_add {
-                    self.emit(Op::F64_ADD);
-                } else {
-                    self.compile_compound_op(op);
-                }
-                self.compile_assign_target(target)?;
-            }
-
-            // ── If / Elif / Else (structured CF with label tracking) ──
-            StmtKind::If {
-                cond,
-                then_body,
-                elifs,
-                else_body,
-            } => {
-                let line = self.line;
-                self.compile_condition_to_i32(cond)?;
-                self.chunk().emit_if(line);
-                self.label_depth += 1;
-
-                self.scope_mut().begin_scope();
-                for s in then_body {
-                    self.compile_stmt(s)?;
-                }
-                self.scope_mut().end_scope();
-
-                if !elifs.is_empty() || else_body.is_some() {
-                    let line = self.line;
-                    self.chunk().emit_else(line);
-                    if let Some((elif_cond, elif_body)) = elifs.first() {
-                        let nested = Statement::new(StmtKind::If {
-                            cond: elif_cond.clone(),
-                            then_body: elif_body.clone(),
-                            elifs: elifs.iter().skip(1).cloned().collect(),
-                            else_body: else_body.clone(),
-                        });
-                        self.compile_stmt(&nested)?;
-                    } else if let Some(else_stmts) = else_body {
-                        self.scope_mut().begin_scope();
-                        for s in else_stmts {
-                            self.compile_stmt(s)?;
-                        }
-                        self.scope_mut().end_scope();
-                    }
-                }
-
-                let line = self.line;
-                self.chunk().emit_end(line);
-                self.label_depth -= 1;
-            }
-
-            // ── While (compiler_common::loops) ─────────────────────────
-            StmtKind::While {
-                cond,
-                body,
-                else_body,
-            } => {
-                let line = self.line;
-                let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
-                // block + loop = 2 label stack entries
-                let break_depth = self.label_depth + 1; // block is first (break target)
-                let continue_depth = self.label_depth + 2; // loop is second (continue target)
-                self.label_depth += 2;
-                self.loop_states.push(lp);
-                self.loops.push(LoopCtx {
-                    label: self.pending_label.take(),
-                    break_label_depth: break_depth,
-                    continue_label_depth: continue_depth,
-                    did_break_slot: None,
-                    iterator_close_slot: None,
-                    is_continuable: true,
-                    finally_depth: self.frame_cf().active_finally_blocks.len(),
-                });
-                self.compile_condition_to_i32(cond)?;
-                let line = self.line;
-                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
-                self.loops.pop();
-                let lp = self.loop_states.pop().unwrap();
-                let line = self.line;
-                common::loops::emit_loop_end(&mut self.chunks, self.current, lp, line);
-                self.label_depth -= 2; // block + loop closed
-                if let Some(else_stmts) = else_body {
-                    for s in else_stmts {
-                        self.compile_stmt(s)?;
-                    }
-                }
-            }
-
-            // ── For C-style (compiler_common::loops) ────────────────────
-            StmtKind::For {
-                init,
-                cond,
-                update,
-                body,
-            } => {
-                self.scope_mut().begin_scope();
-                if let Some(init_stmt) = init {
-                    self.compile_stmt(init_stmt)?;
-                }
-                let loop_capture_name = if self.profile.for_loop_per_iteration_binding {
-                    init.as_ref().and_then(|stmt| match &stmt.kind {
-                        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
-                            match &declarations[0].pattern {
-                                BindingPattern::Ident(name) => Some(self.canon(name)),
-                                _ => None,
-                            }
-                        }
-                        _ => None,
-                    })
-                } else {
-                    None
-                };
-                let line = self.line;
-                // For C-style with update: use block { loop { cond, block $body { body }, update, br loop } }
-                let block_patch = self.chunk().emit_block(line);
-                self.label_depth += 1; // block
-                let (loop_patch, _) = self.chunk().emit_loop_s(line);
-                self.label_depth += 1; // loop
-                let break_depth = self.label_depth - 1; // the block
-                if let Some(c) = cond {
-                    self.compile_condition_to_i32(c)?;
-                } else {
-                    // `for (;;)` — an i32, not a `Bool`, so the branch below
-                    // gets the i32 its precondition names rather than relying
-                    // on `Value::as_i32` to coerce one.
-                    inst!(self, core_wasm::i32_const, 1);
-                }
-                let line = self.line;
-                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
-                // Body block for continue-to-update
-                let body_block = if update.is_some() {
-                    let bp = self.chunk().emit_block(line);
-                    self.label_depth += 1;
-                    Some(bp)
-                } else {
-                    None
-                };
-                let continue_depth = self.label_depth; // innermost = continue target (body block or loop)
-                let lp = common::loops::LoopState {
-                    block_patch,
-                    loop_patch,
-                    body_block_patch: body_block,
-                };
-                self.loop_states.push(lp);
-                self.loops.push(LoopCtx {
-                    label: self.pending_label.take(),
-                    break_label_depth: break_depth,
-                    continue_label_depth: continue_depth,
-                    did_break_slot: None,
-                    iterator_close_slot: None,
-                    is_continuable: true,
-                    finally_depth: self.frame_cf().active_finally_blocks.len(),
-                });
-                if let Some(loop_capture_name) = loop_capture_name.clone() {
-                    self.capture_by_value_vars.push(loop_capture_name);
-                }
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
-                if loop_capture_name.is_some() {
-                    self.capture_by_value_vars.pop();
-                }
-                self.loops.pop();
-                let lp = self.loop_states.pop().unwrap();
-                // Close body block (continue lands here)
-                if let Some(bp) = lp.body_block_patch {
-                    self.chunk().emit_end(line);
-                    self.chunk().patch_block(bp);
-                    self.label_depth -= 1;
-                }
-                if let Some(u) = update {
-                    self.compile_expr(u)?;
+                if member_names
+                    .iter()
+                    .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
+                {
+                    self.emit_global_read("__static_init__");
+                    self.emit_direct_callable_invoke(0);
                     self.emit(Op::DROP);
                 }
-                let line = self.line;
-                self.chunk().emit_br(0, line); // br loop
-                self.chunk().emit_end(line); // end loop
-                self.chunk().patch_loop(lp.loop_patch);
-                self.label_depth -= 1;
-                self.chunk().emit_end(line); // end block
-                self.chunk().patch_block(lp.block_patch);
-                self.label_depth -= 1;
-                self.scope_mut().end_scope();
-            }
 
-            // ── ForIn / ForOf ───────────────────────────────────────────
-            StmtKind::ForIn {
-                var,
-                key,
-                iter,
-                body,
-                else_body,
-                of,
-                is_async,
-                ..
-            } => {
+                // Second pass: build namespace struct { member1: global, member2: global, ... }
+                self.class_alloc();
+                for (mn, global_name) in &member_names {
+                    inst!(self, core_wasm::dup);
+                    self.emit_global_read(global_name);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(mn),
+                        class_slots::ValueSource::Stack,
+                    );
+                    // Register bare member → module name for qualified resolution
+                    self.enum_members.insert(mn.clone(), module_name.clone());
+                    // A member is CONTRIBUTED to the enclosing scope exactly
+                    // when it was published under its bare name — which is the
+                    // same condition the visibility rule above already
+                    // decided, so it is read back here rather than derived a
+                    // second time and left to drift.
+                    if global_name == mn {
+                        let contributors = self
+                            .module_member_contributors
+                            .entry(mn.clone())
+                            .or_default();
+                        if !contributors.iter().any(|m| m == &module_name) {
+                            contributors.push(module_name.clone());
+                        }
+                    }
+                }
+                self.emit_global_write(&module_name);
+                self.defined_globals.insert(module_name);
+                    Ok(())
+    }
+
+    /// The `StmtKind::NamespaceDecl { name, body }` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why: the recursive frame is the UNION of
+    /// every arm's locals, so removing one shrinks it at every nesting level.
+    #[allow(clippy::ptr_arg)]
+    #[inline(never)]
+    fn compile_namespace_decl_stmt(&mut self, name: &String, body: &Vec<Statement>) -> Result<(), String> {
+
+                let local_ns_name = self.canon(name).replace('\\', ".");
+                let ns_name = match self.current_namespace.as_deref() {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}.{local_ns_name}"),
+                    _ => local_ns_name,
+                };
+                if ns_name.is_empty() {
+                    let prev_namespace = self.current_namespace.clone();
+                    self.current_namespace = None;
+                    for s in body {
+                        self.compile_stmt(s)?;
+                    }
+                    self.current_namespace = prev_namespace;
+                    return Ok(());
+                }
+                let mut member_names: Vec<(String, String, bool)> = Vec::new();
+                let mut qualified_body: Vec<Statement> = Vec::with_capacity(body.len());
+                for s in body {
+                    let mut qualified = s.clone();
+                    match &mut qualified.kind {
+                        StmtKind::ClassDecl { name: cn, .. }
+                        | StmtKind::StructDecl { name: cn, .. }
+                        | StmtKind::EnumDecl { name: cn, .. }
+                        | StmtKind::InterfaceDecl { name: cn, .. }
+                        | StmtKind::ModuleDecl { name: cn, .. } => {
+                            let member_name = self.canon(cn);
+                            let qualified_name = if member_name.contains('.') {
+                                member_name.clone()
+                            } else {
+                                format!("{ns_name}.{member_name}")
+                            };
+                            member_names.push((member_name, qualified_name.clone(), true));
+                            *cn = qualified_name;
+                        }
+                        StmtKind::FunctionDecl { name: cn, .. } => {
+                            let member_name = self.canon(cn);
+                            let qualified_name = if member_name.contains('.') {
+                                member_name.clone()
+                            } else {
+                                format!("{ns_name}.{member_name}")
+                            };
+                            member_names.push((member_name, qualified_name.clone(), false));
+                            *cn = qualified_name;
+                        }
+                        _ => {}
+                    }
+                    qualified_body.push(qualified);
+                }
+                for (_, qualified_name, is_type_like) in &member_names {
+                    self.defined_globals.insert(qualified_name.clone());
+                    if *is_type_like {
+                        self.declare_class_identity(qualified_name);
+                    } else {
+                        self.declare_function_identity(qualified_name);
+                    }
+                }
+                let prev_namespace = self.current_namespace.clone();
+                self.current_namespace = Some(ns_name.clone());
+                for s in &qualified_body {
+                    self.compile_stmt(s)?;
+                }
+                self.current_namespace = prev_namespace;
+
+                for (member_name, qualified_name, is_type_like) in &member_names {
+                    self.defined_globals.insert(qualified_name.clone());
+                    if *is_type_like {
+                        self.declare_class_identity(qualified_name);
+                    } else {
+                        self.declare_function_identity(qualified_name);
+                    }
+                    let suffix = format!(".{member_name}");
+                    let has_qualified_collision = if *is_type_like {
+                        self.defined_classes
+                            .iter()
+                            .any(|name| name != qualified_name && name.ends_with(&suffix))
+                    } else {
+                        self.defined_functions
+                            .iter()
+                            .any(|name| name != qualified_name && name.ends_with(&suffix))
+                    };
+                    if !has_qualified_collision
+                        && !self.defined_globals.contains(member_name)
+                        && !self.defined_classes.contains(member_name)
+                        && !self.defined_functions.contains(member_name)
+                    {
+                        self.emit_global_read(qualified_name);
+                        self.emit_global_write(member_name);
+                    }
+                }
+
+                // Build the namespace object — EXTENDING one that already
+                // exists rather than replacing it.
+                //
+                // A namespace is OPEN: `namespace App { … }` may be written any
+                // number of times, and every namespaced language merges the
+                // blocks. A fresh `struct.new` here made the last block win, so
+                //
+                //     namespace App.Deep { class Helper { … } }   // App = { Deep }
+                //     namespace App      { class Runner { … } }   // App = { Runner }
+                //
+                // dropped `Deep` off the object, and a fully-qualified
+                // `App.Deep.Helper.Tag()` — which compiles to member access on
+                // the `App` object — read `undefined`. Verified against the .NET
+                // SDK: real C# prints `App.Deep.Helper` for exactly this program.
+                // The sibling block is what triggers it, so the single-namespace
+                // case always worked and hid this.
+                //
+                // Same rule the parent-linking loop below already applies to the
+                // ENCLOSING object, now applied to the namespace's own: read
+                // what is there, else start one. `ns_name` reaches
+                // `defined_globals` only right after a global write (here and in
+                // that loop), so a read can never find a declared-but-unwritten
+                // global.
+                if self.defined_globals.contains(&ns_name) {
+                    self.emit_global_read(&ns_name);
+                } else {
+                    self.class_alloc();
+                }
+                for (member_name, qualified_name, _) in &member_names {
+                    inst!(self, core_wasm::dup);
+                    self.emit_global_read(qualified_name);
+                    self.class_set(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(member_name),
+                        class_slots::ValueSource::Stack,
+                    );
+                }
+                self.emit_global_write(&ns_name);
+                self.defined_globals.insert(ns_name.clone());
+
+                let namespace_parts: Vec<&str> = ns_name
+                    .split('.')
+                    .map(|part| part.trim())
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if namespace_parts.len() > 1 {
+                    for depth in 1..namespace_parts.len() {
+                        let parent_name = self.canon(&namespace_parts[..depth].join("."));
+                        let child_name = self.canon(&namespace_parts[..=depth].join("."));
+                        let child_key = self.canon(namespace_parts[depth]);
+
+                        if self.defined_globals.contains(&parent_name) {
+                            self.emit_global_read(&parent_name);
+                        } else {
+                            self.class_alloc();
+                        }
+                        inst!(self, core_wasm::dup);
+                        self.emit_global_read(&child_name);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&child_key),
+                            class_slots::ValueSource::Stack,
+                        );
+                        self.emit_global_write(&parent_name);
+                        self.defined_globals.insert(parent_name);
+                    }
+                }
+                    Ok(())
+    }
+
+    /// The `StmtKind::Delete(exprs)` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why: the recursive frame is the UNION of
+    /// every arm's locals, so removing one shrinks it at every nesting level.
+    #[allow(clippy::ptr_arg)]
+    #[inline(never)]
+    fn compile_delete_stmt(&mut self, exprs: &Vec<Expression>) -> Result<(), String> {
+
+                for expr in exprs {
+                    match &expr.kind {
+                        ExprKind::Member { object, field, .. } => {
+                            self.compile_expr(object)?;
+                            self.emit_null();
+                            let field_name = self.canon(field);
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal(&field_name),
+                                class_slots::ValueSource::Stack,
+                            );
+                        }
+                        ExprKind::Index { object, index, .. } => {
+                            let line = self.line;
+                            if self.profile.slice_assignment_splices {
+                                if let ExprKind::Slice { lower, upper, step } = &index.kind {
+                                    if step.is_none() {
+                                        self.compile_expr(object)?;
+                                        let obj_tmp = self.define_local("__delete_slice_obj");
+                                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+
+                                        if let Some(lower) = lower {
+                                            self.compile_expr(lower)?;
+                                        } else {
+                                            inst!(self, core_wasm::i32_const, 0);
+                                        }
+                                        let start_tmp = self.define_local("__delete_slice_start");
+                                        self.emit_u16(Op::LOCAL_SET, start_tmp);
+
+                                        if let Some(upper) = upper {
+                                            self.compile_expr(upper)?;
+                                        } else {
+                                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                            common::collections::emit_len(
+                                                &mut self.chunks,
+                                                self.current,
+                                                line,
+                                            );
+                                        }
+                                        let end_tmp = self.define_local("__delete_slice_end");
+                                        self.emit_u16(Op::LOCAL_SET, end_tmp);
+
+                                        self.emit_u16(Op::LOCAL_GET, end_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
+                                        self.emit(Op::I32_SUB);
+                                        let count_tmp = self.define_local("__delete_slice_count");
+                                        self.emit_u16(Op::LOCAL_SET, count_tmp);
+
+                                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, count_tmp);
+                                        common::collections::emit_remove_range(
+                                            &mut self.chunks,
+                                            self.current,
+                                            line,
+                                        );
+                                        self.emit(Op::DROP);
+                                        continue;
+                                    } else {
+                                        // `del a[i:j:k]` — strided deletion via
+                                        // the shared slices emitter.
+                                        self.compile_expr(object)?;
+                                        if let Some(lower) = lower {
+                                            self.compile_expr(lower)?;
+                                        } else {
+                                            self.emit_null();
+                                        }
+                                        if let Some(upper) = upper {
+                                            self.compile_expr(upper)?;
+                                        } else {
+                                            self.emit_null();
+                                        }
+                                        if let Some(step) = step {
+                                            self.compile_expr(step)?;
+                                        } else {
+                                            self.emit_null();
+                                        }
+                                        let opts = crate::primitives::slices::Options::new(
+                                            self.profile.slice_step_zero_raises,
+                                        );
+                                        crate::primitives::slices::emit_strided_del(
+                                            &mut self.chunks,
+                                            self.current,
+                                            line,
+                                            opts,
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            self.compile_expr(object)?;
+                            let obj_tmp = self.define_local("__delete_obj");
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                            self.compile_expr(index)?;
+                            let key_tmp = self.define_local("__delete_key");
+                            self.emit_u16(Op::LOCAL_SET, key_tmp);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            let is_array_idx = self.import("ecma:array", "isArray");
+                            self.chunk().emit_call(is_array_idx, 1, line);
+                            inst!(self, core_wasm::i32_const, 0);
+                            {
+                                let line = self.line;
+                                crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
+                            };
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            self.chunk().emit_if(line);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::collections::emit_remove_at(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
+                            self.emit(Op::DROP);
+
+                            self.chunk().emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::dict::emit_method_delete(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            self.chunk().emit_end(line);
+                        }
+                        _ => {
+                            // Delete on a bare NAME drops the reference. Where
+                            // the region declares `name_drop = Finalise` that
+                            // runs the referent's Destructor slot first; the
+                            // unbinding itself is still the language's own
+                            // business, so nothing else is emitted here.
+                            self.emit_name_drop_finalise(expr)?;
+                        }
+                    }
+                }
+                    Ok(())
+    }
+
+    /// The `StmtKind::Expr(expr)` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why: the recursive frame is the UNION of
+    /// every arm's locals, so removing one shrinks it at every nesting level.
+    #[allow(clippy::ptr_arg)]
+    #[inline(never)]
+    fn compile_expr_stmt(&mut self, expr: &Expression) -> Result<(), String> {
+
+                match &expr.kind {
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_named_type")
+                            && args.len() == 2 =>
+                    {
+                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                            let type_name = match &args[1].value.kind {
+                                ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
+                                ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+                                _ => None,
+                            };
+                            if let Some(type_name) = type_name {
+                                self.source_type_aliases.insert(self.canon(name), type_name);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt")
+                            && args.len() == 2 =>
+                    {
+                        return self.compile_vb_fixed_string_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            false,
+                        );
+                    }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_rset_stmt")
+                            && args.len() == 2 =>
+                    {
+                        return self.compile_vb_fixed_string_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            true,
+                        );
+                    }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt")
+                            && args.len() == 4 =>
+                    {
+                        return self.compile_vb_mid_stmt(
+                            &args[0].value,
+                            &args[1].value,
+                            &args[2].value,
+                            &args[3].value,
+                        );
+                    }
+                    ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") =>
+                    {
+                        return self.compile_vb_err_raise_stmt(args);
+                    }
+// Bare identifier that's a known function → call with 0 args
+                    ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
+                        let saved_js_this = self.begin_receiver_bind("__js_stmt_prev_this");
+                        self.emit_var_get(name);
+                        // A plain call still passes a receiver under
+                        // `UniversalParameter` — §10.2.1.1 binds `undefined`,
+                        // and "absent" and "undefined" must not be the same
+                        // thing. 0 under the ambient binding.
+                        let recv_argc = self.push_receiver_argument(saved_js_this);
+                        self.emit_direct_callable_invoke(recv_argc);
+                        if saved_js_this.is_active() {
+                            let result_slot = self.define_local("__js_stmt_result");
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.end_receiver_bind(saved_js_this);
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                        }
+                        self.emit(Op::DROP);
+                    }
+                    // JS bare member statements evaluate the property access
+                    // and discard the result; they are not implicit calls.
+                    ExprKind::Member { object, field, .. } => {
+                        if self.profile.dynamic_member_access {
+                            self.compile_expr(expr)?;
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
+                        self.compile_expr(object)?;
+                        let field_name = self.canon(field);
+                        let prop = self
+                            .resolve_slot_interned(&class_slots::ClassSlot::internal(field_name));
+                        inst!(self, core_wasm::dup);
+                        let line = self.line;
+                        class_slots::emit_class_get(
+                            self.chunk(),
+                            class_slots::ObjSource::Stack,
+                            &prop,
+                            class_slots::Dest::Stack,
+                            line,
+                        );
+                        let fn_tmp = self.define_local("__fn");
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                        let obj_tmp = self.define_local("__obj");
+                        self.reserve_local_slot(obj_tmp);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_direct_callable_invoke(1);
+                        self.emit(Op::DROP);
+                    }
+                    _ => {
+                        // ⛔ THE `DROP` IS CONDITIONAL ON SOMETHING HAVING BEEN
+                        // PUSHED. An expression statement discards its value,
+                        // but a compile-time DIRECTIVE spelled as a call —
+                        // `__wast_register_struct_type`, `__wast_register_func_type`,
+                        // and the rest of that family — emits no bytecode at
+                        // all, so there is no value to discard and the `DROP`
+                        // underflows the stack.
+                        //
+                        // Our VM tolerated it (a pop on an empty operand stack
+                        // is a no-op there), which is why every wast module we
+                        // emitted carried one unbalanced `drop` per registered
+                        // struct type and no test could see it. A spec engine
+                        // rejects the module outright: V8 gives
+                        // `not enough arguments on the stack for drop (need 1,
+                        // got 0)` before it reaches anything else.
+                        //
+                        // Zero bytes emitted means zero stack effect — a value
+                        // can only reach the stack via an instruction — so the
+                        // emitted LENGTH is the honest signal, and it is
+                        // language-agnostic: no name check, and every
+                        // emit-nothing directive present or future is covered
+                        // without being enumerated here.
+                        let before = self.chunks[self.current].code.len();
+                        self.compile_expr(expr)?;
+                        if self.chunks[self.current].code.len() != before {
+                            self.emit(Op::DROP);
+                        }
+                    }
+                }
+                    Ok(())
+    }
+
+    /// The `ForIn` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_forin_stmt(&mut self, var: &String, key: &Option<String>, iter: &Expression, body: &Vec<Statement>, else_body: &Option<Vec<Statement>>, of: &bool, is_async: &bool) -> Result<(), String> {
+
                 // Claim the enclosing label NOW, before anything below compiles
                 // the loop BODY.
                 //
@@ -1266,60 +1492,369 @@ impl Compiler {
                         self.label_depth -= 1;
                     }
                 }
-            }
+                    Ok(())
+    }
 
-            // ── DoWhile (compiler_common::loops) ────────────────────────
-            StmtKind::DoWhile { body, cond, until } => {
+    /// The `Try` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_try_stmt(&mut self, body: &Vec<Statement>, catches: &Vec<CatchClause>, else_body: &Option<Vec<Statement>>, finally: &Option<Vec<Statement>>) -> Result<(), String> {
+
                 let line = self.line;
-                let lp = common::loops::emit_do_loop_start(&mut self.chunks, self.current, line);
-                // Three nesting levels now: break-block, loop, body-block.
-                // `continue` targets the INNERMOST (the body block) so control
-                // reaches the condition; `break` targets the outermost.
-                let break_depth = self.label_depth + 1;
-                let continue_depth = self.label_depth + 3;
-                self.label_depth += 3;
-                self.loop_states.push(lp);
-                self.loops.push(LoopCtx {
-                    label: self.pending_label.take(),
-                    break_label_depth: break_depth,
-                    continue_label_depth: continue_depth,
-                    did_break_slot: None,
-                    iterator_close_slot: None,
-                    is_continuable: true,
-                    finally_depth: self.frame_cf().active_finally_blocks.len(),
-                });
+                let finally_exc_slot = if catches.is_empty() && finally.is_some() {
+                    let slot = self.define_local("__try_finally_exc");
+                    self.emit_null();
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    Some(slot)
+                } else {
+                    None
+                };
+                // For a try-WITH-finally, allocate the completion state so a
+                // `break`/`continue`/`return` inside the body can run `finally`
+                // OUTSIDE the handler (see `finally_joins`): it stores a code
+                // here and `br`s to the join instead of inlining `finally`
+                // under the `try_table`. Default NORMAL (fall through).
+                let completion = if finally.is_some() {
+                    let completion_slot = self.define_local("__try_completion");
+                    let ret_slot = self.define_local("__try_ret");
+                    self.emit_const(Value::F64(completion::NORMAL));
+                    self.emit_u16(Op::LOCAL_SET, completion_slot);
+                    Some((completion_slot, ret_slot))
+                } else {
+                    None
+                };
+                let after_try_block = self.chunk().emit_block(line);
+                self.label_depth += 1;
+                // Register the join NOW: its `br` target is `after_try_block`,
+                // whose `end` lands exactly on the `finally` emission below,
+                // outside every handler. `label_depth - join_label_depth` from
+                // any point in the body is the `br` depth to reach it.
+                if let Some((completion_slot, ret_slot)) = completion {
+                    let join_label_depth = self.label_depth;
+                    self.frame_cf_mut().finally_joins.push(FinallyJoin {
+                        join_label_depth,
+                        completion_slot,
+                        ret_slot,
+                    });
+                }
+                common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                // `emit_try_start` opens TWO labels: the handler block (whose
+                // `end` is where the catch arms begin — the target every clause
+                // names by `labelidx`) and the `try_table` itself, which is a
+                // structural block in the spec. The body therefore sits two
+                // levels deeper. The handler block's level is dropped after the
+                // normal-path `br` below, so the catch arms see it closed.
+                self.label_depth += 2;
+                if let Some(fin) = finally.clone() {
+                    self.frame_cf_mut()
+                        .active_finally_blocks
+                        .push(FinallyAction::Statements(fin));
+                }
+                let saved_try_strict = self.in_strict;
+                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(body) {
+                    self.in_strict = true;
+                }
+                let try_framed = Self::stmts_have_directive(body);
+                if try_framed {
+                    self.push_directive_frame();
+                }
                 for s in body {
                     self.compile_stmt(s)?;
                 }
-                // Close the body block first — everything after it is the
-                // condition, which is where `continue` must land.
-                let body_block = self.loop_states.last().unwrap().body_block_patch;
-                let line = self.line;
-                if let Some(patch) = body_block {
-                    self.chunks[self.current].emit_end(line);
-                    self.chunks[self.current].patch_block(patch);
+                if try_framed {
+                    self.pop_directive_frame();
                 }
+                self.in_strict = saved_try_strict;
+                common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.label_depth -= 1;
-                self.compile_condition_to_i32(cond)?;
-                self.loops.pop();
-                let lp = self.loop_states.pop().unwrap();
-                let line = self.line;
-                common::loops::emit_do_loop_end_from_i32(
-                    &mut self.chunks,
-                    self.current,
-                    lp,
-                    *until,
-                    line,
-                );
-                self.label_depth -= 2;
-            }
+                // Python else: runs if no exception
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
+                }
+                // `br 1`, not `br 0`: the handler block now sits between here
+                // and `after_try_block`, so the normal path is one level
+                // further out. `br 0` would land on the handler block's `end`
+                // — that is, run the catch arms on SUCCESS.
+                self.chunk().emit_br(1, line);
+                common::errors::emit_handler_block_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
+                // Entering this try's catch-arms section: ITS runtime handler
+                // has fired, so ITS finally (sequenced after the arms) is the
+                // one a `throw` inside an arm must inline — enclosing trys'
+                // finallys still have LIVE handlers and must NOT be inlined
+                // (the runtime runs them; inlining doubled the finally).
+                let fired_finally = if finally.is_some() && !catches.is_empty() {
+                    let idx = self.frame_cf().active_finally_blocks.len() - 1;
+                    self.frame_cf_mut().fired_finally_indices.push(idx);
+                    true
+                } else {
+                    false
+                };
+                if catches.is_empty() {
+                    if let Some(exc_slot) = finally_exc_slot {
+                        self.emit_u16(Op::LOCAL_SET, exc_slot);
+                    } else {
+                        self.emit(Op::DROP);
+                    }
+                } else {
+                    // Multi-catch dispatch: each arm tests the exception's
+                    // canonical __exception_type field. If it matches one of
+                    // the arm's types, run the body; otherwise fall through
+                    // to the next arm. The exception object is on TOS at
+                    // every step. A catch-all arm (empty types or "Exception")
+                    // catches everything. After all arms, any unmatched
+                    // exception is re-thrown.
+                    let exc_slot = self.define_local("__caught_exception");
+                    let handled_slot = self.define_local("__catch_handled");
+                    self.emit_u16(Op::LOCAL_SET, exc_slot);
+                    self.emit_const(Value::Bool(false));
+                    self.emit_u16(Op::LOCAL_SET, handled_slot);
+                    for c in catches {
+                        // When the language models its exceptions as real
+                        // classes (`throwable_is_root`), catch types must match
+                        // the real class names in the `__type`/`__types` chain —
+                        // do NOT canonicalize, which conflates `Error` and
+                        // `Exception` (both map to "Exception") and would erase
+                        // PHP's two distinct branches.
+                        let types: Vec<&str> = c
+                            .types
+                            .iter()
+                            .map(|t| {
+                                if self.profile.throwable_is_root {
+                                    t.trim()
+                                } else {
+                                    common::errors::canonical_exception_name(t)
+                                }
+                            })
+                            .collect();
+                        // `Throwable` is the universal root everywhere. In
+                        // PHP/Java (`throwable_is_root`), `Exception` is only a
+                        // branch — the `Error` branch is a sibling — so
+                        // `catch (Exception)` matches via the `__types` chain
+                        // below, not as a catch-all. In Python/.NET/Ruby,
+                        // `Exception` is the root and catches everything.
+                        let exception_catches_all = !self.profile.throwable_is_root;
+                        let is_catch_all = types.is_empty()
+                            || types.iter().any(|t| {
+                                *t == "Throwable"
+                                    || (exception_catches_all
+                                        && (*t == "Exception" || *t == "BaseException"))
+                            });
 
-            // ── Switch / Select Case ────────────────────────────────────
-            StmtKind::Switch {
-                expr,
-                cases,
-                default,
-            } => {
+                        let arm_match_slot = self.define_local("__catch_arm_match");
+                        self.emit_const(Value::Bool(is_catch_all));
+                        self.emit_u16(Op::LOCAL_SET, arm_match_slot);
+
+                        if !is_catch_all {
+                            for ty in &types {
+                                let mut expected_names = vec![(*ty).to_string()];
+                                if !self.case_sensitive {
+                                    let canon_ty = self.canon(ty);
+                                    if canon_ty != *ty {
+                                        expected_names.push(canon_ty);
+                                    }
+                                }
+
+                                // Single identity test per candidate type,
+                                // through the shared reflection primitive that
+                                // owns the question — it unions the rtt
+                                // (`ref.test`, which is what resolves declared
+                                // subtyping and `implements` by index) with the
+                                // `__types` ancestry chain every frontend
+                                // stamps. A bare `REF_TEST` here answered from
+                                // the rtt alone, so an instance a BASE
+                                // constructor allocated — carrying its parent's
+                                // rtt — failed `catch` on its own class even
+                                // though `__types` named it. One unified
+                                // mechanism, no per-language branching.
+                                for expected in &expected_names {
+                                    let line = self.line;
+                                    crate::primitives::reflection::emit_is_instance_of(
+                                        &mut self.chunks,
+                                        self.current,
+                                        exc_slot,
+                                        expected,
+                                        line,
+                                    );
+                                    self.chunk().emit_if(line);
+                                    inst!(self, core_wasm::bool_const, true);
+                                    self.emit_u16(Op::LOCAL_SET, arm_match_slot);
+                                    self.chunk().emit_end(line);
+                                }
+                            }
+                        }
+
+                        self.emit_u16(Op::LOCAL_GET, handled_slot);
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
+                        self.emit(Op::I32_EQZ);
+                        self.chunk().emit_if_value(line);
+                        self.emit_u16(Op::LOCAL_GET, arm_match_slot);
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
+                        self.chunk().emit_else(line);
+                        self.emit_const(Value::Bool(false));
+                        self.chunk().emit_end(line);
+                        // ⛔ THE TWO ARMS DISAGREE, so the block result is a
+                        // VALUE: the then-arm leaves a raw i32 from
+                        // `emit_dyn_to_bool` while the else-arm leaves a boxed
+                        // `Bool(false)`, and `emit_if_value` declares the block
+                        // `externref` — so the writer boxes the i32 arm to
+                        // match and `if` then gets `expected i32, found
+                        // externref`. EVERY `catch` clause emitted an invalid
+                        // module because of it; `try`/`finally` with no catch
+                        // was always fine.
+                        //
+                        // ECMA §7.1.2 ToBoolean on the block result, the same
+                        // shape as the `handled_slot` test just above. (Typing
+                        // the block i32 and giving the else-arm `I32(0)` would
+                        // also work and save two conversions, but that changes
+                        // the block's declared type on the single most
+                        // load-bearing control-flow path in the compiler.)
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
+                        self.chunk().emit_if(line);
+                        // The catch body executes inside this arm-match IF —
+                        // a real WASM control frame the VM pushes onto its
+                        // label_stack. `break`/`continue` inside the catch body
+                        // derive their `br` depth from `label_depth`, so it must
+                        // count this open IF or the branch targets the wrong
+                        // frame and the enclosing loop never exits (hang).
+                        // ECMA-262 §14.2: abrupt completion still exits the loop.
+                        self.label_depth += 1;
+
+                        if let Some(ref var) = c.var_name {
+                            self.scope_mut().begin_scope();
+                            let slot = self.define_source_local(var);
+                            self.emit_u16(Op::LOCAL_GET, exc_slot);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                        } else {
+                            self.scope_mut().begin_scope();
+                        }
+
+                        if let Some(cond) = &c.when_clause {
+                            self.compile_expr(cond)?;
+                            {
+                                let line = self.line;
+                                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            };
+                            self.chunk().emit_if(line);
+                            // The when-clause adds a second open IF around the
+                            // catch body — count it too.
+                            self.label_depth += 1;
+                        }
+
+                        self.frame_cf_mut().catch_depth += 1;
+                        for s in &c.body {
+                            self.compile_stmt(s)?;
+                        }
+                        self.frame_cf_mut().catch_depth = self.frame_cf().catch_depth.saturating_sub(1);
+                        self.emit_const(Value::Bool(true));
+                        self.emit_u16(Op::LOCAL_SET, handled_slot);
+                        if c.when_clause.is_some() {
+                            self.label_depth -= 1;
+                            self.chunk().emit_end(line);
+                        }
+                        self.scope_mut().end_scope();
+                        self.label_depth -= 1;
+                        self.chunk().emit_end(line);
+                    }
+                    // Fallthrough = no arm matched. Re-throw (through finally if any).
+                    self.emit_u16(Op::LOCAL_GET, handled_slot);
+                    {
+                        let line = self.line;
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
+                    self.emit(Op::I32_EQZ);
+                    self.chunk().emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, exc_slot);
+                    self.emit_throw_through_finally()?;
+                    self.chunk().emit_end(line);
+                }
+                self.chunk().emit_end(line);
+                self.chunk().patch_block(after_try_block);
+                self.label_depth -= 1;
+                if fired_finally {
+                    self.frame_cf_mut().fired_finally_indices.pop();
+                }
+                if finally.is_some() {
+                    self.frame_cf_mut().active_finally_blocks.pop();
+                }
+                // Pop the join BEFORE emitting the `finally` body: a
+                // `break`/`continue`/`return` inside `finally` itself belongs
+                // to the ENCLOSING try/loop, not this one (whose finally is
+                // now running).
+                if finally.is_some() {
+                    self.frame_cf_mut().finally_joins.pop();
+                }
+                if let Some(fin) = finally {
+                    for s in fin {
+                        self.compile_stmt(s)?;
+                    }
+                }
+                // Completion dispatch — runs AFTER `finally`, OUTSIDE the
+                // handler. A non-local exit that jumped here re-issues itself,
+                // now chaining to the enclosing join (or the real loop/return
+                // target) since this try's join + finally are already popped.
+                if let Some((completion_slot, ret_slot)) = completion {
+                    let emit_eq_branch = |c: &mut Self, code: f64| {
+                        c.emit_u16(Op::LOCAL_GET, completion_slot);
+                        c.emit_const(Value::F64(code));
+                        let ln = c.line;
+                        crate::primitives::ops::emit_dyn_eq(c.chunk(), ln);
+                        crate::primitives::ops::emit_dyn_to_bool(c.chunk(), ln);
+                        c.chunk().emit_if(ln);
+                        c.label_depth += 1;
+                    };
+                    emit_eq_branch(self, completion::BREAK);
+                    self.emit_break_through_finally(None)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
+                    emit_eq_branch(self, completion::CONTINUE);
+                    self.emit_continue_through_finally(None)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
+                    emit_eq_branch(self, completion::RETURN);
+                    self.emit_u16(Op::LOCAL_GET, ret_slot);
+                    self.emit_return_through_finally(1)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
+                }
+                if let Some(exc_slot) = finally_exc_slot {
+                    if self.frame_cf().catch_depth > 0 {
+                        return Ok(());
+                    }
+                    self.emit_u16(Op::LOCAL_GET, exc_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    self.emit(Op::I32_EQZ);
+                    self.chunk().emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, exc_slot);
+                    let line = self.line;
+                    common::errors::emit_throw(self.chunk(), line);
+                    self.chunk().emit_end(line);
+                }
+                    Ok(())
+    }
+
+    /// The `Switch` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_switch_stmt(&mut self, expr: &Expression, cases: &Vec<SwitchCase>, default: &Option<Vec<Statement>>) -> Result<(), String> {
+
                 // Save switch expression to a local so checks can read it
                 // without leaving it on the stack during body execution.
                 self.compile_expr(expr)?;
@@ -1553,6 +2088,943 @@ impl Compiler {
                 self.chunk().emit_end(line);
                 self.chunk().patch_block(switch_lp.block_patch);
                 self.label_depth -= 1;
+                    Ok(())
+    }
+
+    /// The `ReDim` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_redim_stmt(&mut self, array: &String, bounds: &Vec<Expression>, preserve: &bool) -> Result<(), String> {
+
+                if let Some(size_expr) = bounds.first() {
+                    let line = self.line;
+                    if *preserve {
+                        // Allocate new array of N+1, then iterate the OLD
+                        // array via compiler_common::loops::emit_for_in_start
+                        // and copy each element into new[i] (bounded by
+                        // new_len). This reuses the canonical for-in loop
+                        // emit pattern that every other iteration site uses.
+                        let old_slot = self.define_local("__redim_old");
+                        let new_slot = self.define_local("__redim_new");
+                        let new_len_slot = self.define_local("__redim_nlen");
+                        let idx_slot = self.define_local("__redim_idx");
+                        let old_len_slot = self.define_local("__redim_olen");
+                        let fill_idx_slot = self.define_local("__redim_fill_idx");
+                        let default_slot = self.define_local("__redim_default");
+
+                        // old = arr
+                        self.emit_var_get(array);
+                        self.emit_u16(Op::LOCAL_SET, old_slot);
+                        // new_len = N + 1
+                        self.compile_expr(size_expr)?;
+                        self.emit_const(Value::F64(1.0));
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        self.emit_u16(Op::LOCAL_SET, new_len_slot);
+                        self.emit_u16(Op::LOCAL_GET, old_slot);
+                        common::collections::emit_len(&mut self.chunks, self.current, line);
+                        self.emit_u16(Op::LOCAL_SET, old_len_slot);
+                        // new = newWithLength(new_len) via common::collections
+                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+                        common::collections::emit_new_with_length(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit_u16(Op::LOCAL_SET, new_slot);
+
+                        // Iterate old array with the canonical for-in helper.
+                        // The helper leaves [element] on the stack each pass
+                        // and exposes the index in `idx_slot`.
+                        let lp = common::loops::emit_for_in_start(
+                            &mut self.chunks,
+                            self.current,
+                            old_slot,
+                            idx_slot,
+                            line,
+                        );
+                        // Stack: [element]. If idx >= new_len, drop and break
+                        // (don't write past the new array). Otherwise
+                        // new[idx] = element.
+                        let elem_slot = self.define_local("__redim_el");
+                        self.emit_u16(Op::LOCAL_SET, elem_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
+                        };
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+                        // in bounds: new[idx] = element via common::collections::emit_set.
+                        self.emit_u16(Op::LOCAL_GET, new_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, elem_slot);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        // emit_set preserves [val] — drop it.
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+
+                        common::loops::emit_for_in_end(
+                            &mut self.chunks,
+                            self.current,
+                            idx_slot,
+                            lp,
+                            line,
+                        );
+
+                        // Fill any grown tail with the array's default value.
+                        // Until arrays carry static element metadata, infer the
+                        // default from the first existing element's runtime
+                        // category: numbers -> 0, bools -> false, refs -> null.
+                        self.emit_null();
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
+                        self.emit_const(Value::F64(0.0));
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_gt(self.chunk(), line);
+                        };
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        self.emit_u16(Op::LOCAL_GET, old_slot);
+                        inst!(self, core_wasm::i32_const, 0);
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                        let seed_slot = self.define_local("__redim_seed");
+                        self.emit_u16(Op::LOCAL_SET, seed_slot);
+
+                        self.emit_u16(Op::LOCAL_GET, seed_slot);
+                        fn_call!(self, "wasm:js-boolean", "test", 1);
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+                        inst!(self, core_wasm::bool_const, false);
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, seed_slot);
+                        fn_call!(self, "wasm:js-number", "test", 1);
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+                        inst!(self, core_wasm::i32_const, 0);
+                        self.emit_u16(Op::LOCAL_SET, default_slot);
+                        self.chunk().emit_end(line);
+                        self.chunk().emit_end(line);
+                        self.chunk().emit_end(line);
+
+                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
+                        let fill_block = self.chunk().emit_block(line);
+                        let (fill_loop, _) = self.chunk().emit_loop_s(line);
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+                        };
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
+                        self.chunk().emit_br_if(1, line);
+
+                        self.emit_u16(Op::LOCAL_GET, new_slot);
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, default_slot);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_const(Value::F64(1.0));
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
+                        self.chunk().emit_br(0, line);
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_loop(fill_loop);
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(fill_block);
+
+                        // arr = new
+                        self.emit_u16(Op::LOCAL_GET, new_slot);
+                        self.emit_var_set(array);
+                    } else {
+                        // ReDim arr(N) — non-preserving. N is the upper
+                        // bound; length is N+1. Emit through
+                        // `common::collections` (Phase D2).
+                        let line = self.line;
+                        self.compile_expr(size_expr)?;
+                        self.emit_const(Value::F64(1.0));
+                        {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+                        };
+                        common::collections::emit_new_with_length(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit_var_set(array);
+                    }
+                }
+                    Ok(())
+    }
+
+    /// The `InputRecordFile` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_input_record_file_stmt(&mut self, file_number: &Expression, variables: &Vec<String>, key_index: &Option<usize>, key_value: &Option<Expression>) -> Result<(), String> {
+
+                let line = self.line;
+                let file_slot = self.define_local("__vb_record_file_number");
+                let rows_slot = self.define_local("__vb_record_rows");
+                let len_slot = self.define_local("__vb_record_len");
+                let idx_slot = self.define_local("__vb_record_idx");
+                let row_slot = self.define_local("__vb_record_row");
+                let values_slot = self.define_local("__vb_record_values");
+                let found_slot = self.define_local("__vb_record_found");
+                let key_slot = key_value
+                    .as_ref()
+                    .map(|_| self.define_local("__vb_record_key"));
+
+                self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+
+                if let Some(key_expr) = key_value {
+                    let key_slot = key_slot.expect("key slot allocated when key_value exists");
+                    let key_index = key_index.unwrap_or(0);
+
+                    self.compile_expr(key_expr)?;
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    self.emit_null();
+                    self.emit_u16(Op::LOCAL_SET, found_slot);
+
+                    let state = common::loops::emit_for_in_start(
+                        &mut self.chunks,
+                        self.current,
+                        rows_slot,
+                        idx_slot,
+                        line,
+                    );
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    fn_call!(self, "ecma:string", "split", 2);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit_u16(Op::LOCAL_GET, values_slot);
+                    self.emit_const(Value::F64(key_index as f64));
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                    self.emit_file_key_compare(FileKeyRelation::Equal);
+                    {
+                        let line = self.line;
+                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
+                    self.chunk().emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_SET, found_slot);
+                    self.chunks[self.current].emit_br(state.break_depth(0).into(), line);
+                    self.chunk().emit_end(line);
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks,
+                        self.current,
+                        idx_slot,
+                        state,
+                        line,
+                    );
+
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    self.chunk().emit_if(line);
+                    self.emit_record_assign_nulls(variables);
+                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(true),
+                    );
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, rows_slot);
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    fn_call!(self, "ecma:string", "split", 2);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit_record_assign_values_from_local(values_slot, variables);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_current_index_by_handle",
+                        file_slot,
+                        found_slot,
+                    );
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    inst!(self, core_wasm::i32_const, 1);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(false),
+                    );
+                    self.chunk().emit_end(line);
+                } else {
+                    self.emit_global_map_get_into_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    self.chunk().emit_if(line);
+                    inst!(self, core_wasm::i32_const, 0);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.chunk().emit_end(line);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    {
+                        let line = self.line;
+                        crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
+                    };
+                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, rows_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    fn_call!(self, "ecma:string", "split", 2);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit_record_assign_values_from_local(values_slot, variables);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_current_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    inst!(self, core_wasm::i32_const, 1);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit_global_map_set_from_local(
+                        "__vb_record_next_index_by_handle",
+                        file_slot,
+                        idx_slot,
+                    );
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(false),
+                    );
+                    self.chunk().emit_else(line);
+                    self.emit_record_assign_nulls(variables);
+                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+                    self.emit_global_map_set_const(
+                        "__vb_file_eof_by_handle",
+                        file_slot,
+                        Value::Bool(true),
+                    );
+                    self.chunk().emit_end(line);
+                }
+                    Ok(())
+    }
+
+    /// The `WasmTryTable` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_wasm_try_table_stmt(&mut self, body: &Vec<Statement>, catches: &Vec<WasmCatch>, try_params: &u8, try_results: &u8) -> Result<(), String> {
+
+                let line = self.line;
+                // Resolve each clause's kind + tag index up front.
+                let mut clause_kinds: Vec<u8> = Vec::with_capacity(catches.len());
+                let mut clause_tags: Vec<u16> = Vec::with_capacity(catches.len());
+                for c in catches {
+                    let (kind, tag_idx) = match (&c.tag, c.capture_ref) {
+                        (Some(name), false) => (
+                            common::errors::CATCH_KIND_CATCH,
+                            self.chunks[self.current].import_exception_tag(
+                                format!("wast:tag:{name}"),
+                                c.payload_binds.len() as u8,
+                            ),
+                        ),
+                        (Some(name), true) => (
+                            common::errors::CATCH_KIND_CATCH_REF,
+                            self.chunks[self.current].import_exception_tag(
+                                format!("wast:tag:{name}"),
+                                c.payload_binds.len() as u8,
+                            ),
+                        ),
+                        (None, false) => (common::errors::CATCH_KIND_CATCH_ALL, 0u16),
+                        (None, true) => (common::errors::CATCH_KIND_CATCH_ALL_REF, 0u16),
+                    };
+                    clause_kinds.push(kind);
+                    clause_tags.push(tag_idx);
+                }
+
+                // Join block: normal completion and every handler branch here.
+                let after = self.chunk().emit_block(line);
+                self.label_depth += 1;
+
+                // ONE HANDLER BLOCK PER CLAUSE, nested innermost-first, so
+                // clause `i` names `labelidx i` and handler `i`'s code follows
+                // block `i`'s `end`. This is what lets the clause carry a spec
+                // `labelidx` — a depth resolved by block structure — instead of
+                // a patched byte offset that truncated past a 64KB body.
+                //
+                // Emitting in REVERSE puts the LAST clause's block outermost,
+                // so the FIRST clause's block is innermost and is depth 0.
+                // Each block carries its clause's payload arity: the values the
+                // catch delivers travel as that block's results.
+                for c in catches.iter().rev() {
+                    let arity = c.payload_binds.len() + usize::from(c.capture_ref);
+                    self.chunk().emit_block_typed(line, arity as u8);
+                    self.label_depth += 1;
+                }
+
+                let clauses: Vec<common::errors::TryTableClause> = (0..catches.len())
+                    .map(|i| common::errors::TryTableClause {
+                        kind: clause_kinds[i],
+                        tag: clause_tags[i],
+                        label: i as u16,
+                    })
+                    .collect();
+                common::errors::emit_try_table(
+                    &mut self.chunks[self.current],
+                    *try_params,
+                    *try_results,
+                    &clauses,
+                    line,
+                );
+
+                // Body sits one label level deeper (try_table is a block).
+                self.label_depth += 1;
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
+
+                // Normal completion skips EVERY handler block: the join sits
+                // `catches.len()` levels out from here.
+                self.chunk().emit_br(catches.len() as u32, line);
+
+                // Handler `i` begins at block `i`'s `end`. Close that block,
+                // bind the delivered exnref/payload, run the arm, then branch
+                // to the join — which is one level nearer after each close.
+                for (i, c) in catches.iter().enumerate() {
+                    self.chunk().emit_end(line);
+                    self.label_depth -= 1;
+                    if c.capture_ref {
+                        if let Some(exnref) = &c.exnref_bind {
+                            let slot = self.define_source_local(exnref);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                        }
+                    }
+                    for bind in c.payload_binds.iter().rev() {
+                        let slot = self.define_source_local(bind);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                    }
+                    for s in &c.body {
+                        self.compile_stmt(s)?;
+                    }
+                    // The last handler falls through to the join's own `end`.
+                    if i + 1 < catches.len() {
+                        self.chunk().emit_br((catches.len() - 1 - i) as u32, line);
+                    }
+                }
+
+                // Close the join block.
+                self.chunk().emit_end(line);
+                self.chunk().patch_block(after);
+                self.label_depth -= 1;
+                    Ok(())
+    }
+
+    /// The `For` arm of `compile_stmt_inner`, lifted out.
+    /// See `compile_assign_stmt` for why — the recursive frame is the UNION
+    /// of every arm's locals, so removing one shrinks it at EVERY nesting
+    /// level, not only where it runs.
+    #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+    #[inline(never)]
+    fn compile_for_stmt(&mut self, init: &Option<Box<Statement>>, cond: &Option<Expression>, update: &Option<Expression>, body: &Vec<Statement>) -> Result<(), String> {
+
+                self.scope_mut().begin_scope();
+                if let Some(init_stmt) = init {
+                    self.compile_stmt(init_stmt)?;
+                }
+                let loop_capture_name = if self.profile.for_loop_per_iteration_binding {
+                    init.as_ref().and_then(|stmt| match &stmt.kind {
+                        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
+                            match &declarations[0].pattern {
+                                BindingPattern::Ident(name) => Some(self.canon(name)),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
+                let line = self.line;
+                // For C-style with update: use block { loop { cond, block $body { body }, update, br loop } }
+                let block_patch = self.chunk().emit_block(line);
+                self.label_depth += 1; // block
+                let (loop_patch, _) = self.chunk().emit_loop_s(line);
+                self.label_depth += 1; // loop
+                let break_depth = self.label_depth - 1; // the block
+                if let Some(c) = cond {
+                    self.compile_condition_to_i32(c)?;
+                } else {
+                    // `for (;;)` — an i32, not a `Bool`, so the branch below
+                    // gets the i32 its precondition names rather than relying
+                    // on `Value::as_i32` to coerce one.
+                    inst!(self, core_wasm::i32_const, 1);
+                }
+                let line = self.line;
+                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+                // Body block for continue-to-update
+                let body_block = if update.is_some() {
+                    let bp = self.chunk().emit_block(line);
+                    self.label_depth += 1;
+                    Some(bp)
+                } else {
+                    None
+                };
+                let continue_depth = self.label_depth; // innermost = continue target (body block or loop)
+                let lp = common::loops::LoopState {
+                    block_patch,
+                    loop_patch,
+                    body_block_patch: body_block,
+                };
+                self.loop_states.push(lp);
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    iterator_close_slot: None,
+                    is_continuable: true,
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
+                });
+                if let Some(loop_capture_name) = loop_capture_name.clone() {
+                    self.capture_by_value_vars.push(loop_capture_name);
+                }
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                if loop_capture_name.is_some() {
+                    self.capture_by_value_vars.pop();
+                }
+                self.loops.pop();
+                let lp = self.loop_states.pop().unwrap();
+                // Close body block (continue lands here)
+                if let Some(bp) = lp.body_block_patch {
+                    self.chunk().emit_end(line);
+                    self.chunk().patch_block(bp);
+                    self.label_depth -= 1;
+                }
+                if let Some(u) = update {
+                    self.compile_expr(u)?;
+                    self.emit(Op::DROP);
+                }
+                let line = self.line;
+                self.chunk().emit_br(0, line); // br loop
+                self.chunk().emit_end(line); // end loop
+                self.chunk().patch_loop(lp.loop_patch);
+                self.label_depth -= 1;
+                self.chunk().emit_end(line); // end block
+                self.chunk().patch_block(lp.block_patch);
+                self.label_depth -= 1;
+                self.scope_mut().end_scope();
+                    Ok(())
+    }
+
+    fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), String> {
+        self.line = stmt.span.start_line;
+        // Runtime-prelude boundary marker: a frontend that prepends a prelude
+        // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
+        // before the user's own code. Record the current bytecode offset on the
+        // chunk (the `<script>`) for the debugger's prelude-skip, and emit
+        // nothing. Generic — not gated on any language name.
+        if let StmtKind::Expr(expr) = &stmt.kind {
+            if let ExprKind::Lit(Literal::Str(s)) = &expr.kind {
+                if s == "__vybe_user_code_start__" {
+                    let off = self.chunks[self.current].code.len() as u32;
+                    self.chunks[self.current].user_code_offset = Some(off);
+                    return Ok(());
+                }
+            }
+        }
+        match &stmt.kind {
+            StmtKind::Select { arms, default } => {
+                self.emit_select(arms, default.as_deref())?;
+            }
+
+            // ── Declared policy ─────────────────────────────────────────
+            // Emits no code: it changes how the statements after it compile.
+            StmtKind::Directive { set, scope } => {
+                self.apply_directive(set, *scope);
+            }
+            // ── Expression statement ────────────────────────────────────
+            StmtKind::Expr(expr) => {
+                self.compile_expr_stmt(expr)?;
+            }
+
+            // ── Block ───────────────────────────────────────────────────
+            StmtKind::Block(stmts) => {
+                let all_decls = stmts.iter().all(|s| {
+                    matches!(
+                        s.kind,
+                        StmtKind::VarDecl { .. }
+                            | StmtKind::FunctionDecl { .. }
+                            | StmtKind::ClassDecl { .. }
+                            | StmtKind::EnumDecl { .. }
+                    )
+                });
+                let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
+                // A block that declares a lexical binding (`let`/`const`/
+                // `class`) is its own scope even when it contains *only*
+                // declarations — otherwise `{ let x = 42; }` would leak `x` to
+                // the enclosing scope. (`var` is function-scoped and correctly
+                // skips this.) Driven by the profile capability, not a language
+                // name.
+                let has_lexical = self.profile.lexical_block_scope
+                    && stmts.iter().any(|s| {
+                        matches!(
+                            &s.kind,
+                            StmtKind::VarDecl {
+                                kind: VarDeclKind::Let | VarDeclKind::Const,
+                                ..
+                            } | StmtKind::ClassDecl { .. }
+                        )
+                    });
+                let make_scope = (!all_decls && !hoisted_deconstruction) || has_lexical;
+                if make_scope {
+                    self.scope_mut().begin_scope();
+                }
+                let saved_strict = self.in_strict;
+                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(stmts) {
+                    self.in_strict = true;
+                }
+                let framed = Self::stmts_have_directive(stmts);
+                if framed {
+                    self.push_directive_frame();
+                }
+                for s in stmts {
+                    self.compile_stmt(s)?;
+                }
+                if framed {
+                    self.pop_directive_frame();
+                }
+                self.in_strict = saved_strict;
+                if make_scope {
+                    self.scope_mut().end_scope();
+                }
+            }
+
+            // ── Variable declarations ───────────────────────────────────
+            StmtKind::VarDecl { declarations, kind } => {
+                for decl in declarations {
+                    self.compile_var_declarator(decl, kind)?;
+                }
+            }
+
+            // ── Assignment ──────────────────────────────────────────────
+            StmtKind::Assign { targets, value, .. } => {
+                self.compile_assign_stmt(targets, value)?;
+            }
+
+            StmtKind::CompoundAssign { target, op, value } => {
+                // Same question as the `h = h + handler` form above: the
+                // TARGET decides whether `+=` is a delegate combine.
+                if matches!(op, CompoundOp::Add | CompoundOp::Sub)
+                    && self.expr_is_delegate_typed(target)
+                    && self.is_csharp_delegate_handler_expr(value)
+                {
+                    match op {
+                        CompoundOp::Add => {
+                            self.compile_expr(target)?;
+                            self.compile_expr(value)?;
+                            common::delegates::emit_combine(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
+                            self.compile_assign_target(target)?;
+                            return Ok(());
+                        }
+                        CompoundOp::Sub => {
+                            self.compile_expr(target)?;
+                            self.compile_expr(value)?;
+                            common::delegates::emit_remove(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
+                            self.compile_assign_target(target)?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                if matches!(op, CompoundOp::NullCoalesce) {
+                    self.compile_expr(target)?;
+                    let current_slot = self.define_local("__null_coalesce_current");
+                    self.emit_u16(Op::LOCAL_SET, current_slot);
+
+                    self.emit_u16(Op::LOCAL_GET, current_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let line = self.line;
+                    self.chunk().emit_if_value(line);
+                    self.compile_expr(value)?;
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, current_slot);
+                    self.chunk().emit_end(line);
+                    self.compile_assign_target(target)?;
+                    return Ok(());
+                }
+                // Dynamic-typed languages: desugar `t OP= v` → `t = t OP v`
+                // and reuse the full type-aware binary routing so compound
+                // assignment dispatches BigInt/number/string identically to
+                // the plain operator (e.g. `exp >>= 1n` hits the bigint path).
+                if self.profile.dynamic_numeric_dispatch {
+                    if let Some(binop) = compound_op_to_binop(op) {
+                        let binexpr = Expression::new(ExprKind::Binary {
+                            op: binop,
+                            left: Box::new(target.clone()),
+                            right: Box::new(value.clone()),
+                        });
+                        self.compile_expr(&binexpr)?;
+                        self.compile_assign_target(target)?;
+                        return Ok(());
+                    }
+                }
+                // Load current value
+                self.compile_expr(target)?;
+                let prefer_numeric_add =
+                    matches!(op, CompoundOp::Add) && self.expr_prefers_numeric_add(target);
+                self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;
+                if prefer_numeric_add {
+                    self.emit(Op::F64_ADD);
+                } else {
+                    self.compile_compound_op(op);
+                }
+                self.compile_assign_target(target)?;
+            }
+
+            // ── If / Elif / Else (structured CF with label tracking) ──
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                let line = self.line;
+                self.compile_condition_to_i32(cond)?;
+                self.chunk().emit_if(line);
+                self.label_depth += 1;
+
+                self.scope_mut().begin_scope();
+                for s in then_body {
+                    self.compile_stmt(s)?;
+                }
+                self.scope_mut().end_scope();
+
+                // ⛔ THE ELIF CHAIN IS EMITTED ITERATIVELY. It used to rebuild
+                // a nested `StmtKind::If` per elif and RECURSE into
+                // `compile_stmt`, which cost one Rust frame per elif — and
+                // `compile_stmt_inner` is the largest frame in the compiler, so
+                // the depth limit was a few hundred elifs before the process
+                // aborted with a native stack overflow. `br_table.wast` lowers
+                // a 16154-target table into exactly this shape.
+                //
+                // ⛔ IT WAS ALSO O(n²) IN ALLOCATION: each level did
+                // `elifs.iter().skip(1).cloned().collect()`, deep-cloning the
+                // entire remaining tail — every statement of every later branch
+                // — once per elif.
+                //
+                // The EMITTED bytecode is unchanged: structured control flow
+                // still nests each elif's `if` inside the previous `else`, so
+                // this opens them in order and closes all of them at the end.
+                // Only the compiler's own recursion and copying go away.
+                let mut opened = 1usize;
+                for (elif_cond, elif_body) in elifs {
+                    let line = self.line;
+                    // Reclaim the previous branch's scratch before opening the
+                    // next — the recursion used to get this for free from
+                    // `compile_stmt`'s wrapper.
+                    let mark = self.chunks[self.current].local_count;
+                    self.chunk().emit_else(line);
+                    self.compile_condition_to_i32(elif_cond)?;
+                    self.chunk().emit_if(line);
+                    self.label_depth += 1;
+                    opened += 1;
+                    self.scope_mut().begin_scope();
+                    for s in elif_body {
+                        self.compile_stmt(s)?;
+                    }
+                    self.scope_mut().end_scope();
+                    self.reclaim_scratch_to(mark);
+                }
+                if let Some(else_stmts) = else_body {
+                    let line = self.line;
+                    self.chunk().emit_else(line);
+                    self.scope_mut().begin_scope();
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
+                    self.scope_mut().end_scope();
+                }
+
+                // One `end` per `if` opened above — the innermost first, which
+                // is what unwinding the old recursion did.
+                for _ in 0..opened {
+                    let line = self.line;
+                    self.chunk().emit_end(line);
+                    self.label_depth -= 1;
+                }
+            }
+
+            // ── While (compiler_common::loops) ─────────────────────────
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => {
+                let line = self.line;
+                let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
+                // block + loop = 2 label stack entries
+                let break_depth = self.label_depth + 1; // block is first (break target)
+                let continue_depth = self.label_depth + 2; // loop is second (continue target)
+                self.label_depth += 2;
+                self.loop_states.push(lp);
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    iterator_close_slot: None,
+                    is_continuable: true,
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
+                });
+                self.compile_condition_to_i32(cond)?;
+                let line = self.line;
+                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                self.loops.pop();
+                let lp = self.loop_states.pop().unwrap();
+                let line = self.line;
+                common::loops::emit_loop_end(&mut self.chunks, self.current, lp, line);
+                self.label_depth -= 2; // block + loop closed
+                if let Some(else_stmts) = else_body {
+                    for s in else_stmts {
+                        self.compile_stmt(s)?;
+                    }
+                }
+            }
+
+            // ── For C-style (compiler_common::loops) ────────────────────
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                self.compile_for_stmt(init, cond, update, body)?;
+            }
+
+            // ── ForIn / ForOf ───────────────────────────────────────────
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                else_body,
+                of,
+                is_async,
+                ..
+            } => {
+                self.compile_forin_stmt(var, key, iter, body, else_body, of, is_async)?;
+            }
+
+            // ── DoWhile (compiler_common::loops) ────────────────────────
+            StmtKind::DoWhile { body, cond, until } => {
+                let line = self.line;
+                let lp = common::loops::emit_do_loop_start(&mut self.chunks, self.current, line);
+                // Three nesting levels now: break-block, loop, body-block.
+                // `continue` targets the INNERMOST (the body block) so control
+                // reaches the condition; `break` targets the outermost.
+                let break_depth = self.label_depth + 1;
+                let continue_depth = self.label_depth + 3;
+                self.label_depth += 3;
+                self.loop_states.push(lp);
+                self.loops.push(LoopCtx {
+                    label: self.pending_label.take(),
+                    break_label_depth: break_depth,
+                    continue_label_depth: continue_depth,
+                    did_break_slot: None,
+                    iterator_close_slot: None,
+                    is_continuable: true,
+                    finally_depth: self.frame_cf().active_finally_blocks.len(),
+                });
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                // Close the body block first — everything after it is the
+                // condition, which is where `continue` must land.
+                let body_block = self.loop_states.last().unwrap().body_block_patch;
+                let line = self.line;
+                if let Some(patch) = body_block {
+                    self.chunks[self.current].emit_end(line);
+                    self.chunks[self.current].patch_block(patch);
+                }
+                self.label_depth -= 1;
+                self.compile_condition_to_i32(cond)?;
+                self.loops.pop();
+                let lp = self.loop_states.pop().unwrap();
+                let line = self.line;
+                common::loops::emit_do_loop_end_from_i32(
+                    &mut self.chunks,
+                    self.current,
+                    lp,
+                    *until,
+                    line,
+                );
+                self.label_depth -= 2;
+            }
+
+            // ── Switch / Select Case ────────────────────────────────────
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                self.compile_switch_stmt(expr, cases, default)?;
             }
 
             // ── Try / Catch / Finally ───────────────────────────────────
@@ -1562,327 +3034,7 @@ impl Compiler {
                 else_body,
                 finally,
             } => {
-                let line = self.line;
-                let finally_exc_slot = if catches.is_empty() && finally.is_some() {
-                    let slot = self.define_local("__try_finally_exc");
-                    self.emit_null();
-                    self.emit_u16(Op::LOCAL_SET, slot);
-                    Some(slot)
-                } else {
-                    None
-                };
-                // For a try-WITH-finally, allocate the completion state so a
-                // `break`/`continue`/`return` inside the body can run `finally`
-                // OUTSIDE the handler (see `finally_joins`): it stores a code
-                // here and `br`s to the join instead of inlining `finally`
-                // under the `try_table`. Default NORMAL (fall through).
-                let completion = if finally.is_some() {
-                    let completion_slot = self.define_local("__try_completion");
-                    let ret_slot = self.define_local("__try_ret");
-                    self.emit_const(Value::F64(completion::NORMAL));
-                    self.emit_u16(Op::LOCAL_SET, completion_slot);
-                    Some((completion_slot, ret_slot))
-                } else {
-                    None
-                };
-                let after_try_block = self.chunk().emit_block(line);
-                self.label_depth += 1;
-                // Register the join NOW: its `br` target is `after_try_block`,
-                // whose `end` lands exactly on the `finally` emission below,
-                // outside every handler. `label_depth - join_label_depth` from
-                // any point in the body is the `br` depth to reach it.
-                if let Some((completion_slot, ret_slot)) = completion {
-                    let join_label_depth = self.label_depth;
-                    self.frame_cf_mut().finally_joins.push(FinallyJoin {
-                        join_label_depth,
-                        completion_slot,
-                        ret_slot,
-                    });
-                }
-                common::errors::emit_try_start(&mut self.chunks[self.current], line);
-                // `emit_try_start` opens TWO labels: the handler block (whose
-                // `end` is where the catch arms begin — the target every clause
-                // names by `labelidx`) and the `try_table` itself, which is a
-                // structural block in the spec. The body therefore sits two
-                // levels deeper. The handler block's level is dropped after the
-                // normal-path `br` below, so the catch arms see it closed.
-                self.label_depth += 2;
-                if let Some(fin) = finally.clone() {
-                    self.frame_cf_mut()
-                        .active_finally_blocks
-                        .push(FinallyAction::Statements(fin));
-                }
-                let saved_try_strict = self.in_strict;
-                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(body) {
-                    self.in_strict = true;
-                }
-                let try_framed = Self::stmts_have_directive(body);
-                if try_framed {
-                    self.push_directive_frame();
-                }
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
-                if try_framed {
-                    self.pop_directive_frame();
-                }
-                self.in_strict = saved_try_strict;
-                common::errors::emit_try_end(&mut self.chunks[self.current], line);
-                self.label_depth -= 1;
-                // Python else: runs if no exception
-                if let Some(else_stmts) = else_body {
-                    for s in else_stmts {
-                        self.compile_stmt(s)?;
-                    }
-                }
-                // `br 1`, not `br 0`: the handler block now sits between here
-                // and `after_try_block`, so the normal path is one level
-                // further out. `br 0` would land on the handler block's `end`
-                // — that is, run the catch arms on SUCCESS.
-                self.chunk().emit_br(1, line);
-                common::errors::emit_handler_block_end(&mut self.chunks[self.current], line);
-                self.label_depth -= 1;
-                // Entering this try's catch-arms section: ITS runtime handler
-                // has fired, so ITS finally (sequenced after the arms) is the
-                // one a `throw` inside an arm must inline — enclosing trys'
-                // finallys still have LIVE handlers and must NOT be inlined
-                // (the runtime runs them; inlining doubled the finally).
-                let fired_finally = if finally.is_some() && !catches.is_empty() {
-                    let idx = self.frame_cf().active_finally_blocks.len() - 1;
-                    self.frame_cf_mut().fired_finally_indices.push(idx);
-                    true
-                } else {
-                    false
-                };
-                if catches.is_empty() {
-                    if let Some(exc_slot) = finally_exc_slot {
-                        self.emit_u16(Op::LOCAL_SET, exc_slot);
-                    } else {
-                        self.emit(Op::DROP);
-                    }
-                } else {
-                    // Multi-catch dispatch: each arm tests the exception's
-                    // canonical __exception_type field. If it matches one of
-                    // the arm's types, run the body; otherwise fall through
-                    // to the next arm. The exception object is on TOS at
-                    // every step. A catch-all arm (empty types or "Exception")
-                    // catches everything. After all arms, any unmatched
-                    // exception is re-thrown.
-                    let exc_slot = self.define_local("__caught_exception");
-                    let handled_slot = self.define_local("__catch_handled");
-                    self.emit_u16(Op::LOCAL_SET, exc_slot);
-                    self.emit_const(Value::Bool(false));
-                    self.emit_u16(Op::LOCAL_SET, handled_slot);
-                    for c in catches {
-                        // When the language models its exceptions as real
-                        // classes (`throwable_is_root`), catch types must match
-                        // the real class names in the `__type`/`__types` chain —
-                        // do NOT canonicalize, which conflates `Error` and
-                        // `Exception` (both map to "Exception") and would erase
-                        // PHP's two distinct branches.
-                        let types: Vec<&str> = c
-                            .types
-                            .iter()
-                            .map(|t| {
-                                if self.profile.throwable_is_root {
-                                    t.trim()
-                                } else {
-                                    common::errors::canonical_exception_name(t)
-                                }
-                            })
-                            .collect();
-                        // `Throwable` is the universal root everywhere. In
-                        // PHP/Java (`throwable_is_root`), `Exception` is only a
-                        // branch — the `Error` branch is a sibling — so
-                        // `catch (Exception)` matches via the `__types` chain
-                        // below, not as a catch-all. In Python/.NET/Ruby,
-                        // `Exception` is the root and catches everything.
-                        let exception_catches_all = !self.profile.throwable_is_root;
-                        let is_catch_all = types.is_empty()
-                            || types.iter().any(|t| {
-                                *t == "Throwable"
-                                    || (exception_catches_all
-                                        && (*t == "Exception" || *t == "BaseException"))
-                            });
-
-                        let arm_match_slot = self.define_local("__catch_arm_match");
-                        self.emit_const(Value::Bool(is_catch_all));
-                        self.emit_u16(Op::LOCAL_SET, arm_match_slot);
-
-                        if !is_catch_all {
-                            for ty in &types {
-                                let mut expected_names = vec![(*ty).to_string()];
-                                if !self.case_sensitive {
-                                    let canon_ty = self.canon(ty);
-                                    if canon_ty != *ty {
-                                        expected_names.push(canon_ty);
-                                    }
-                                }
-
-                                // Single identity test per candidate type,
-                                // through the shared reflection primitive that
-                                // owns the question — it unions the rtt
-                                // (`ref.test`, which is what resolves declared
-                                // subtyping and `implements` by index) with the
-                                // `__types` ancestry chain every frontend
-                                // stamps. A bare `REF_TEST` here answered from
-                                // the rtt alone, so an instance a BASE
-                                // constructor allocated — carrying its parent's
-                                // rtt — failed `catch` on its own class even
-                                // though `__types` named it. One unified
-                                // mechanism, no per-language branching.
-                                for expected in &expected_names {
-                                    let line = self.line;
-                                    crate::primitives::reflection::emit_is_instance_of(
-                                        &mut self.chunks,
-                                        self.current,
-                                        exc_slot,
-                                        expected,
-                                        line,
-                                    );
-                                    self.chunk().emit_if(line);
-                                    inst!(self, core_wasm::bool_const, true);
-                                    self.emit_u16(Op::LOCAL_SET, arm_match_slot);
-                                    self.chunk().emit_end(line);
-                                }
-                            }
-                        }
-
-                        self.emit_u16(Op::LOCAL_GET, handled_slot);
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        };
-                        self.emit(Op::I32_EQZ);
-                        self.chunk().emit_if_value(line);
-                        self.emit_u16(Op::LOCAL_GET, arm_match_slot);
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        };
-                        self.chunk().emit_else(line);
-                        self.emit_const(Value::Bool(false));
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_if(line);
-                        // The catch body executes inside this arm-match IF —
-                        // a real WASM control frame the VM pushes onto its
-                        // label_stack. `break`/`continue` inside the catch body
-                        // derive their `br` depth from `label_depth`, so it must
-                        // count this open IF or the branch targets the wrong
-                        // frame and the enclosing loop never exits (hang).
-                        // ECMA-262 §14.2: abrupt completion still exits the loop.
-                        self.label_depth += 1;
-
-                        if let Some(ref var) = c.var_name {
-                            self.scope_mut().begin_scope();
-                            let slot = self.define_source_local(var);
-                            self.emit_u16(Op::LOCAL_GET, exc_slot);
-                            self.emit_u16(Op::LOCAL_SET, slot);
-                        } else {
-                            self.scope_mut().begin_scope();
-                        }
-
-                        if let Some(cond) = &c.when_clause {
-                            self.compile_expr(cond)?;
-                            {
-                                let line = self.line;
-                                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                            };
-                            self.chunk().emit_if(line);
-                            // The when-clause adds a second open IF around the
-                            // catch body — count it too.
-                            self.label_depth += 1;
-                        }
-
-                        self.frame_cf_mut().catch_depth += 1;
-                        for s in &c.body {
-                            self.compile_stmt(s)?;
-                        }
-                        self.frame_cf_mut().catch_depth = self.frame_cf().catch_depth.saturating_sub(1);
-                        self.emit_const(Value::Bool(true));
-                        self.emit_u16(Op::LOCAL_SET, handled_slot);
-                        if c.when_clause.is_some() {
-                            self.label_depth -= 1;
-                            self.chunk().emit_end(line);
-                        }
-                        self.scope_mut().end_scope();
-                        self.label_depth -= 1;
-                        self.chunk().emit_end(line);
-                    }
-                    // Fallthrough = no arm matched. Re-throw (through finally if any).
-                    self.emit_u16(Op::LOCAL_GET, handled_slot);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    };
-                    self.emit(Op::I32_EQZ);
-                    self.chunk().emit_if(line);
-                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                    self.emit_throw_through_finally()?;
-                    self.chunk().emit_end(line);
-                }
-                self.chunk().emit_end(line);
-                self.chunk().patch_block(after_try_block);
-                self.label_depth -= 1;
-                if fired_finally {
-                    self.frame_cf_mut().fired_finally_indices.pop();
-                }
-                if finally.is_some() {
-                    self.frame_cf_mut().active_finally_blocks.pop();
-                }
-                // Pop the join BEFORE emitting the `finally` body: a
-                // `break`/`continue`/`return` inside `finally` itself belongs
-                // to the ENCLOSING try/loop, not this one (whose finally is
-                // now running).
-                if finally.is_some() {
-                    self.frame_cf_mut().finally_joins.pop();
-                }
-                if let Some(fin) = finally {
-                    for s in fin {
-                        self.compile_stmt(s)?;
-                    }
-                }
-                // Completion dispatch — runs AFTER `finally`, OUTSIDE the
-                // handler. A non-local exit that jumped here re-issues itself,
-                // now chaining to the enclosing join (or the real loop/return
-                // target) since this try's join + finally are already popped.
-                if let Some((completion_slot, ret_slot)) = completion {
-                    let emit_eq_branch = |c: &mut Self, code: f64| {
-                        c.emit_u16(Op::LOCAL_GET, completion_slot);
-                        c.emit_const(Value::F64(code));
-                        let ln = c.line;
-                        crate::primitives::ops::emit_dyn_eq(c.chunk(), ln);
-                        crate::primitives::ops::emit_dyn_to_bool(c.chunk(), ln);
-                        c.chunk().emit_if(ln);
-                        c.label_depth += 1;
-                    };
-                    emit_eq_branch(self, completion::BREAK);
-                    self.emit_break_through_finally(None)?;
-                    self.label_depth -= 1;
-                    self.chunk().emit_end(line);
-                    emit_eq_branch(self, completion::CONTINUE);
-                    self.emit_continue_through_finally(None)?;
-                    self.label_depth -= 1;
-                    self.chunk().emit_end(line);
-                    emit_eq_branch(self, completion::RETURN);
-                    self.emit_u16(Op::LOCAL_GET, ret_slot);
-                    self.emit_return_through_finally(1)?;
-                    self.label_depth -= 1;
-                    self.chunk().emit_end(line);
-                }
-                if let Some(exc_slot) = finally_exc_slot {
-                    if self.frame_cf().catch_depth > 0 {
-                        return Ok(());
-                    }
-                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    self.emit(Op::I32_EQZ);
-                    self.chunk().emit_if(line);
-                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                    let line = self.line;
-                    common::errors::emit_throw(self.chunk(), line);
-                    self.chunk().emit_end(line);
-                }
+                self.compile_try_stmt(body, catches, else_body, finally)?;
             }
 
             // ── Return ──────────────────────────────────────────────────
@@ -2203,209 +3355,7 @@ impl Compiler {
             // - Bare member names register in enum_members map → resolve to Module.Member
             // - A namespace struct is built so qualified `Module.Member` works too
             StmtKind::ModuleDecl { name, members, .. } => {
-                let module_name = self.canon(name);
-                self.declare_class_identity(&module_name);
-                self.register_module_static_container(&module_name, members);
-                let mut member_names: Vec<(String, String)> = Vec::new();
-
-                // First pass: compile all members as globals + collect names
-                for m in members {
-                    match m {
-                        ClassMember::Method(stmt) => {
-                            if let StmtKind::FunctionDecl {
-                                name: mname,
-                                modifiers,
-                                ..
-                            } = &stmt.kind
-                            {
-                                let mn = self.canon(mname);
-                                // A module member is published under its BARE
-                                // name only when the declaration makes it
-                                // reachable from OUTSIDE the module. A bare
-                                // global is reachable from everywhere, so
-                                // publishing one for a module-private member
-                                // discards the visibility the AST already
-                                // carries on `modifiers`.
-                                //
-                                // Measured against VB.NET (dotnet SDK):
-                                //   Private member, called from another module
-                                //     -> BC30390 "not accessible in this
-                                //        context because it is 'Private'"
-                                //   Friend member, same call -> allowed
-                                // so `Friend`/`Internal` contributes and only
-                                // `Private` is withheld. `Visibility` defaults
-                                // to `Public`, so a walker that declares
-                                // nothing is unaffected.
-                                //
-                                // Qualifying instead of skipping keeps the
-                                // member fully functional: the second pass
-                                // below reads `global_name` and stamps it onto
-                                // the module object under `mn`, and calls from
-                                // inside the module resolve through that
-                                // container (`current_class` is set while
-                                // members compile) rather than through the
-                                // bare global. Only outside reachability
-                                // changes.
-                                let contributes_unqualified = matches!(
-                                    modifiers.visibility,
-                                    Visibility::Public | Visibility::Internal
-                                );
-                                let global_name =
-                                    if module_name.contains('.') || !contributes_unqualified {
-                                        format!("{module_name}.{mn}")
-                                    } else {
-                                        mn.clone()
-                                    };
-                                let mut module_stmt = stmt.clone();
-                                if let StmtKind::FunctionDecl { name, .. } = &mut module_stmt.kind {
-                                    *name = global_name.clone();
-                                }
-                                let saved_class = self.current_class.clone();
-                                let saved_implicit_self = self.current_class_implicit_self;
-                                let saved_member_static = self.current_member_is_static;
-                                self.current_class = Some(module_name.clone());
-                                self.current_class_implicit_self = false;
-                                self.current_member_is_static = true;
-                                self.compile_stmt(&module_stmt)?;
-                                self.current_class = saved_class;
-                                self.current_class_implicit_self = saved_implicit_self;
-                                self.current_member_is_static = saved_member_static;
-                                member_names.push((mn, global_name));
-                            }
-                        }
-                        ClassMember::Field {
-                            name: fname, init, ..
-                        } => {
-                            if let Some(init_expr) = init {
-                                self.compile_expr(init_expr)?;
-                            } else {
-                                self.emit_null();
-                            }
-                            let cname = self.canon(fname);
-                            self.emit_global_write(&cname);
-                            self.defined_globals.insert(cname.clone());
-                            member_names.push((cname.clone(), cname));
-                        }
-                        ClassMember::Const {
-                            name: cname, value, ..
-                        } => {
-                            // Compile value once, install as global
-                            // `<Class>.<Const>` (legacy access path)
-                            // AND stamp on the class object so PHP
-                            // `Class::Const` static access (struct_get
-                            // on class) resolves to the value.
-                            self.compile_expr(value)?;
-                            let val_slot = self.define_local("__class_const_val");
-                            self.emit_u16(Op::LOCAL_SET, val_slot);
-
-                            let cn = self.canon(cname);
-                            self.emit_u16(Op::LOCAL_GET, val_slot);
-                            self.emit_global_write(&cn);
-                            self.defined_globals.insert(cn.clone());
-                            member_names.push((cn.clone(), cn.clone()));
-
-                            // Stamp on class object for static access.
-                            // `name` here is the enclosing class name; on
-                            // module-level Const blocks it's the module
-                            // name, but the class object lookup will
-                            // miss harmlessly in that case.
-                            let class_canon = self.canon(name);
-                            if self.defined_globals.contains(&class_canon) {
-                                self.emit_global_read(&class_canon);
-                                self.emit_u16(Op::LOCAL_GET, val_slot);
-                                self.class_set(
-                                    class_slots::ObjSource::Stack,
-                                    &class_slots::ClassSlot::internal(cname),
-                                    class_slots::ValueSource::Stack,
-                                );
-                            }
-                        }
-                        ClassMember::NestedType(stmt) => {
-                            // Nested types get their own globals; attach them to the
-                            // module object so `Module.Type.Member` resolves through the
-                            // same shared namespace path used by classes.
-                            if let Some(cn) = match &stmt.kind {
-                                StmtKind::ClassDecl { name: cname, .. }
-                                | StmtKind::StructDecl { name: cname, .. }
-                                | StmtKind::EnumDecl { name: cname, .. }
-                                | StmtKind::InterfaceDecl { name: cname, .. }
-                                | StmtKind::ModuleDecl { name: cname, .. } => {
-                                    Some(self.canon(cname))
-                                }
-                                _ => None,
-                            } {
-                                member_names.push((cn.clone(), cn));
-                            }
-                            self.compile_stmt(stmt)?;
-                        }
-                        ClassMember::Constructor { params, body, .. } => {
-                            // Module-level constructor — compile as a function named after constructor_name
-                            let ctor_stmt = Statement::new(StmtKind::FunctionDecl {
-                                name: self.profile.constructor_name.clone(),
-                                params: params.clone(),
-                                return_type: None,
-                                body: body.clone(),
-                                modifiers: Modifiers::default(),
-                                handles: Vec::new(),
-                                is_async: false,
-                                is_generator: false,
-                                is_sub: true,
-                            });
-                            let saved_class = self.current_class.clone();
-                            let saved_implicit_self = self.current_class_implicit_self;
-                            let saved_member_static = self.current_member_is_static;
-                            self.current_class = Some(module_name.clone());
-                            self.current_class_implicit_self = false;
-                            self.current_member_is_static = true;
-                            self.compile_stmt(&ctor_stmt)?;
-                            self.current_class = saved_class;
-                            self.current_class_implicit_self = saved_implicit_self;
-                            self.current_member_is_static = saved_member_static;
-                            let ctor = self.canon(&self.profile.constructor_name);
-                            member_names.push((ctor.clone(), ctor));
-                        }
-                        _ => {}
-                    }
-                }
-
-                if member_names
-                    .iter()
-                    .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
-                {
-                    self.emit_global_read("__static_init__");
-                    self.emit_direct_callable_invoke(0);
-                    self.emit(Op::DROP);
-                }
-
-                // Second pass: build namespace struct { member1: global, member2: global, ... }
-                self.class_alloc();
-                for (mn, global_name) in &member_names {
-                    inst!(self, core_wasm::dup);
-                    self.emit_global_read(global_name);
-                    self.class_set(
-                        class_slots::ObjSource::Stack,
-                        &class_slots::ClassSlot::internal(mn),
-                        class_slots::ValueSource::Stack,
-                    );
-                    // Register bare member → module name for qualified resolution
-                    self.enum_members.insert(mn.clone(), module_name.clone());
-                    // A member is CONTRIBUTED to the enclosing scope exactly
-                    // when it was published under its bare name — which is the
-                    // same condition the visibility rule above already
-                    // decided, so it is read back here rather than derived a
-                    // second time and left to drift.
-                    if global_name == mn {
-                        let contributors = self
-                            .module_member_contributors
-                            .entry(mn.clone())
-                            .or_default();
-                        if !contributors.iter().any(|m| m == &module_name) {
-                            contributors.push(module_name.clone());
-                        }
-                    }
-                }
-                self.emit_global_write(&module_name);
-                self.defined_globals.insert(module_name);
+                self.compile_module_decl_stmt(name, members)?;
             }
 
             // ── Namespace declaration ───────────────────────────────────
@@ -2413,162 +3363,7 @@ impl Compiler {
             // (matches .NET behavior — within the same compilation unit, bare type access
             // works without import). Also builds namespace struct for qualified access.
             StmtKind::NamespaceDecl { name, body } => {
-                let local_ns_name = self.canon(name).replace('\\', ".");
-                let ns_name = match self.current_namespace.as_deref() {
-                    Some(prefix) if !prefix.is_empty() => format!("{prefix}.{local_ns_name}"),
-                    _ => local_ns_name,
-                };
-                if ns_name.is_empty() {
-                    let prev_namespace = self.current_namespace.clone();
-                    self.current_namespace = None;
-                    for s in body {
-                        self.compile_stmt(s)?;
-                    }
-                    self.current_namespace = prev_namespace;
-                    return Ok(());
-                }
-                let mut member_names: Vec<(String, String, bool)> = Vec::new();
-                let mut qualified_body: Vec<Statement> = Vec::with_capacity(body.len());
-                for s in body {
-                    let mut qualified = s.clone();
-                    match &mut qualified.kind {
-                        StmtKind::ClassDecl { name: cn, .. }
-                        | StmtKind::StructDecl { name: cn, .. }
-                        | StmtKind::EnumDecl { name: cn, .. }
-                        | StmtKind::InterfaceDecl { name: cn, .. }
-                        | StmtKind::ModuleDecl { name: cn, .. } => {
-                            let member_name = self.canon(cn);
-                            let qualified_name = if member_name.contains('.') {
-                                member_name.clone()
-                            } else {
-                                format!("{ns_name}.{member_name}")
-                            };
-                            member_names.push((member_name, qualified_name.clone(), true));
-                            *cn = qualified_name;
-                        }
-                        StmtKind::FunctionDecl { name: cn, .. } => {
-                            let member_name = self.canon(cn);
-                            let qualified_name = if member_name.contains('.') {
-                                member_name.clone()
-                            } else {
-                                format!("{ns_name}.{member_name}")
-                            };
-                            member_names.push((member_name, qualified_name.clone(), false));
-                            *cn = qualified_name;
-                        }
-                        _ => {}
-                    }
-                    qualified_body.push(qualified);
-                }
-                for (_, qualified_name, is_type_like) in &member_names {
-                    self.defined_globals.insert(qualified_name.clone());
-                    if *is_type_like {
-                        self.declare_class_identity(qualified_name);
-                    } else {
-                        self.declare_function_identity(qualified_name);
-                    }
-                }
-                let prev_namespace = self.current_namespace.clone();
-                self.current_namespace = Some(ns_name.clone());
-                for s in &qualified_body {
-                    self.compile_stmt(s)?;
-                }
-                self.current_namespace = prev_namespace;
-
-                for (member_name, qualified_name, is_type_like) in &member_names {
-                    self.defined_globals.insert(qualified_name.clone());
-                    if *is_type_like {
-                        self.declare_class_identity(qualified_name);
-                    } else {
-                        self.declare_function_identity(qualified_name);
-                    }
-                    let suffix = format!(".{member_name}");
-                    let has_qualified_collision = if *is_type_like {
-                        self.defined_classes
-                            .iter()
-                            .any(|name| name != qualified_name && name.ends_with(&suffix))
-                    } else {
-                        self.defined_functions
-                            .iter()
-                            .any(|name| name != qualified_name && name.ends_with(&suffix))
-                    };
-                    if !has_qualified_collision
-                        && !self.defined_globals.contains(member_name)
-                        && !self.defined_classes.contains(member_name)
-                        && !self.defined_functions.contains(member_name)
-                    {
-                        self.emit_global_read(qualified_name);
-                        self.emit_global_write(member_name);
-                    }
-                }
-
-                // Build the namespace object — EXTENDING one that already
-                // exists rather than replacing it.
-                //
-                // A namespace is OPEN: `namespace App { … }` may be written any
-                // number of times, and every namespaced language merges the
-                // blocks. A fresh `struct.new` here made the last block win, so
-                //
-                //     namespace App.Deep { class Helper { … } }   // App = { Deep }
-                //     namespace App      { class Runner { … } }   // App = { Runner }
-                //
-                // dropped `Deep` off the object, and a fully-qualified
-                // `App.Deep.Helper.Tag()` — which compiles to member access on
-                // the `App` object — read `undefined`. Verified against the .NET
-                // SDK: real C# prints `App.Deep.Helper` for exactly this program.
-                // The sibling block is what triggers it, so the single-namespace
-                // case always worked and hid this.
-                //
-                // Same rule the parent-linking loop below already applies to the
-                // ENCLOSING object, now applied to the namespace's own: read
-                // what is there, else start one. `ns_name` reaches
-                // `defined_globals` only right after a global write (here and in
-                // that loop), so a read can never find a declared-but-unwritten
-                // global.
-                if self.defined_globals.contains(&ns_name) {
-                    self.emit_global_read(&ns_name);
-                } else {
-                    self.class_alloc();
-                }
-                for (member_name, qualified_name, _) in &member_names {
-                    inst!(self, core_wasm::dup);
-                    self.emit_global_read(qualified_name);
-                    self.class_set(
-                        class_slots::ObjSource::Stack,
-                        &class_slots::ClassSlot::internal(member_name),
-                        class_slots::ValueSource::Stack,
-                    );
-                }
-                self.emit_global_write(&ns_name);
-                self.defined_globals.insert(ns_name.clone());
-
-                let namespace_parts: Vec<&str> = ns_name
-                    .split('.')
-                    .map(|part| part.trim())
-                    .filter(|part| !part.is_empty())
-                    .collect();
-                if namespace_parts.len() > 1 {
-                    for depth in 1..namespace_parts.len() {
-                        let parent_name = self.canon(&namespace_parts[..depth].join("."));
-                        let child_name = self.canon(&namespace_parts[..=depth].join("."));
-                        let child_key = self.canon(namespace_parts[depth]);
-
-                        if self.defined_globals.contains(&parent_name) {
-                            self.emit_global_read(&parent_name);
-                        } else {
-                            self.class_alloc();
-                        }
-                        inst!(self, core_wasm::dup);
-                        self.emit_global_read(&child_name);
-                        self.class_set(
-                            class_slots::ObjSource::Stack,
-                            &class_slots::ClassSlot::internal(&child_key),
-                            class_slots::ValueSource::Stack,
-                        );
-                        self.emit_global_write(&parent_name);
-                        self.defined_globals.insert(parent_name);
-                    }
-                }
+                self.compile_namespace_decl_stmt(name, body)?;
             }
 
             // ── Delegate declaration ────────────────────────────────────
@@ -2698,184 +3493,7 @@ impl Compiler {
                 bounds,
                 preserve,
             } => {
-                if let Some(size_expr) = bounds.first() {
-                    let line = self.line;
-                    if *preserve {
-                        // Allocate new array of N+1, then iterate the OLD
-                        // array via compiler_common::loops::emit_for_in_start
-                        // and copy each element into new[i] (bounded by
-                        // new_len). This reuses the canonical for-in loop
-                        // emit pattern that every other iteration site uses.
-                        let old_slot = self.define_local("__redim_old");
-                        let new_slot = self.define_local("__redim_new");
-                        let new_len_slot = self.define_local("__redim_nlen");
-                        let idx_slot = self.define_local("__redim_idx");
-                        let old_len_slot = self.define_local("__redim_olen");
-                        let fill_idx_slot = self.define_local("__redim_fill_idx");
-                        let default_slot = self.define_local("__redim_default");
-
-                        // old = arr
-                        self.emit_var_get(array);
-                        self.emit_u16(Op::LOCAL_SET, old_slot);
-                        // new_len = N + 1
-                        self.compile_expr(size_expr)?;
-                        self.emit_const(Value::F64(1.0));
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
-                        };
-                        self.emit_u16(Op::LOCAL_SET, new_len_slot);
-                        self.emit_u16(Op::LOCAL_GET, old_slot);
-                        common::collections::emit_len(&mut self.chunks, self.current, line);
-                        self.emit_u16(Op::LOCAL_SET, old_len_slot);
-                        // new = newWithLength(new_len) via common::collections
-                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        common::collections::emit_new_with_length(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
-                        self.emit_u16(Op::LOCAL_SET, new_slot);
-
-                        // Iterate old array with the canonical for-in helper.
-                        // The helper leaves [element] on the stack each pass
-                        // and exposes the index in `idx_slot`.
-                        let lp = common::loops::emit_for_in_start(
-                            &mut self.chunks,
-                            self.current,
-                            old_slot,
-                            idx_slot,
-                            line,
-                        );
-                        // Stack: [element]. If idx >= new_len, drop and break
-                        // (don't write past the new array). Otherwise
-                        // new[idx] = element.
-                        let elem_slot = self.define_local("__redim_el");
-                        self.emit_u16(Op::LOCAL_SET, elem_slot);
-                        self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-                        };
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        self.chunk().emit_if(line);
-                        // in bounds: new[idx] = element via common::collections::emit_set.
-                        self.emit_u16(Op::LOCAL_GET, new_slot);
-                        self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        common::collections::emit_set(&mut self.chunks, self.current, line);
-                        // emit_set preserves [val] — drop it.
-                        self.emit(Op::DROP);
-                        self.chunk().emit_end(line);
-
-                        common::loops::emit_for_in_end(
-                            &mut self.chunks,
-                            self.current,
-                            idx_slot,
-                            lp,
-                            line,
-                        );
-
-                        // Fill any grown tail with the array's default value.
-                        // Until arrays carry static element metadata, infer the
-                        // default from the first existing element's runtime
-                        // category: numbers -> 0, bools -> false, refs -> null.
-                        self.emit_null();
-                        self.emit_u16(Op::LOCAL_SET, default_slot);
-                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
-                        self.emit_const(Value::F64(0.0));
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_gt(self.chunk(), line);
-                        };
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        self.chunk().emit_if(line);
-
-                        self.emit_u16(Op::LOCAL_GET, old_slot);
-                        inst!(self, core_wasm::i32_const, 0);
-                        common::collections::emit_get(&mut self.chunks, self.current, line);
-                        let seed_slot = self.define_local("__redim_seed");
-                        self.emit_u16(Op::LOCAL_SET, seed_slot);
-
-                        self.emit_u16(Op::LOCAL_GET, seed_slot);
-                        fn_call!(self, "wasm:js-boolean", "test", 1);
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        self.chunk().emit_if(line);
-                        inst!(self, core_wasm::bool_const, false);
-                        self.emit_u16(Op::LOCAL_SET, default_slot);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, seed_slot);
-                        fn_call!(self, "wasm:js-number", "test", 1);
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        self.chunk().emit_if(line);
-                        inst!(self, core_wasm::i32_const, 0);
-                        self.emit_u16(Op::LOCAL_SET, default_slot);
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_end(line);
-
-                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
-                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
-                        let fill_block = self.chunk().emit_block(line);
-                        let (fill_loop, _) = self.chunk().emit_loop_s(line);
-                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
-                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-                        };
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                        };
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        };
-                        self.chunk().emit_br_if(1, line);
-
-                        self.emit_u16(Op::LOCAL_GET, new_slot);
-                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
-                        self.emit_u16(Op::LOCAL_GET, default_slot);
-                        common::collections::emit_set(&mut self.chunks, self.current, line);
-                        self.emit(Op::DROP);
-
-                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
-                        self.emit_const(Value::F64(1.0));
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
-                        };
-                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot);
-                        self.chunk().emit_br(0, line);
-                        self.chunk().emit_end(line);
-                        self.chunk().patch_loop(fill_loop);
-                        self.chunk().emit_end(line);
-                        self.chunk().patch_block(fill_block);
-
-                        // arr = new
-                        self.emit_u16(Op::LOCAL_GET, new_slot);
-                        self.emit_var_set(array);
-                    } else {
-                        // ReDim arr(N) — non-preserving. N is the upper
-                        // bound; length is N+1. Emit through
-                        // `common::collections` (Phase D2).
-                        let line = self.line;
-                        self.compile_expr(size_expr)?;
-                        self.emit_const(Value::F64(1.0));
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_add(self.chunk(), line);
-                        };
-                        common::collections::emit_new_with_length(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
-                        self.emit_var_set(array);
-                    }
-                }
+                self.compile_redim_stmt(array, bounds, preserve)?;
             }
 
             // ── Events ──────────────────────────────────────────────────
@@ -3289,164 +3907,7 @@ impl Compiler {
                 key_index,
                 key_value,
             } => {
-                let line = self.line;
-                let file_slot = self.define_local("__vb_record_file_number");
-                let rows_slot = self.define_local("__vb_record_rows");
-                let len_slot = self.define_local("__vb_record_len");
-                let idx_slot = self.define_local("__vb_record_idx");
-                let row_slot = self.define_local("__vb_record_row");
-                let values_slot = self.define_local("__vb_record_values");
-                let found_slot = self.define_local("__vb_record_found");
-                let key_slot = key_value
-                    .as_ref()
-                    .map(|_| self.define_local("__vb_record_key"));
-
-                self.compile_expr(file_number)?;
-                self.emit_u16(Op::LOCAL_SET, file_slot);
-                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
-
-                if let Some(key_expr) = key_value {
-                    let key_slot = key_slot.expect("key slot allocated when key_value exists");
-                    let key_index = key_index.unwrap_or(0);
-
-                    self.compile_expr(key_expr)?;
-                    self.emit_u16(Op::LOCAL_SET, key_slot);
-                    self.emit_null();
-                    self.emit_u16(Op::LOCAL_SET, found_slot);
-
-                    let state = common::loops::emit_for_in_start(
-                        &mut self.chunks,
-                        self.current,
-                        rows_slot,
-                        idx_slot,
-                        line,
-                    );
-                    self.emit_u16(Op::LOCAL_SET, row_slot);
-                    self.emit_u16(Op::LOCAL_GET, row_slot);
-                    self.emit_const(Value::String(Arc::from(",")));
-                    fn_call!(self, "ecma:string", "split", 2);
-                    self.emit_u16(Op::LOCAL_SET, values_slot);
-                    self.emit_u16(Op::LOCAL_GET, values_slot);
-                    self.emit_const(Value::F64(key_index as f64));
-                    self.emit(Op::ARRAY_GET);
-                    self.emit_u16(Op::LOCAL_GET, key_slot);
-                    self.emit_file_key_compare(FileKeyRelation::Equal);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    };
-                    self.chunk().emit_if(line);
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    self.emit_u16(Op::LOCAL_SET, found_slot);
-                    self.chunks[self.current].emit_br(state.break_depth(0).into(), line);
-                    self.chunk().emit_end(line);
-                    common::loops::emit_for_in_end(
-                        &mut self.chunks,
-                        self.current,
-                        idx_slot,
-                        state,
-                        line,
-                    );
-
-                    self.emit_u16(Op::LOCAL_GET, found_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    self.chunk().emit_if(line);
-                    self.emit_record_assign_nulls(variables);
-                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
-                    self.emit_global_map_set_const(
-                        "__vb_file_eof_by_handle",
-                        file_slot,
-                        Value::Bool(true),
-                    );
-                    self.chunk().emit_else(line);
-                    self.emit_u16(Op::LOCAL_GET, rows_slot);
-                    self.emit_u16(Op::LOCAL_GET, found_slot);
-                    self.emit(Op::ARRAY_GET);
-                    self.emit_u16(Op::LOCAL_SET, row_slot);
-                    self.emit_u16(Op::LOCAL_GET, row_slot);
-                    self.emit_const(Value::String(Arc::from(",")));
-                    fn_call!(self, "ecma:string", "split", 2);
-                    self.emit_u16(Op::LOCAL_SET, values_slot);
-                    self.emit_record_assign_values_from_local(values_slot, variables);
-                    self.emit_global_map_set_from_local(
-                        "__vb_record_current_index_by_handle",
-                        file_slot,
-                        found_slot,
-                    );
-                    self.emit_u16(Op::LOCAL_GET, found_slot);
-                    inst!(self, core_wasm::i32_const, 1);
-                    self.emit(Op::I32_ADD);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.emit_global_map_set_from_local(
-                        "__vb_record_next_index_by_handle",
-                        file_slot,
-                        idx_slot,
-                    );
-                    self.emit_global_map_set_const(
-                        "__vb_file_eof_by_handle",
-                        file_slot,
-                        Value::Bool(false),
-                    );
-                    self.chunk().emit_end(line);
-                } else {
-                    self.emit_global_map_get_into_local(
-                        "__vb_record_next_index_by_handle",
-                        file_slot,
-                        idx_slot,
-                    );
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    self.chunk().emit_if(line);
-                    inst!(self, core_wasm::i32_const, 0);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.chunk().emit_end(line);
-
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    self.emit_u16(Op::LOCAL_GET, len_slot);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-                    };
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    self.chunk().emit_if(line);
-                    self.emit_u16(Op::LOCAL_GET, rows_slot);
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    self.emit(Op::ARRAY_GET);
-                    self.emit_u16(Op::LOCAL_SET, row_slot);
-                    self.emit_u16(Op::LOCAL_GET, row_slot);
-                    self.emit_const(Value::String(Arc::from(",")));
-                    fn_call!(self, "ecma:string", "split", 2);
-                    self.emit_u16(Op::LOCAL_SET, values_slot);
-                    self.emit_record_assign_values_from_local(values_slot, variables);
-                    self.emit_global_map_set_from_local(
-                        "__vb_record_current_index_by_handle",
-                        file_slot,
-                        idx_slot,
-                    );
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    inst!(self, core_wasm::i32_const, 1);
-                    self.emit(Op::I32_ADD);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.emit_global_map_set_from_local(
-                        "__vb_record_next_index_by_handle",
-                        file_slot,
-                        idx_slot,
-                    );
-                    self.emit_global_map_set_const(
-                        "__vb_file_eof_by_handle",
-                        file_slot,
-                        Value::Bool(false),
-                    );
-                    self.chunk().emit_else(line);
-                    self.emit_record_assign_nulls(variables);
-                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
-                    self.emit_global_map_set_const(
-                        "__vb_file_eof_by_handle",
-                        file_slot,
-                        Value::Bool(true),
-                    );
-                    self.chunk().emit_end(line);
-                }
+                self.compile_input_record_file_stmt(file_number, variables, key_index, key_value)?;
             }
             StmtKind::RewriteRecordFile {
                 file_number,
@@ -3618,142 +4079,7 @@ impl Compiler {
 
             // ── Delete ──────────────────────────────────────────────────
             StmtKind::Delete(exprs) => {
-                for expr in exprs {
-                    match &expr.kind {
-                        ExprKind::Member { object, field, .. } => {
-                            self.compile_expr(object)?;
-                            self.emit_null();
-                            let field_name = self.canon(field);
-                            self.class_set(
-                                class_slots::ObjSource::Stack,
-                                &class_slots::ClassSlot::internal(&field_name),
-                                class_slots::ValueSource::Stack,
-                            );
-                        }
-                        ExprKind::Index { object, index, .. } => {
-                            let line = self.line;
-                            if self.profile.slice_assignment_splices {
-                                if let ExprKind::Slice { lower, upper, step } = &index.kind {
-                                    if step.is_none() {
-                                        self.compile_expr(object)?;
-                                        let obj_tmp = self.define_local("__delete_slice_obj");
-                                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
-
-                                        if let Some(lower) = lower {
-                                            self.compile_expr(lower)?;
-                                        } else {
-                                            inst!(self, core_wasm::i32_const, 0);
-                                        }
-                                        let start_tmp = self.define_local("__delete_slice_start");
-                                        self.emit_u16(Op::LOCAL_SET, start_tmp);
-
-                                        if let Some(upper) = upper {
-                                            self.compile_expr(upper)?;
-                                        } else {
-                                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                            common::collections::emit_len(
-                                                &mut self.chunks,
-                                                self.current,
-                                                line,
-                                            );
-                                        }
-                                        let end_tmp = self.define_local("__delete_slice_end");
-                                        self.emit_u16(Op::LOCAL_SET, end_tmp);
-
-                                        self.emit_u16(Op::LOCAL_GET, end_tmp);
-                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
-                                        self.emit(Op::I32_SUB);
-                                        let count_tmp = self.define_local("__delete_slice_count");
-                                        self.emit_u16(Op::LOCAL_SET, count_tmp);
-
-                                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
-                                        self.emit_u16(Op::LOCAL_GET, count_tmp);
-                                        common::collections::emit_remove_range(
-                                            &mut self.chunks,
-                                            self.current,
-                                            line,
-                                        );
-                                        self.emit(Op::DROP);
-                                        continue;
-                                    } else {
-                                        // `del a[i:j:k]` — strided deletion via
-                                        // the shared slices emitter.
-                                        self.compile_expr(object)?;
-                                        if let Some(lower) = lower {
-                                            self.compile_expr(lower)?;
-                                        } else {
-                                            self.emit_null();
-                                        }
-                                        if let Some(upper) = upper {
-                                            self.compile_expr(upper)?;
-                                        } else {
-                                            self.emit_null();
-                                        }
-                                        if let Some(step) = step {
-                                            self.compile_expr(step)?;
-                                        } else {
-                                            self.emit_null();
-                                        }
-                                        let opts = crate::primitives::slices::Options::new(
-                                            self.profile.slice_step_zero_raises,
-                                        );
-                                        crate::primitives::slices::emit_strided_del(
-                                            &mut self.chunks,
-                                            self.current,
-                                            line,
-                                            opts,
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            self.compile_expr(object)?;
-                            let obj_tmp = self.define_local("__delete_obj");
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                            self.compile_expr(index)?;
-                            let key_tmp = self.define_local("__delete_key");
-                            self.emit_u16(Op::LOCAL_SET, key_tmp);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            let is_array_idx = self.import("ecma:array", "isArray");
-                            self.chunk().emit_call(is_array_idx, 1, line);
-                            inst!(self, core_wasm::i32_const, 0);
-                            {
-                                let line = self.line;
-                                crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
-                            };
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                            self.chunk().emit_if(line);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            common::collections::emit_remove_at(
-                                &mut self.chunks,
-                                self.current,
-                                line,
-                            );
-                            self.emit(Op::DROP);
-
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            common::dict::emit_method_delete(&mut self.chunks, self.current, line);
-                            self.emit(Op::DROP);
-                            self.chunk().emit_end(line);
-                        }
-                        _ => {
-                            // Delete on a bare NAME drops the reference. Where
-                            // the region declares `name_drop = Finalise` that
-                            // runs the referent's Destructor slot first; the
-                            // unbinding itself is still the language's own
-                            // business, so nothing else is emitted here.
-                            self.emit_name_drop_finalise(expr)?;
-                        }
-                    }
-                }
+                self.compile_delete_stmt(exprs)?;
             }
 
             // ── Assert ──────────────────────────────────────────────────
@@ -3980,109 +4306,7 @@ impl Compiler {
                 params: try_params,
                 results: try_results,
             } => {
-                let line = self.line;
-                // Resolve each clause's kind + tag index up front.
-                let mut clause_kinds: Vec<u8> = Vec::with_capacity(catches.len());
-                let mut clause_tags: Vec<u16> = Vec::with_capacity(catches.len());
-                for c in catches {
-                    let (kind, tag_idx) = match (&c.tag, c.capture_ref) {
-                        (Some(name), false) => (
-                            common::errors::CATCH_KIND_CATCH,
-                            self.chunks[self.current].import_exception_tag(
-                                format!("wast:tag:{name}"),
-                                c.payload_binds.len() as u8,
-                            ),
-                        ),
-                        (Some(name), true) => (
-                            common::errors::CATCH_KIND_CATCH_REF,
-                            self.chunks[self.current].import_exception_tag(
-                                format!("wast:tag:{name}"),
-                                c.payload_binds.len() as u8,
-                            ),
-                        ),
-                        (None, false) => (common::errors::CATCH_KIND_CATCH_ALL, 0u16),
-                        (None, true) => (common::errors::CATCH_KIND_CATCH_ALL_REF, 0u16),
-                    };
-                    clause_kinds.push(kind);
-                    clause_tags.push(tag_idx);
-                }
-
-                // Join block: normal completion and every handler branch here.
-                let after = self.chunk().emit_block(line);
-                self.label_depth += 1;
-
-                // ONE HANDLER BLOCK PER CLAUSE, nested innermost-first, so
-                // clause `i` names `labelidx i` and handler `i`'s code follows
-                // block `i`'s `end`. This is what lets the clause carry a spec
-                // `labelidx` — a depth resolved by block structure — instead of
-                // a patched byte offset that truncated past a 64KB body.
-                //
-                // Emitting in REVERSE puts the LAST clause's block outermost,
-                // so the FIRST clause's block is innermost and is depth 0.
-                // Each block carries its clause's payload arity: the values the
-                // catch delivers travel as that block's results.
-                for c in catches.iter().rev() {
-                    let arity = c.payload_binds.len() + usize::from(c.capture_ref);
-                    self.chunk().emit_block_typed(line, arity as u8);
-                    self.label_depth += 1;
-                }
-
-                let clauses: Vec<common::errors::TryTableClause> = (0..catches.len())
-                    .map(|i| common::errors::TryTableClause {
-                        kind: clause_kinds[i],
-                        tag: clause_tags[i],
-                        label: i as u16,
-                    })
-                    .collect();
-                common::errors::emit_try_table(
-                    &mut self.chunks[self.current],
-                    *try_params,
-                    *try_results,
-                    &clauses,
-                    line,
-                );
-
-                // Body sits one label level deeper (try_table is a block).
-                self.label_depth += 1;
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
-                common::errors::emit_try_end(&mut self.chunks[self.current], line);
-                self.label_depth -= 1;
-
-                // Normal completion skips EVERY handler block: the join sits
-                // `catches.len()` levels out from here.
-                self.chunk().emit_br(catches.len() as u32, line);
-
-                // Handler `i` begins at block `i`'s `end`. Close that block,
-                // bind the delivered exnref/payload, run the arm, then branch
-                // to the join — which is one level nearer after each close.
-                for (i, c) in catches.iter().enumerate() {
-                    self.chunk().emit_end(line);
-                    self.label_depth -= 1;
-                    if c.capture_ref {
-                        if let Some(exnref) = &c.exnref_bind {
-                            let slot = self.define_source_local(exnref);
-                            self.emit_u16(Op::LOCAL_SET, slot);
-                        }
-                    }
-                    for bind in c.payload_binds.iter().rev() {
-                        let slot = self.define_source_local(bind);
-                        self.emit_u16(Op::LOCAL_SET, slot);
-                    }
-                    for s in &c.body {
-                        self.compile_stmt(s)?;
-                    }
-                    // The last handler falls through to the join's own `end`.
-                    if i + 1 < catches.len() {
-                        self.chunk().emit_br((catches.len() - 1 - i) as u32, line);
-                    }
-                }
-
-                // Close the join block.
-                self.chunk().emit_end(line);
-                self.chunk().patch_block(after);
-                self.label_depth -= 1;
+                self.compile_wasm_try_table_stmt(body, catches, try_params, try_results)?;
             }
 
             // ── Record files ────────────────────────────────────────────
@@ -4700,11 +4924,7 @@ impl Compiler {
                             .resolve_pending_class_name_for_type_hint(&resolved_init)
                             .is_some()
                             || self.control_element_for_type(&resolved_init).is_some()
-                            || vybe_runtime::namespaces::is_registered_type(
-                                &self.profile.namespaces.type_scopes,
-                                &resolved_init,
-                                self.tree_fold(),
-                            );
+                            || self.tree_is_registered_type(&resolved_init);
                         if declares_a_type {
                             inferred_type_hint = Some(resolved_init);
                         }
@@ -5552,12 +5772,7 @@ impl Compiler {
                         // a fold.
                         if let Some(target) = (!self.user_owns_type_spelling(&class_name))
                             .then(|| {
-                                vybe_runtime::namespaces::lookup_type_property_setter_target(
-                                    &self.profile.namespaces.type_scopes,
-                                    &class_name,
-                                    field,
-                                    self.tree_fold(),
-                                )
+                                self.tree_property_setter_target(&class_name, field)
                             })
                             .flatten()
                         {

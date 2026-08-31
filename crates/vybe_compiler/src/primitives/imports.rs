@@ -20,6 +20,20 @@
 /// composition out of ECMA primitives + WASM opcodes — no `vybe:*` host fn.
 pub enum CommonImport {
     Host(&'static str, &'static str),
+    /// A host function whose type has NO receiver parameter — a free
+    /// function, not a method reached as one.
+    ///
+    /// ⛔ THE DISTINCTION IS THE CALLEE'S TYPE, NOT THE CALL. `toFixed(5.5, 1)`
+    /// and `padStart(s, 4)` arrive in this same free-function shape, but their
+    /// argument 0 IS the receiver — they are methods being spelled as calls.
+    /// `encodeURIComponent(s)` has no receiver at all. Under
+    /// `ReceiverBinding::UniversalParameter` argument 0 of every host callee is
+    /// its receiver, so the receiverless ones need `undefined` pushed there
+    /// (§10.2.1.1 binds exactly that for a call with no receiver of its own) —
+    /// otherwise the same function has one shape when called directly and
+    /// another when handed to `map`, and a funcref's type cannot say "argument
+    /// 0 is a receiver, sometimes".
+    HostGlobal(&'static str, &'static str),
     Intrinsic(&'static str),
 }
 
@@ -59,7 +73,7 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
 
         // Float conversion is `Number(x)` exactly — no truncation.
         "parsefloat" | "cdbl" | "float" | "to_f" | "floatval" => {
-            Some(CommonImport::Host("ecma:number", "Number"))
+            Some(CommonImport::HostGlobal("ecma:number", "Number"))
         }
 
         // Direct numeric formatting helpers used by frontend adapters
@@ -71,15 +85,15 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
 
         // String coercion — §22.1.1.1 ToString.
         "tostring" | "str" | "to_s" | "strval" | "cstr" => {
-            Some(CommonImport::Host("ecma:string", "String"))
+            Some(CommonImport::HostGlobal("ecma:string", "String"))
         }
 
         "padstart" | "padleft" => Some(CommonImport::Host("ecma:string", "padStart")),
         "padend" | "padright" => Some(CommonImport::Host("ecma:string", "padEnd")),
 
         // JS: isNaN, isFinite — same name across languages
-        "isnan" => Some(CommonImport::Host("ecma:number", "isNaN")),
-        "isfinite" => Some(CommonImport::Host("ecma:number", "isFinite")),
+        "isnan" => Some(CommonImport::HostGlobal("ecma:number", "isNaN")),
+        "isfinite" => Some(CommonImport::HostGlobal("ecma:number", "isFinite")),
 
         // ── Encoding ─────────────────────────────────────────────────────
         "btoa" | "base64_encode" => Some(CommonImport::Intrinsic("base64_encode_binary_string")),
@@ -91,8 +105,8 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         // (space → "%20"). Let each language bind its own urlencode
         // variant via the profile so the on-the-wire bytes match the
         // language's spec.
-        "encodeuricomponent" => Some(CommonImport::Host("ecma:string", "encodeURIComponent")),
-        "decodeuricomponent" => Some(CommonImport::Host("ecma:string", "decodeURIComponent")),
+        "encodeuricomponent" => Some(CommonImport::HostGlobal("ecma:string", "encodeURIComponent")),
+        "decodeuricomponent" => Some(CommonImport::HostGlobal("ecma:string", "decodeURIComponent")),
 
         // ── JSON ─────────────────────────────────────────────────────────
         "json_decode" => Some(CommonImport::Host("ecma:json", "parse")),

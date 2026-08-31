@@ -5,7 +5,7 @@
 
 use super::*;
 use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
-use vybe_runtime::namespaces::UserGlobalKind;
+use crate::primitives::namespaces::UserGlobalKind;
 
 fn mounted_ambient_tree_root(tree_mounts: &HashMap<String, String>, path: &str) -> Option<String> {
     let trimmed = path.trim();
@@ -787,9 +787,7 @@ impl Compiler {
             {
                 continue;
             }
-            if let Some(spec) =
-                vybe_runtime::namespaces::lookup_type_ctor_spec(&scope, &parent, self.tree_fold())
-            {
+            if let Some(spec) = self.tree_ctor_spec(&parent) {
                 if let Some(nc) = self.normalized_classes.get_mut(&name) {
                     nc.platform_base = Some(platform_base_spec_from_ctor_spec(spec));
                 }

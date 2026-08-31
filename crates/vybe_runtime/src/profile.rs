@@ -1028,14 +1028,16 @@ pub enum ReturnStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReflectionTypeNaming {
     /// A type keeps its own name (`Throwable`, `Error`, `MyClass`). No forced
-    /// namespace, no BCL primitive remap. Default for every language except
-    /// the .NET family — this is what preserves each language's real
+    /// namespace, no framework primitive remap. Default for every language
+    /// except the .NET family — this is what preserves each language's real
     /// exception hierarchy in its `__types` chain.
     #[default]
     Native,
-    /// .NET BCL scheme: qualify under `System.` and map primitives
-    /// (`int`→`Int32`, `string`→`String`, …). C#/VB reflection expects this.
-    Dotnet,
+    /// Types are qualified under a framework root and primitives are remapped
+    /// to their framework spellings (`int`→`Int32`, `string`→`String`, …).
+    /// Selected by a profile saying `reflection_type_naming = "dotnet"`; the
+    /// scheme is named for what it DOES, so the runtime carries no vendor.
+    FrameworkQualified,
 }
 
 /// Definition of a builtin function's compilation.
@@ -1627,7 +1629,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .map(|s| s.to_ascii_lowercase())
         .as_deref()
     {
-        Some("dotnet") => ReflectionTypeNaming::Dotnet,
+        Some("dotnet") => ReflectionTypeNaming::FrameworkQualified,
         // Default (and explicit "native"): each language owns its type names.
         _ => ReflectionTypeNaming::Native,
     };

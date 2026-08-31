@@ -4944,9 +4944,6 @@ pub enum AppShell {
 pub enum ReceiverBinding {
     /// An explicit leading parameter: Pascal `Self`, Python `self`, C# `this`.
     #[default]
-    ExplicitParameter,
-    /// Ambient, read from the call's own `this` binding: JS, Dart.
-    Ambient,
     /// **Every** callable takes a leading receiver parameter, not just methods
     /// — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`, where the
     /// receiver is an argument of the call itself rather than a property of
@@ -5021,7 +5018,7 @@ pub enum CaseMatch {
 ///
 /// ⛔ **The tree already disagrees with itself about this**, which is why it is
 /// stated rather than assumed. `primitives/scope.rs` folds with
-/// `eq_ignore_ascii_case`; `vybe_runtime::namespaces` folds with
+/// `eq_ignore_ascii_case`; `vybe_compiler::primitives::namespaces` folds with
 /// `to_lowercase()`, which is Unicode. So a Turkish dotted `I` resolves one way
 /// as a local and another way as a namespace path *in the same program*, and
 /// nothing reports the disagreement because the two are never compared.

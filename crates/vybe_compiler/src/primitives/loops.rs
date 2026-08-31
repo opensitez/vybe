@@ -299,13 +299,17 @@ pub fn emit_map(
     chunks[current].emit_op(Op::DROP, line);
 
     // result.push(fn(arr[i], i))
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    // §10.2.1: the receiver is argument 0 of the CALLBACK, pushed before its
+    // real arguments — see `callable::emit_callback_receiver`.
+    let recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + recv, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -337,9 +341,13 @@ pub fn emit_filter(
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     // if fn(element): result.push(element)
+    // §10.2.1: the callback's receiver is argument 0 — see
+    // `callable::emit_callback_receiver`.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Use structured if for the conditional push
     let if_block = chunks[current].emit_block(line);
@@ -373,12 +381,16 @@ pub fn emit_foreach(
 
     chunks[current].emit_op(Op::DROP, line);
 
+    // §10.2.1: the callback's receiver is argument 0 — see
+    // `callable::emit_callback_receiver`.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_op(Op::DROP, line);
 
     emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -421,13 +433,17 @@ pub fn emit_reduce(
     emit_loop_cond(chunks, current, line);
 
     // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26: callback(acc, elem, index, array)
+    // §10.2.1: the callback's receiver is argument 0 — see
+    // `callable::emit_callback_receiver`.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3 + __recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
 
     // i += 1
@@ -478,11 +494,15 @@ pub fn emit_any_every(
     // Drop element from for_in_start, call fn(arr[i]) directly
     chunks[current].emit_op(Op::DROP, line);
 
+    // §10.2.1: the callback's receiver is argument 0 — see
+    // `callable::emit_callback_receiver`.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
     // From here: depth 0=$body, 1=$loop, 2=$exit

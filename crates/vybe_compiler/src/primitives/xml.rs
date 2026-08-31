@@ -11,7 +11,7 @@
 use crate::primitives::collections;
 use crate::primitives::ops;
 use vybe_runtime::Chunk;
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use crate::primitives::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::opcode::Op;
 
 pub const XML_NAME_TYPE: &str = "XmlName";
@@ -352,7 +352,7 @@ pub fn emit_attribute(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vybe_runtime::namespaces::{NamespaceNode, clear_registry_for_tests, registry_read};
+    use crate::primitives::namespaces::{NamespaceNode, clear_registry_for_tests, registry_read};
 
     /// This asserts REGISTRATION, so it checks the registry directly rather
     /// than resolving through it — resolution is the compiler's concern and

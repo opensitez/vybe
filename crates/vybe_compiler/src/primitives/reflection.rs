@@ -100,6 +100,25 @@ impl Compiler {
                     ) => self
                         .reflection_field_metadata(&type_name, &field_name)
                         .map(|(owner, _)| ReflectionBinding::Type(owner)),
+                    // `GetParameters()[i].ParameterType` — a Type, so `.Name`
+                    // and `.FullName` answer through the ordinary Type arms.
+                    // Without this the parameter object's raw `ParameterType`
+                    // value was read instead, which is a bare identifier for
+                    // the type's SOURCE spelling and answers NaN.
+                    (
+                        ReflectionBinding::Parameter {
+                            type_name,
+                            method_name,
+                            index,
+                        },
+                        "ParameterType",
+                    ) => self
+                        .reflection_types
+                        .get(&type_name)
+                        .and_then(|meta| meta.methods.get(&method_name))
+                        .and_then(|meta| meta.params.get(index))
+                        .and_then(|param| param.type_name.clone())
+                        .map(ReflectionBinding::Type),
                     (ReflectionBinding::Type(_), "Assembly") => Some(ReflectionBinding::Assembly),
                     _ => None,
                 }
@@ -319,6 +338,25 @@ impl Compiler {
             (ReflectionBinding::AssemblyName, "Name") => Some("main".to_string()),
             _ => None,
         }
+    }
+
+    /// A Type as a VALUE — `{ Name, FullName }`.
+    ///
+    /// `reflection_class_expr` answers the CLASS (`Ident("Int32")`), which is
+    /// what an invocation needs and what a read of `.Name` cannot use: there is
+    /// no global named after a primitive. A parameter's `ParameterType` is read,
+    /// not called, so it carries the names instead.
+    pub(super) fn reflection_type_value_expr(&self, type_name: &str) -> Expression {
+        Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("Name"),
+                value: Expression::string(&self.reflection_type_short_name(type_name)),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("FullName"),
+                value: Expression::string(&self.reflection_type_full_name(type_name)),
+            },
+        ]))
     }
 
     pub(super) fn reflection_class_expr(&self, type_name: &str) -> Expression {
@@ -707,7 +745,7 @@ impl Compiler {
                     value: param
                         .type_name
                         .as_deref()
-                        .map(|type_name| self.reflection_class_expr(type_name))
+                        .map(|type_name| self.reflection_type_value_expr(type_name))
                         .unwrap_or_else(Expression::null),
                 },
             ])))?;
@@ -1739,6 +1777,60 @@ impl Compiler {
                         .map(|(_, meta)| meta.params.clone())
                         .unwrap_or_default();
                     self.compile_reflection_parameter_array(&params)?;
+                    Ok(true)
+                }
+                _ => Ok(false),
+            },
+            // `method.CreateDelegate(typeof(Func<…>))` — a CALLABLE bound to the
+            // method, which is what the delegate type describes. Built as a
+            // forwarding lambda of the declared arity rather than by reading the
+            // member as a value: a static on a registered type resolves to an
+            // emit, and reading it would RUN the method instead of yielding it.
+            // The delegate-type argument is accepted and ignored — it states the
+            // shape, and the shape is already the method's own.
+            "CreateDelegate" => match provider {
+                ReflectionBinding::Method {
+                    type_name,
+                    method_name,
+                    ..
+                } => {
+                    let arity = self
+                        .reflection_types
+                        .get(&self.reflection_type_lookup_name(&type_name))
+                        .and_then(|meta| meta.methods.get(&method_name))
+                        .map(|meta| meta.params.len())
+                        .unwrap_or(0);
+                    let params: Vec<Param> = (0..arity)
+                        .map(|index| Param {
+                            name: format!("__arg{index}"),
+                            type_hint: None,
+                            default: None,
+                            pass_by: vybe_ast::PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        })
+                        .collect();
+                    let call_args = params
+                        .iter()
+                        .map(|param| Argument::positional(Expression::ident(&param.name)))
+                        .collect();
+                    let call = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(self.reflection_class_expr(&type_name)),
+                            field: method_name,
+                            null_safe: false,
+                        })),
+                        args: call_args,
+                        optional: false,
+                    });
+                    self.compile_expr(&Expression::new(ExprKind::Lambda {
+                        params,
+                        body: vybe_ast::LambdaBody::Expr(Box::new(call)),
+                        is_async: false,
+                        captures: Vec::new(),
+                    }))?;
                     Ok(true)
                 }
                 _ => Ok(false),

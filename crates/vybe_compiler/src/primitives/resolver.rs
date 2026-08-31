@@ -2,7 +2,7 @@
 //!
 //! Phase 0: wraps the EXISTING Link-phase maps (`host_import_bindings`,
 //! `host_const_bindings`, `host_namespace_aliases`, `host_package_roots`)
-//! plus the global namespace tree (`vybe_runtime::namespaces`) behind one
+//! plus the global namespace tree (`crate::primitives::namespaces`) behind one
 //! query API implementing the plan's resolution order:
 //!
 //!   1. **Scope bindings** — locals/params/upvalues always shadow; a name
@@ -22,7 +22,7 @@
 
 use super::Compiler;
 use crate::primitives::namespaces::{self, ResolutionTarget};
-use vybe_runtime::namespaces::UserGlobalKind;
+use crate::primitives::namespaces::UserGlobalKind;
 
 /// Lazy platform-tree registration: every platform/language package
 /// contributes its descriptor DATA to the shared tree before a walk
@@ -76,6 +76,131 @@ pub(crate) enum Resolution {
 }
 
 impl Compiler {
+    // ── The typed tree query, as ONE surface ────────────────────────────
+    //
+    // Principle 7 of flexclassplan.md: a single choke point answers "what
+    // implements operation X on receiver Y". These wrap the tree walks so a
+    // call site states only the QUESTION — the scope list and the case fold are
+    // the resolver's to supply, and getting either wrong at a call site is a
+    // silent miss rather than an error.
+    //
+    // ⛔ NO SCOPE OR ESM SHADOWING HERE, deliberately. `resolve_namespace_name`
+    // lets a local shadow a namespace, because a bare name is ambiguous. A
+    // typed member lookup is asked only once the RECEIVER'S TYPE is settled, so
+    // the shadowing question is already answered; re-asking it would let a
+    // local named like a registered type change member resolution.
+
+    fn tree_type_scope(&self) -> &[String] {
+        &self.profile.namespaces.type_scopes
+    }
+
+    pub(crate) fn tree_instance_member(
+        &self,
+        class_name: &str,
+        member: &str,
+    ) -> Option<namespaces::NamespaceNode> {
+        namespaces::lookup_type_instance_member(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            self.tree_fold(),
+        )
+    }
+
+    pub(crate) fn tree_static_member(
+        &self,
+        class_name: &str,
+        member: &str,
+    ) -> Option<namespaces::NamespaceNode> {
+        namespaces::lookup_type_static_member(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            self.tree_fold(),
+        )
+    }
+
+    pub(crate) fn tree_member_return(&self, class_name: &str, member: &str) -> Option<String> {
+        namespaces::lookup_type_member_return(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            self.tree_fold(),
+        )
+    }
+
+    pub(crate) fn tree_instance_target(
+        &self,
+        class_name: &str,
+        member: &str,
+        argc: u8,
+    ) -> Option<vybe_runtime::component_model::InstanceMethodTarget> {
+        namespaces::lookup_type_instance_target(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            argc,
+            self.tree_fold(),
+        )
+    }
+
+    pub(crate) fn tree_ctor_target(
+        &self,
+        class_name: &str,
+    ) -> Option<vybe_runtime::component_model::ConstructorTarget> {
+        namespaces::lookup_type_ctor_target(self.tree_type_scope(), class_name, self.tree_fold())
+    }
+
+    pub(crate) fn tree_ctor_spec(&self, class_name: &str) -> Option<namespaces::CtorSpec> {
+        namespaces::lookup_type_ctor_spec(self.tree_type_scope(), class_name, self.tree_fold())
+    }
+
+    pub(crate) fn tree_property_target(
+        &self,
+        class_name: &str,
+        member: &str,
+    ) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+        namespaces::lookup_type_property_target(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            self.tree_fold(),
+        )
+    }
+
+    pub(crate) fn tree_property_setter_target(
+        &self,
+        class_name: &str,
+        member: &str,
+    ) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+        namespaces::lookup_type_property_setter_target(
+            self.tree_type_scope(),
+            class_name,
+            member,
+            self.tree_fold(),
+        )
+    }
+
+    /// Does the profile's RUNTIME COLLECTION scope declare `member` at `arity`?
+    ///
+    /// A different scope from the typed lookups above — this asks the ambient
+    /// collection surface, not a named receiver's type — so it takes its scope
+    /// from `runtime_collection_scope` rather than `type_scopes`.
+    pub(crate) fn tree_collection_declares(&self, member: &str, arity: u8) -> bool {
+        let scope: Vec<&str> = self
+            .profile
+            .namespaces
+            .runtime_collection_scope
+            .iter()
+            .map(String::as_str)
+            .collect();
+        namespaces::scope_declares_member_arity(&scope, member, arity, self.tree_fold())
+    }
+
+    pub(crate) fn tree_is_registered_type(&self, class_name: &str) -> bool {
+        namespaces::is_registered_type(self.tree_type_scope(), class_name, self.tree_fold())
+    }
+
     /// Resolve a bare identifier per the plan's order. `None` = not a
     /// namespace reference (locals shadow, or the name is simply unknown).
     #[allow(dead_code)] // consumed from Phase 1 (JS migration) onward
@@ -539,7 +664,7 @@ impl Compiler {
     ///
     /// The compiler owns only the common resolution rules: scope shadowing,
     /// tree mounts, ambient roots, and namespace objects. Platform-specific
-    /// surface lives in `vybe_runtime::namespaces` registrations.
+    /// surface lives in `crate::primitives::namespaces` registrations.
     pub(crate) fn resolve_profile_namespace_chain(&self, parts: &[String]) -> Option<Resolution> {
         let first = parts.first()?;
         let lower: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();

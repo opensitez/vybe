@@ -83,8 +83,12 @@ impl Compiler {
             self.bind_receiver_from_stack(saved_this);
         }
         self.emit_u16(Op::LOCAL_GET, method_slot);
+        // The receiver is `B`; under `UniversalParameter` it travels as
+        // argument 0 rather than in the ambient global. 0 under the ambient
+        // binding, so this is inert there.
+        let recv_argc = self.push_receiver_argument(saved_this);
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
-        self.emit_direct_callable_invoke(1);
+        self.emit_direct_callable_invoke(1 + recv_argc);
         {
             let line = self.line;
             // §13.10.2 step 4: ToBoolean of whatever the hook returned, then
@@ -795,8 +799,22 @@ impl Compiler {
     /// gfortran confirms. The saturated result is therefore the sign fill
     /// (`value >> 31`) for [`Op::I32_SHR_S`] and zero for the logical shifts.
     fn emit_shift(&mut self, op: Op) {
+        self.emit_shift_slot(op, None)
+    }
+
+    /// A shift, with the rich-operator slot it answers when the left operand
+    /// carries one.
+    ///
+    /// ⛔ Only the MASKING lane dispatches. The `Zero` lane below builds a
+    /// count guard around the raw opcode, and a type with its own shift slot
+    /// defines its own out-of-range behaviour — wrapping the guard around a
+    /// slot call would impose wasm's rule on it.
+    fn emit_shift_slot(&mut self, op: Op, slot: Option<vybe_ast::ProtocolSlot>) {
         if self.directives().shift_overflow.unwrap_or_default() != vybe_ast::ShiftOverflow::Zero {
-            self.emit(op);
+            match slot {
+                Some(slot) => self.emit_rich_binop(slot, move |chunk, _| chunk.emit_op(op, 0)),
+                None => self.emit(op),
+            }
             return;
         }
         // Stack: [value, count] — the count pops first.
@@ -1658,11 +1676,30 @@ impl Compiler {
                 let line = self.line;
                 crate::primitives::bits::emit_rotate(self.chunk(), *lane, left, line);
             }
-            BinOp::BitAnd => self.emit(Op::I32_AND),
-            BinOp::BitOr => self.emit(Op::I32_OR),
-            BinOp::BitXor => self.emit(Op::I32_XOR),
-            BinOp::Shl => self.emit_shift(Op::I32_SHL),
-            BinOp::Shr => self.emit_shift(Op::I32_SHR_S),
+            // ⛔ The BITWISE operators had no rich dispatch while the eight
+            // arithmetic ones above all did, so a type that answers
+            // `ProtocolSlot::And` could never be consulted and the operand fell
+            // to `I32_AND`, which coerces a BigInt to 0. The slots existed and
+            // nothing read them.
+            BinOp::BitAnd => {
+                self.emit_rich_binop(vybe_ast::ProtocolSlot::And, |chunk, _| {
+                    chunk.emit_op(Op::I32_AND, 0)
+                });
+            }
+            BinOp::BitOr => {
+                self.emit_rich_binop(vybe_ast::ProtocolSlot::Or, |chunk, _| {
+                    chunk.emit_op(Op::I32_OR, 0)
+                });
+            }
+            BinOp::BitXor => {
+                self.emit_rich_binop(vybe_ast::ProtocolSlot::Xor, |chunk, _| {
+                    chunk.emit_op(Op::I32_XOR, 0)
+                });
+            }
+            BinOp::Shl => self.emit_shift_slot(Op::I32_SHL, Some(vybe_ast::ProtocolSlot::LShift)),
+            BinOp::Shr => {
+                self.emit_shift_slot(Op::I32_SHR_S, Some(vybe_ast::ProtocolSlot::RShift))
+            }
             BinOp::UShr => {
                 self.emit_shift(Op::I32_SHR_U);
                 if self.profile.ecma_operator_coercion {
