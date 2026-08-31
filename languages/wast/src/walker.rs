@@ -91,6 +91,18 @@ struct WastWalker {
     /// Declared type name → the name of the type it is CANONICALLY equal to.
     /// WASM 3.0 type identity is structural; see the note where this is built.
     type_canonical: HashMap<String, String>,
+    /// Canonical type name → `"{group size}:{position}"` of its rec group.
+    ///
+    /// ⛔ THE ONE PART OF TYPE IDENTITY WE KNOW EXACTLY. Canonicalisation
+    /// merges by the composite's source TEXT, which cannot see that
+    /// `(param f32 f32)` and `(param $x f32) (param $y f32)` are one type, nor
+    /// that `(ref $r1)` and `(ref $r2)` are when `$r1` and `$r2` are — so two
+    /// equal types can end up with different names. The rec group's SIZE and
+    /// the member's POSITION come from the tree instead, and under
+    /// iso-recursive equivalence a difference in either means the types are
+    /// genuinely different. That makes it the only safe discriminator for a
+    /// runtime trap.
+    type_rec_shape: HashMap<String, String>,
     memory_slots: Vec<usize>,
     /// One entry per `(memory …)` FIELD, in order: the script slot it owns and
     /// whether it merely aliases an imported memory. `walk_memory_field` counts
@@ -468,6 +480,34 @@ fn peek_block_result_count(__w: &mut WastWalker, pair: &Pair<Rule>) -> usize {
     count
 }
 
+/// Does any NESTED operand of this folded instruction produce several values?
+/// Only a `call` to a multi-result callee does, and only that case needs the
+/// operand-spreading path.
+fn has_multi_result_call_operand(__w: &mut WastWalker, op: &Pair<Rule>) -> bool {
+    let children: Vec<Pair<Rule>> = op.clone().into_inner().collect();
+    for child in children {
+        let Some(nested) = folded_operand_child(&child) else {
+            continue;
+        };
+        if nested.as_rule() != Rule::folded_instr {
+            continue;
+        }
+        if folded_instr_head(&nested) != "call" {
+            continue;
+        }
+        let imms: Vec<Expression> = nested
+            .clone()
+            .into_inner()
+            .filter(|c| c.as_rule() == Rule::instr_arg && folded_operand_child(c).is_none())
+            .filter_map(|c| walk_instr_arg_pair(__w, c, &mut LabelStack(Vec::new())).ok())
+            .collect();
+        if call_result_count(__w, &imms) >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Capture a branch/block body's trailing N stack values (the flushed
 /// value-statements) into `temps`, `temps[k]` ← the k-th value in stack order
 /// (bottom-to-top). The trailing `StmtKind::Expr` run at the end of `body` is
@@ -759,7 +799,18 @@ fn push_folded_operand(__w: &mut WastWalker,
         .map(|c| walk_instr_arg_pair(__w, c, labels))
         .collect::<Result<_, _>>()?;
     let arity = get_instruction_arity(__w, &head, &immediate_args);
-    if nested_count < arity && !stack.is_empty() {
+    // ⛔ A NESTED MULTI-RESULT CALL MUST TAKE THIS PATH TOO. It is the only one
+    // that evaluates operands through `push_folded_operand`, which spreads a
+    // call's several results into several stack entries; the expression-only
+    // fallback below collapses them into one argument. `(call $swap (call
+    // $swap …))` has nested_count 1 < arity 2 but an EMPTY stack, so the
+    // `!stack.is_empty()` guard sent it to the fallback and the outer call
+    // received one packed tuple instead of two operands.
+    //
+    // Entering with nothing below is safe: `take` is then 0 and the drain is a
+    // no-op — the guard was avoiding a pointless drain, not preventing one.
+    let spread_operand = has_multi_result_call_operand(__w, &op);
+    if nested_count < arity && (!stack.is_empty() || spread_operand) {
         // The operands the flat form would have found already on the stack sit
         // BELOW the nested ones — take them first, then evaluate the nested
         // operands in source order on top.
@@ -781,10 +832,39 @@ fn push_folded_operand(__w: &mut WastWalker,
         let mut args = immediate_args;
         args.extend(below);
         args.extend(nested_vals);
-        stack.push(map_instr_to_ast(__w, head, args, op_span)?);
+        // ⛔ A MULTI-RESULT CALL PUSHES SEVERAL OPERANDS. `land_instr_value`
+        // already destructures them into one stack entry each — this path just
+        // never reached it, so `(i32.add (call $swap-i32-i32 …))` handed
+        // `i32.add` a single packed tuple where the spec gives it two values.
+        let pushes = if head == "call" {
+            call_result_count(__w, &args)
+        } else {
+            1
+        };
+        let value = map_instr_to_ast(__w, head.clone(), args, op_span)?;
+        if pushes >= 2 {
+            land_instr_value(__w, value, pushes, true, op_span, statements, stack);
+        } else {
+            stack.push(value);
+        }
         return Ok(());
     }
-    stack.push(walk_folded_instr_as_expr(__w, op, op_span, labels)?);
+    // ⛔ THE FULLY-NESTED PATH NEEDS THE SPREAD TOO — and it is the one a
+    // multi-result call actually takes. `(call $swap-i32-i32 (i32.const 3)
+    // (i32.const 4))` has nested_count == arity, so it never enters the branch
+    // above and landed here, pushing ONE packed tuple where the callee's two
+    // results are two operands.
+    let pushes = if head == "call" {
+        call_result_count(__w, &immediate_args)
+    } else {
+        1
+    };
+    let value = walk_folded_instr_as_expr(__w, op, op_span, labels)?;
+    if pushes >= 2 {
+        land_instr_value(__w, value, pushes, true, op_span, statements, stack);
+    } else {
+        stack.push(value);
+    }
     Ok(())
 }
 
@@ -1172,8 +1252,31 @@ fn emit_folded_br_on_null(__w: &mut WastWalker,
     let is_null = make_call("ref_is_null", vec![Expression::ident(&tmp)], span);
     let target = br_target_of(label_arg.as_ref());
     let mut then_body: Vec<Statement> = Vec::new();
-    match labels.resolve(&target) {
-        Some(entry) => {
+    match labels.resolve_dest(&target) {
+        // ⛔ THE SAME FUNCTION-LABEL CASE AS `br`. `br_on_null 0` in a
+        // function with no enclosing block names the function's own label and
+        // must RETURN — it fell through here exactly as `br` did, and in the
+        // same file, after the fix whose whole point was that sibling
+        // spellings agree. Nothing in the suite showed it: the GC
+        // `br_on_cast` fixtures stop on an earlier validation gap and
+        // `br_on_non_null.wast` fails on a different bug of its own.
+        BrDest::Func => {
+            let n = __w.current_fn_results;
+            // `br_on_non_null` delivers `t*` AND the ref (the ref is the top
+            // result); `br_on_null` delivers only the `t*` below it. Peek in
+            // both cases — the fall-through path still owns the stack.
+            if is_non_null {
+                let mut vals: Vec<Expression> = Vec::new();
+                let below = n.saturating_sub(1).min(stack.len());
+                vals.extend(stack[stack.len() - below..].iter().cloned());
+                vals.push(Expression::ident(&tmp));
+                then_body.push(func_return_stmt_n(n, &mut vals, true, span));
+            } else {
+                let mut vals = stack.clone();
+                then_body.push(func_return_stmt_n(n, &mut vals, true, span));
+            }
+        }
+        BrDest::Frame(entry) => {
             if is_non_null {
                 // Carry the ref into the target's topmost result, then branch.
                 if let Some(rt) = entry.result_temps.last() {
@@ -1190,7 +1293,7 @@ fn emit_folded_br_on_null(__w: &mut WastWalker,
             }
             then_body.push(br_stmt_for(&entry, span));
         }
-        None => then_body.push(make_br_stmt_opt(None, labels, span)),
+        BrDest::Unresolved => then_body.push(make_br_stmt_opt(None, labels, span)),
     }
     let cond = if is_non_null {
         Expression::new(ExprKind::Binary {
@@ -1488,8 +1591,8 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
         test
     };
     let mut then_body: Vec<Statement> = Vec::new();
-    match labels.resolve(&target) {
-        Some(entry) => {
+    match labels.resolve_dest(&target) {
+        BrDest::Frame(entry) => {
             // ⚠ THE BRANCH CARRIES EVERY RESULT, NOT JUST THE REFERENCE.
             //
             // The typing rule is `t* rt_1 -> t* (rt_1 \ rt_2)`, and that
@@ -1529,7 +1632,20 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
         // `(unreachable)` placed there precisely because the branch should have
         // jumped over it. The same instruction inside an explicit `(block …)`
         // resolved to a real label and worked, so the two spellings disagreed.
-        None => then_body.push(Statement::with_span(
+        //
+        // ⛔ AND IT CARRIES `t*` TOO, not just the reference. Returning the
+        // ref alone is right only for a single-result function; the typing
+        // rule's leading `t*` is as real here as it is on the block path
+        // directly above, where assigning only the topmost result delivered
+        // garbage for the values underneath.
+        BrDest::Func => {
+            let n = __w.current_fn_results;
+            let below = n.saturating_sub(1).min(stack.len());
+            let mut vals: Vec<Expression> = stack[stack.len() - below..].to_vec();
+            vals.push(Expression::ident(&tmp));
+            then_body.push(func_return_stmt_n(n, &mut vals, true, span));
+        }
+        BrDest::Unresolved => then_body.push(Statement::with_span(
             StmtKind::Return(Some(Expression::ident(&tmp))),
             span,
         )),
@@ -1775,8 +1891,8 @@ fn emit_br_on_cast_desc_eq_stmt(
         Expression::ident(&mtmp)
     };
     let mut then_body: Vec<Statement> = Vec::new();
-    match labels.resolve(&target) {
-        Some(entry) => {
+    match labels.resolve_dest(&target) {
+        BrDest::Frame(entry) => {
             // ⚠ THE BRANCH CARRIES EVERY RESULT, NOT JUST THE REFERENCE.
             //
             // The typing rule is `t* rt_1 (ref null (exact y)) -> t* (rt_1 \ rt_2)`
@@ -1814,7 +1930,20 @@ fn emit_br_on_cast_desc_eq_stmt(
         // `(unreachable)` placed there precisely because the branch should have
         // jumped over it. The same instruction inside an explicit `(block …)`
         // resolved to a real label and worked, so the two spellings disagreed.
-        None => then_body.push(Statement::with_span(
+        //
+        // ⛔ AND IT CARRIES `t*` TOO, not just the reference. Returning the
+        // ref alone is right only for a single-result function; the typing
+        // rule's leading `t*` is as real here as it is on the block path
+        // directly above, where assigning only the topmost result delivered
+        // garbage for the values underneath.
+        BrDest::Func => {
+            let n = __w.current_fn_results;
+            let below = n.saturating_sub(1).min(stack.len());
+            let mut vals: Vec<Expression> = stack[stack.len() - below..].to_vec();
+            vals.push(Expression::ident(&rtmp));
+            then_body.push(func_return_stmt_n(n, &mut vals, true, span));
+        }
+        BrDest::Unresolved => then_body.push(Statement::with_span(
             StmtKind::Return(Some(Expression::ident(&rtmp))),
             span,
         )),
@@ -2171,11 +2300,13 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             // `U8_U8_U8` is used by exactly two opcodes, both of them this one,
             // so widening the arg list here reaches nothing else.
             let signature = typeuse_signature(__w, &inner);
+            let canon = typeuse_canon_name(__w, &inner);
             let mut call_args = vec![
                 Expression::int(argc as i64),
                 Expression::int(tableidx as i64),
                 Expression::int(expected_results as i64),
                 Expression::string(&signature),
+                Expression::string(&canon),
             ];
             call_args.extend(operands);
             if head == "return_call_indirect" {
@@ -2201,8 +2332,16 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             let popped: Vec<Expression> = stack.drain(drain_start..).collect();
             let mut args = immediate_args;
             args.extend(popped);
+            // Same gap in the flat form.
+            let call_pushes = if head == "call" {
+                call_result_count(__w, &args)
+            } else {
+                1
+            };
             let expr = map_instr_to_ast(__w, head.clone(), args, span)?;
-            if get_instruction_push_count(&head) > 0 {
+            if call_pushes >= 2 {
+                land_instr_value(__w, expr, call_pushes, true, span, statements, stack);
+            } else if get_instruction_push_count(&head) > 0 {
                 stack.push(expr);
             } else {
                 statements.push(Statement::with_span(StmtKind::Expr(expr), span));
@@ -2313,6 +2452,62 @@ impl LabelStack {
             BrTarget::Innermost => self.0.last().cloned(),
         }
     }
+
+    /// Resolve a branch target to where it LANDS, distinguishing the function's
+    /// own implicit label from a target that is genuinely out of scope. See
+    /// `BrDest` for why the two must not share an answer.
+    fn resolve_dest(&self, target: &BrTarget) -> BrDest {
+        if let Some(entry) = self.resolve(target) {
+            return BrDest::Frame(entry);
+        }
+        let is_func_label = match target {
+            BrTarget::Index(d) => *d == self.0.len(),
+            // `br` with no label immediate inside a function with no enclosing
+            // block names the function label by the same reasoning.
+            BrTarget::Innermost => self.0.is_empty(),
+            BrTarget::Named(_) => false,
+        };
+        if is_func_label {
+            BrDest::Func
+        } else {
+            BrDest::Unresolved
+        }
+    }
+}
+
+/// The `return` a branch to the function's implicit label lowers to: the top
+/// `n` stack values become the function's results.
+///
+/// `n == 0` is NOT a fall-through — it is a bare `return` that DISCARDS
+/// whatever the branch unwinds past. `unwind.wast`'s `func-unwind-by-br_table`
+/// is `(i32.const 3) (i64.const 1) (br_table 0 (i32.const 0))` in a
+/// result-less function: carrying values alone leaves that one failing.
+///
+/// `consume` mirrors `carry_stack_into_temps`: a `br` owns the stack it
+/// unwinds, but a `br_if`/`br_table` case must leave it intact for the paths
+/// that are not taken.
+fn func_return_stmt_n(
+    n: usize,
+    stack: &mut Vec<Expression>,
+    consume: bool,
+    span: Span,
+) -> Statement {
+    if n == 0 {
+        return Statement::with_span(StmtKind::Return(None), span);
+    }
+    let avail = n.min(stack.len());
+    let start = stack.len() - avail;
+    let vals: Vec<Expression> = if consume {
+        stack.split_off(start)
+    } else {
+        stack[start..].to_vec()
+    };
+    let val = if n >= 2 {
+        Some(Expression::new(ExprKind::Tuple(vals)))
+    } else {
+        vals.into_iter().next()
+    };
+    Statement::with_span(StmtKind::Return(val), span)
 }
 
 /// How a `br`/`br_if` names its destination frame.
@@ -2320,6 +2515,35 @@ enum BrTarget {
     Named(String),
     Index(usize),
     Innermost,
+}
+
+/// Where a branch actually lands.
+///
+/// ⛔ `LabelStack::resolve` answers `None` for TWO different things: a target
+/// that is out of scope, and the function's OWN implicit label at depth
+/// `len()`. Every branch emitter read that single `None` as
+/// `Break(BreakTarget::Implicit)` — which at function top level breaks nothing
+/// and FALLS THROUGH. Per §4.4.8 a branch to the outermost label is a `return`
+/// carrying the function's results, so `(br 0 (i32.const 50)) (i32.const 51)`
+/// returned 51. `return` was right, `br` to a block was right, and only the
+/// sibling spelling was wrong — invisible to validation, since the module is
+/// perfectly valid and the failure is a WRONG VALUE.
+///
+/// Matching on this enum instead of on `Option` is what makes the next branch
+/// instruction unable to forget: an unhandled variant is a compile error.
+enum BrDest {
+    Frame(LabelEntry),
+    /// The function's implicit label — a branch here IS a return.
+    Func,
+    /// Neither in scope nor the function label: an invalid module.
+    ///
+    /// ⛔ NOT AN `Option`. The first cut of this returned `Option<BrDest>`,
+    /// and `None` is exactly the shape that let the bug spread in the first
+    /// place — a site can handle it without ever deciding what the function
+    /// label means, and three of the six branch emitters did precisely that.
+    /// A third variant makes every `match` exhaustive, so forgetting one is a
+    /// compile error instead of a spelling that silently falls through.
+    Unresolved,
 }
 
 /// Derive a `br` target from its first argument (label id or numeric index).
@@ -2372,12 +2596,17 @@ fn emit_br_stmt_carry(__w: &mut WastWalker,
     // discards.
     preserve_stack_across_block(__w, stack, statements);
     let target = br_target_of(lbl_arg);
-    if let Some(entry) = labels.resolve(&target) {
-        let carry = branch_carry_temps(&entry);
-        carry_stack_into_temps(&carry, stack, true, statements);
-        statements.push(br_stmt_for(&entry, span));
-    } else {
-        statements.push(make_br_stmt_opt(None, labels, span));
+    match labels.resolve_dest(&target) {
+        BrDest::Frame(entry) => {
+            let carry = branch_carry_temps(&entry);
+            carry_stack_into_temps(&carry, stack, true, statements);
+            statements.push(br_stmt_for(&entry, span));
+        }
+        BrDest::Func => {
+            let n = __w.current_fn_results;
+            statements.push(func_return_stmt_n(n, stack, true, span));
+        }
+        BrDest::Unresolved => statements.push(make_br_stmt_opt(None, labels, span)),
     }
 }
 
@@ -2398,13 +2627,18 @@ fn emit_br_if_stmt(__w: &mut WastWalker,
     preserve_stack_across_block(__w, stack, statements);
     let target = br_target_of(lbl_arg);
     let mut then_body: Vec<Statement> = Vec::new();
-    let branch = match labels.resolve(&target) {
-        Some(entry) => {
+    let branch = match labels.resolve_dest(&target) {
+        BrDest::Frame(entry) => {
             let carry = branch_carry_temps(&entry);
             carry_stack_into_temps(&carry, stack, false, &mut then_body);
             br_stmt_for(&entry, span)
         }
-        None => make_br_stmt_opt(None, labels, span),
+        // ⛔ Peek, never consume: the untaken path still owns this stack.
+        BrDest::Func => {
+            let n = __w.current_fn_results;
+            func_return_stmt_n(n, stack, false, span)
+        }
+        BrDest::Unresolved => make_br_stmt_opt(None, labels, span),
     };
     then_body.push(branch);
     statements.push(Statement::with_span(
@@ -2437,9 +2671,16 @@ fn emit_br_table_stmt(__w: &mut WastWalker,
     // VALUES must have been computed regardless).
     preserve_stack_across_block(__w, stack, statements);
     let carried: Vec<Expression> = stack.clone();
+    let fn_results = __w.current_fn_results;
     let br_for = |t: &BrTarget| -> Vec<Statement> {
-        match labels.resolve(t) {
-            Some(entry) => {
+        match labels.resolve_dest(t) {
+            BrDest::Func => {
+                // Each case reads the same snapshot; only one runs, so this
+                // takes a private copy rather than draining `carried`.
+                let mut snap = carried.clone();
+                vec![func_return_stmt_n(fn_results, &mut snap, true, span)]
+            }
+            BrDest::Frame(entry) => {
                 let mut out = Vec::new();
                 let n = entry.result_temps.len();
                 let start = carried.len().saturating_sub(n);
@@ -2456,7 +2697,7 @@ fn emit_br_table_stmt(__w: &mut WastWalker,
                 out.push(br_stmt_for(&entry, span));
                 out
             }
-            None => vec![make_br_stmt_opt(None, labels, span)],
+            BrDest::Unresolved => vec![make_br_stmt_opt(None, labels, span)],
         }
     };
     if targets.is_empty() {
@@ -2478,24 +2719,35 @@ fn emit_br_table_stmt(__w: &mut WastWalker,
             }],
             kind: VarDeclKind::Let,
         }));
-        let mut chain = br_for(&targets[targets.len() - 1]);
-        for k in (0..targets.len() - 1).rev() {
-            let cond = Expression::new(ExprKind::Binary {
-                op: BinOp::StrictEq,
-                left: Box::new(Expression::ident(&idx_tmp)),
-                right: Box::new(Expression::int(k as i64)),
-            });
-            chain = vec![Statement::with_span(
+        // ⛔ NEITHER A NESTED CHAIN NOR `elifs` — A FLAT SEQUENCE. Both of
+        // those nest each successive target one level deeper, and a branch
+        // DEPTH is a u8: `br_table.wast`'s "large" case has 16150 targets, so
+        // every index past 255 branched to the wrong block. (The nested form
+        // also cost one Rust frame per target in the compiler and aborted the
+        // process long before that; the depth bug was hiding behind it.)
+        //
+        // Emitting the tests as INDEPENDENT `if`s at the SAME level keeps every
+        // branch depth constant. Only one can run: each body BRANCHES, so
+        // control leaves before the next test is reached, and falling past all
+        // of them is exactly the default case.
+        for k in 0..targets.len() - 1 {
+            statements.push(Statement::with_span(
                 StmtKind::If {
-                    cond,
+                    cond: Expression::new(ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(Expression::ident(&idx_tmp)),
+                        right: Box::new(Expression::int(k as i64)),
+                    }),
                     then_body: br_for(&targets[k]),
-                    else_body: Some(chain),
                     elifs: Vec::new(),
+                    else_body: None,
                 },
                 span,
-            )];
+            ));
         }
-        statements.extend(chain);
+        // The last label is `br_table`'s default: reached only by falling past
+        // every test above.
+        statements.extend(br_for(&targets[targets.len() - 1]));
     }
 }
 
@@ -5286,7 +5538,74 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     {
         let mut canonical: HashMap<String, String> = HashMap::new();
         let mut by_shape: HashMap<String, String> = HashMap::new();
-        for (name, parent_ref, comp_text) in &type_shapes {
+        let mut rec_shape: HashMap<String, String> = HashMap::new();
+        // ⛔ A REC GROUP IS PART OF THE IDENTITY. Under iso-recursive
+        // equivalence a type declared inside `(rec …)` is identified by its
+        // WHOLE GROUP plus its POSITION in it — not by its own shape. Keying on
+        // the shape alone merged `$f1` and `$f2` in all three of
+        // `type-rec.wast`'s dynamic-matching modules, when only the FIRST (two
+        // structurally identical groups) is actually the same type; the other
+        // two differ by member ORDER and by group SIZE respectively, and both
+        // must trap on `call_indirect`.
+        //
+        // A type outside any `(rec …)` is its own singleton group, so its key
+        // gains a constant prefix and identical standalone types still merge —
+        // which is what `test-canon` in the gc suite pins.
+        let rec_of = rec_groups_of_module(&pair).unwrap_or_default();
+        let group_of = |i: usize| rec_of.get(i).copied().unwrap_or(usize::MAX - i);
+        let members_of = |g: usize| -> Vec<usize> {
+            (0..type_shapes.len()).filter(|j| group_of(*j) == g).collect()
+        };
+        // ⛔ A REFERENCE INTO ONE'S OWN GROUP IS A POSITION, NOT A NAME. Under
+        // iso-recursive equivalence a group is compared after unrolling, so
+        // `(rec (type $t1 (func (result (ref null $t1)))))` and the same
+        // written with `$t2` are ONE type — the recursive reference points at
+        // "member 0 of this group" in both. Comparing the source text keeps the
+        // spelling and splits them, which trapped a valid `call_indirect`.
+        //
+        // References OUT of the group stay nominal (qualified): resolving those
+        // to a canonical form would need a fixpoint over the whole module, and
+        // splitting there costs a merge, not a wrong trap.
+        let positional_text = |i: usize| -> String {
+            let members = members_of(group_of(i));
+            let text = &type_shapes[i].2;
+            if !text.contains('$') {
+                return text.clone();
+            }
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find('$') {
+                out.push_str(&rest[..at]);
+                let tail = &rest[at + 1..];
+                let end = tail
+                    .find(|c: char| !(c.is_alphanumeric() || "_.+-*/\\^~=<>!?@#$%&|:'`".contains(c)))
+                    .unwrap_or(tail.len());
+                if end == 0 {
+                    out.push('$');
+                    rest = tail;
+                    continue;
+                }
+                let qualified = qualify_type_name(__w, &tail[..end]);
+                match members.iter().position(|j| type_shapes[*j].0 == qualified) {
+                    Some(pos) => out.push_str(&format!("rec.{pos}")),
+                    None => out.push_str(&qualified),
+                }
+                rest = &tail[end..];
+            }
+            out.push_str(rest);
+            out
+        };
+        let shapes: Vec<String> = (0..type_shapes.len()).map(positional_text).collect();
+        let group_shape = |g: usize| -> (String, Vec<usize>) {
+            let members = members_of(g);
+            let text = members
+                .iter()
+                .map(|j| shapes[*j].clone())
+                .collect::<Vec<_>>()
+                .join(";");
+            (text, members)
+        };
+        for (i, (name, parent_ref, _)) in type_shapes.iter().enumerate() {
             let parent = parent_ref.as_ref().map(|p| {
                 let resolved = match p.parse::<usize>() {
                     Ok(i) => type_order.get(i).cloned().unwrap_or_else(|| p.clone()),
@@ -5294,8 +5613,17 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 };
                 canonical.get(&resolved).cloned().unwrap_or(resolved)
             });
-            let key = format!("{}|{}", parent.unwrap_or_default(), comp_text);
+            let (gtext, members) = group_shape(group_of(i));
+            let pos = members.iter().position(|j| *j == i).unwrap_or(0);
+            let key = format!(
+                "{}#{}#{}|{}",
+                gtext,
+                pos,
+                parent.unwrap_or_default(),
+                shapes[i]
+            );
             let winner = by_shape.entry(key).or_insert_with(|| name.clone()).clone();
+            rec_shape.insert(winner.clone(), format!("{}:{}", members.len(), pos));
             canonical.insert(name.clone(), winner);
         }
         // A numeric type reference resolves through `type_index_name`, so that
@@ -5306,6 +5634,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             .map(|n| canonical.get(n).cloned().unwrap_or_else(|| n.clone()))
             .collect();
         __w.type_canonical = canonical;
+        // Script-wide: names are module-qualified, so one map serves every
+        // module and a later module cannot overwrite an earlier one's row.
+        __w.type_rec_shape.extend(rec_shape);
     }
     __w.struct_field_counts = struct_counts;
     __w.type_func_params = func_param_counts;
@@ -5387,7 +5718,36 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         }
     }
     __w.type_func_results = func_result_counts;
-    __w.type_func_sigs = func_sigs;
+    // ⛔ KEYED PRE-CANONICAL, READ POST-CANONICAL. These keys were built by
+    // `qualify_type_name` during the pre-scan, when `type_canonical` is still
+    // EMPTY — that emptiness is deliberate, it is what lets the pass read raw
+    // names. But `type_canonical` is populated further up (`__w.type_canonical
+    // = canonical`) BEFORE anything looks a signature up, and every reader goes
+    // through the same funnel, which now answers with the CANONICAL name. So a
+    // type with a canonical form was stored under one key and asked for under
+    // another, and `(type $t)` resolved to nothing — which
+    // `typeuse_signature` then formatted as `"->"`, a real signature meaning
+    // "no params, no results".
+    //
+    // Re-key through the mapping now that it exists, so both sides agree.
+    // Two names collapsing onto one canonical key is correct: they ARE the
+    // same type.
+    // The VALUES need the same treatment as the keys: a stored signature holds
+    // `(ref $s1)` verbatim from the pre-scan, and the call site it is compared
+    // against resolves its own reference canonically — so two equal types read
+    // as different signatures.
+    __w.type_func_sigs = func_sigs
+        .into_iter()
+        .map(|(k, (ps, rs))| {
+            let canon_all = |v: Vec<String>| {
+                v.into_iter().map(|t| canonical_val_type(__w, &t)).collect::<Vec<_>>()
+            };
+            (
+                __w.type_canonical.get(&k).cloned().unwrap_or(k),
+                (canon_all(ps), canon_all(rs)),
+            )
+        })
+        .collect();
     __w.type_func_parent = func_parents;
     // Each DEFINED function's own signature, collected here because `pair` is
     // consumed before the directives are emitted. Resolving a `(type $t)`
@@ -6282,6 +6642,11 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         )),
                         Argument::positional(Expression::string(&params.join(","))),
                         Argument::positional(Expression::string(&results.join(","))),
+                        // The rec group's size and this member's position in
+                        // it — see `type_rec_shape`.
+                        Argument::positional(Expression::string(
+                            __w.type_rec_shape.get(name).map(|s| s.as_str()).unwrap_or(""),
+                        )),
                     ],
                     optional: false,
                 })))
@@ -9147,41 +9512,152 @@ fn walk_func_switch_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
 /// (`Chunk` carries `arity`/`param_count`/`result_arity` and no value types at
 /// all), so the declared spelling is the only place the functype survives. It
 /// is compared, never interpreted.
+/// The CANONICAL name of an instruction's `(type $t)`, when it names one.
+///
+/// ⛔ THE IDENTITY, NOT THE SHAPE. `call_indirect`'s runtime check must tell
+/// `$f1` from `$f2` when both are `(func)` in DIFFERENT rec groups — the
+/// signature strings are equal there and only the canonicalised name differs.
+/// `qualify_type_name` runs the same canonicalisation the callee's
+/// `declared_func_type` went through, so the two are comparable.
+///
+/// Empty when the instruction spells its type inline (`(param …)(result …)`),
+/// which has no name to compare — the signature check covers that case.
+fn typeuse_canon_name(__w: &WastWalker, pair: &Pair<Rule>) -> String {
+    let host = match pair.as_rule() {
+        Rule::instr => pair.clone().into_inner().next().unwrap_or_else(|| pair.clone()),
+        _ => pair.clone(),
+    };
+    for c in host.into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
+        }
+        let Some(bt) = c.into_inner().next() else { continue };
+        if bt.as_rule() != Rule::block_type {
+            continue;
+        }
+        if !bt.as_str().trim_start_matches('(').trim_start().starts_with("type") {
+            continue;
+        }
+        if let Some(ix) = bt.into_inner().find(|x| x.as_rule() == Rule::index) {
+            let raw = ix.as_str().trim_start_matches('$').to_string();
+            return match raw.parse::<usize>() {
+                Ok(i) => __w.type_index_name.get(i).cloned().unwrap_or(raw),
+                Err(_) => qualify_type_name(__w, &raw),
+            };
+        }
+    }
+    String::new()
+}
+
 fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
     let mut params: Vec<String> = Vec::new();
     let mut results: Vec<String> = Vec::new();
-    for child in pair.clone().into_inner() {
-        match child.as_rule() {
-            Rule::param => {
-                for t in child
-                    .into_inner()
-                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
-                {
-                    params.push(t.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
-                }
-            }
-            Rule::result => {
-                for t in child
-                    .into_inner()
-                    .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
-                {
-                    results.push(t.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
-                }
-            }
-            // `(type $t)` — a named functype. RESOLVED to its value types, not
-            // kept as a name: the writer matches this against a function's
-            // `func_sig`, which is value types, so a name would never match and
-            // the lookup would silently fall back to the count-keyed path this
-            // exists to replace.
-            Rule::index => {
-                let n = qualify_type_name(__w, child.as_str().trim_start_matches('$'));
-                if let Some((p, r)) = __w.type_func_sigs.get(&n) {
-                    params.extend(p.iter().cloned());
-                    results.extend(r.iter().cloned());
-                }
-            }
-            _ => {}
+    // Set when a `(type $t)` names a functype this walker cannot resolve; the
+    // caller records nothing rather than a fabricated shape.
+    let mut unresolved = false;
+
+    // ⛔ ON AN INSTRUCTION THE TYPE IS A `block_type`, NOT A `typeuse`. This
+    // read `Rule::typeuse`/`param`/`result`/`index` off the pair's children and
+    // found NONE of them, so every `call_indirect (type $t)` produced `"->"` —
+    // a real signature meaning "no params, no results", not an absent one. The
+    // runtime then had nothing true to compare and fell back to arity, which
+    // cannot tell `(func (result i32))` from `(func (result i64))`.
+    //
+    // `peek_typeuse_shape` reads the same instruction correctly and is the
+    // shape mirrored here: `instr_arg` → `block_type`, whose KEYWORD is inlined
+    // by the grammar and so has to be read off the node's own text.
+    let host = match pair.as_rule() {
+        Rule::instr => pair.clone().into_inner().next().unwrap_or_else(|| pair.clone()),
+        _ => pair.clone(),
+    };
+    let mut saw_block_type = false;
+    for c in host.clone().into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
         }
+        let Some(bt) = c.into_inner().next() else { continue };
+        if bt.as_rule() != Rule::block_type {
+            continue;
+        }
+        saw_block_type = true;
+        let head = bt.as_str().trim_start_matches('(').trim_start();
+        let vals = |b: &Pair<Rule>| -> Vec<String> {
+            b.clone()
+                .into_inner()
+                .filter(|x| matches!(x.as_rule(), Rule::val_type | Rule::any_val_type))
+                .map(|x| {
+                    canonical_val_type(
+                        __w,
+                        &x.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
+                    )
+                })
+                .collect()
+        };
+        if head.starts_with("type") {
+            let named = bt
+                .clone()
+                .into_inner()
+                .find(|x| x.as_rule() == Rule::index)
+                .map(|x| x.as_str().trim_start_matches('$').to_string());
+            match named
+                .map(|n| qualify_type_name(__w, &n))
+                .and_then(|n| __w.type_func_sigs.get(&n).cloned())
+            {
+                Some((p, r)) => {
+                    params.extend(p);
+                    results.extend(r);
+                }
+                None => unresolved = true,
+            }
+        } else if head.starts_with("param") {
+            params.extend(vals(&bt));
+        } else if head.starts_with("result") {
+            results.extend(vals(&bt));
+        }
+    }
+
+    // A real `typeuse` node (the shape a func FIELD carries) still reads the
+    // old way; only the instruction spelling goes through `block_type`.
+    if !saw_block_type {
+        for child in host.into_inner() {
+            match child.as_rule() {
+                Rule::param => {
+                    for t in child.into_inner().filter(|c| {
+                        matches!(c.as_rule(), Rule::any_val_type | Rule::val_type)
+                    }) {
+                        params.push(canonical_val_type(
+                            __w,
+                            &t.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
+                        ));
+                    }
+                }
+                Rule::result => {
+                    for t in child.into_inner().filter(|c| {
+                        matches!(c.as_rule(), Rule::any_val_type | Rule::val_type)
+                    }) {
+                        results.push(canonical_val_type(
+                            __w,
+                            &t.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
+                        ));
+                    }
+                }
+                Rule::index => {
+                    let n = qualify_type_name(__w, child.as_str().trim_start_matches('$'));
+                    match __w.type_func_sigs.get(&n) {
+                        Some((p, r)) => {
+                            params.extend(p.iter().cloned());
+                            results.extend(r.iter().cloned());
+                        }
+                        None => unresolved = true,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if unresolved {
+        return String::new();
     }
     format!("{}->{}", params.join(","), results.join(","))
 }
@@ -9351,7 +9827,24 @@ fn walk_table_field(__w: &mut WastWalker,
                     max_size = Some(parse_wat_u64(max.as_str()));
                 }
             }
-            Rule::index => inline_funcs.push(child.as_str().trim_start_matches('$').to_string()),
+            // ⛔ A NUMERIC funcidx IS NOT A NAME. `(table funcref (elem 0 1))`
+            // is the same index space `call 0` uses — pushing the literal "0"
+            // as a function NAME matched nothing, so the slot stayed null and
+            // the first `call_indirect` trapped "uninitialized element 0".
+            // The named spelling worked, which is why this survived: only
+            // func_ptrs.wast writes the numeric one.
+            Rule::index => {
+                let raw = child.as_str().trim();
+                let resolved = match raw.strip_prefix('$') {
+                    Some(n) => n.to_string(),
+                    None => raw
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| __w.func_index_name.get(i).cloned())
+                        .unwrap_or_else(|| raw.to_string()),
+                };
+                inline_funcs.push(resolved);
+            }
             _ => {}
         }
     }
@@ -9371,11 +9864,31 @@ fn walk_table_field(__w: &mut WastWalker,
         );
         let mut population = Vec::new();
         for (i, f) in inline_funcs.iter().enumerate() {
-            let funcref = Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident(&class)),
-                field: f.clone(),
-                null_safe: false,
-            });
+            // ⛔ AN IMPORTED FUNCTION IS NOT A MEMBER OF THIS MODULE'S CLASS.
+            // `(table funcref (elem $print_i32))` names an IMPORT, and
+            // qualifying it as `ThisModule.print_i32` resolves to nothing — the
+            // slot stayed null and the first `call_indirect` trapped
+            // "uninitialized element 0". The `call` arm has always resolved
+            // these through `import_alias` (an import is a second name for the
+            // EXPORTING module's method) and `host_import_alias`; the inline
+            // elem list never did.
+            let funcref = if let Some((icls, imeth)) = __w.import_alias.get(f).cloned() {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&icls)),
+                    field: imeth,
+                    null_safe: false,
+                })
+            } else if let Some(hostname) = __w.host_import_alias.get(f).cloned() {
+                // A HOST import is reached by its bare `host:m:n` ident, not
+                // through any class.
+                Expression::ident(&hostname)
+            } else {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&class)),
+                    field: f.clone(),
+                    null_safe: false,
+                })
+            };
             let call = make_call(
                 "table_set",
                 vec![
@@ -9845,6 +10358,42 @@ fn func_field_declared_type(__w: &WastWalker, func_field: &Pair<Rule>) -> Option
     None
 }
 
+/// A value type with every `$type` reference in it replaced by its CANONICAL
+/// name.
+///
+/// ⛔ A SIGNATURE IS COMPARED, SO ITS SPELLINGS MUST AGREE. `call_indirect`
+/// checks the callee's signature against the call site's, and both are built
+/// from source text: `(func (param (ref $s1)))` and `(func (param (ref $s2)))`
+/// are the SAME type when `$s1` and `$s2` are, but their texts differ, so the
+/// comparison rejected a valid call. Running the reference through the same
+/// funnel every other consumer uses makes the two sides say the same thing.
+///
+/// Only `$`-prefixed references are touched — `i32`, `funcref`, `(ref null
+/// any)` and the rest have no name to resolve and pass through unchanged.
+fn canonical_val_type(__w: &WastWalker, text: &str) -> String {
+    if !text.contains('$') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 1..];
+        let end = tail
+            .find(|c: char| !(c.is_alphanumeric() || "_.+-*/\\^~=<>!?@#$%&|:'`".contains(c)))
+            .unwrap_or(tail.len());
+        if end == 0 {
+            out.push('$');
+            rest = tail;
+            continue;
+        }
+        out.push_str(&qualify_type_name(__w, &tail[..end]));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<String>, Vec<String>) {
     let mut params: Vec<String> = Vec::new();
     let mut results: Vec<String> = Vec::new();
@@ -9866,9 +10415,10 @@ fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<Strin
                     };
                     for v in t.into_inner() {
                         if matches!(v.as_rule(), Rule::any_val_type | Rule::val_type) {
-                            target.push(
-                                v.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
-                            );
+                            target.push(canonical_val_type(
+                                __w,
+                                &v.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
+                            ));
                         }
                     }
                 }
@@ -10371,23 +10921,43 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
     // compare, a null-ness predicate, a `ref.test`, a lane-wise vector
     // compare, or an `either` over any of those) and not just a value.
     let mut expected: Vec<Pair<Rule>> = Vec::new();
+    // ⛔ "assert_return failed" ALONE NAMES NOTHING. A file stops at its first
+    // failing assertion, so a bare message says only that SOMETHING in a
+    // 200-assertion file disagreed — not which, and not what it wanted. Both
+    // halves are STATIC TEXT already in the fixture, so quoting them costs no
+    // runtime plumbing and turns "this file fails" into a diagnosis.
+    let mut action_text = String::new();
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::action => action_expr = Some(walk_action(__w, child)?),
+            Rule::action => {
+                action_text = squeeze_ws(child.as_str());
+                action_expr = Some(walk_action(__w, child)?);
+            }
             Rule::result_val => expected.push(child),
             _ => {}
         }
     }
+    let want_text = |ps: &[Pair<Rule>]| -> String {
+        ps.iter()
+            .map(|p| squeeze_ws(p.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let Some(action) = action_expr else {
         return Ok(Statement::with_span(StmtKind::Empty, span));
     };
 
     if expected.len() == 1 {
+        let msg = format!(
+            "assert_return failed: {} — expected {}",
+            action_text,
+            want_text(&expected)
+        );
         let want = expected.pop().expect("checked len");
         let cond = result_failure_cond(&want, action, span)?;
         let throw = Statement::with_span(
             StmtKind::Throw {
-                expr: Some(Expression::string("assert_return failed")),
+                expr: Some(Expression::string(&msg)),
                 cause: None,
             },
             span,
@@ -10455,7 +11025,11 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
     }
     let throw = Statement::with_span(
         StmtKind::Throw {
-            expr: Some(Expression::string("assert_return failed")),
+            expr: Some(Expression::string(&format!(
+                "assert_return failed: {} — expected {}",
+                action_text,
+                want_text(&expected)
+            ))),
             cause: None,
         },
         span,
@@ -10664,6 +11238,96 @@ fn memarg_offset_range_reason(module: &Pair<Rule>) -> Option<String> {
     scan(module)
 }
 
+/// §3.3.4: a SIMD lane immediate must be in range for the instruction's shape.
+/// `i8x16.extract_lane_s 16` names lane 16 of a 16-lane vector.
+///
+/// The bound comes from the SHAPE, not from the instruction family, so it is
+/// read off the name: the `SHAPE.` prefix on extract/replace, and the access
+/// WIDTH on `v128.loadN_lane`/`storeN_lane` (a `load8_lane` addresses the same
+/// 16 lanes an `i8x16` does). `i8x16.shuffle` is the odd one — SIXTEEN
+/// immediates, each selecting from the two input vectors' 32 lanes together.
+///
+/// ⛔ THE FIRST INTEGER IMMEDIATE, NOT THE FIRST IMMEDIATE. On the lane
+/// load/stores the memarg comes first (`v128.load8_lane offset=0 1`), and on
+/// the folded spellings the vector operand is a nested instruction rather than
+/// an immediate. Filtering to integers is what makes one reading serve every
+/// spelling — and picking the wrong token here would reject VALID modules,
+/// which is the costly direction for a check that runs over every module.
+fn lane_index_reason(module: &Pair<Rule>) -> Option<String> {
+    /// Lanes addressable by this instruction, or `None` if it takes no lane.
+    fn lanes_of(name: &str) -> Option<(u128, usize)> {
+        // (bound, how many lane immediates)
+        if name == "i8x16.shuffle" {
+            return Some((32, 16));
+        }
+        if !name.ends_with("_lane") {
+            return None;
+        }
+        let shape_lanes = |s: &str| -> Option<u128> {
+            Some(match s {
+                "i8x16" => 16,
+                "i16x8" => 8,
+                "i32x4" | "f32x4" => 4,
+                "i64x2" | "f64x2" => 2,
+                _ => return None,
+            })
+        };
+        let (head, tail) = name.split_once('.')?;
+        if head == "v128" {
+            // load8_lane / store16_lane / … — the width names the lane count.
+            let w = tail.trim_start_matches("load").trim_start_matches("store");
+            let w = w.strip_suffix("_lane")?;
+            return Some((
+                match w {
+                    "8" => 16,
+                    "16" => 8,
+                    "32" => 4,
+                    "64" => 2,
+                    _ => return None,
+                },
+                1,
+            ));
+        }
+        // extract_lane_s / extract_lane_u / replace_lane
+        Some((shape_lanes(head)?, 1))
+    }
+
+    fn scan(p: &Pair<Rule>) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            let name = head_keyword(p);
+            if let Some((bound, count)) = lanes_of(&name) {
+                let mut seen = 0usize;
+                for c in p.clone().into_inner() {
+                    let t = match c.as_rule() {
+                        Rule::integer => c.as_str(),
+                        Rule::instr_arg => match c.clone().into_inner().next() {
+                            Some(i) if i.as_rule() == Rule::integer => i.as_str(),
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+                    if let Some(v) = parse_wat_u128(t.trim()) {
+                        if v >= bound {
+                            return Some("invalid lane index".to_string());
+                        }
+                        seen += 1;
+                        if seen == count {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module)
+}
+
 /// A type may reference only types declared BEFORE it, or types in its OWN
 /// recursion group. Mutual recursion is legal exactly inside one `(rec …)`.
 ///
@@ -10721,6 +11385,346 @@ fn collect_concrete_type_refs(
     for c in p.clone().into_inner() {
         collect_concrete_type_refs(&c, names, out);
     }
+}
+
+/// Source text on one line, runs of whitespace collapsed — fixture forms are
+/// written across several lines and a diagnostic wants them inline.
+fn squeeze_ws(s: &str) -> String {
+    let mut out = String::new();
+    let mut sp = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            sp = true;
+            continue;
+        }
+        if sp && !out.is_empty() {
+            out.push(' ');
+        }
+        sp = false;
+        // The message is embedded in a string literal downstream.
+        out.push(if c == '"' { '\'' } else { c });
+    }
+    out
+}
+
+/// `array.copy $dst $src` — the SOURCE element must be assignable to the
+/// DESTINATION element.
+///
+/// ⛔ ITS OWN DIAGNOSTIC, NOT "type mismatch". The suite asserts "array types
+/// do not match", and the operands are all perfectly well typed — this is a
+/// relation between the two TYPE immediates, which is why the stack-typing
+/// pass cannot see it.
+fn array_copy_element_reason(module: &Pair<Rule>) -> Option<String> {
+    let (types, names) = descriptor_type_table(module);
+    fn scan(
+        p: &Pair<Rule>,
+        types: &[DescType],
+        names: &HashMap<String, usize>,
+    ) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr)
+            && instr_head_name(p).as_deref() == Some("array.copy")
+        {
+            let idx: Vec<usize> = p
+                .clone()
+                .into_inner()
+                .filter(|c| c.as_rule() == Rule::instr_arg)
+                .map(|c| c.as_str().trim().to_string())
+                .filter(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                .filter_map(|t| resolve_wast_index(&t, names))
+                .collect();
+            if let (Some(&d), Some(&sr)) = (idx.first(), idx.get(1)) {
+                if let (Some(dt), Some(st)) = (types.get(d), types.get(sr)) {
+                    if dt.kind == Some("array") && st.kind == Some("array") {
+                        if let (Some(de), Some(se)) = (&dt.array_elem, &st.array_elem) {
+                            if de != se {
+                                match (parse_vt(se, names), parse_vt(de, names)) {
+                                    (Some(x), Some(y)) if vt_subtype(&x, &y, types) => {}
+                                    (Some(x), Some(y)) if provably_not_subtype(&x, &y, types) => {
+                                        return Some("array types do not match".to_string());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c, types, names) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module, &types, &names)
+}
+
+/// Writing through an array whose element type is not `(mut …)`.
+///
+/// ⛔ MUTABILITY IS PER-ELEMENT AND OPT-IN. `(type $a (array i64))` declares an
+/// IMMUTABLE array — `(array i64)` is not shorthand for `(array (mut i64))` —
+/// so `array.set` on it is invalid however well-typed its operands are. Five
+/// files in the GC suite assert this, and it is a property of the TYPE, which
+/// is why the stack-typing pass cannot see it: every operand is correct.
+///
+/// `array.copy` names DEST first, then source; only the destination is
+/// written. The read-only forms (`array.get`, `array.len`, `array.new*`) are
+/// deliberately absent.
+fn array_immutability_reason(module: &Pair<Rule>) -> Option<String> {
+    let (types, names) = descriptor_type_table(module);
+    fn scan(
+        p: &Pair<Rule>,
+        types: &[DescType],
+        names: &HashMap<String, usize>,
+    ) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            let head = instr_head_name(p).unwrap_or_default();
+            if matches!(
+                head.as_str(),
+                "array.set" | "array.fill" | "array.copy" | "array.init_data" | "array.init_elem"
+            ) {
+                // The first index-shaped immediate is the array type written to.
+                let ty = p
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::instr_arg)
+                    .map(|c| c.as_str().trim().to_string())
+                    .find(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                    .and_then(|t| resolve_wast_index(&t, names))
+                    .and_then(|i| types.get(i));
+                if let Some(t) = ty {
+                    if t.kind == Some("array") && !t.array_elem_mut {
+                        return Some("immutable array".to_string());
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c, types, names) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module, &types, &names)
+}
+
+/// §3.4.5 (exception handling): a tag's type must have NO results — a tag
+/// describes the values an exception CARRIES, and throwing never produces
+/// anything. `(tag (result i32))` is invalid, and so is the imported spelling
+/// `(import "" "" (tag (result i32)))`.
+///
+/// ⛔ BOTH SPELLINGS OR NEITHER. The suite asserts the defined form and the
+/// imported form with the same wording, and they reach the tree as different
+/// rules — checking only `tag_field` answers one fixture of the two, which is
+/// the same half-covered shape that left `br_on_null` behind.
+fn tag_result_type_reason(module: &Pair<Rule>) -> Option<String> {
+    fn has_result(p: &Pair<Rule>) -> bool {
+        find_rule(p, Rule::tag_type).is_some_and(|tt| {
+            tt.into_inner().any(|c| {
+                c.as_rule() == Rule::result
+                    // A bare `(result)` carries nothing and is fine; it is a
+                    // result with a TYPE in it that makes the tag invalid.
+                    && c.into_inner().next().is_some()
+            })
+        })
+    }
+    for field in module_fields(module) {
+        let is_tag = match field.as_rule() {
+            Rule::tag_field => true,
+            Rule::import_field => find_rule(&field, Rule::import_desc)
+                .is_some_and(|d| head_keyword(&d) == "tag"),
+            _ => false,
+        };
+        if is_tag && has_result(&field) {
+            return Some("non-empty tag result type".to_string());
+        }
+    }
+    None
+}
+
+/// §6.6.4: a numeric `(type N)` must name a type that EXISTS — counting the
+/// implicit types an inline signature defines.
+///
+/// ⛔ THE CENSUS DELIBERATELY OVER-COUNTS. `implicit_type_upper_bound` adds one
+/// per inline signature with no dedup, which is the safe direction for a
+/// name-resolution check — it can only miss, never over-fire. But missing is
+/// exactly what happened: in `func.wast`'s fixture three functions carry inline
+/// signatures of which only ONE is new, so the bound says 4 where the space
+/// holds 2, and `(func (type 2))` looked in range.
+///
+/// `build_type_ctx` already computes the exact figure — its Pass 1b dedups
+/// implicit types against both the explicit ones and each other, because the
+/// INDICES depend on it. Reading that length here rather than re-deriving the
+/// dedup keeps one answer in one place.
+fn unknown_type_index_reason(module: &Pair<Rule>) -> Option<String> {
+    let ctx = build_type_ctx(module);
+    let n = ctx.type_sigs.len();
+    fn walk(p: &Pair<Rule>, n: usize) -> Option<String> {
+        if p.as_rule() == Rule::typeuse {
+            if let Some(idx) = p.clone().into_inner().find(|c| c.as_rule() == Rule::index) {
+                // Named indices are the census's question; this rule answers
+                // only for the numeric spelling, whose bound it can prove.
+                if let Ok(i) = idx.as_str().trim().parse::<usize>() {
+                    if i >= n {
+                        return Some(format!("unknown type {i}"));
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = walk(&c, n) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    walk(module, n)
+}
+
+/// §3.4.4: a table's element type must be DEFAULTABLE unless the table is
+/// written with an explicit initializer. Every slot starts life at the default
+/// value, and a non-nullable reference has none — so `(table 0 (ref func))` is
+/// invalid while `(table 0 funcref)` and `(table 1 (ref func) (ref.func $f))`
+/// are both fine.
+///
+/// ⛔ THE SIZE DOES NOT MATTER, AND THE FIXTURES PIN THAT. `(table 0 (ref $f))`
+/// is invalid even though it has no slots to fill: the rule is a property of
+/// the TYPE, checked before any element count is considered. Reading it as
+/// "only a non-empty table needs a default" discharges #16 and fails #17.
+///
+/// ⛔ THE `(elem …)` SPELLING IS AN INITIALIZER TOO. `table_field`'s second
+/// branch — `(table $t funcref (elem $f …))` — supplies every slot, so it is
+/// exempt; only the `table_type` branch with no trailing `folded_instr` can
+/// trip this.
+fn table_defaultable_reason(module: &Pair<Rule>) -> Option<String> {
+    for field in module_fields(module) {
+        if field.as_rule() != Rule::table_field {
+            continue;
+        }
+        // The `(elem …)` branch has no `table_type` at all.
+        let Some(tt) = find_rule(&field, Rule::table_type) else {
+            continue;
+        };
+        // An IMPORTED table is initialised by whoever exports it.
+        if find_rule(&field, Rule::import_inline).is_some() {
+            continue;
+        }
+        if find_rule(&field, Rule::folded_instr).is_some() {
+            continue;
+        }
+        let Some(rt) = find_rule(&tt, Rule::ref_val_type) else {
+            continue;
+        };
+        let spelling = rt.as_str().trim();
+        // Defaultable ⇔ nullable. The abbreviations (`funcref`, `externref`,
+        // `anyref`, …) are all nullable by definition; only an explicit
+        // `(ref …)` without `null` is not.
+        let inner = spelling.trim_start_matches('(').trim_end_matches(')').trim();
+        let non_null = inner
+            .strip_prefix("ref")
+            .is_some_and(|r| !r.trim_start().starts_with("null"));
+        if non_null {
+            return Some(format!("type mismatch: table element {spelling} is not defaultable"));
+        }
+    }
+    None
+}
+
+/// §3.4.10: `ref.func x` is valid only when `x` is in `C.refs` — "the set of
+/// function indices occurring in the module, EXCEPT in its functions or start
+/// function". A function reachable only from inside a body, with nothing
+/// declaring it, is invalid: `(module (func $f (drop (ref.func $f))))`.
+///
+/// ⛔ `start` DOES NOT DECLARE, and the suite pins that directly —
+/// `(module (start $f) (func $f (drop (ref.func $f))))` is asserted invalid
+/// even though `$f` plainly occurs in the module. Reading the rule as "occurs
+/// anywhere outside a body" discharges the first fixture and fails this one.
+///
+/// ⛔ AN INLINE EXPORT DECLARES ITS OWN FUNCTION. `(func $f (export "a") …)`
+/// desugars to a top-level export of `$f`, so the func field cannot simply be
+/// skipped wholesale — that would reject a VALID module, which is the
+/// expensive direction here: these rules run over every module the suite
+/// compiles, not only the ones asserted invalid. Where this is unsure it
+/// over-approximates the declared set, which can only cost a missed detection.
+fn undeclared_func_ref_reason(module: &Pair<Rule>) -> Option<String> {
+    fn collect_idents(p: &Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+        if matches!(p.as_rule(), Rule::index | Rule::id) {
+            out.insert(p.as_str().trim().trim_start_matches('$').to_string());
+        }
+        for c in p.clone().into_inner() {
+            collect_idents(&c, out);
+        }
+    }
+    // Every `ref.func` use inside a function body, paired with nothing else —
+    // the check is membership, so the use sites are just names.
+    fn collect_uses(p: &Pair<Rule>, out: &mut Vec<String>) {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr)
+            && head_keyword(p) == "ref.func"
+        {
+            if let Some(a) = p
+                .clone()
+                .into_inner()
+                .flat_map(|c| {
+                    if c.as_rule() == Rule::instr_arg {
+                        c.into_inner().collect::<Vec<_>>()
+                    } else {
+                        vec![c]
+                    }
+                })
+                .find(|c| matches!(c.as_rule(), Rule::index | Rule::id))
+            {
+                out.push(a.as_str().trim().trim_start_matches('$').to_string());
+            }
+        }
+        for c in p.clone().into_inner() {
+            collect_uses(&c, out);
+        }
+    }
+
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut uses: Vec<String> = Vec::new();
+    let mut func_index: usize = 0;
+    for field in module_fields(module) {
+        let inner = match field.as_rule() {
+            Rule::module_field => match field.clone().into_inner().next() {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => field.clone(),
+        };
+        match inner.as_rule() {
+            // Bodies declare nothing; they only USE. The index the field
+            // occupies is tracked either way, since a numeric `ref.func 0`
+            // has to resolve against the same space.
+            Rule::func_field => {
+                let has_inline_export = inner
+                    .clone()
+                    .into_inner()
+                    .any(|c| c.as_rule() == Rule::export_inline);
+                if has_inline_export {
+                    declared.insert(func_index.to_string());
+                    if let Some(id) = census_id(&inner) {
+                        declared.insert(id);
+                    }
+                }
+                collect_uses(&inner, &mut uses);
+                func_index += 1;
+            }
+            // The start function is explicitly outside `C.refs`.
+            Rule::start_field => {}
+            other => {
+                if other == Rule::import_field && inner.as_str().contains("func") {
+                    func_index += 1;
+                }
+                collect_idents(&inner, &mut declared);
+            }
+        }
+    }
+    uses.into_iter()
+        .find(|u| !declared.contains(u))
+        .map(|_| "undeclared function reference".to_string())
 }
 
 fn module_name_resolution_reason(module: &Pair<Rule>) -> Option<String> {
@@ -10841,6 +11845,63 @@ fn name_resolution_walk(
             }
             // Same: this arm needs `tables == 0`, so the target is table 0.
             return Some("unknown table 0".to_string());
+        }
+    }
+
+    // §3.4.6 (exception handling): `throw x` names a declared tag.
+    // `(module (func (throw 0)))` has no tag section at all. The typing pass
+    // never sees this — `throw` has no rule there and falls to the bail — so
+    // it is answered off the census, exactly like `start`.
+    if matches!(rule, Rule::plain_instr | Rule::folded_instr) && head_keyword(&pair) == "throw" {
+        let idx = pair
+            .clone()
+            .into_inner()
+            .flat_map(|x| {
+                if x.as_rule() == Rule::instr_arg {
+                    x.into_inner().collect::<Vec<_>>()
+                } else {
+                    vec![x]
+                }
+            })
+            // ⛔ `Rule::integer`, NOT just `Rule::index` — and this file
+            // already says so, at `peek_instr_tag_ref`: "an `instr_arg` spells
+            // a bare tagidx as `integer`, not `index`; the `index` rule is
+            // only reached where the grammar names it explicitly". Matching
+            // `id`/`index` alone caught `throw $missing` and silently missed
+            // `throw 0` in BOTH the folded and plain spellings — the same
+            // sibling-spelling split, from re-deriving an immediate's rule set
+            // instead of copying the helper that already got it right.
+            .find(|x| matches!(x.as_rule(), Rule::index | Rule::id | Rule::integer));
+        if let Some(idx) = idx {
+            if !index_resolves(&idx, &c.tags) {
+                if pushed {
+                    locals.pop();
+                }
+                let t = idx.as_str().trim();
+                return Some(match t.parse::<u64>() {
+                    Ok(n) => format!("unknown tag {n}"),
+                    Err(_) => "unknown tag".to_string(),
+                });
+            }
+        }
+    }
+
+    // §3.4.9: the start function must exist. `(module (func) (start 1))` names
+    // index 1 in a module with one function. Like an export descriptor this is
+    // a reference OUTSIDE any instruction, so no instruction-level check could
+    // ever reach it — and nothing else validated `start_field` at all.
+    if rule == Rule::start_field {
+        if let Some(idx) = pair
+            .clone()
+            .into_inner()
+            .find(|x| x.as_rule() == Rule::index)
+        {
+            if !index_resolves(&idx, &c.funcs) {
+                if pushed {
+                    locals.pop();
+                }
+                return Some("unknown function".to_string());
+            }
         }
     }
 
@@ -11097,7 +12158,25 @@ fn module_invalid_walk(
         if let Some(r) = module_name_resolution_reason(&pair) {
             return Some(r);
         }
+        // Kept alongside the index-space check in the stack-typing pass: this
+        // one still answers when that pass BAILS on a module it cannot fully
+        // type, and both give the same wording.
         if let Some(r) = immutable_global_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = undeclared_func_ref_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = lane_index_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = unknown_type_index_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = table_defaultable_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = tag_result_type_reason(&pair) {
             return Some(r);
         }
         if let Some(r) = memarg_offset_range_reason(&pair) {
@@ -11107,6 +12186,12 @@ fn module_invalid_walk(
             return Some(r);
         }
         if let Some(r) = type_forward_reference_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = array_immutability_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = array_copy_element_reason(&pair) {
             return Some(r);
         }
     }
@@ -11266,6 +12351,13 @@ struct DescType {
     fields: usize,
     /// The declared field type SPELLINGS, in order, for subtype comparison.
     field_types: Vec<String>,
+    /// Per field, its `$name` when one was written — PARALLEL to `field_types`.
+    ///
+    /// ⛔ FIELD NAMES ARE SCOPED TO THEIR STRUCT, NOT THE MODULE. Two types may
+    /// each declare `$x`, and `struct.get 0 $x` means type 0's. A module-wide
+    /// map would answer with whichever was seen last, which is a confident
+    /// wrong answer where the fixtures differ by exactly that.
+    field_names: Vec<Option<String>>,
     /// ISO-RECURSIVE CANONICAL ID. Two declarations with this id equal ARE the
     /// same type, even in different rec groups. `None` when the module's
     /// groups could not be canonicalised, which leaves every comparison
@@ -11286,6 +12378,16 @@ struct DescType {
     /// A func type's param and result SPELLINGS. Needed because function
     /// subtyping compares SIGNATURES, which no other field records.
     func_sig: Option<(Vec<String>, Vec<String>)>,
+    /// For an `array` type: is its ELEMENT declared `(mut …)`?
+    ///
+    /// ⛔ NOT DERIVABLE FROM `field_types`. `array_type` is
+    /// `"(" ~ "array" ~ (field_def | storage_type) ~ ")"`, and the common
+    /// spelling `(array (mut i64))` is the bare `storage_type` branch — no
+    /// `field_def` at all — so the field collector sees nothing and "no
+    /// element" is indistinguishable from "immutable element".
+    array_elem_mut: bool,
+    /// For an `array` type: its ELEMENT type spelling, `mut` stripped.
+    array_elem: Option<String>,
 }
 
 /// The rec-group id of every type in declaration order.
@@ -11437,6 +12539,35 @@ fn descriptor_type_table(module: &Pair<Rule>) -> (Vec<DescType>, HashMap<String,
                                         .collect::<Vec<String>>()
                                 })
                                 .unwrap_or_default();
+                            // The names, kept PARALLEL to `field_types`. A
+                            // `field_def` that carries an id declares exactly
+                            // one field (`id ~ storage_type`); the multi-field
+                            // spelling `(field i32 i32)` carries none, so each
+                            // of its storage types contributes a `None`.
+                            t.field_names = c
+                                .clone()
+                                .into_inner()
+                                .next()
+                                .map(|k| {
+                                    k.into_inner()
+                                        .filter(|f| f.as_rule() == Rule::field_def)
+                                        .flat_map(|f| {
+                                            let id = f
+                                                .clone()
+                                                .into_inner()
+                                                .find(|x| x.as_rule() == Rule::id)
+                                                .map(|x| x.as_str().to_string());
+                                            let n = f
+                                                .into_inner()
+                                                .filter(|x| x.as_rule() != Rule::id)
+                                                .count();
+                                            (0..n)
+                                                .map(|i| if i == 0 { id.clone() } else { None })
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .collect::<Vec<Option<String>>>()
+                                })
+                                .unwrap_or_default();
                             t.fields = t.field_types.len();
                             t.is_struct = c
                                 .clone()
@@ -11455,6 +12586,39 @@ fn descriptor_type_table(module: &Pair<Rule>) -> (Vec<DescType>, HashMap<String,
                                 Some("func") => Some("func"),
                                 _ => t.kind,
                             };
+                            if t.kind == Some("array") {
+                                // Read it off the `array_type` text: the
+                                // element is `(mut …)` or it is not.
+                                if let Some(at) = find_rule(&c, Rule::array_type) {
+                                    let inner = at
+                                        .as_str()
+                                        .trim()
+                                        .trim_start_matches('(')
+                                        .trim_start()
+                                        .strip_prefix("array")
+                                        .unwrap_or("")
+                                        .trim_start();
+                                    let inner = inner
+                                        .strip_prefix("(field")
+                                        .map(|r| r.trim_start())
+                                        .unwrap_or(inner);
+                                    t.array_elem_mut = inner.starts_with("(mut");
+                                    // Strip the `mut` wrapper so the element
+                                    // can be compared as an ordinary type.
+                                    let e = if t.array_elem_mut {
+                                        inner
+                                            .strip_prefix("(mut")
+                                            .map(|r| r.trim().trim_end_matches(')').trim())
+                                            .unwrap_or(inner)
+                                    } else {
+                                        inner
+                                    };
+                                    let e = e.trim().trim_end_matches(')').trim();
+                                    if !e.is_empty() {
+                                        t.array_elem = Some(e.to_string());
+                                    }
+                                }
+                            }
                             if t.kind == Some("func") {
                                 let mut ps = Vec::new();
                                 let mut rs = Vec::new();
@@ -12033,6 +13197,26 @@ enum Vt {
 /// than be treated as some default.
 fn abs_heap(name: &str) -> Option<&'static str> {
     Some(match name {
+        // ⛔ THE `-ref` ABBREVIATIONS ARE THE SAME HEAP TYPE. §2.3.4:
+        // `funcref` ≡ `(ref null func)`, `externref` ≡ `(ref null extern)`.
+        // `bare_heap_type` lists them FIRST in the grammar, so they reach here
+        // — and fell through to `None`, which `ref.null` reads as "concrete
+        // type I cannot resolve" and emits as `none`. `ref.null funcref` was
+        // therefore a nullref, in a different hierarchy from the funcref it
+        // spells. Both readers of this function want the same answer, so the
+        // abbreviation resolves here rather than at either call site.
+        "funcref" => "func",
+        "externref" => "extern",
+        // ⛔ `abs_subtype` ALREADY KNOWS `noexn <: exn`; ONLY THIS SIDE DID NOT
+        // KNOW THE SPELLING. So the hierarchy was right and unreachable:
+        // `parse_vt("exnref")` returned `None`, every exception-typing rule
+        // bailed, and the bail is invisible by construction. Same two-helper
+        // gap as `funcref`/`externref` above — fixed here, in the shared
+        // helper, rather than at either call site.
+        "exnref" => "exn",
+        "nullexnref" => "noexn",
+        "exn" => "exn",
+        "noexn" => "noexn",
         "any" => "any",
         "eq" => "eq",
         "i31" => "i31",
@@ -12068,6 +13252,25 @@ fn parse_vt(text: &str, names: &HashMap<String, usize>) -> Option<Vt> {
             exact: false,
             heap: Heap::Abs(abs_heap(heap)?),
         }));
+    }
+    // ⛔ THE RUNTIME'S ABBREVIATION TABLE STOPS BEFORE THE EXCEPTION HIERARCHY:
+    // it lists `anyref` … `nullexternref` and no `exnref`. That made this
+    // function answer `None` for a type the rest of the pass models perfectly —
+    // `abs_subtype` already knows `noexn <: exn` — so every exception-typing
+    // rule bailed, silently, on the spelling alone.
+    //
+    // Restricted to names ENDING IN `ref` on purpose. `abs_heap` also maps bare
+    // HEAP names (`any`, `struct`, …), and those are not val types: falling
+    // back on every name would make `(param any)` parse, which is a wrong
+    // answer where `None` was merely an absent one.
+    if t.ends_with("ref") {
+        if let Some(h) = abs_heap(t) {
+            return Some(Vt::Ref(RefT {
+                nullable: true,
+                exact: false,
+                heap: Heap::Abs(h),
+            }));
+        }
     }
     if !t.starts_with('(') {
         return None;
@@ -12118,6 +13321,15 @@ fn collect_params_results(p: &Pair<Rule>, ps: &mut Vec<String>, rs: &mut Vec<Str
             _ => collect_params_results(&c, ps, rs),
         }
     }
+}
+
+/// A field/element spelling with any `(mut …)` wrapper removed.
+fn strip_mut(s: &str) -> String {
+    let t = s.trim();
+    t.strip_prefix('(')
+        .and_then(|x| x.trim().strip_prefix("mut"))
+        .map(|x| x.trim().trim_end_matches(')').trim().to_string())
+        .unwrap_or_else(|| t.to_string())
 }
 
 /// Are two field spellings DEMONSTRABLY incompatible as sub/super?
@@ -12450,9 +13662,13 @@ fn split_immediates_and_operands<'a>(
 fn func_locals(
     f: &Pair<Rule>,
     names: &HashMap<String, usize>,
-) -> Option<(Vec<Vt>, HashMap<String, usize>)> {
+) -> Option<(Vec<Vt>, HashMap<String, usize>, Vec<bool>)> {
     let mut out = Vec::new();
     let mut by_name = HashMap::new();
+    // §3.4.1: a local starts INITIALIZED only if its type is defaultable.
+    // Parameters always are — they arrive with a value — so the two decl kinds
+    // answer differently and `collect_decls` keeps them distinguishable.
+    let mut inited: Vec<bool> = Vec::new();
     // ⛔ `param` is NOT a direct child of `func_field` — it sits inside
     // `typeuse` (`func_field = { … ~ typeuse ~ … ~ local* ~ instr* }`).
     // Iterating one level found no params at all, so every function typed as
@@ -12489,11 +13705,16 @@ fn func_locals(
         if let Some(n) = id {
             by_name.insert(n, out.len());
         }
+        let is_param = c.as_rule() == Rule::param;
         for d in decls {
-            out.push(parse_vt(&d, names)?);
+            let t = parse_vt(&d, names)?;
+            // Defaultable ⇔ not a non-nullable reference.
+            let defaultable = !matches!(&t, Vt::Ref(r) if !r.nullable);
+            inited.push(is_param || defaultable);
+            out.push(t);
         }
     }
-    Some((out, by_name))
+    Some((out, by_name, inited))
 }
 
 /// Operand typing for the descriptor instructions.
@@ -12513,7 +13734,7 @@ fn descriptor_operand_mismatch(
         if f.as_rule() != Rule::func_field {
             continue;
         }
-        let Some((locals, local_names)) = func_locals(&f, names) else {
+        let Some((locals, local_names, _)) = func_locals(&f, names) else {
             continue;
         };
         if let Some(m) = scan_descriptor_operands(&f, &locals, &local_names, types, names) {
@@ -12741,6 +13962,7 @@ struct ModuleCensus {
     // surfaced it.
     memories: (std::collections::HashSet<String>, usize),
     tables: (std::collections::HashSet<String>, usize),
+    tags: (std::collections::HashSet<String>, usize),
 }
 
 fn census_id(pair: &Pair<Rule>) -> Option<String> {
@@ -12809,6 +14031,12 @@ fn build_census(module: &Pair<Rule>, c: &mut ModuleCensus) {
                 }
                 c.tables.1 += 1;
             }
+            Rule::tag_field => {
+                if let Some(id) = census_id(&inner) {
+                    c.tags.0.insert(id);
+                }
+                c.tags.1 += 1;
+            }
             Rule::import_field => {
                 if let Some(desc) = inner
                     .clone()
@@ -12834,6 +14062,12 @@ fn build_census(module: &Pair<Rule>, c: &mut ModuleCensus) {
                                 c.tables.0.insert(n);
                             }
                             c.tables.1 += 1;
+                        }
+                        "tag" => {
+                            if let Some(n) = census_id(&desc) {
+                                c.tags.0.insert(n);
+                            }
+                            c.tags.1 += 1;
                         }
                         _ => {}
                     }
@@ -15930,10 +17164,22 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         .unwrap_or_else(|| __w.table_index_base);
                     let n = (argc + 1).min(stack.len());
                     let operands: Vec<Expression> = stack.split_off(stack.len() - n);
+                    // ⛔ THE DECLARED FUNCTYPE RIDES ALONG HERE TOO. The folded
+                    // arm appended it and this one did not, so every PLAIN
+                    // `call_indirect (type $t)` reached the VM with the three
+                    // counts and no type — and the runtime check, which needs
+                    // the type to tell `(func (result i32))` from
+                    // `(func (result i64))`, had nothing to compare and fell
+                    // back to arity. One instruction, two lowerings, one of
+                    // them fixed.
+                    let signature = typeuse_signature(__w, &pairs[i]);
+                    let canon = typeuse_canon_name(__w, &pairs[i]);
                     let mut call_args = vec![
                         Expression::int(argc as i64),
                         Expression::int(tableidx as i64),
                         Expression::int(expected_results as i64),
+                        Expression::string(&signature),
+                        Expression::string(&canon),
                     ];
                     call_args.extend(operands);
                     // `return_call_indirect` is the tail-call form: it emits the
@@ -16140,10 +17386,26 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                             .into_inner()
                             .filter(|c| folded_operand_child(c).is_some())
                             .count();
+                        // ⛔ A NESTED OPERAND IS NOT AN IMMEDIATE. `instr_arg`
+                        // wraps both, so without the `folded_operand_child`
+                        // exclusion — the one `push_folded_operand` has always
+                        // had — every nested operand was walked TWICE: once as
+                        // an argument expression here, and again by the loop
+                        // below that pushes it on the stack.
+                        //
+                        // A binary op survived that by accident (its extra
+                        // trailing arg is ignored and the first two happen to
+                        // be right). `call` does not: the duplicate shifts every
+                        // operand, so `(call $swap (call $swap …))` passed the
+                        // inner CALL as argument 1 and the spread temps after
+                        // it — the callee got three arguments and the inner
+                        // call was evaluated twice.
                         let immediate_args: Vec<Expression> = inner
                             .clone()
                             .into_inner()
-                            .filter(|c| c.as_rule() == Rule::instr_arg)
+                            .filter(|c| {
+                                c.as_rule() == Rule::instr_arg && folded_operand_child(c).is_none()
+                            })
                             .map(|c| walk_instr_arg_pair(__w, c, labels))
                             .collect::<Result<_, _>>()?;
                         let arity = get_instruction_arity(__w, &head, &immediate_args);
@@ -16894,6 +18156,17 @@ fn tmis<T>() -> R<T> {
     Err(Fail::Mismatch("type mismatch".to_string()))
 }
 
+/// "unknown global 1" for a numeric spelling, bare "unknown global" for a
+/// `$name`. The suite asserts the index where the source writes one, and the
+/// comparison is one-directional — a reason vaguer than the fixture does not
+/// discharge it.
+fn unknown_index_msg(kind: &str, key: &str) -> String {
+    match key.trim().parse::<u64>() {
+        Ok(n) => format!("unknown {kind} {n}"),
+        Err(_) => format!("unknown {kind}"),
+    }
+}
+
 /// The same failure, carrying WHAT disagreed.
 ///
 /// ⛔ THIS IS NOT COSMETIC AND IT DOES NOT WEAKEN THE ASSERTION. The suite's
@@ -16926,6 +18199,33 @@ fn vt_show(v: &Vt) -> String {
     }
 }
 
+/// Which types may serve as the target of the IMPLICIT-type dedup.
+///
+/// §6.6.4 lets an inline signature REUSE an existing type instead of defining a
+/// new one — but reuse means *the same type*, and type identity is
+/// ISO-RECURSIVE. A type declared inside a multi-member `(rec …)` is identified
+/// by its whole group, so a standalone inline signature is never the same type
+/// as one of its members however well the parameters and results line up.
+///
+/// ⛔ THIS IS WHAT `type-rec.wast` ASSERTS, AND A SIGNATURE MATCH CANNOT SEE IT.
+/// `(rec (type $ft (func)) (type (func)))` with a plain `(func $f)` gave `$f`
+/// the index of `$ft` by structural match, so `(global (ref $ft) (ref.func $f))`
+/// compared a type against itself and typed clean. The three fixtures differ
+/// from their valid neighbours in the REC GROUP alone.
+///
+/// A standalone `(type …)` is its own singleton group, so the common case is
+/// unaffected.
+fn implicit_dedup_eligible(types: &[DescType]) -> Vec<bool> {
+    let mut size: HashMap<usize, usize> = HashMap::new();
+    for t in types {
+        *size.entry(t.rec_group).or_insert(0) += 1;
+    }
+    types
+        .iter()
+        .map(|t| size.get(&t.rec_group).copied().unwrap_or(1) == 1)
+        .collect()
+}
+
 /// Everything a body is typed against: the module's index spaces.
 #[derive(Default)]
 struct TypeCtx {
@@ -16937,16 +18237,45 @@ struct TypeCtx {
     func_names: HashMap<String, usize>,
     /// Per function index: the type index it was declared with, for `ref.func`.
     func_types: Vec<Option<usize>>,
-    globals: Vec<Vt>,
+    /// ⛔ `Option`, NOT `Vt::Bottom`. Bottom is the POLYMORPHIC bottom — a
+    /// subtype of everything, produced by `unreachable` — and `pop_expect`
+    /// short-circuits on it in BOTH directions. Reusing it for "this spelling
+    /// did not parse" gave one sentinel two meanings, so an unparseable
+    /// declared type silently accepted every value instead of abstaining.
+    /// `None` is the honest answer and its consumers bail on it.
+    globals: Vec<Option<Vt>>,
+    /// Per global index: whether it was declared `(mut t)`.
+    ///
+    /// ⛔ THIS RIDES THE INDEX SPACE ON PURPOSE. The rule already existed as a
+    /// module-level scan keyed on the global's NAME, which meant
+    /// `global.set $g` was checked and `global.set 0` was not, and an IMPORTED
+    /// global — which occupies the same index space but is not a
+    /// `global_field` — was never collected at all. Both spellings resolve
+    /// through `global_names`/`globals` here, so both are checked by
+    /// construction.
+    global_mut: Vec<bool>,
+    /// How many globals are IMPORTED — the prefix of the index space a
+    /// constant expression is allowed to read. See `Tv::global_limit`.
+    imported_globals: usize,
     global_names: HashMap<String, usize>,
     /// Per memory: its address type. memory64 declares `i64`; the default is
     /// `i32`, and it decides the operand type of every load, store and
     /// `memory.*` on that memory.
     mem_addr: Vec<&'static str>,
-    tables: Vec<Vt>,
+    tables: Vec<Option<Vt>>,
     table_addr: Vec<&'static str>,
     table_names: HashMap<String, usize>,
     tags: Vec<Vec<Vt>>,
+    tag_names: HashMap<String, usize>,
+    /// Per element segment: its declared reference type.
+    ///
+    /// ⛔ A SEGMENT IS NOT ITS TABLE. `array.init_elem` compares the SEGMENT's
+    /// type against the array's element type, and an active segment's table
+    /// says nothing about a passive one — which is the only kind the fixtures
+    /// use. `None` where the spelling did not parse, so the check abstains
+    /// rather than guessing.
+    elem_types: Vec<Option<Vt>>,
+    elem_names: HashMap<String, usize>,
 }
 
 /// One flattened instruction. Folded and plain source forms both reduce to
@@ -16958,6 +18287,10 @@ struct FlatInstr<'a> {
     /// and the `(result …)` of a typed `select`.
     btypes: Vec<Pair<'a, Rule>>,
     label: Option<String>,
+    /// `try_table`'s `try_clause*`. Each names a branch target, and the
+    /// `catch`/`catch_ref` forms name a tag as well — the values the branch
+    /// carries come from BOTH, so the clause has to travel with the frame.
+    clauses: Vec<Pair<'a, Rule>>,
 }
 
 /// A control frame, per the spec's validation algorithm.
@@ -16968,6 +18301,14 @@ struct Ctrl {
     end: Vec<Vt>,
     height: usize,
     unreachable: bool,
+    /// The local-init state when this frame OPENED.
+    ///
+    /// ⛔ INITS MADE INSIDE A STRUCTURED INSTRUCTION DO NOT ESCAPE IT, and
+    /// `local_init.wast` pins that harder than it looks: setting the local in
+    /// BOTH the `then` and the `else` and reading it after the `if` is still
+    /// "uninitialized local". A join over the branches — the intuitive reading
+    /// — accepts that module and fails the fixture.
+    inited_entry: Vec<bool>,
 }
 
 struct Tv<'a> {
@@ -16976,9 +18317,57 @@ struct Tv<'a> {
     ctrls: Vec<Ctrl>,
     locals: Vec<Vt>,
     local_names: HashMap<String, usize>,
+    /// Per local: has it been assigned on every path to here?
+    inited: Vec<bool>,
+    /// How much of the global index space this expression may read.
+    ///
+    /// §3.4.10 types a module's constant expressions in a context whose
+    /// globals are the IMPORTED ones only, so `(global $a i32 (global.get $b))`
+    /// is "unknown global" even when `$b` is declared — before OR after it.
+    /// The suite pins both halves: every valid init-expr `global.get` in the
+    /// corpus names an import, and a table initializer reading a defined
+    /// global is asserted invalid.
+    ///
+    /// `None` in a function body, where the whole space is visible.
+    global_limit: Option<usize>,
 }
 
 impl<'a> Tv<'a> {
+    /// The constant instructions, per §3.4.10 plus the extended-const and GC
+    /// additions that WASM 3.0 folds in.
+    ///
+    /// ⛔ `i32.add`/`sub`/`mul` ARE CONSTANT NOW, and the suite relies on it:
+    /// `elem.wast:1062` and `data.wast:180` are VALID modules whose offsets
+    /// are `(i32.add (i32.const 1) (i32.const 2))`. Writing the pre-3.0 set
+    /// here would have rejected them — the direction that costs working
+    /// modules rather than a missed diagnostic. `i32.ctz`, which the suite
+    /// asserts invalid in the same position, is the line: arithmetic that
+    /// extended-const names, nothing else.
+    fn is_const_instr(name: &str) -> bool {
+        name.ends_with(".const")
+            || matches!(
+                name,
+                "end"
+                    | "ref.null"
+                    | "ref.func"
+                    | "global.get"
+                    | "ref.i31"
+                    | "struct.new"
+                    | "struct.new_default"
+                    | "array.new"
+                    | "array.new_default"
+                    | "array.new_fixed"
+                    | "any.convert_extern"
+                    | "extern.convert_any"
+                    | "i32.add"
+                    | "i32.sub"
+                    | "i32.mul"
+                    | "i64.add"
+                    | "i64.sub"
+                    | "i64.mul"
+            )
+    }
+
     // ── the spec's algorithm, verbatim ───────────────────────────────────
     //
     // ⛔ `pop_val` is the detail that decides `unreached-invalid.wast` (117
@@ -17035,6 +18424,7 @@ impl<'a> Tv<'a> {
         self.ctrls.push(Ctrl {
             op,
             label,
+            inited_entry: self.inited.clone(),
             start: start.clone(),
             end,
             height,
@@ -17428,6 +18818,7 @@ fn build_type_ctx(module: &Pair<Rule>) -> TypeCtx {
     // (param i32))` in that same module adds nothing — it REUSES type 0 — so
     // appending unconditionally would shift every later index by one and
     // mistype the bodies that name them.
+    let eligible = implicit_dedup_eligible(&ctx.types);
     let mut inline_sigs: Vec<Pair<Rule>> = Vec::new();
     collect_typeuses(module, &mut inline_sigs);
     for tu in inline_sigs {
@@ -17436,12 +18827,14 @@ fn build_type_ctx(module: &Pair<Rule>) -> TypeCtx {
             continue;
         }
         let Some(sig) = sig_from_params(&tu, &names) else { continue };
-        if sig.params.is_empty() && sig.results.is_empty() {
-            continue;
-        }
-        let dup = ctx.type_sigs.iter().any(|t| {
-            t.as_ref()
-                .is_some_and(|t| t.params == sig.params && t.results == sig.results)
+        // ⛔ `(func $f)` DEFINES THE TYPE `[] -> []` LIKE ANY OTHER SIGNATURE.
+        // Skipping the empty one left such a function with no type index at
+        // all, so `ref.func $f` bailed and the whole init expression went
+        // unvalidated — an absent answer that looked like conservatism.
+        let dup = ctx.type_sigs.iter().enumerate().any(|(i, t)| {
+            eligible.get(i).copied().unwrap_or(true)
+                && t.as_ref()
+                    .is_some_and(|t| t.params == sig.params && t.results == sig.results)
         });
         if !dup {
             ctx.type_sigs.push(Some(sig));
@@ -17475,8 +18868,30 @@ fn build_type_ctx(module: &Pair<Rule>) -> TypeCtx {
             _ => {}
         }
     }
+    // Everything in the global index space so far is an IMPORT, and that
+    // boundary is the whole context a constant expression may read.
+    ctx.imported_globals = ctx.globals.len();
     for field in defined {
         add_entity(&mut ctx, &field, &names);
+    }
+
+    // Pass 3 — element segments. They occupy their own index space, in
+    // document order, and cannot be imported, so a single walk is the whole
+    // rule. The `func`-index spelling `(elem $e func $f …)` has no written
+    // reftype and means `funcref`.
+    for field in module_fields(module) {
+        if field.as_rule() != Rule::elem_field {
+            continue;
+        }
+        let idx = ctx.elem_types.len();
+        if let Some(id) = find_rule(&field, Rule::id) {
+            ctx.elem_names.insert(id.as_str().to_string(), idx);
+        }
+        let vt = match find_rule(&field, Rule::ref_val_type) {
+            Some(rt) => parse_vt(rt.as_str().trim(), &names),
+            None => parse_vt("funcref", &names),
+        };
+        ctx.elem_types.push(vt);
     }
     ctx
 }
@@ -17500,11 +18915,18 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
             // Pass 1b has already materialised those types, so the index is
             // recoverable by structural match — the same match the spec's own
             // dedup uses to decide whether to append in the first place.
+            // ⛔ THE RECOVERY MUST USE THE SAME ELIGIBILITY AS PASS 1B'S DEDUP.
+            // Pass 1b appends a fresh implicit type when the only structural
+            // match sits inside a rec group; if this side still matched it, the
+            // function would be handed the group member's index and the two
+            // would agree again — the conflation restored one line later.
+            let elig = implicit_dedup_eligible(&ctx.types);
             let ti = sig.as_ref().and_then(|(i, _)| *i).or_else(|| {
                 let s = &sig.as_ref()?.1;
-                ctx.type_sigs.iter().position(|t| {
-                    t.as_ref()
-                        .is_some_and(|t| t.params == s.params && t.results == s.results)
+                ctx.type_sigs.iter().enumerate().position(|(i, t)| {
+                    elig.get(i).copied().unwrap_or(true)
+                        && t.as_ref()
+                            .is_some_and(|t| t.params == s.params && t.results == s.results)
                 })
             });
             ctx.func_types.push(ti);
@@ -17521,11 +18943,19 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
                         .unwrap_or(inner);
                     parse_vt(spelling, names)
                 })
-                .unwrap_or(Vt::Bottom);
+                ;
+            let is_mut = find_rule(p, Rule::global_type)
+                .is_some_and(|g| {
+                    g.as_str()
+                        .trim()
+                        .strip_prefix('(')
+                        .is_some_and(|x| x.trim().starts_with("mut"))
+                });
             if let Some(n) = id {
                 ctx.global_names.insert(n, ctx.globals.len());
             }
             ctx.globals.push(vt);
+            ctx.global_mut.push(is_mut);
         }
         "memory" => {
             // ⛔ `addr_type` is a bare literal, so it never reaches the parse
@@ -17551,7 +18981,7 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
                         .last()
                 })
                 .and_then(|c| parse_vt(c.as_str().trim(), names))
-                .unwrap_or(Vt::Bottom);
+                ;
             if let Some(n) = id {
                 ctx.table_names.insert(n, ctx.tables.len());
             }
@@ -17559,10 +18989,28 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
             ctx.tables.push(elem);
         }
         "tag" => {
-            let params = find_rule(p, Rule::typeuse)
-                .and_then(|tu| sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, names))
-                .map(|(_, s)| s.params)
+            // ⛔ A TAG'S SIGNATURE IS A `tag_type`, NOT A `typeuse`. This read
+            // `Rule::typeuse` and found nothing, so every tag was recorded
+            // with EMPTY params — `throw $e (i32.const 1)` then had nothing to
+            // check against. `tag_type` is `(func param* result*)`,
+            // `(type $t) param* result*`, or a bare `param* result*`, so the
+            // `(type …)` spelling still has to go through the type table.
+            let tt = find_rule(p, Rule::tag_type);
+            let params = tt
+                .as_ref()
+                .and_then(|t| {
+                    find_rule(t, Rule::index)
+                        .and_then(|i| resolve_wast_index(i.as_str().trim(), &ctx.type_names))
+                        .and_then(|i| ctx.type_sigs.get(i).cloned().flatten())
+                        .map(|sig| sig.params)
+                })
+                .or_else(|| tt.as_ref().and_then(|t| {
+                    sig_from_params(t, names).map(|s| s.params)
+                }))
                 .unwrap_or_default();
+            if let Some(n) = id {
+                ctx.tag_names.insert(n, ctx.tags.len());
+            }
             ctx.tags.push(params);
         }
         _ => {}
@@ -17654,7 +19102,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                     .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
                         && !s.starts_with("(param"))
                     .collect();
-                out.push(FlatInstr { head, imms, btypes, label });
+                out.push(FlatInstr { head, imms, btypes, label, clauses: vec![] });
             }
             Rule::folded_instr => {
                 let head = head_keyword(&p);
@@ -17693,6 +19141,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                             imms: vec![],
                             btypes,
                             label,
+                            clauses: vec![],
                         });
                         flatten_instrs(body, out)?;
                         out.push(FlatInstr {
@@ -17700,6 +19149,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                             imms: vec![],
                             btypes: vec![],
                             label: None,
+                            clauses: vec![],
                         });
                     }
                     "if" => {
@@ -17718,6 +19168,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                             imms: vec![],
                             btypes,
                             label,
+                            clauses: vec![],
                         });
                         for c in p.clone().into_inner() {
                             match c.as_rule() {
@@ -17732,6 +19183,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                                         imms: vec![],
                                         btypes: vec![],
                                         label: None,
+                                        clauses: vec![],
                                     });
                                     let b: Vec<Pair<Rule>> =
                                         c.into_inner().filter(|x| x.as_rule() == Rule::instr).collect();
@@ -17745,11 +19197,48 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                             imms: vec![],
                             btypes: vec![],
                             label: None,
+                            clauses: vec![],
                         });
                     }
-                    // Exception handling has its own frame kinds and its own
-                    // fixtures; out of scope for this pass.
-                    "try_table" | "try" => return None,
+                    // ⛔ `try_table` OPENS AN ORDINARY BLOCK. Bailing here
+                    // abandoned the whole function, so every one of
+                    // `try_table.wast`'s nine assertions went undetected — and
+                    // two of them (`(try_table (result i32))` with an empty
+                    // body) are plain block-arity failures that need no
+                    // exception machinery at all. The handlers are branch
+                    // targets, not frame kinds: the clauses ride along and the
+                    // body types against a normal block frame.
+                    //
+                    // The legacy `try`/`catch` shape is a different instruction
+                    // with a different frame; it still abstains.
+                    "try_table" => {
+                        let clauses: Vec<Pair<Rule>> = p
+                            .clone()
+                            .into_inner()
+                            .filter(|c| c.as_rule() == Rule::try_clause)
+                            .collect();
+                        let body: Vec<Pair<Rule>> = p
+                            .clone()
+                            .into_inner()
+                            .filter(|c| c.as_rule() == Rule::instr)
+                            .collect();
+                        out.push(FlatInstr {
+                            head: "try_table".into(),
+                            imms: vec![],
+                            btypes,
+                            label,
+                            clauses,
+                        });
+                        flatten_instrs(body, out)?;
+                        out.push(FlatInstr {
+                            head: "end".into(),
+                            imms: vec![],
+                            btypes: vec![],
+                            label: None,
+                            clauses: vec![],
+                        });
+                    }
+                    "try" => return None,
                     _ => {
                         let (imms, ops) = split_immediates_and_operands(&p);
                         flatten_instrs(ops, out)?;
@@ -17758,7 +19247,7 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                             .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
                                 && !s.starts_with("(param"))
                             .collect();
-                        out.push(FlatInstr { head, imms, btypes, label });
+                        out.push(FlatInstr { head, imms, btypes, label, clauses: vec![] });
                     }
                 }
             }
@@ -17830,7 +19319,9 @@ impl<'a> Tv<'a> {
             .first()
             .and_then(|s| resolve_wast_index(s, &self.ctx.table_names))
             .unwrap_or(0);
-        let elem = self.ctx.tables.get(idx).cloned().ok_or(Fail::Bail)?;
+        // A table whose element type did not parse ABSTAINS. It must not
+        // fall through to a bottom that accepts anything.
+        let elem = self.ctx.tables.get(idx).cloned().flatten().ok_or(Fail::Bail)?;
         let addr = Vt::Num(self.ctx.table_addr.get(idx).copied().ok_or(Fail::Bail)?);
         Ok((idx, elem, addr))
     }
@@ -17856,6 +19347,74 @@ impl<'a> Tv<'a> {
         self.locals.get(i).cloned().ok_or(Fail::Bail)
     }
 
+    /// The INDEX behind a local's spelling — same two-convention resolution as
+    /// `local_at`, which returns only the type.
+    fn local_index(&self, s: &str) -> R<usize> {
+        let s = s.trim();
+        match s.strip_prefix('$') {
+            Some(bare) => self
+                .local_names
+                .get(bare)
+                .or_else(|| self.local_names.get(s))
+                .copied()
+                .ok_or(Fail::Bail),
+            None => s.parse().map_err(|_| Fail::Bail),
+        }
+    }
+
+    /// §3.4.1: reading a local that is not yet initialized on every path.
+    ///
+    /// ⛔ SKIPPED IN UNREACHABLE CODE. After `unreachable` the stack is
+    /// polymorphic and the path is dead; enforcing initialization there would
+    /// reject modules the spec accepts, and this rule runs over every module
+    /// that compiles, not only the ones asserted invalid.
+    fn read_local(&mut self, s: &str) -> R<()> {
+        let i = self.local_index(s)?;
+        let dead = self.ctrls.last().is_some_and(|f| f.unreachable);
+        if !dead && !self.inited.get(i).copied().unwrap_or(true) {
+            return Err(Fail::Mismatch("uninitialized local".to_string()));
+        }
+        Ok(())
+    }
+
+    fn write_local(&mut self, s: &str) -> R<()> {
+        let i = self.local_index(s)?;
+        if let Some(f) = self.inited.get_mut(i) {
+            *f = true;
+        }
+        Ok(())
+    }
+
+    /// The type index an instruction's first immediate names.
+    fn type_index(&self, imm: Option<&String>) -> R<usize> {
+        resolve_wast_index(imm.ok_or(Fail::Bail)?, &self.ctx.type_names).ok_or(Fail::Bail)
+    }
+
+    /// A struct's field types, in declaration order.
+    fn field_types(&self, t: &DescType) -> R<Vec<Vt>> {
+        t.field_types
+            .iter()
+            .map(|f| {
+                let bare = strip_mut(f);
+                if matches!(bare.as_str(), "i8" | "i16") {
+                    // Packed storage is written as i32.
+                    Ok(Vt::Num("i32"))
+                } else {
+                    parse_vt(&bare, &self.ctx.type_names).ok_or(Fail::Bail)
+                }
+            })
+            .collect()
+    }
+
+    /// An array's element type as a value type (packed storage reads as i32).
+    fn array_elem_vt(&self, t: &DescType) -> R<Vt> {
+        let raw = t.array_elem.clone().ok_or(Fail::Bail)?;
+        if matches!(raw.as_str(), "i8" | "i16") {
+            return Ok(Vt::Num("i32"));
+        }
+        parse_vt(&raw, &self.ctx.type_names).ok_or(Fail::Bail)
+    }
+
     fn is_ref(v: &Vt) -> bool {
         matches!(v, Vt::Ref(_) | Vt::Bottom)
     }
@@ -17866,6 +19425,15 @@ impl<'a> Tv<'a> {
         let head = ins.head.split("@@").next().unwrap_or(&ins.head).to_string();
         let name = head.as_str();
         let imms = &ins.imms;
+
+        // §3.4.10: a constant expression admits only the constant
+        // instructions. `(global i32 (i32.ctz (i32.const 0)))` types
+        // perfectly and is still invalid, so this cannot fall out of the
+        // typing rules — it is a separate, syntactic admissibility check, and
+        // it runs only where `global_limit` says we are in an init expression.
+        if self.global_limit.is_some() && !Self::is_const_instr(name) {
+            return Err(Fail::Mismatch("constant expression required".to_string()));
+        }
 
         match name {
             "nop" => Ok(()),
@@ -17928,16 +19496,80 @@ impl<'a> Tv<'a> {
                 self.push_ctrl("if", ins.label.clone(), p, r);
                 Ok(())
             }
+            // §3.4.8.19: `try_table bt (catch …)* instr*` is an ordinary block
+            // whose handlers are BRANCHES. Each clause carries a fixed list to
+            // its target label: a tag's parameters, `catch_ref` those plus the
+            // caught `exnref`, `catch_all` nothing, `catch_all_ref` the exnref.
+            //
+            // ⛔ THE CLAUSE LABELS RESOLVE IN THE *OUTER* CONTEXT — checked
+            // BEFORE the frame is pushed. Fixture #3 is the one that decides
+            // it: `(func (result exnref) (try_table (catch 0 0)) (unreachable))`
+            // is invalid only if label 0 is the FUNCTION, whose result is
+            // `exnref`, against a `catch` that carries nothing. Resolving it
+            // against the try_table's own frame — whose result is empty — makes
+            // that module type clean.
+            "try_table" => {
+                let (p, r) = self.block_sig(&ins.btypes)?;
+                let exn = parse_vt("exnref", &self.ctx.type_names).ok_or(Fail::Bail)?;
+                for cl in &ins.clauses {
+                    let kind = head_keyword(cl);
+                    let ids: Vec<String> = cl
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::index)
+                        .map(|c| c.as_str().trim().to_string())
+                        .collect();
+                    let (tag_key, label_key) = match kind.as_str() {
+                        "catch" | "catch_ref" => (ids.first(), ids.get(1)),
+                        _ => (None, ids.first()),
+                    };
+                    let mut carried: Vec<Vt> = Vec::new();
+                    if let Some(k) = tag_key {
+                        let ti = resolve_wast_index(k, &self.ctx.tag_names)
+                            .filter(|i| *i < self.ctx.tags.len())
+                            .ok_or_else(|| Fail::Mismatch(unknown_index_msg("tag", k)))?;
+                        carried.extend(self.ctx.tags[ti].iter().cloned());
+                    }
+                    if matches!(kind.as_str(), "catch_ref" | "catch_all_ref") {
+                        carried.push(exn.clone());
+                    }
+                    let l = self.label_index(label_key.ok_or(Fail::Bail)?)?;
+                    let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                    let agrees = lt.len() == carried.len()
+                        && carried
+                            .iter()
+                            .zip(lt.iter())
+                            .all(|(g, w)| vt_subtype(g, w, &self.ctx.types));
+                    if !agrees {
+                        let show = |vs: &[Vt]| {
+                            vs.iter().map(vt_show).collect::<Vec<_>>().join(" ")
+                        };
+                        return tmis_d(format!(
+                            "handler carries [{}] but label takes [{}]",
+                            show(&carried),
+                            show(&lt)
+                        ));
+                    }
+                }
+                self.pop_vals(&p)?;
+                self.push_ctrl("block", ins.label.clone(), p, r);
+                Ok(())
+            }
             "else" => {
                 let f = self.pop_ctrl()?;
                 if f.op != "if" {
                     return tmis();
                 }
+                // The `else` arm starts from the state at the `if`, not from
+                // whatever the `then` arm initialized — `local_init.wast`'s
+                // uninit-in-else fixture is exactly that module.
+                self.inited = f.inited_entry.clone();
                 self.push_ctrl("else", f.label.clone(), f.start, f.end);
                 Ok(())
             }
             "end" => {
                 let f = self.pop_ctrl()?;
+                self.inited = f.inited_entry.clone();
                 // ⛔ AN `if` WITH NO `else` IS THE IDENTITY ON ITS PARAMETERS,
                 // so it is only well typed when they ARE its results. Without
                 // this an `(if (result i32) (then …))` types clean.
@@ -17948,6 +19580,61 @@ impl<'a> Tv<'a> {
                 }
                 self.push_vals(&f.end);
                 Ok(())
+            }
+            // §3.3.8: `throw x` pops the tag's parameters and is then
+            // unreachable — it never falls through, so the rest of the block
+            // types against the polymorphic stack.
+            "throw" => {
+                let key = imms.first().ok_or(Fail::Bail)?;
+                let i = resolve_wast_index(key, &self.ctx.tag_names)
+                    .filter(|i| *i < self.ctx.tags.len())
+                    .ok_or_else(|| Fail::Mismatch(unknown_index_msg("tag", key)))?;
+                let params = self.ctx.tags[i].clone();
+                // ⛔ THE SUITE'S ONLY TWO DETAILED `type mismatch` WORDINGS
+                // ARE BOTH HERE, and the comparison is one-directional — our
+                // reason must CONTAIN the fixture's text, so the generic
+                // "type mismatch: stack underflow in block" does NOT discharge
+                // `"type mismatch: instruction requires [i32] but stack has []"`.
+                //
+                // Skipped once the frame is unreachable: the polymorphic
+                // bottom legitimately satisfies any requirement there, and
+                // reporting a mismatch would reject valid code after a `br`.
+                let f = self.ctrls.last().ok_or(Fail::Bail)?;
+                if !f.unreachable {
+                    let have: Vec<Vt> = self.vals[f.height..].to_vec();
+                    let disagrees = have.len() < params.len()
+                        || !params.iter().rev().zip(have.iter().rev()).all(|(want, got)| {
+                            matches!(got, Vt::Bottom)
+                                || matches!(want, Vt::Bottom)
+                                || vt_subtype(got, want, &self.ctx.types)
+                        });
+                    if disagrees {
+                        let show = |vs: &[Vt]| {
+                            vs.iter().map(vt_show).collect::<Vec<_>>().join(" ")
+                        };
+                        return Err(Fail::Mismatch(format!(
+                            "type mismatch: instruction requires [{}] but stack has [{}]",
+                            show(&params),
+                            show(&have)
+                        )));
+                    }
+                }
+                self.pop_vals(&params)?;
+                self.unreachable()
+            }
+            // §3.4.8.6: `throw_ref` re-raises an exception it is HANDED, so it
+            // pops one `exnref` and is stack-polymorphic after — exactly the
+            // shape of `throw`, minus the tag.
+            //
+            // ⛔ THE OPERAND IS THE WHOLE RULE. Both fixtures spell it with an
+            // EMPTY stack (`(func (throw_ref))`, `(func (block (throw_ref))))`,
+            // so an arm that only went unreachable would discharge neither: the
+            // pop is what rejects them, and going unreachable first would eat
+            // the very mismatch being asserted.
+            "throw_ref" => {
+                let exn = parse_vt("exnref", &self.ctx.type_names).ok_or(Fail::Bail)?;
+                self.pop_expect(&exn)?;
+                self.unreachable()
             }
             "br" => {
                 let l = self.label_index(imms.first().ok_or(Fail::Bail)?)?;
@@ -18038,34 +19725,64 @@ impl<'a> Tv<'a> {
 
             // ── variables ────────────────────────────────────────────────
             "local.get" => {
-                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                let key = imms.first().ok_or(Fail::Bail)?;
+                let t = self.local_at(key)?;
+                self.read_local(key)?;
                 self.push_val(t);
                 Ok(())
             }
             "local.set" => {
-                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                let key = imms.first().ok_or(Fail::Bail)?;
+                let t = self.local_at(key)?;
                 self.pop_expect(&t)?;
+                self.write_local(key)?;
                 Ok(())
             }
             "local.tee" => {
-                let t = self.local_at(imms.first().ok_or(Fail::Bail)?)?;
+                // ⛔ A `tee` WRITES BEFORE IT READS BACK. Its result is the
+                // value it just stored, so it INITIALIZES the local — checking
+                // it as a read would reject `(local.tee $x v)` on a local that
+                // this very instruction makes valid.
+                let key = imms.first().ok_or(Fail::Bail)?;
+                let t = self.local_at(key)?;
                 self.pop_expect(&t)?;
+                self.write_local(key)?;
                 self.push_val(t);
                 Ok(())
             }
             "global.get" | "global.set" => {
-                let i = resolve_wast_index(
-                    imms.first().ok_or(Fail::Bail)?,
-                    &self.ctx.global_names,
-                )
-                .ok_or(Fail::Bail)?;
-                let t = self.ctx.globals.get(i).cloned().ok_or(Fail::Bail)?;
-                if matches!(t, Vt::Bottom) {
-                    return Err(Fail::Bail);
+                let key = imms.first().ok_or(Fail::Bail)?;
+                // ⛔ ONE `None`, TWO MEANINGS. An index that does not resolve
+                // used to bail — indistinguishable from "this spelling was not
+                // understood" — so `(global.get 1)` in a one-global module
+                // proved nothing and every "unknown global" fixture went
+                // unanswered. Out of range is a DIAGNOSIS, not an abstention.
+                let i = resolve_wast_index(key, &self.ctx.global_names)
+                    .filter(|i| *i < self.ctx.globals.len())
+                    .ok_or_else(|| Fail::Mismatch(unknown_index_msg("global", key)))?;
+                if self.global_limit.is_some_and(|n| i >= n) {
+                    return Err(Fail::Mismatch(unknown_index_msg("global", key)));
                 }
+                // A constant expression may read an IMMUTABLE global only, and
+                // the suite gives a mutable one the constant-expression
+                // wording rather than "immutable global" — the same import is
+                // perfectly legal to read from a function body.
+                if self.global_limit.is_some()
+                    && self.ctx.global_mut.get(i).copied().unwrap_or(false)
+                {
+                    return Err(Fail::Mismatch("constant expression required".to_string()));
+                }
+                let t = self.ctx.globals.get(i).cloned().flatten().ok_or(Fail::Bail)?;
                 if name == "global.get" {
                     self.push_val(t);
                 } else {
+                    // §3.3.5: the target must be mutable. Checked BEFORE the
+                    // operand is popped — a `global.set` on an immutable
+                    // global whose operand also disagrees asserts
+                    // "immutable global", not "type mismatch".
+                    if !self.ctx.global_mut.get(i).copied().unwrap_or(true) {
+                        return Err(Fail::Mismatch("immutable global".to_string()));
+                    }
                     self.pop_expect(&t)?;
                 }
                 Ok(())
@@ -18149,6 +19866,63 @@ impl<'a> Tv<'a> {
                 }
                 Ok(())
             }
+            // §3.4.8.10-11: `br_on_cast l rt1 rt2` takes an `rt1`, branches to
+            // `l` carrying `rt2` when the cast succeeds, and falls through with
+            // the DIFFERENCE `rt1\rt2`. `br_on_cast_fail` swaps those two: it
+            // branches with the difference and falls through with `rt2`.
+            //
+            // ⛔ `rt2 <: rt1` IS A SIDE CONDITION, NOT A CONSEQUENCE. Three of
+            // the twelve fixtures are invalid for that reason alone — casting
+            // `eqref` to `anyref` widens, and no stack shape reveals it — so it
+            // has to be asserted before any operand is touched.
+            "br_on_cast" | "br_on_cast_fail" => {
+                let l = self.label_index(imms.first().ok_or(Fail::Bail)?)?;
+                let rt1 = parse_vt(imms.get(1).ok_or(Fail::Bail)?, &self.ctx.type_names)
+                    .ok_or(Fail::Bail)?;
+                let rt2 = parse_vt(imms.get(2).ok_or(Fail::Bail)?, &self.ctx.type_names)
+                    .ok_or(Fail::Bail)?;
+                let (Vt::Ref(r1), Vt::Ref(r2)) = (&rt1, &rt2) else {
+                    return tmis_d("br_on_cast needs two reference types".to_string());
+                };
+                if !vt_subtype(&rt2, &rt1, &self.ctx.types) {
+                    return tmis_d(format!(
+                        "{} is not a subtype of {}",
+                        vt_show(&rt2),
+                        vt_show(&rt1)
+                    ));
+                }
+                // §4.2.9.2: `(ref null1 ht1) \ (ref null2 ht2)` keeps ht1 and
+                // loses nullability exactly when rt2 could have absorbed the
+                // null — i.e. when rt2 is itself nullable.
+                let diff = Vt::Ref(RefT {
+                    nullable: r1.nullable && !r2.nullable,
+                    ..r1.clone()
+                });
+                let (carried, falls) = if name == "br_on_cast" {
+                    (rt2.clone(), diff)
+                } else {
+                    (diff, rt2.clone())
+                };
+                let lt = Self::label_types(&self.ctrls[self.ctrls.len() - 1 - l]).to_vec();
+                let mut want = lt.clone();
+                let slot = want
+                    .pop()
+                    .ok_or_else(|| Fail::Mismatch("type mismatch: label takes no value".into()))?;
+                if !vt_subtype(&carried, &slot, &self.ctx.types) {
+                    return tmis_d(format!(
+                        "branch carries {} but label takes {}",
+                        vt_show(&carried),
+                        vt_show(&slot)
+                    ));
+                }
+                // The operand sits ON TOP of the `t*` the label also takes, so
+                // it comes off first; `t*` stays put on the fall-through path.
+                self.pop_expect(&rt1)?;
+                self.pop_vals(&want)?;
+                self.push_vals(&want);
+                self.push_val(falls);
+                Ok(())
+            }
 
             // ── memory ───────────────────────────────────────────────────
             "memory.size" => {
@@ -18223,19 +19997,420 @@ impl<'a> Tv<'a> {
                 Ok(())
             }
             "table.copy" => {
-                // Two tableidx immediates, in a position the peel cannot tell
-                // from one — table 0 is what both spellings share.
-                let (_, _, a) = self.table_of(&[])?;
-                self.pop_expect(&a)?;
-                self.pop_expect(&a)?;
-                self.pop_expect(&a)?;
+                // ⛔ THE TWO TABLES MAY HAVE DIFFERENT ADDRESS WIDTHS.
+                // `table.copy $t32 $t64` takes an i32 destination index and an
+                // i64 source index; collapsing both to table 0 typed the source
+                // against the wrong width. With TWO immediates written the
+                // positions are unambiguous — dest first, then source — and
+                // the length is the NARROWER of the two.
+                let ids: Vec<String> = imms
+                    .iter()
+                    .filter(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                    .cloned()
+                    .collect();
+                // ⛔ THE ELEMENT TYPES MUST AGREE TOO, and this arm only ever
+                // compared ADDRESS WIDTHS — so `table.copy $funcs $externs`
+                // typed clean. `table_of` returned the element type all along;
+                // nothing read it.
+                let (dst, src) = if ids.len() >= 2 {
+                    let (_, de, da) = self.table_of(&ids[0..1])?;
+                    let (_, se, sa) = self.table_of(&ids[1..2])?;
+                    if !vt_subtype(&se, &de, &self.ctx.types) {
+                        return tmis_d(format!(
+                            "table element {} is not a subtype of {}",
+                            vt_show(&se),
+                            vt_show(&de)
+                        ));
+                    }
+                    (da, sa)
+                } else {
+                    let a = self.table_of(&[])?.2;
+                    (a.clone(), a)
+                };
+                let len = if matches!(dst, Vt::Num("i32")) || matches!(src, Vt::Num("i32")) {
+                    Vt::Num("i32")
+                } else {
+                    dst.clone()
+                };
+                self.pop_expect(&len)?;
+                self.pop_expect(&src)?;
+                self.pop_expect(&dst)?;
                 Ok(())
             }
             "table.init" => {
-                let (_, _, a) = self.table_of(&[])?;
+                // `table.init $t $el` names a TABLE then an ELEMENT SEGMENT,
+                // and the segment's type must be a subtype of the table's
+                // element type. With one immediate the table is 0.
+                let ids: Vec<String> = imms
+                    .iter()
+                    .filter(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                    .cloned()
+                    .collect();
+                let (tbl, seg) = if ids.len() >= 2 {
+                    (&ids[0..1], Some(&ids[1]))
+                } else {
+                    (&ids[0..0], ids.first())
+                };
+                let (_, elem, a) = self.table_of(tbl)?;
+                if let Some(si) = seg.and_then(|k| resolve_wast_index(k, &self.ctx.elem_names)) {
+                    if let Some(st) = self.ctx.elem_types.get(si).cloned().flatten() {
+                        if !vt_subtype(&st, &elem, &self.ctx.types) {
+                            return tmis_d(format!(
+                                "element segment {} is not a subtype of table element {}",
+                                vt_show(&st),
+                                vt_show(&elem)
+                            ));
+                        }
+                    }
+                }
                 self.pop_expect(&Vt::Num("i32"))?;
                 self.pop_expect(&Vt::Num("i32"))?;
                 self.pop_expect(&a)?;
+                Ok(())
+            }
+
+            // ── GC ───────────────────────────────────────────────────────
+            //
+            // ⛔ EVERY ARM RESOLVES ITS TYPE OR BAILS. A GC instruction's
+            // operand and result types come from the TYPE TABLE, not the
+            // mnemonic, so an unresolvable index or an unparseable field
+            // spelling abandons the function rather than guessing — the same
+            // discipline the rest of the pass runs on.
+            "struct.new" | "struct.new_default" => {
+                let ti = self.type_index(imms.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                if t.kind != Some("struct") {
+                    return tmis_d(format!("type {ti} is not a struct"));
+                }
+                if name == "struct.new" {
+                    // Fields are pushed in declaration order, so they pop in
+                    // reverse.
+                    let fields = self.field_types(&t)?;
+                    self.pop_vals(&fields)?;
+                }
+                self.push_val(Vt::Ref(RefT {
+                    nullable: false,
+                    exact: true,
+                    heap: Heap::Concrete(ti),
+                }));
+                Ok(())
+            }
+            "struct.get" | "struct.get_s" | "struct.get_u" | "struct.set" => {
+                let ti = self.type_index(imms.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                if t.kind != Some("struct") {
+                    return tmis_d(format!("type {ti} is not a struct"));
+                }
+                // The field is named by the SECOND immediate, in EITHER
+                // spelling.
+                //
+                // ⛔ THE NAMED ONE USED TO BAIL, AND A BAIL IS INVISIBLE. Only
+                // `parse::<usize>()` was tried, so `struct.get 0 $x` abandoned
+                // the whole function instead of typing it — the third time in
+                // this file that one spelling carried a rule its sibling did
+                // not (`global.set $g` vs `global.set 0`, `throw $t` vs
+                // `throw 0`). Resolution is per-TYPE, so it reads this type's
+                // own `field_names`.
+                let key = imms.get(1).ok_or(Fail::Bail)?;
+                let fi: usize = match key.parse::<usize>() {
+                    Ok(n) => n,
+                    Err(_) => t
+                        .field_names
+                        .iter()
+                        .position(|n| n.as_deref() == Some(key.as_str()))
+                        .ok_or(Fail::Bail)?,
+                };
+                let spelling = t.field_types.get(fi).cloned().ok_or(Fail::Bail)?;
+                let packed = matches!(strip_mut(&spelling).as_str(), "i8" | "i16");
+                // ⛔ A PACKED FIELD HAS NO PLAIN ACCESSOR. `i8`/`i16` are
+                // storage-only: they must be read through `_s`/`_u`, which
+                // yield i32, and a bare `struct.get` on one is invalid.
+                if packed && name == "struct.get" {
+                    return tmis_d("packed field needs struct.get_s or struct.get_u".to_string());
+                }
+                if !packed && matches!(name, "struct.get_s" | "struct.get_u") {
+                    return tmis_d("sign extension on a non-packed field".to_string());
+                }
+                let fty = if packed {
+                    Vt::Num("i32")
+                } else {
+                    parse_vt(&strip_mut(&spelling), &self.ctx.type_names).ok_or(Fail::Bail)?
+                };
+                let r = Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                });
+                if name == "struct.set" {
+                    // ⛔ MUTABILITY IS OPT-IN PER FIELD, exactly as it is for an
+                    // array element. `(field i32)` is NOT `(field (mut i32))`,
+                    // so writing it is invalid however well-typed the value is
+                    // — a property of the TYPE, with its own diagnostic.
+                    if !spelling.trim_start().starts_with("(mut") {
+                        return Err(Fail::Mismatch("immutable field".to_string()));
+                    }
+                    self.pop_expect(&fty)?;
+                    self.pop_expect(&r)?;
+                } else {
+                    self.pop_expect(&r)?;
+                    self.push_val(fty);
+                }
+                Ok(())
+            }
+            "array.new" | "array.new_default" | "array.new_fixed" => {
+                let ti = self.type_index(imms.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                if t.kind != Some("array") {
+                    return tmis_d(format!("type {ti} is not an array"));
+                }
+                let elem = self.array_elem_vt(&t)?;
+                match name {
+                    "array.new" => {
+                        self.pop_expect(&Vt::Num("i32"))?;
+                        self.pop_expect(&elem)?;
+                    }
+                    "array.new_default" => {
+                        self.pop_expect(&Vt::Num("i32"))?;
+                    }
+                    _ => {
+                        // `array.new_fixed $t N` — N elements, all on the stack.
+                        let n: usize =
+                            imms.get(1).and_then(|x| x.parse().ok()).ok_or(Fail::Bail)?;
+                        for _ in 0..n {
+                            self.pop_expect(&elem)?;
+                        }
+                    }
+                }
+                self.push_val(Vt::Ref(RefT {
+                    nullable: false,
+                    exact: true,
+                    heap: Heap::Concrete(ti),
+                }));
+                Ok(())
+            }
+            "array.get" | "array.get_s" | "array.get_u" | "array.set" => {
+                let ti = self.type_index(imms.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                if t.kind != Some("array") {
+                    return tmis_d(format!("type {ti} is not an array"));
+                }
+                let raw = t.array_elem.clone().ok_or(Fail::Bail)?;
+                let packed = matches!(raw.as_str(), "i8" | "i16");
+                if packed && name == "array.get" {
+                    return tmis_d("packed element needs array.get_s or array.get_u".to_string());
+                }
+                if !packed && matches!(name, "array.get_s" | "array.get_u") {
+                    return tmis_d("sign extension on a non-packed element".to_string());
+                }
+                let elem = self.array_elem_vt(&t)?;
+                let r = Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                });
+                if name == "array.set" {
+                    self.pop_expect(&elem)?;
+                    self.pop_expect(&Vt::Num("i32"))?;
+                    self.pop_expect(&r)?;
+                } else {
+                    self.pop_expect(&Vt::Num("i32"))?;
+                    self.pop_expect(&r)?;
+                    self.push_val(elem);
+                }
+                Ok(())
+            }
+            "array.len" => {
+                let t = self.pop_val()?;
+                if !Self::is_ref(&t) {
+                    return tmis_d("array.len needs a reference".to_string());
+                }
+                self.push_val(Vt::Num("i32"));
+                Ok(())
+            }
+            "array.fill" => {
+                let ti = self.type_index(imms.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                let elem = self.array_elem_vt(&t)?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&elem)?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                }))?;
+                Ok(())
+            }
+            // §3.4.8.14: the SOURCE array's storage type must be a subtype of
+            // the DESTINATION's.
+            //
+            // ⛔ PACKEDNESS IS PART OF THE STORAGE TYPE, AND `array_elem_vt`
+            // ERASES IT — it reads i8 and i16 as the i32 they load as, which is
+            // right for a value and wrong here. Both fixtures are invalid only
+            // in the erased detail: `(mut i8)` from `i16` agrees once both are
+            // i32, and `(mut i8)` from `(mut (ref $a))` needs the packed side
+            // to reject a reference outright. So this compares the RAW
+            // spellings, and a packed type matches only itself.
+            "array.copy" => {
+                let ids: Vec<String> = imms
+                    .iter()
+                    .filter(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                    .cloned()
+                    .collect();
+                if ids.len() < 2 {
+                    return Err(Fail::Bail);
+                }
+                let di = self.type_index(Some(&ids[0]))?;
+                let si = self.type_index(Some(&ids[1]))?;
+                let dt = self.ctx.types.get(di).cloned().ok_or(Fail::Bail)?;
+                let st = self.ctx.types.get(si).cloned().ok_or(Fail::Bail)?;
+                if dt.kind != Some("array") || st.kind != Some("array") {
+                    return tmis_d("array.copy needs two array types".to_string());
+                }
+                if !dt.array_elem_mut {
+                    return Err(Fail::Mismatch("array is immutable".to_string()));
+                }
+                let draw = dt.array_elem.clone().ok_or(Fail::Bail)?;
+                let sraw = st.array_elem.clone().ok_or(Fail::Bail)?;
+                let dpk = matches!(draw.as_str(), "i8" | "i16");
+                let spk = matches!(sraw.as_str(), "i8" | "i16");
+                let agree = if dpk || spk {
+                    draw == sraw
+                } else {
+                    let dv = self.array_elem_vt(&dt)?;
+                    let sv = self.array_elem_vt(&st)?;
+                    vt_subtype(&sv, &dv, &self.ctx.types)
+                };
+                if !agree {
+                    return Err(Fail::Mismatch("array types do not match".to_string()));
+                }
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(si),
+                }))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(di),
+                }))?;
+                Ok(())
+            }
+            // §3.4.8.16-17: `array.init_data` fills from raw bytes, so the
+            // element must be numeric or vector — a reference has no byte
+            // spelling. `array.init_elem` fills from an element segment, so the
+            // segment's type must be a subtype of the element type.
+            "array.init_data" | "array.init_elem" => {
+                let ids: Vec<String> = imms
+                    .iter()
+                    .filter(|t| t.starts_with('$') || t.parse::<usize>().is_ok())
+                    .cloned()
+                    .collect();
+                let ti = self.type_index(ids.first())?;
+                let t = self.ctx.types.get(ti).cloned().ok_or(Fail::Bail)?;
+                if t.kind != Some("array") {
+                    return tmis_d(format!("type {ti} is not an array"));
+                }
+                if !t.array_elem_mut {
+                    return Err(Fail::Mismatch("array is immutable".to_string()));
+                }
+                let elem = self.array_elem_vt(&t)?;
+                if name == "array.init_data" {
+                    if Self::is_ref(&elem) {
+                        return Err(Fail::Mismatch(
+                            "array type is not numeric or vector".to_string(),
+                        ));
+                    }
+                } else {
+                    // ⛔ RESOLVED THROUGH THE SEGMENT INDEX SPACE, NOT THE TYPE
+                    // ONE. `$e1` names an element segment here; looking it up
+                    // among types would find nothing and abstain, which is how
+                    // both fixtures went undetected.
+                    let si = ids
+                        .get(1)
+                        .and_then(|k| resolve_wast_index(k, &self.ctx.elem_names))
+                        .ok_or(Fail::Bail)?;
+                    let seg = self
+                        .ctx
+                        .elem_types
+                        .get(si)
+                        .cloned()
+                        .flatten()
+                        .ok_or(Fail::Bail)?;
+                    if !vt_subtype(&seg, &elem, &self.ctx.types) {
+                        return Err(Fail::Mismatch(format!(
+                            "type mismatch: instruction requires [{}] but stack has [{}]",
+                            vt_show(&elem),
+                            vt_show(&seg)
+                        )));
+                    }
+                }
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Concrete(ti),
+                }))?;
+                Ok(())
+            }
+            "ref.eq" => {
+                let eq = Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("eq"),
+                });
+                self.pop_expect(&eq)?;
+                self.pop_expect(&eq)?;
+                self.push_val(Vt::Num("i32"));
+                Ok(())
+            }
+            "ref.i31" => {
+                self.pop_expect(&Vt::Num("i32"))?;
+                self.push_val(Vt::Ref(RefT {
+                    nullable: false,
+                    exact: false,
+                    heap: Heap::Abs("i31"),
+                }));
+                Ok(())
+            }
+            "i31.get_s" | "i31.get_u" => {
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("i31"),
+                }))?;
+                self.push_val(Vt::Num("i32"));
+                Ok(())
+            }
+            "any.convert_extern" => {
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("extern"),
+                }))?;
+                self.push_val(Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("any"),
+                }));
+                Ok(())
+            }
+            "extern.convert_any" => {
+                self.pop_expect(&Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("any"),
+                }))?;
+                self.push_val(Vt::Ref(RefT {
+                    nullable: true,
+                    exact: false,
+                    heap: Heap::Abs("extern"),
+                }));
                 Ok(())
             }
 
@@ -18288,6 +20463,192 @@ impl<'a> Tv<'a> {
 
 // ── The driver ───────────────────────────────────────────────────────────────
 
+/// Type a module's INITIALIZER const-expressions against their declared type.
+///
+/// ⛔ AN INITIALIZER IS TYPED TOO, AND NOTHING WAS TYPING IT. A table's inline
+/// init and a global's init are constant EXPRESSIONS whose result must match
+/// the declared element/global type — `(table 1 (ref null func) (i32.const 0))`
+/// is invalid because an i32 is not a funcref. The stack-typing pass walks
+/// FUNCTION BODIES only, so these went unexamined: 10 fixtures in table.wast
+/// alone.
+///
+/// Reuses the same machinery — an initializer is just a body with no locals
+/// whose declared result is the entity's type — so it bails identically on
+/// anything it cannot type.
+fn module_init_expr_reason(module: &Pair<Rule>) -> Option<String> {
+    let ctx = build_type_ctx(module);
+    // How far into the global index space the NEXT defined global sits.
+    let mut global_at = ctx.imported_globals;
+    for field in module_fields(module) {
+        // An IMPORTED entity has no initializer.
+        if find_rule(&field, Rule::import_inline).is_some() {
+            continue;
+        }
+        // ⛔ HOW MANY GLOBALS A CONSTANT EXPRESSION MAY READ DEPENDS ON WHERE
+        // IT SITS, and the reason is INSTANTIATION ORDER (§4.5.4), not a
+        // uniform rule about constant expressions:
+        //
+        //   * a TABLE is allocated BEFORE any global is initialised, so its
+        //     initializer sees the IMPORTED globals only — the suite asserts
+        //     `(global $g funcref …) (table $t 10 funcref (global.get $g))`
+        //     is "unknown global" even though `$g` is declared first;
+        //   * a GLOBAL at index i sees `[0, i)` — imports and the globals
+        //     already initialised, which is why a forward reference is
+        //     "unknown global" but a backward one is fine;
+        //   * an ELEM or DATA offset runs after every global exists, so it
+        //     sees all of them.
+        //
+        // Reading this as one rule ("imports only") rejected SEVEN valid
+        // modules across global/elem/data — invisible to the suite, since
+        // validation runs only inside `assert_invalid`, and caught only by
+        // wrapping the suite's VALID modules in one.
+        let limit = match field.as_rule() {
+            Rule::table_field => ctx.imported_globals,
+            Rule::global_field => global_at,
+            _ => ctx.globals.len(),
+        };
+        if field.as_rule() == Rule::global_field {
+            global_at += 1;
+        }
+        let want = match field.as_rule() {
+            Rule::table_field => {
+                // The element type is the `ref_val_type` inside `table_type`.
+                let tt = find_rule(&field, Rule::table_type)?;
+                tt.into_inner()
+                    .filter(|c| !matches!(c.as_rule(), Rule::integer))
+                    .last()
+                    .and_then(|c| parse_vt(c.as_str().trim(), &ctx.type_names))
+            }
+            Rule::global_field => find_rule(&field, Rule::global_type).and_then(|g| {
+                let t = g.as_str().trim();
+                let spelling = t
+                    .strip_prefix('(')
+                    .and_then(|x| x.trim().strip_prefix("mut"))
+                    .map(|x| x.trim().trim_end_matches(')').trim())
+                    .unwrap_or(t);
+                parse_vt(spelling, &ctx.type_names)
+            }),
+            // ⛔ A SEGMENT OFFSET IS A CONST-EXPRESSION TOO, and its type is
+            // the TARGET's address width — `(table 1 funcref) (elem
+            // (i64.const 0))` is invalid because that table is i32-indexed.
+            // Only an ACTIVE segment has one.
+            Rule::elem_field => ctx.table_addr.first().map(|t| Vt::Num(t)),
+            Rule::data_field => ctx.mem_addr.first().map(|t| Vt::Num(t)),
+            _ => continue,
+        };
+        let Some(want) = want else { continue };
+        let init: Vec<Pair<Rule>> = if matches!(field.as_rule(), Rule::elem_field | Rule::data_field)
+        {
+            // The offset lives inside `elem_mode`/`data_mode`. ⛔ AND THE SAME
+            // GRAMMAR AMBIGUITY BITES HERE: `elem_mode`'s last alternative is a
+            // bare folded instruction, so `(elem $e (ref 1))`'s element TYPE
+            // parses as an offset. `elem_mode_is_reference_type` is what tells
+            // them apart — without it every typed passive segment reports a
+            // mismatch against the table's address type.
+            let mode = field
+                .clone()
+                .into_inner()
+                .find(|c| matches!(c.as_rule(), Rule::elem_mode | Rule::data_mode));
+            match mode {
+                Some(m)
+                    if !(m.as_rule() == Rule::elem_mode && elem_mode_is_reference_type(&m))
+                        && m.as_str().trim() != "declare" =>
+                {
+                    m.into_inner()
+                        .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
+                        .collect()
+                }
+                _ => Vec::new(),
+            }
+        } else {
+            field
+                .clone()
+                .into_inner()
+                .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
+                .collect()
+        };
+        if init.is_empty() {
+            // ⛔ EMPTY IS ONLY LEGAL WHERE THERE IS NOTHING TO INITIALISE.
+            // A global's initializer is REQUIRED — `(global i32)` delivers no
+            // value where an i32 is wanted, which the suite asserts as a type
+            // mismatch. A table has no initializer at all (`(table 1 funcref)`
+            // is perfectly valid), and a PASSIVE segment has no offset, so
+            // those two must keep skipping or every valid module trips here.
+            if field.as_rule() == Rule::global_field {
+                return Some("type mismatch".to_string());
+            }
+            continue;
+        }
+        let mut flat = Vec::new();
+        if flatten_instrs(init, &mut flat).is_none() {
+            continue;
+        }
+        let mut tv = Tv {
+            ctx: &ctx,
+            vals: Vec::new(),
+            ctrls: Vec::new(),
+            locals: Vec::new(),
+            local_names: HashMap::new(),
+            inited: Vec::new(),
+            global_limit: Some(limit),
+        };
+        let results = vec![want];
+        tv.push_ctrl("func", None, Vec::new(), results.clone());
+        let mut bailed = false;
+        for ins in &flat {
+            match tv.step(ins, &results) {
+                Ok(()) => {}
+                Err(Fail::Mismatch(m)) => return Some(m),
+                Err(Fail::Bail) => {
+                    bailed = true;
+                    break;
+                }
+            }
+        }
+        if bailed || tv.ctrls.len() != 1 {
+            continue;
+        }
+        if let Err(Fail::Mismatch(m)) = tv.pop_ctrl() {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// §3.4.7: the start function takes no parameters and returns no results.
+/// `(func $main (result i32) …) (start $main)` and `(func $main (param i32))`
+/// are both invalid, and the suite gives that its own wording — "start
+/// function", not "type mismatch".
+///
+/// Separate from the EXISTENCE check in `name_resolution_walk`: that one runs
+/// off the census, which counts declarations without their signatures. This
+/// needs the typed index space, so it lives where the `TypeCtx` is built.
+fn start_function_type_reason(module: &Pair<Rule>) -> Option<String> {
+    let ctx = build_type_ctx(module);
+    for field in module_fields(module) {
+        let inner = match field.as_rule() {
+            Rule::module_field => field.clone().into_inner().next()?,
+            _ => field.clone(),
+        };
+        if inner.as_rule() != Rule::start_field {
+            continue;
+        }
+        let idx = inner
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::index)?;
+        let i = resolve_wast_index(idx.as_str().trim(), &ctx.func_names)?;
+        // An unresolvable or untypeable function abstains — "unknown function"
+        // is a different rule's answer, and guessing here would give the wrong
+        // wording to a module that is invalid for another reason entirely.
+        let sig = ctx.funcs.get(i)?.as_ref()?;
+        if !sig.params.is_empty() || !sig.results.is_empty() {
+            return Some("start function".to_string());
+        }
+    }
+    None
+}
+
 /// Type every defined function in a module. `None` means nothing was proved —
 /// either the module types clean or some function could not be typed at all.
 fn module_stack_typing_reason(module: &Pair<Rule>) -> Option<String> {
@@ -18319,17 +20680,20 @@ fn func_local_types(
     tu: &Pair<Rule>,
     sig: &FnSig,
     names: &HashMap<String, usize>,
-) -> Option<(Vec<Vt>, HashMap<String, usize>)> {
+) -> Option<(Vec<Vt>, HashMap<String, usize>, Vec<bool>)> {
     let has_inline_params = tu.clone().into_inner().any(|c| c.as_rule() == Rule::param);
-    let (declared, declared_names) = func_locals(f, names)?;
+    let (declared, declared_names, declared_inited) = func_locals(f, names)?;
     if has_inline_params {
-        return Some((declared, declared_names));
+        return Some((declared, declared_names, declared_inited));
     }
     let off = sig.params.len();
     let mut v = sig.params.clone();
     v.extend(declared);
     let shifted = declared_names.into_iter().map(|(k, i)| (k, i + off)).collect();
-    Some((v, shifted))
+    // The signature's params come first and are initialized by arrival.
+    let mut inited = vec![true; off];
+    inited.extend(declared_inited);
+    Some((v, shifted, inited))
 }
 
 /// A NUMERIC `local.get`/`set`/`tee` index past the end of the function's
@@ -18354,7 +20718,7 @@ fn module_unknown_local_reason(module: &Pair<Rule>) -> Option<String> {
         else {
             continue;
         };
-        let Some((locals, _)) = func_local_types(&f, &tu, &sig, &ctx.type_names) else {
+        let Some((locals, _, _)) = func_local_types(&f, &tu, &sig, &ctx.type_names) else {
             continue;
         };
         if let Some(n) = first_out_of_range_local(&f, locals.len()) {
@@ -18404,7 +20768,7 @@ fn type_one_func(f: &Pair<Rule>, ctx: &TypeCtx) -> Option<String> {
     // has none of them and every `local.get` shifts by the parameter count —
     // silently typing `local.get 0` as the first local. Prepend the signature's
     // params and shift the name map with them.
-    let (locals, local_names) = func_local_types(f, &tu, &sig, names)?;
+    let (locals, local_names, inited) = func_local_types(f, &tu, &sig, names)?;
 
     let body: Vec<Pair<Rule>> = f
         .clone()
@@ -18420,6 +20784,9 @@ fn type_one_func(f: &Pair<Rule>, ctx: &TypeCtx) -> Option<String> {
         ctrls: Vec::new(),
         locals,
         local_names,
+        inited,
+        // A function body reads the whole global index space.
+        global_limit: None,
     };
     // The function body is itself a block returning the function's results.
     tv.push_ctrl("func", None, Vec::new(), sig.results.clone());
@@ -18446,6 +20813,15 @@ fn type_one_func(f: &Pair<Rule>, ctx: &TypeCtx) -> Option<String> {
 /// `assert_invalid` module arrives — inline and `(module quote …)`.
 fn stack_typing_reason_in(pair: &Pair<Rule>) -> Option<String> {
     if pair.as_rule() == Rule::module {
+        // Initializers first: they are typed independently of any function,
+        // and a module whose table init is ill-typed says so regardless of
+        // what its bodies do.
+        if let Some(r) = module_init_expr_reason(pair) {
+            return Some(r);
+        }
+        if let Some(r) = start_function_type_reason(pair) {
+            return Some(r);
+        }
         return module_stack_typing_reason(pair);
     }
     for c in pair.clone().into_inner() {

@@ -353,10 +353,19 @@ bare_lane_type = @{ val_lane_type ~ !("." | ASCII_ALPHANUMERIC | "_") }
 mem_arg = @{ ("offset=" ~ integer) | ("align=" ~ integer) }
 
 // Block type annotation (inside block/loop/if)
+// ⛔ `*`, NOT `+`. An EMPTY `(result)` / `(param)` is a legal block type, and
+// requiring at least one type here did not make the spelling fail to parse —
+// it made it parse as something else. `result` satisfies `instr_name`, so
+// `(select (result) …)` fell through to the `folded_instr` alternative below
+// and arrived as a folded instruction named "result". The typing pass then saw
+// EMPTY `btypes`, which is how it spells "this instruction has no type
+// annotation at all", and typed the `select` as untyped — so the
+// "invalid result arity" rule, which was already written and correct, never
+// ran on the one fixture that asserts it.
 block_type = {
     "(" ~ "type"   ~ index ~ ")"
-  | "(" ~ "result" ~ any_val_type+ ~ ")"
-  | "(" ~ "param"  ~ id? ~ val_type+ ~ ")"
+  | "(" ~ "result" ~ any_val_type* ~ ")"
+  | "(" ~ "param"  ~ id? ~ val_type* ~ ")"
 }
 
 // ── Module fields ─────────────────────────────────────────────────────────────
@@ -535,11 +544,19 @@ elem_item = { ("(" ~ "item" ~ instr* ~ ")") | folded_instr }
 // `(i32.const 0)`), an explicit `(table …)(offset …)`, or `declare`. Mirrors
 // `data_mode`. The `func` keyword in the element list is optional, so bare
 // funcidx lists (`(elem $e $f1 $f2)`, `(elem (i32.const 0) $f1)`) parse.
+// ⛔ A REFTYPE IS NOT AN ABBREVIATED OFFSET. The last alternative is the
+// active segment's `(i32.const 0)` shorthand, and it used to swallow the
+// element list's own reftype: `(elem $e (ref $bvec) …)` parsed `(ref $bvec)` as
+// a folded instruction, so a PASSIVE segment was read as active and populated
+// table 0 — which the module does not declare, trapping "out of bounds table
+// access" at instantiation. `(ref …)` and `(ref null …)` are never offsets, and
+// `(ref.func $f)`/`(ref.null func)` are not `ref_val_type`s, so the items still
+// parse.
 elem_mode = {
     "(" ~ "table" ~ index ~ ")" ~ ("(" ~ "offset" ~ instr* ~ ")" | folded_instr)
   | "(" ~ "offset" ~ instr* ~ ")"
   | "declare"
-  | folded_instr
+  | !ref_val_type ~ folded_instr
 }
 
 // ── Data segment ──────────────────────────────────────────────────────────────
