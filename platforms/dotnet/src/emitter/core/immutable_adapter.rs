@@ -46,6 +46,28 @@ pub fn emit_seq_empty(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// `ImmutableX.Create(a, b, …)` — the arguments are already on the stack.
 pub fn emit_seq_create(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // ⛔`Create<T>(T[] items)` and `Create<T>(T item)` are BOTH arity 1, and
+    // .NET picks between them by the argument's type — an array creates FROM
+    // its items, anything else becomes the single element. Building an array of
+    // `argc` unconditionally made `Create(new[]{1,2})` a one-element sequence
+    // holding an array, so `.Length` answered 1. The receiver's type is only
+    // knowable at run time here, so the test is too.
+    if argc == 1 {
+        let arg = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, arg, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+        let is_array = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(is_array, 1, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+        collections::emit_clone(chunks, current, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+        collections::emit_array_new(chunks, current, 1, line);
+        chunks[current].emit_end(line);
+        return;
+    }
     collections::emit_array_new(chunks, current, argc as u16, line);
 }
 

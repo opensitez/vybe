@@ -135,6 +135,105 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 )),
         ),
         DotnetClassExport::new("dotnet.System.Net", ClassType::new("IPHostEntry")),
+        // `System.Net.WebUtility` — HTML and URL escaping. Absent from the
+        // catalog, so `WebUtility.HtmlEncode(s)` trapped with `undefined is not
+        // callable`. See `core::web_utility_adapter` for what .NET actually
+        // encodes; it is not the five specials.
+        DotnetClassExport::new(
+            "dotnet.System.Net",
+            ClassType::new("WebUtility")
+                .with_method(MethodDef::static_method(
+                    "HtmlEncode",
+                    1,
+                    MethodBody::Common("dotnet.web_utility_html_encode".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "HtmlDecode",
+                    1,
+                    MethodBody::Common("dotnet.web_utility_html_decode".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "UrlEncode",
+                    1,
+                    MethodBody::Common("dotnet.web_utility_url_encode".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "UrlDecode",
+                    1,
+                    MethodBody::Common("dotnet.web_utility_url_decode".into()),
+                )),
+        ),
+        // `System.Net.Http.HttpMethod` — the verbs are static PROPERTIES, so
+        // each is a zero-arity static method here and a row in
+        // `static_member_parameterless_call` makes the bare read invoke it.
+        DotnetClassExport::new(
+            "dotnet.System.Net.Http",
+            ClassType::new("HttpMethod")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.http_method_new"),
+                )
+                .with_method(MethodDef::static_method(
+                    "Get",
+                    0,
+                    MethodBody::Common("dotnet.http_method_get".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Post",
+                    0,
+                    MethodBody::Common("dotnet.http_method_post".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Put",
+                    0,
+                    MethodBody::Common("dotnet.http_method_put".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Delete",
+                    0,
+                    MethodBody::Common("dotnet.http_method_delete".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Head",
+                    0,
+                    MethodBody::Common("dotnet.http_method_head".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Options",
+                    0,
+                    MethodBody::Common("dotnet.http_method_options".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Trace",
+                    0,
+                    MethodBody::Common("dotnet.http_method_trace".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Patch",
+                    0,
+                    MethodBody::Common("dotnet.http_method_patch".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.http_method_to_string".into()),
+                )),
+        ),
+        // `System.Net.Http.Headers.MediaTypeHeaderValue`. A NEW export prefix;
+        // the tests spell the type fully qualified.
+        DotnetClassExport::new(
+            "dotnet.System.Net.Http.Headers",
+            ClassType::new("MediaTypeHeaderValue")
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.media_type_header_parse".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.media_type_header_to_string".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Net",
             ClassType::new("IPAddress")
@@ -147,6 +246,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToString",
                     0,
                     MethodBody::Common("dotnet.ip_address_to_string".into()),
+                ))
+                // Network byte order is big-endian and the host here is
+                // little-endian, so both directions are the same 32-bit
+                // reversal — the one `BinaryPrimitives.ReverseEndianness`
+                // already performs. Two names, one emitter, no new
+                // implementation.
+                .with_method(MethodDef::static_method(
+                    "HostToNetworkOrder",
+                    1,
+                    MethodBody::Common("dotnet.binprim_reverse_i32".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "NetworkToHostOrder",
+                    1,
+                    MethodBody::Common("dotnet.binprim_reverse_i32".into()),
                 )),
         ),
     ]

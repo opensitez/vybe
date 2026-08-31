@@ -105,13 +105,66 @@ fn emit_observable_items_slot(chunks: &mut [Chunk], current: usize, recv: u16, l
     items
 }
 
-pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::DROP, line);
+/// `SortedSet<T>()` / `SortedSet<T>(IEnumerable<T>)` / `SortedSet<T>(IComparer<T>)`.
+///
+/// ⛔ONE registration, branching on `argc`. `ClassType::with_constructor`
+/// OVERWRITES — a second call replaces the first rather than adding an overload
+/// — so declaring arity 0 and arity 1 leaves only the arity-1 body, and it then
+/// runs for the no-argument call with nothing of its own on the stack.
+///
+/// ⛔The single argument is an ENUMERABLE or a COMPARER, .NET's two arity-1
+/// overloads, and they are disjoint at run time: a comparer is never an array.
+/// Dropping it unconditionally made `SortedSet[int]::new(@(50,10,90,30))` the
+/// EMPTY set, so `Min`, `Max`, `Remove`, `UnionWith` and every set-algebra
+/// answer came off nothing — most of the dir failed on one construction, not on
+/// its own member.
+pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        sets::emit_new(chunks, current, line);
+        return;
+    }
+    let arg = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    collections::emit_spread_iterable_for_constructor(chunks, current, line);
+    sets::emit_from_iterable(chunks, current, line);
+    chunks[current].emit_else(line);
+    // A comparer: the set starts empty and the ordering is the default one,
+    // which is what every ordered read here already applies.
     sets::emit_new(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
-pub fn emit_list_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
-    collections::emit_spread_iterable(chunks, current, line);
+/// `List<T>()` / `ObservableCollection<T>(iterable)` — see the `argc` note on
+/// [`emit_set_new_ignore_comparer`]. With no argument there is nothing to
+/// spread and the collection starts empty.
+pub fn emit_list_new_from_iterable(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_array_new_fixed(0, 0, line);
+        return;
+    }
+    // ⛔`Queue<T>(int capacity)` and `Queue<T>(IEnumerable<T>)` are both arity 1
+    // — the same split `HashSet<T>` has, and `Stack`, `List` and `ArrayList`
+    // carry it too. A number is never an `IEnumerable` in .NET, and a capacity
+    // contributes no elements, so `isFinite` separates them exactly as the
+    // compiler's overload resolution does. Spreading it instead threw.
+    let arg = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    let is_number = chunks[current].add_import("ecma:number", "isFinite");
+    chunks[current].emit_call(is_number, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    collections::emit_spread_iterable_for_constructor(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_list_set_capacity_to_len(chunks: &mut [Chunk], current: usize, list_slot: u16, line: u32) {
@@ -157,7 +210,8 @@ pub fn emit_list_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg_slot, line);
-    emit_list_new_from_iterable(chunks, current, line);
+    // One value pushed just above, so this is the one-argument shape.
+    emit_list_new_from_iterable(chunks, current, 1, line);
     let iterable_list_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, iterable_list_slot, line);
     emit_list_set_capacity_to_len(chunks, current, iterable_list_slot, line);
@@ -302,9 +356,40 @@ pub fn emit_notify_collection_changed_event_args_new(
     chunks[current].emit_op_u16(Op::LOCAL_GET, args, line);
 }
 
-pub fn emit_set_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
-    collections::emit_spread_iterable(chunks, current, line);
+pub fn emit_set_new_from_iterable(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // ⛔§24.2.1.1 step 3: a Set constructor whose iterable is `undefined` or
+    // `null` yields an EMPTY set and never reaches `GetIterator`, which is what
+    // `emit_spread_iterable_for_constructor` implements.
+    //
+    // ⛔But NO ARGUMENT is not `undefined` — nothing is pushed at all, so the
+    // guard would read whatever the stack already held. `ClassType::with_constructor`
+    // OVERWRITES, so the arity-0 `sets.new` registration beside this one never
+    // existed and every `new HashSet<T>()` arrived here; the drain then tried to
+    // iterate a stray value and threw a TypeError once it became spec-correct
+    // about non-iterables. One registration, branching on `argc`.
+    if argc == 0 {
+        sets::emit_new(chunks, current, line);
+        return;
+    }
+    // ⛔`HashSet<T>(int capacity)` and `HashSet<T>(IEnumerable<T>)` are both
+    // arity 1. A number is never an `IEnumerable` in .NET, so the runtime test
+    // separates them exactly as the compiler's overload resolution does — and
+    // a capacity contributes no elements, so it yields the empty set.
+    let arg = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    // `Number.isFinite` does NOT coerce — it is true for a number and false for
+    // an array, a string or a generator, which is the discrimination wanted.
+    let is_number = chunks[current].add_import("ecma:number", "isFinite");
+    chunks[current].emit_call(is_number, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    sets::emit_new(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    collections::emit_spread_iterable_for_constructor(chunks, current, line);
     sets::emit_from_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -430,6 +515,96 @@ pub fn emit_dict_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32
 pub fn emit_dict_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `System.Index` — a VALUE and a direction, which is the whole struct.
+///
+/// `Index(value, isFromEnd)`; `FromStart(n)` and `FromEnd(n)` are the same
+/// struct with the flag supplied, so they push it rather than taking it.
+pub fn emit_index_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::dispatch::emit_value_type_new(
+        &mut chunks[current],
+        "Index",
+        &["Value", "IsFromEnd"],
+        line,
+    );
+}
+
+pub fn emit_index_from(chunks: &mut [Chunk], current: usize, from_end: bool, line: u32) {
+    chunks[current].emit_bool_const(from_end, line);
+    emit_index_new(chunks, current, line);
+}
+
+/// `Tuple.Create(…)` / `ValueTuple.Create(…)` — the items become `Item1`…`ItemN`.
+///
+/// The arity IS the shape, so the field list is built from `argc` rather than
+/// declared once per size. `Tuple` and `ValueTuple` differ only in being a
+/// reference versus a value type, which nothing here observes, so both reach
+/// this and carry the type name they were called on.
+pub fn emit_tuple_create(chunks: &mut [Chunk], current: usize, type_name: &str, argc: u8, line: u32) {
+    let names: Vec<String> = (1..=argc.max(1)).map(|n| format!("Item{n}")).collect();
+    let fields: Vec<&str> = names.iter().map(String::as_str).collect();
+    crate::emitter::dispatch::emit_value_type_new(&mut chunks[current], type_name, &fields, line);
+}
+
+/// `System.Range` — a start index and an end index.
+pub fn emit_range_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::dispatch::emit_value_type_new(
+        &mut chunks[current],
+        "Range",
+        &["Start", "End"],
+        line,
+    );
+}
+
+/// `Range.StartAt(i)` — from `i` to the end; `EndAt(i)` — from the start to
+/// `i`; `All` — the whole span. Each supplies the open end as the `Index` that
+/// bounds it, so all three build the same struct.
+pub fn emit_range_open(chunks: &mut [Chunk], current: usize, at_start: bool, line: u32) {
+    if at_start {
+        // [start] → [start, Index::FromEnd(0)]
+        chunks[current].emit_i32_const(0, line);
+        emit_index_from(chunks, current, true, line);
+    } else {
+        // [end] → [Index::FromStart(0), end]
+        let given = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, given, line);
+        chunks[current].emit_i32_const(0, line);
+        emit_index_from(chunks, current, false, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, given, line);
+    }
+    emit_range_new(chunks, current, line);
+}
+
+/// `Range.All` — start of sequence to end of sequence.
+pub fn emit_range_all(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_i32_const(0, line);
+    emit_index_from(chunks, current, false, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_index_from(chunks, current, true, line);
+    emit_range_new(chunks, current, line);
+}
+
+/// `IsEmpty` — the concurrent collections' own spelling for "no elements".
+///
+/// Stack: `[collection]` → `[bool]`.
+pub fn emit_collection_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+}
+
+/// `Stack<T>.ToArray()` / `ConcurrentStack<T>.ToArray()` — TOP TO BOTTOM.
+///
+/// .NET documents both as returning the newest element first, which is the
+/// reverse of the insertion order the backing array holds. A plain clone hands
+/// back insertion order, so `$s.Push("a"); $s.Push("b"); $s.ToArray()[0]`
+/// answered `a` where .NET says `b`.
+///
+/// Stack: `[stack]` → `[array]`.
+pub fn emit_stack_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_clone(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_reverse(chunks, current, line);
 }
 
 fn emit_blocking_field(
@@ -1150,10 +1325,44 @@ pub fn emit_observable_collection_on_changed(chunks: &mut [Chunk], current: usiz
 /// to an array via the shared iterator protocol (handles arrays, `List<T>`,
 /// other sets, and generators alike — `ecma:set.new` alone mishandles a Set
 /// argument), then build a Set from that array. Stores the Set back in `slot`.
+/// The `IEnumerable<T>` argument of a set operation, as an ECMA Set.
+///
+/// A Set is already the operand shape the host wants, so it passes through
+/// rather than being drained and rebuilt.
+///
+/// ⛔OPEN, and NOT closed by this guard: every set-algebra call whose argument
+/// is another SET is a silent no-op — `h1.UnionWith(h2)` leaves `h1.Count`
+/// unchanged, `IsSubsetOf` and `Overlaps` answer false. An ARRAY argument works,
+/// both operands really are `ObjectKind::Set` (the receiver mutates for the
+/// array form, and `@($h2)` spreads to its elements), and the host
+/// `ecma:set.unionWith` mutates correctly when both are sets. Cause not found.
 fn normalize_arg_to_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current],
+        "ecma:object",
+        "toStringTag",
+        1,
+        line,
+    );
+    chunks[current].emit_string_const("[object Set]", line);
+    // `wasm:js-string.equals`, the comparison `sets.rs` uses for the same
+    // question — a tag test is a STRING test, and it has to answer an i32 the
+    // branch can read.
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "equals",
+        2,
+        line,
+    );
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     collections::emit_spread_iterable(chunks, current, line);
     sets::emit_from_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
@@ -1664,4 +1873,423 @@ pub fn emit_vb_collection_remove(chunks: &mut [Chunk], current: usize, line: u32
     call_import(chunks, current, "ecma:map", "delete", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// The last element, or null on an empty collection — `ConcurrentStack.TryPeek`
+/// and `ConcurrentBag.TryPeek`, which both look at the end a `TryTake` would
+/// remove.
+///
+/// Stack: `[collection]` → `[value]`.
+pub fn emit_concurrent_peek_last(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = chunks[current].alloc_scratch(2);
+    let len = recv + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    // `len - 1`, spelled as `len + (-1)`: `ops` has no dynamic subtract.
+    chunks[current].emit_i32_const(-1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+}
+
+/// The first element, or null on an empty collection — `ConcurrentQueue.TryPeek`
+/// looks at the head a `TryDequeue` would remove.
+///
+/// Stack: `[collection]` → `[value]`.
+pub fn emit_concurrent_peek_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+}
+
+/// `stack.PushRange(items)` — push every element, in array order, so the LAST
+/// element ends up on top.
+///
+/// Stack: `[stack, items]` → `[null]`.
+pub fn emit_concurrent_stack_push_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let items = base + 1;
+    let idx = chunks[current].alloc_scratch(2);
+    let len = idx + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    collections::emit_get(chunks, current, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `stack.TryPopRange(buffer)` — fill `buffer` from the TOP DOWN and answer how
+/// many elements were taken.
+///
+/// ⛔ TOP TO BOTTOM, like `ToArray`. A stack that was pushed `1,2,3` fills the
+/// buffer `3,2` — reading the array forwards would answer `1,2` and reverse the
+/// only thing a stack guarantees.
+///
+/// Stack: `[stack, buffer]` → `[count]`.
+pub fn emit_concurrent_stack_try_pop_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let buffer = base + 1;
+    let idx = chunks[current].alloc_scratch(2);
+    let want = idx + 1;
+
+    // Take no more than the buffer holds, and no more than the stack has.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, buffer, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, want, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, want, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, want, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, want, line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, want, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, buffer, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_pop(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, want, line);
+}
+
+/// `dict.TryUpdate(key, newValue, comparisonValue)` — a compare-and-set.
+/// Answers `False` and changes nothing unless the stored value equals
+/// `comparisonValue`.
+///
+/// Stack: `[dict, key, newValue, comparison]` → `[bool]`.
+pub fn emit_dict_try_update(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 4, line);
+    let recv = base;
+    let key = base + 1;
+    let value = base + 2;
+    let comparison = base + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparison, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+}
+
+/// `dict.TryRemove(key)` — the removed VALUE, or null when the key was absent.
+///
+/// The `out` half is the walker's: `TryRemove(k, out v)` becomes
+/// `(v = TryRemove(k)) != null`, because a tree-registered method carries an
+/// arity and no pass-by mode.
+///
+/// Stack: `[dict, key]` → `[value]`.
+pub fn emit_dict_try_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let key = base + 1;
+    let value = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+}
+
+/// `dict.GetOrAdd(key, value)` — the stored value, INSERTING `value` first when
+/// the key is absent. `ecma:map.get` alone answered nothing and wrote nothing.
+///
+/// Stack: `[dict, key, value]` → `[value]`.
+pub fn emit_dict_get_or_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let key = base + 1;
+    let value = base + 2;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_end(line);
+}
+
+/// `dict.AddOrUpdate(key, addValue, updateFactory)` — store `addValue` when the
+/// key is absent, otherwise store `updateFactory(key, existing)`. Answers what
+/// was stored.
+///
+/// Stack: `[dict, key, addValue, updateFactory]` → `[value]`.
+pub fn emit_dict_add_or_update(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 4, line);
+    let recv = base;
+    let key = base + 1;
+    let add = base + 2;
+    let update = base + 3;
+    let stored = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, update, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 3, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, add, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stored, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stored, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stored, line);
+}
+
+/// `HashSet<T>.ToArray()` / `SortedSet<T>.ToArray()`.
+///
+/// A set is not an array, so the shared array primitives cannot read it
+/// directly; `iter_values` is the conversion every ordered read here already
+/// goes through.
+pub fn emit_set_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_iter_values(chunks, current, line);
+}
+
+/// `ICollection<T>.CopyTo(array, index)` on a SET receiver — the same shared
+/// copy, with the source converted first. Stack: `[set, dest, index]`.
+pub fn emit_set_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let (src, dest, index) = (base, base + 1, base + 2);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dest, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_copy_to(chunks, current, line);
+}
+
+/// The .NET TRY-PATTERN over a collection: `TryTake(out x)` / `TryPop(out x)` /
+/// `TryDequeue(out x)` / `TryPeek(out x)`.
+///
+/// ⛔It answers a BOOL and writes the item through the out-parameter. The
+/// previous binding DROPPED the out-parameter and answered the ITEM, so
+/// `$ok = $bag.TryTake([ref]$v)` left `$v` untouched and put the value in `$ok`
+/// — both halves wrong, and silently.
+///
+/// Stack: `[recv, ref]` → `[bool]`. `remove` distinguishes take from peek,
+/// `from_end` the stack end from the queue end.
+pub fn emit_try_out(
+    chunks: &mut [Chunk],
+    current: usize,
+    remove: bool,
+    from_end: bool,
+    line: u32,
+) {
+    let base = stash_args(chunks, current, 2, line);
+    let (recv, cell) = (base, base + 1);
+    let value = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    match (remove, from_end) {
+        (true, true) => collections::emit_pop(chunks, current, line),
+        (true, false) => collections::emit_shift(chunks, current, line),
+        (false, true) => {
+            // The last element, left in place.
+            chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+            collections::emit_len(chunks, current, line);
+            chunks[current].emit_i32_const(1, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            collections::emit_get(chunks, current, line);
+        }
+        (false, false) => {
+            chunks[current].emit_i32_const(0, line);
+            collections::emit_get(chunks, current, line);
+        }
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cell, line);
+    vybe_compiler::primitives::references::emit_cell_store(chunks, current, value, line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(
+        &mut chunks[current],
+        line,
+        true,
+    );
+    chunks[current].emit_else(line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(
+        &mut chunks[current],
+        line,
+        false,
+    );
+    chunks[current].emit_end(line);
+}
+
+/// `TryGetValue(key, out value)` — a BOOL answer with the value written through
+/// the out-parameter, the same contract as [`emit_try_out`]. It used to answer
+/// the VALUE and leave the out-parameter untouched, so `$ok` held the item and
+/// `$v` stayed at its default.
+///
+/// Stack: `[map, key, ref]` → `[bool]`.
+pub fn emit_dict_try_get_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let (map, key, cell) = (base, base + 1, base + 2);
+    let value = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    let has = chunks[current].add_import("ecma:map", "has");
+    chunks[current].emit_call(has, 2, line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    let get = chunks[current].add_import("ecma:map", "get");
+    chunks[current].emit_call(get, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cell, line);
+    vybe_compiler::primitives::references::emit_cell_store(chunks, current, value, line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(
+        &mut chunks[current],
+        line,
+        true,
+    );
+    chunks[current].emit_else(line);
+    // .NET leaves the out-parameter at `default(T)`; zero is what every other
+    // miss in this adapter writes.
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cell, line);
+    vybe_compiler::primitives::references::emit_cell_store(chunks, current, value, line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(
+        &mut chunks[current],
+        line,
+        false,
+    );
+    chunks[current].emit_end(line);
 }

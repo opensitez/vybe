@@ -16,7 +16,11 @@ use vybe_runtime::{Chunk, Value, opcode::Op};
 
 use super::object_fields::field_slot;
 
-const CANCELLED_KEY: &str = "__dotnet_cancelled";
+// ⛔ THE VM'S TASK-PROTOCOL SPELLING, NOT A .NET ONE. The await path reads this
+// flag off a task's cancellation token, and it reads it for every language —
+// so the key belongs to the protocol. It was `__dotnet_cancelled`, which is
+// what put .NET vocabulary inside `vybe_runtime`.
+const CANCELLED_KEY: &str = "__cancelled";
 const CANCEL_AT_MS_KEY: &str = "__dotnet_cancel_at_ms";
 const LINKED_KEY: &str = "__dotnet_linked_tokens";
 // ⛔ LOWERCASE — the dotnet value-type field convention (`tree_register`: a type
@@ -25,9 +29,11 @@ const LINKED_KEY: &str = "__dotnet_linked_tokens";
 // case-insensitive frontend, which folds `cts.Token` to `token` and reads EMPTY.
 const TOKEN_KEY: &str = "token";
 const REQUESTED_KEY: &str = "iscancellationrequested";
-/// The CancellationToken a task carries — `task.IsCanceled` asks it. Shared
-/// with `memory_stream_adapter`, whose `CopyToAsync` stamps the same field.
-pub(crate) const DELAY_TOKEN_KEY: &str = "__dotnet_delay_token";
+/// The CancellationToken a task carries — `task.IsCanceled` asks it, and so
+/// does the VM's await. Shared with `memory_stream_adapter`, whose
+/// `CopyToAsync` stamps the same field. The spelling is the VM's task
+/// protocol, so no language name reaches the await path.
+pub(crate) const DELAY_TOKEN_KEY: &str = "__cancel_token";
 const EXCEPTION_KEY: &str = "exception";
 const REGISTRATIONS_KEY: &str = "__dotnet_cancellation_registrations";
 const SOURCE_TYPE: &str = "CancellationTokenSource";
@@ -410,6 +416,12 @@ fn emit_cancelled_task_object(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("Canceled", line);
     struct_set_drop(&mut chunks[current], "status", line);
+    // `Canceled` is .NET's name for it; `rejected` is the settled state the VM
+    // reads. Both are stamped because both have a reader — `task.Status`
+    // answers the first, the await path branches on the second.
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_string_const("rejected", line);
+    struct_set_drop(&mut chunks[current], "__state", line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_drop(&mut chunks[current], "result", line);
@@ -875,15 +887,103 @@ pub fn emit_task_when_all(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// `Task.WhenAny(t1, …)` — completes with the first task to finish
 /// (`Promise.race`). Stack: [t1 .. tN] → [task].
 pub fn emit_task_when_any(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc > 1 {
-        for _ in 1..argc {
-            chunks[current].emit_op(Op::DROP, line);
-        }
-        call_import(chunks, current, "ecma:promise", "resolve", 1, line);
-        return;
-    }
     emit_pack_task_args(chunks, current, argc, line);
+    let tasks_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tasks_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
     call_import(chunks, current, "ecma:promise", "race", 1, line);
+    let outer_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, outer_slot, line);
+
+    // ⛔ `WhenAny` ANSWERS A TASK *OF A TASK*, AND ECMA PROMISES FLATTEN.
+    // `race` adopts the winner's state rather than yielding the winner, so the
+    // winning TASK is stamped on the `Result` slot the read looks at first —
+    // the only place .NET's non-flattening `Task<Task>` can live.
+    let winner_slot = emit_first_settled_task(chunks, current, tasks_slot, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, outer_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, winner_slot, line);
+    struct_set_drop(chunk, "Result", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, outer_slot, line);
+}
+
+/// The winning task of a `WhenAny`, answered directly.
+///
+/// This is what `Task.WhenAny(…).Result` needs: a SYNCHRONOUS read cannot wait
+/// for a raced promise, which settles on a microtask. The C# front end rewrites
+/// that exact chain onto this entry point.
+///
+/// Stack: `[t1 … tN]` → `[task]`.
+pub fn emit_task_when_any_completed(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_pack_task_args(chunks, current, argc, line);
+    let tasks_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tasks_slot, line);
+    let winner_slot = emit_first_settled_task(chunks, current, tasks_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, winner_slot, line);
+}
+
+/// The first task in `tasks_slot` that is no longer pending, or the first task
+/// when none has settled. `WhenAny` promises no order among tasks that have
+/// already completed, so any settled one is a correct winner.
+fn emit_first_settled_task(
+    chunks: &mut [Chunk],
+    current: usize,
+    tasks_slot: u16,
+    line: u32,
+) -> u16 {
+    let idx_slot = chunks[current].alloc_scratch(4);
+    let len_slot = idx_slot + 1;
+    let winner_slot = idx_slot + 2;
+    let candidate_slot = idx_slot + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, winner_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, candidate_slot, line);
+
+    // Skip out of this block while the candidate is still pending; otherwise it
+    // is the winner and the search is over.
+    let still_pending = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, candidate_slot, line);
+    struct_get(&mut chunks[current], "__state", line);
+    chunks[current].emit_string_const("pending", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, candidate_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, winner_slot, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(still_pending);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    winner_slot
 }
 
 /// `antecedent.ContinueWith(fn)` — run `fn(antecedent)` once the antecedent has

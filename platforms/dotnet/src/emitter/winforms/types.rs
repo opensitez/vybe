@@ -66,7 +66,7 @@ static KNOWN_TYPE_MAPPINGS: LazyLock<Vec<KnownTypeMapping>> = LazyLock::new(|| {
             if export.class.name != "Form" {
                 return None;
             }
-            let target = export.class.constructor.as_ref()?.backing.as_ref()?;
+            let target = export.class.constructor()?.backing.as_ref()?;
             Some(KnownTypeMapping {
                 name: "form",
                 interface: export.interface,

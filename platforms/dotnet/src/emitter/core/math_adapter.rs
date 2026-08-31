@@ -32,6 +32,130 @@ fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     );
 }
 
+fn emit_throw_argument_out_of_range(chunk: &mut Chunk, message: &str, line: u32) {
+    vybe_compiler::primitives::errors::emit_exception_new(
+        chunk,
+        "ArgumentOutOfRangeException",
+        ValueSource::ConstStr(message.to_string()),
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+}
+
+/// `Math.Round(value)` / `(value, digits)` / `(value, digits, mode)`.
+///
+/// The mode is a `MidpointRounding` ordinal, and the five modes are the five
+/// ways .NET breaks a tie. Verified against the .NET SDK over every mode × a
+/// midpoint, a non-midpoint and a negative:
+///
+/// | mode | ordinal | rule |
+/// |---|---|---|
+/// | `ToEven` | 0 | ties to the even neighbour — the .NET DEFAULT |
+/// | `AwayFromZero` | 1 | ties away from zero |
+/// | `ToZero` | 2 | truncate |
+/// | `ToNegativeInfinity` | 3 | floor |
+/// | `ToPositiveInfinity` | 4 | ceil |
+///
+/// ⛔`ToZero`/`ToNegativeInfinity`/`ToPositiveInfinity` are NOT tie rules — they
+/// apply to every value, not just a midpoint, which is why each is its own
+/// opcode rather than a nudge before `F64_NEAREST`.
+///
+/// Scaling by `10^digits` first is what makes one implementation serve all
+/// three arities: `Round(v)` is `digits = 0`, and the mode-only overload is the
+/// three-argument one with `digits = 0` (measured identical for all 25
+/// mode × value pairs), so no caller needs a fourth shape.
+pub fn emit_round(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let scratch = chunk.alloc_scratch(4);
+    let (mode, digits, value, factor) = (scratch, scratch + 1, scratch + 2, scratch + 3);
+
+    if argc >= 3 {
+        set(chunk, mode, line);
+    } else {
+        chunk.emit_f64_const(0.0, line);
+        set(chunk, mode, line);
+    }
+    if argc >= 2 {
+        set(chunk, digits, line);
+    } else {
+        chunk.emit_f64_const(0.0, line);
+        set(chunk, digits, line);
+    }
+    set(chunk, value, line);
+
+    // `digits` is bounded 0..=15 and .NET throws outside it. Guarded only where
+    // a caller actually supplied one: the mode-only and no-argument forms
+    // synthesize 0, which is always in range.
+    if argc >= 2 {
+        get(chunk, digits, line);
+        chunk.emit_f64_const(0.0, line);
+        chunk.emit_op(Op::F64_LT, line);
+        get(chunk, digits, line);
+        chunk.emit_f64_const(15.0, line);
+        chunk.emit_op(Op::F64_GT, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_if(line);
+        emit_throw_argument_out_of_range(
+            chunk,
+            "Rounding digits must be between 0 and 15, inclusive. (Parameter 'digits')",
+            line,
+        );
+        chunk.emit_end(line);
+    }
+
+    chunk.emit_f64_const(10.0, line);
+    get(chunk, digits, line);
+    let pow = chunk.add_import("ecma:math", "pow");
+    chunk.emit_call(pow, 2, line);
+    set(chunk, factor, line);
+
+    // The scaled value, rounded by the mode, then unscaled.
+    get(chunk, value, line);
+    get(chunk, factor, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_round_scaled(chunk, mode, line);
+    get(chunk, factor, line);
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
+/// The scaled value is on the stack; leave it rounded per the mode in `mode`.
+fn emit_round_scaled(chunk: &mut Chunk, mode: u16, line: u32) {
+    let scaled = chunk.alloc_scratch(1);
+    set(chunk, scaled, line);
+
+    // An if/else ladder over the four non-default ordinals; `ToEven` (0) and
+    // anything unrecognised fall through to `F64_NEAREST`, which IS ties-to-even.
+    //
+    // `AwayFromZero` has no opcode: it is `trunc(x + copysign(0.5, x))`, which
+    // pushes a tie outward in whichever direction the value already points and
+    // leaves a non-tie where it was.
+    for ordinal in [1.0, 2.0, 3.0, 4.0] {
+        get(chunk, mode, line);
+        chunk.emit_f64_const(ordinal, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if_value(line);
+        get(chunk, scaled, line);
+        match ordinal as i32 {
+            1 => {
+                chunk.emit_f64_const(0.5, line);
+                get(chunk, scaled, line);
+                chunk.emit_op(Op::F64_COPYSIGN, line);
+                chunk.emit_op(Op::F64_ADD, line);
+                chunk.emit_op(Op::F64_TRUNC, line);
+            }
+            2 => chunk.emit_op(Op::F64_TRUNC, line),
+            3 => chunk.emit_op(Op::F64_FLOOR, line),
+            _ => chunk.emit_op(Op::F64_CEIL, line),
+        }
+        chunk.emit_else(line);
+    }
+    get(chunk, scaled, line);
+    chunk.emit_op(Op::F64_NEAREST, line);
+    for _ in 0..4 {
+        chunk.emit_end(line);
+    }
+}
+
 /// `[a, b] → [{Quotient, Remainder, Item1, Item2}]`.
 ///
 /// ⛔ .NET 7 added this TUPLE overload alongside the older out-param one, and

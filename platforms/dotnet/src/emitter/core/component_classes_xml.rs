@@ -56,6 +56,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.xml_attribute".into()),
                 ))
+                // See the `XDocument` note: the recursive DOM lookup IS
+                // `Descendants`.
+                .with_method(MethodDef::new(
+                    "Descendants",
+                    1,
+                    MethodBody::Common("dotnet.xml_elements".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.xml_xdocument_parse".into()),
+                ))
                 .with_method(MethodDef::new(
                     "ToString",
                     0,
@@ -97,6 +109,39 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Root",
                     0,
                     MethodBody::Common("dotnet.xml_xdocument_root".into()),
+                ))
+                // `XDocument` carried ONLY `Parse` and `Root`, so every query
+                // straight off the document resolved to nothing. These reach
+                // the same emitters `XElement` already uses.
+                //
+                // ⛔ `Descendants` IS `getElementsByTagName`: the DOM method is
+                // RECURSIVE over the whole subtree, which is LINQ-to-XML's
+                // `Descendants` semantics exactly, while `Elements` is
+                // direct-children-only (`dotnet.xml_child_elements`).
+                .with_method(MethodDef::new(
+                    "Descendants",
+                    1,
+                    MethodBody::Common("dotnet.xml_elements".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Elements",
+                    1,
+                    MethodBody::Common("dotnet.xml_elements".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Element",
+                    1,
+                    MethodBody::Common("dotnet.xml_element".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Value",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
                 )),
         ),
         DotnetClassExport::new(

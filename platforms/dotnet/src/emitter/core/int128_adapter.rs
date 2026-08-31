@@ -247,3 +247,48 @@ pub fn emit_is_numeric(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::F64_EQ, line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
 }
+
+/// `IsPow2(v)` — `v > 0 && (v & (v - 1)) == 0`. Stack `[bigint] -> [bool]`.
+///
+/// Emitted here rather than composed in the synthesized class because the
+/// composite operations all live on this side; see the note above.
+pub fn emit_is_pow2(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    cmp_const(&mut chunks[current], v, "gt", 0, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], v, line);
+    get(&mut chunks[current], v, line);
+    big_const(&mut chunks[current], 1, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "sub", 2, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "and", 2, line);
+    let masked = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], masked, line);
+    cmp_const(&mut chunks[current], masked, "eq", 0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `ToString("X")` / `ToString("x")` — hex. Stack `[bigint, upper] -> [string]`.
+///
+/// §21.2.3.3 `BigInt.prototype.toString(radix)` renders LOWERCASE, and .NET's
+/// `"X"` is uppercase (`"x"` is the lowercase one), so the case is applied
+/// here rather than left to the caller.
+pub fn emit_to_hex(chunks: &mut [Chunk], current: usize, line: u32) {
+    let upper = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], upper, line);
+    chunks[current].emit_i32_const(16, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "toStringRadix", 2, line);
+    let text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], text, line);
+    get(&mut chunks[current], upper, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], text, line);
+    vybe_compiler::primitives::strings::emit_to_upper(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], text, line);
+    chunks[current].emit_end(line);
+}

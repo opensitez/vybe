@@ -17,20 +17,90 @@ fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message:
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
+/// Is this `StringComparison` one of the case-insensitive members?
+///
+/// `System.StringComparison` is registered in the namespace tree as ordinals,
+/// so the ignore-case members arrive as the values .NET defines them with:
+/// `CurrentCultureIgnoreCase` 1, `InvariantCultureIgnoreCase` 3,
+/// `OrdinalIgnoreCase` 5.
+///
+/// ⛔ The marker STRINGS are still accepted because the vb and csharp walkers
+/// fold `StringComparison.X` through `static_member_constant` before the tree
+/// is ever consulted, so those two languages deliver a name here. They can go
+/// once those folds do; a receiver that resolves through the tree already
+/// delivers the ordinal.
 fn emit_ignore_case_flag(chunk: &mut Chunk, comparison_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
     chunk.emit_bool_const(true, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
-    chunk.emit_string_const("__dotnet_stringcomparison_ordinalignorecase", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_op(Op::I32_OR, line);
+    for ordinal in [1i32, 3, 5] {
+        chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
+        chunk.emit_i32_const(ordinal, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_op(Op::I32_OR, line);
+    }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
-    chunk.emit_string_const("__dotnet_stringcomparison_invariantignorecase", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_op(Op::I32_OR, line);
+    for marker in [
+        "__dotnet_stringcomparison_ordinalignorecase",
+        "__dotnet_stringcomparison_invariantignorecase",
+    ] {
+        chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
+        chunk.emit_string_const(marker, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_op(Op::I32_OR, line);
+    }
+}
+
+/// The `NormalizationForm` ordinal as the form name ECMA's `normalize` takes.
+/// `FormC` (1) is .NET's default and the fallback, so an unrecognised value
+/// normalizes rather than throwing.
+fn emit_normalization_form_name(chunk: &mut Chunk, form_slot: u16, line: u32) {
+    for (ordinal, name) in [(2i32, "NFD"), (5, "NFKC"), (6, "NFKD")] {
+        chunk.emit_op_u16(Op::LOCAL_GET, form_slot, line);
+        chunk.emit_i32_const(ordinal, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const(name, line);
+        chunk.emit_else(line);
+    }
+    chunk.emit_string_const("NFC", line);
+    for _ in 0..3 {
+        chunk.emit_end(line);
+    }
+}
+
+fn emit_normalize_to_slot(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> (u16, u16) {
+    let form_slot = reserve_slot(&mut chunks[current]);
+    let value_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, form_slot, line);
+    } else {
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, form_slot, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_normalization_form_name(&mut chunks[current], form_slot, line);
+    host::emit(&mut chunks[current], "ecma:string", "normalize", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    (value_slot, result_slot)
+}
+
+/// `String.Normalize([NormalizationForm])`.
+pub fn emit_string_normalize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (_, result_slot) = emit_normalize_to_slot(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `String.IsNormalized([NormalizationForm])` — whether normalizing changes
+/// nothing, which is the definition rather than a separate algorithm.
+pub fn emit_string_is_normalized(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (value_slot, result_slot) = emit_normalize_to_slot(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 fn emit_load_maybe_lowercase(chunk: &mut Chunk, value_slot: u16, ignore_slot: u16, line: u32) {

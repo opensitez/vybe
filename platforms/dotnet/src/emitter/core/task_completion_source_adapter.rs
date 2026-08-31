@@ -266,6 +266,31 @@ pub fn emit_tcs_settle(
         // `resolve`/`reject` answer undefined — the settle is the point.
         chunk.emit_op(Op::DROP, line);
 
+        // ⛔ THE SETTLED VALUE IS STAMPED, NOT ONLY RESOLVED. `t.Result` is
+        // lowered by the shared compiler as "read the `Result` slot, and AWAIT
+        // the task when that slot is undefined" — and awaiting a
+        // `withResolvers` promise from synchronous top-level code hands back
+        // nothing. The value is known the moment the source completes, so it is
+        // written where the read looks for it and the await never runs.
+        if settle == Settle::Result {
+            lget(chunk, obj_slot, line);
+            class_slots::emit_class_get(
+                chunk,
+                ObjSource::Stack,
+                &field_slot(PROMISE_KEY),
+                Dest::Stack,
+                line,
+            );
+            lget(chunk, value_slot, line);
+            class_slots::emit_class_set(
+                chunk,
+                ObjSource::Stack,
+                &field_slot("Result"),
+                ValueSource::Stack,
+                line,
+            );
+        }
+
         // ⛔ CANCELLATION HAS TO BE CARRIED, NOT DERIVED. ECMA has ONE
         // `rejected` state; .NET distinguishes `Canceled` from `Faulted`. The
         // stamp is what lets `task.IsCanceled` and `task.Status` answer

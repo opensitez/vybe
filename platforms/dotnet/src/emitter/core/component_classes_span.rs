@@ -96,14 +96,49 @@ fn view_class(name: &'static str) -> ClassType {
 /// `ecma:object.valueOf` IS that identity, per its spec default (§20.1.3.7
 /// returns the object itself). It hands back the receiver's `Arc`, so the
 /// array's identity — and every write through it — survives the projection.
+/// ⛔ THE MEMORY SLICE IS DECLARED BEFORE THE VIEW'S. `tree_register` keeps the
+/// FIRST declaration of an arity, so a `Slice` added after `view_class` would
+/// never be reached — the shared `get_range_checked` would win and the ToString
+/// ROLE would never be bound on the result.
 fn memory_class(name: &'static str) -> ClassType {
     // `view_class` already installs the argc-branching `dotnet.span_ctor`
     // constructor; `new Memory<int>(array)` is the 1-arg (identity) branch.
-    view_class(name).with_method(MethodDef::new(
-        "Span",
-        0,
-        MethodBody::HostCall(HostTarget::new("ecma:object", "valueOf")),
-    ))
+    let mut class = ClassType::new(name)
+        .with_method(MethodDef::new(
+            "Slice",
+            1,
+            MethodBody::Common("dotnet.memory_slice".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Slice",
+            2,
+            MethodBody::Common("dotnet.memory_slice".into()),
+        ));
+    for (method, arity, module, func) in VIEW_HOST_METHODS {
+        class = class.with_method(MethodDef::new(
+            *method,
+            *arity,
+            MethodBody::HostCall(HostTarget::new(*module, *func)),
+        ));
+    }
+    for (method, arity, common) in VIEW_COMMON_METHODS {
+        class = class.with_method(MethodDef::new(
+            *method,
+            *arity,
+            MethodBody::Common((*common).into()),
+        ));
+    }
+    class
+        .with_method(MethodDef::new(
+            "Span",
+            0,
+            MethodBody::HostCall(HostTarget::new("ecma:object", "valueOf")),
+        ))
+        .with_method(MethodDef::new(
+            "ToString",
+            0,
+            MethodBody::Common("dotnet.memory_to_string".into()),
+        ))
 }
 
 /// `System.MemoryExtensions` — where .NET actually declares `AsSpan`,
@@ -123,10 +158,15 @@ fn memory_extensions_class() -> ClassType {
             2,
             MethodBody::HostCall(HostTarget::new("ecma:array", "slice")),
         ))
+        // ⛔ THE WALKER SENDS EVERY `Slice` HERE. `m.Slice(0, 5)` is rewritten
+        // to `MemoryExtensions.Slice(m, 0, 5)`, so the `ClassType` on
+        // `ReadOnlyMemory` is never consulted — this is the only site that can
+        // bind the ToString ROLE on the result, which is what makes it answer
+        // through `var` rather than only through an explicit annotation.
         .with_method(MethodDef::static_method(
             "Slice",
             3,
-            MethodBody::Common("dotnet.get_range_checked".into()),
+            MethodBody::Common("dotnet.memory_slice".into()),
         ))
         .with_method(MethodDef::static_method(
             "ToArray",
@@ -309,6 +349,140 @@ fn array_pool_class() -> ClassType {
         ))
 }
 
+/// `System.Buffers.Binary.BinaryPrimitives`.
+///
+/// ⛔ Registered as a TREE LEAF, not a synthesized class: the corpus writes the
+/// fully-qualified `System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian`,
+/// and only a leaf answers a dotted path.
+pub fn binary_primitives_class() -> ClassType {
+    ClassType::new("BinaryPrimitives")
+                .with_method(MethodDef::static_method(
+                    "ReadInt16LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i16_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadInt16BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i16_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt16LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u16_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt16BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u16_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadInt32LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i32_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadInt32BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i32_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt32LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u32_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt32BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u32_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadInt64LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i64_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadInt64BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_i64_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt64LittleEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u64_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReadUInt64BigEndian",
+                    1,
+                    MethodBody::Common("dotnet.binprim_read_u64_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt16LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i16_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt16BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i16_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt16LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u16_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt16BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u16_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt32LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i32_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt32BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i32_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt32LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u32_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt32BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u32_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt64LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i64_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteInt64BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_i64_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt64LittleEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u64_le".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteUInt64BigEndian",
+                    2,
+                    MethodBody::Common("dotnet.binprim_write_u64_be".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReverseEndianness",
+                    1,
+                    MethodBody::Common("dotnet.binprim_reverse_i32".into()),
+                ))
+}
+
 fn memory_pool_class() -> ClassType {
     ClassType::new("MemoryPool")
         .with_method(MethodDef::static_method(
@@ -386,6 +560,116 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     exports.push(DotnetClassExport::new(
         "dotnet.System.Buffers",
         array_pool_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers.Binary",
+        binary_primitives_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Runtime.InteropServices",
+        ClassType::new("MemoryMarshal").with_method(MethodDef::static_method(
+            "CastBytes",
+            3,
+            MethodBody::Common("dotnet.memory_marshal_cast".into()),
+        )),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        ClassType::new("ReadOnlySequence")
+            .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.seq_new")),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        ClassType::new("SequenceReader")
+            .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.seq_reader_new"))
+            .with_method(MethodDef::new(
+                "ReadNext",
+                0,
+                MethodBody::Common("dotnet.seq_read_next".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Remaining",
+                0,
+                MethodBody::Common("dotnet.seq_remaining".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Length",
+                0,
+                MethodBody::Common("dotnet.seq_remaining".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Consumed",
+                0,
+                MethodBody::Common("dotnet.seq_consumed".into()),
+            )),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        ClassType::new("ArrayBufferWriter")
+            .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.abw_new"))
+            .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.abw_new"))
+            .with_method(MethodDef::new(
+                "GetSpan",
+                1,
+                MethodBody::Common("dotnet.abw_get_span".into()),
+            ))
+            .with_method(MethodDef::new(
+                "GetMemory",
+                1,
+                MethodBody::Common("dotnet.abw_get_span".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Advance",
+                1,
+                MethodBody::Common("dotnet.abw_advance".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Clear",
+                0,
+                MethodBody::Common("dotnet.abw_clear".into()),
+            ))
+            .with_method(MethodDef::new(
+                "WrittenCount",
+                0,
+                MethodBody::Common("dotnet.abw_written_count".into()),
+            ))
+            .with_method(MethodDef::new(
+                "WrittenSpan",
+                0,
+                MethodBody::Common("dotnet.abw_written_span".into()),
+            ))
+            .with_method(MethodDef::new(
+                "WrittenMemory",
+                0,
+                MethodBody::Common("dotnet.abw_written_span".into()),
+            )),
+    ));
+    // `Marshal` — a tree leaf so the fully-qualified
+    // `System.Runtime.InteropServices.Marshal.AllocHGlobal` resolves; the
+    // synthesized interop classes beside it answer only the short name.
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Runtime.InteropServices",
+        ClassType::new("Marshal")
+            .with_method(MethodDef::static_method(
+                "AllocHGlobal",
+                1,
+                MethodBody::Common("dotnet.marshal_alloc".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "AllocCoTaskMem",
+                1,
+                MethodBody::Common("dotnet.marshal_alloc".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "FreeHGlobal",
+                1,
+                MethodBody::Common("dotnet.marshal_free".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "FreeCoTaskMem",
+                1,
+                MethodBody::Common("dotnet.marshal_free".into()),
+            )),
     ));
     exports.push(DotnetClassExport::new(
         "dotnet.System.Buffers",

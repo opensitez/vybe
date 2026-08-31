@@ -170,7 +170,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("Queue")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new(
+                    "TryDequeue",
+                    1,
+                    MethodBody::Common("dotnet.try_take_front".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryPeek",
+                    1,
+                    MethodBody::Common("dotnet.try_peek_front".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "Enqueue",
                     1,
@@ -205,6 +227,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToArray",
                     0,
                     MethodBody::Common("collections.clone".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.dict_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimExcess",
+                    0,
+                    MethodBody::Common("dotnet.dict_trim_excess".into()),
                 )),
         ),
         // .NET `Stack<T>` is a JS Array used LIFO - `Push` appends
@@ -213,7 +245,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("Stack")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new(
+                    "TryPop",
+                    1,
+                    MethodBody::Common("dotnet.try_take_back".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryPeek",
+                    1,
+                    MethodBody::Common("dotnet.try_peek_back".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "Push",
                     1,
@@ -248,6 +302,20 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToArray",
                     0,
                     MethodBody::Common("collections.clone".into()),
+                ))
+                // A capacity is advisory over a JS array: `EnsureCapacity`
+                // answers the size asked for, `TrimExcess` does nothing. Both
+                // emits are collection-generic; the `dict_` in their names is
+                // where they were first needed, not what they apply to.
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.dict_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimExcess",
+                    0,
+                    MethodBody::Common("dotnet.dict_trim_excess".into()),
                 )),
         ),
         // .NET `HashSet<T>` is a real cross-language Set. The common primitive
@@ -255,8 +323,20 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // than naming `ecma:set.*` directly.
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
+            // ⛔ONE constructor. `with_constructor` OVERWRITES rather than adding
+            // an overload, so a second call makes the first dead code and its
+            // body then runs for BOTH arities. The backing branches on `argc`.
             ClassType::new("HashSet")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("sets.new"))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("dotnet.set_copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("dotnet.set_to_array".into()),
+                ))
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.set_new_from_iterable"),
                 )
@@ -334,6 +414,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "IsProperSupersetOf",
                     1,
                     MethodBody::Common("dotnet.hashset_is_proper_superset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.dict_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimExcess",
+                    0,
+                    MethodBody::Common("dotnet.dict_trim_excess".into()),
                 )),
         ),
         // `ConcurrentDictionary` is a thread-safe `Dictionary` - same
@@ -355,15 +445,30 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     2,
                     MethodBody::Common("dotnet.dict_try_get_value".into()),
                 ))
+                // ⛔ NEITHER OF THESE IS A PLAIN `set`/`get`. `AddOrUpdate`
+                // runs an UPDATE FACTORY over the existing value when the key
+                // is present, and `GetOrAdd` INSERTS when it is absent —
+                // routing them to the raw map operations dropped the factory
+                // and never wrote the default.
                 .with_method(MethodDef::new(
                     "AddOrUpdate",
                     3,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "set")),
+                    MethodBody::Common("dotnet.dict_add_or_update".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetOrAdd",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "get")),
+                    MethodBody::Common("dotnet.dict_get_or_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryUpdate",
+                    3,
+                    MethodBody::Common("dotnet.dict_try_update".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryRemove",
+                    1,
+                    MethodBody::Common("dotnet.dict_try_remove".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ContainsKey",
@@ -386,15 +491,59 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("ecma:map", "size")),
                 )),
         ),
+        // `Partitioner` — the range partitioner. `Create(from, to, size)` keeps
+        // its bounds so the partitions are COMPUTED when asked for, which is
+        // what makes `GetPartitions`/`GetOrderablePartitions` answer real
+        // ranges instead of a placeholder.
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Concurrent",
+            ClassType::new("Partitioner")
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    1,
+                    MethodBody::Common("dotnet.partitioner_create".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    2,
+                    MethodBody::Common("dotnet.partitioner_create".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    3,
+                    MethodBody::Common("dotnet.partitioner_create".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetPartitions",
+                    1,
+                    MethodBody::Common("dotnet.partitioner_get_partitions".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetOrderablePartitions",
+                    1,
+                    MethodBody::Common("dotnet.partitioner_get_partitions".into()),
+                )),
+        ),
         collection_class_common(
             "dotnet.System.Collections.Concurrent",
             "ConcurrentBag",
             "collections.new",
             &[
                 ("Add", 1, "collections.push"),
-                ("TryTake", 1, "dotnet.concurrent_stack_try_pop"),
-                ("TryPeek", 1, "dotnet.concurrent_stack_try_peek"),
+                ("TryTake", 1, "dotnet.try_take_back"),
+                ("TryPeek", 1, "dotnet.try_peek_back"),
+                // The value-returning forms the `out`-parameter desugar calls.
+                // A tree-registered method carries an ARITY and no pass-by
+                // mode, so the writeback cannot happen inside the call; the
+                // walker turns `TryTake(out v)` into `(v = TryTake()) != null`
+                // and these are what it lands on.
+                ("TryTake", 0, "collections.pop"),
+                ("TryPeek", 0, "dotnet.concurrent_peek_last"),
                 ("Count", 0, "dotnet.observable_collection_count"),
+                ("Clear", 0, "collections.clear"),
+                ("ToArray", 0, "collections.clone"),
+                ("CopyTo", 2, "collections.copy_to"),
+                ("IsEmpty", 0, "dotnet.collection_is_empty"),
             ],
         ),
         DotnetClassExport::new(
@@ -458,7 +607,14 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Concurrent",
             ClassType::new("ConcurrentQueue")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "Enqueue",
                     1,
@@ -467,27 +623,78 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryDequeue",
                     1,
-                    MethodBody::Common("dotnet.concurrent_queue_try_dequeue".into()),
+                    MethodBody::Common("dotnet.try_take_front".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     1,
-                    MethodBody::Common("dotnet.concurrent_queue_try_peek".into()),
+                    MethodBody::Common("dotnet.try_peek_front".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryDequeue",
+                    0,
+                    MethodBody::Common("collections.shift".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryPeek",
+                    0,
+                    MethodBody::Common("dotnet.concurrent_peek_first".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
                     0,
                     MethodBody::Common("collections.length".into()),
+                ))
+                // The members every concurrent collection shares with its
+                // ordinary counterpart. They were absent, so `$q.Clear()`
+                // answered `undefined is not callable` on a collection whose
+                // `Enqueue` worked.
+                .with_method(MethodDef::new(
+                    "Clear",
+                    0,
+                    MethodBody::Common("collections.clear".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("collections.clone".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsEmpty",
+                    0,
+                    MethodBody::Common("dotnet.collection_is_empty".into()),
                 )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Collections.Concurrent",
             ClassType::new("ConcurrentStack")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "Push",
                     1,
                     MethodBody::Common("collections.push".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PushRange",
+                    1,
+                    MethodBody::Common("dotnet.concurrent_stack_push_range".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryPopRange",
+                    1,
+                    MethodBody::Common("dotnet.try_take_back_range".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPop",
@@ -497,22 +704,45 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryPop",
                     1,
-                    MethodBody::Common("dotnet.concurrent_stack_try_pop".into()),
+                    MethodBody::Common("dotnet.try_take_back".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     0,
-                    MethodBody::Common("collections.get".into()),
+                    MethodBody::Common("dotnet.concurrent_peek_last".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     1,
-                    MethodBody::Common("dotnet.concurrent_stack_try_peek".into()),
+                    MethodBody::Common("dotnet.try_peek_back".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
                     0,
                     MethodBody::Common("collections.length".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Clear",
+                    0,
+                    MethodBody::Common("collections.clear".into()),
+                ))
+                // ⛔A STACK'S `ToArray` IS TOP-TO-BOTTOM. `collections.clone`
+                // hands back insertion order, which is the reverse of what
+                // .NET documents for `Stack<T>` and `ConcurrentStack<T>`.
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("dotnet.stack_to_array".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsEmpty",
+                    0,
+                    MethodBody::Common("dotnet.collection_is_empty".into()),
                 )),
         ),
         // `SortedDictionary<K,V>` keeps the `ecma:map` backing (so lookup /
@@ -524,12 +754,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Collections.Generic",
             ClassType::new("SortedDictionary")
                 .with_constructor(
-                    ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")),
+                    ConstructorDef::new(0).with_common_backing("dotnet.sorted_map_new"),
+                )
+                // The `IComparer` overload. Without it the comparer argument
+                // was dropped on the floor.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.sorted_map_new"),
                 )
                 .with_method(MethodDef::new(
                     "Add",
                     2,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "set")),
+                ))
+                // Registered on `Dictionary` but not here, so it answered
+                // False for every key.
+                .with_method(MethodDef::new(
+                    "ContainsValue",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "containsValue")),
                 ))
                 .with_method(MethodDef::new(
                     "Item",
@@ -595,8 +837,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // is rebuilt as a set so its own methods resolve through the set path.
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
+            // One constructor, branching on `argc` — see the `HashSet` note.
             ClassType::new("SortedSet")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("sets.new"))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("dotnet.set_copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("dotnet.set_to_array".into()),
+                ))
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.set_new_ignore_comparer"),
                 )
@@ -705,7 +957,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("LinkedList")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("collections.clone".into()),
+                ))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "AddFirst",
                     1,
@@ -750,7 +1019,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections",
             ClassType::new("ArrayList")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
+                                // Every one of these has a `(IEnumerable<T>)` overload in .NET
+                // as well as the empty one, and `with_constructor` OVERWRITES,
+                // so both arities are ONE registration whose backing reads
+                // `argc`. Declared empty-only, the enumerable form silently
+                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_method(MethodDef::new(
                     "Add",
                     1,
@@ -879,10 +1160,75 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "AddRange",
                     1,
-                    MethodBody::Common("collections.concat".into()),
+                    // ⛔`collections.concat` answers a NEW array and leaves the
+                    // receiver alone; .NET's `AddRange` MUTATES. `List<T>`
+                    // already binds the mutating emitter, so the two spellings
+                    // of one method disagreed and `ArrayList.AddRange` was a
+                    // silent no-op.
+                    MethodBody::Common("dotnet.list_add_range".into()),
                 )),
         ),
-        constructor_class("dotnet.System.Collections", "Hashtable", "ecma:map", "new"),
+        // `Hashtable` is `Dictionary` without the type parameters — the same
+        // `ecma:map` backing and the same members. It carried a CONSTRUCTOR and
+        // nothing else, so `New-Object Hashtable` built a map that answered
+        // `undefined is not callable` on its own `Add`.
+        DotnetClassExport::new(
+            "dotnet.System.Collections",
+            ClassType::new("Hashtable")
+                .with_constructor(
+                    ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")),
+                )
+                .with_method(MethodDef::new(
+                    "Add",
+                    2,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "set")),
+                ))
+                .with_method(MethodDef::new(
+                    "Item",
+                    1,
+                    MethodBody::Common("dotnet.dict_get_or_throw".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ContainsKey",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "has")),
+                ))
+                .with_method(MethodDef::new(
+                    "Contains",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "has")),
+                ))
+                .with_method(MethodDef::new(
+                    "ContainsValue",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "containsValue")),
+                ))
+                .with_method(MethodDef::new(
+                    "Remove",
+                    1,
+                    MethodBody::Common("dotnet.dict_remove".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Keys",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "keys")),
+                ))
+                .with_method(MethodDef::new(
+                    "Values",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "values")),
+                ))
+                .with_method(MethodDef::new(
+                    "Clear",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "clear")),
+                ))
+                .with_method(MethodDef::new(
+                    "Count",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "size")),
+                )),
+        ),
         collection_class_common(
             "dotnet.System.Collections.ObjectModel",
             "ObservableCollection",
@@ -932,6 +1278,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections",
             ClassType::new("Collection")
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    2,
+                    MethodBody::Common("collections.copy_to".into()),
+                ))
                 .with_constructor(
                     ConstructorDef::new(0).with_common_backing("dotnet.vb_collection_new"),
                 )
@@ -980,11 +1331,12 @@ fn collection_class_common(
     ctor_common: &'static str,
     methods: &[(&'static str, u8, &'static str)],
 ) -> DotnetClassExport {
+    // ⛔`with_constructor` OVERWRITES. Each branch below therefore REPLACES the
+    // zero-argument declaration rather than joining it, so every backing named
+    // here has to serve both arities by reading `argc`.
     let mut class = ClassType::new(name)
         .with_constructor(ConstructorDef::new(0).with_common_backing(ctor_common));
-    if name == "List" {
-        class = class.with_constructor(ConstructorDef::new(1).with_common_backing(ctor_common));
-    } else if name == "ObservableCollection" {
+    if name == "ObservableCollection" {
         class = class.with_constructor(
             ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
         );

@@ -1,13 +1,94 @@
 use super::super::super::class_exports::DotnetClassExport;
 use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_runtime::component::ValType;
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
+        // `System.Text.Rune` — ONE Unicode scalar value.
+        //
+        // Everything but the scalar is derived from it, so the constructor
+        // computes `IsAscii`, `IsBmp` and the two encoded lengths once and
+        // stores them as fields; the reads are then ordinary field reads with
+        // no property machinery. The static classifiers unwrap the scalar and
+        // reuse `System.Char`'s tables rather than restating them.
+        DotnetClassExport::new(
+            "dotnet.System.Text",
+            [
+                ("IsDigit", "digit"),
+                ("IsLetter", "letter"),
+                ("IsLetterOrDigit", "letterordigit"),
+                ("IsUpper", "upper"),
+                ("IsLower", "lower"),
+                ("IsWhiteSpace", "whitespace"),
+                ("IsPunctuation", "punctuation"),
+                ("IsControl", "control"),
+            ]
+            .into_iter()
+            .fold(
+                ClassType::new("Rune")
+                    .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.rune_new"))
+                    .with_method(MethodDef::static_method(
+                        "ToUpperInvariant",
+                        1,
+                        MethodBody::Common("dotnet.rune_to_upper".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "ToLowerInvariant",
+                        1,
+                        MethodBody::Common("dotnet.rune_to_lower".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "ReplacementChar",
+                        0,
+                        MethodBody::Common("dotnet.rune_replacement_char".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "GetNumericValue",
+                        1,
+                        MethodBody::Common("dotnet.rune_numeric_value".into()),
+                    ))
+                    .with_method(MethodDef::new(
+                        "ToString",
+                        0,
+                        MethodBody::Common("dotnet.rune_to_string".into()),
+                    ))
+                    .with_method(MethodDef::new(
+                        "GetHashCode",
+                        0,
+                        MethodBody::Common("dotnet.rune_hash".into()),
+                    ))
+                    .with_method(MethodDef::new(
+                        "CompareTo",
+                        1,
+                        MethodBody::Common("dotnet.rune_compare_to".into()),
+                    ))
+                    .with_method(MethodDef::new(
+                        "Equals",
+                        1,
+                        MethodBody::Common("dotnet.rune_equals".into()),
+                    )),
+                |class, (name, kind)| {
+                    class.with_method(MethodDef::static_method(
+                        name,
+                        1,
+                        MethodBody::Common(format!("dotnet.rune_is_{kind}")),
+                    ))
+                },
+            ),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Text",
             ClassType::new("StringBuilder")
                 .with_constructor(
                     ConstructorDef::new(0).with_common_backing("dotnet.string_builder_new"),
+                )
+                // `New StringBuilder("seed")` — the backing already accepts it;
+                // only the DECLARATION was missing, so reflection had no
+                // 1-argument constructor to select.
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_common_backing("dotnet.string_builder_new")
+                        .with_params(vec![ValType::String]),
                 )
                 .with_method(MethodDef::new(
                     "Append",
@@ -225,6 +306,294 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "GroupNumberFromName",
                     1,
                     MethodBody::Common("dotnet.regex_group_number_from_name".into()),
+                )),
+        ),
+        // ── System.Security.Cryptography ────────────────────────────────
+        //
+        // ⛔ TREE LEAVES, NOT SYNTHESIZED CLASSES: the corpus writes the fully
+        // qualified `System.Security.Cryptography.SHA256.HashData(...)`, and a
+        // dotted path resolves through the tree. Registered here rather than in
+        // a language crate so VB reaches the identical surface.
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("AesGcm").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_true".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("ChaCha20Poly1305").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_true".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA3_256").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_false".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA3_384").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_false".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA3_512").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_false".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("AesCcm").with_method(MethodDef::static_method(
+                "IsSupported",
+                0,
+                MethodBody::Common("dotnet.crypto_supported_true".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography.X509Certificates",
+            ClassType::new("X509Certificate2").with_method(MethodDef::new(
+                "Dispose",
+                0,
+                MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA1")
+                .with_method(MethodDef::static_method(
+                    "HashData",
+                    1,
+                    MethodBody::Common("dotnet.crypto_sha1".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    0,
+                    MethodBody::Common("dotnet.crypto_create_sha1".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("MD5")
+                .with_method(MethodDef::static_method(
+                    "HashData",
+                    1,
+                    MethodBody::Common("dotnet.crypto_md5".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    0,
+                    MethodBody::Common("dotnet.crypto_create_md5".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("HashAlgorithm")
+                .with_method(MethodDef::new(
+                    "ComputeHash",
+                    1,
+                    MethodBody::Common("dotnet.crypto_compute_hash".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("RSA").with_method(MethodDef::static_method(
+                "Create",
+                1,
+                MethodBody::Common("dotnet.crypto_rsa_create".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Dispose",
+                0,
+                MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("ECDsa").with_method(MethodDef::static_method(
+                "Create",
+                1,
+                MethodBody::Common("dotnet.crypto_ecdsa_create".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Dispose",
+                0,
+                MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("Rfc2898DeriveBytes").with_method(MethodDef::static_method(
+                "Pbkdf2",
+                5,
+                MethodBody::Common("dotnet.crypto_pbkdf2".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography.X509Certificates",
+            ClassType::new("CertificateRequest")
+                .with_constructor(
+                    ConstructorDef::new(4).with_common_backing("dotnet.crypto_cert_request"),
+                )
+                .with_method(MethodDef::new(
+                    "CreateSelfSigned",
+                    2,
+                    MethodBody::Common("dotnet.crypto_self_signed".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA256").with_method(MethodDef::static_method(
+                "HashData",
+                1,
+                MethodBody::Common("dotnet.crypto_sha256".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("SHA512").with_method(MethodDef::static_method(
+                "HashData",
+                1,
+                MethodBody::Common("dotnet.crypto_sha512".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("HMACSHA256").with_method(MethodDef::static_method(
+                "HashData",
+                2,
+                MethodBody::Common("dotnet.crypto_hmac_sha256".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("HMACSHA512").with_method(MethodDef::static_method(
+                "HashData",
+                2,
+                MethodBody::Common("dotnet.crypto_hmac_sha512".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("IncrementalHash")
+                .with_method(MethodDef::static_method(
+                    "CreateHash",
+                    1,
+                    MethodBody::Common("dotnet.crypto_incremental_create".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AppendData",
+                    1,
+                    MethodBody::Common("dotnet.crypto_incremental_append".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetHashAndReset",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_finish".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetCurrentHash",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_finish".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("RandomNumberGenerator")
+                .with_method(MethodDef::static_method(
+                    "GetBytes",
+                    1,
+                    MethodBody::Common("dotnet.crypto_random_bytes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetInt32",
+                    2,
+                    MethodBody::Common("dotnet.crypto_random_int".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetInt32",
+                    1,
+                    MethodBody::Common("dotnet.crypto_random_int".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text.Json",
+            ClassType::new("JsonDocument").with_method(MethodDef::static_method(
+                "Parse",
+                1,
+                MethodBody::Common("dotnet.json_document_parse".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text.Json",
+            ClassType::new("JsonSerializerOptions").with_constructor(
+                ConstructorDef::new(0).with_common_backing("dotnet.json_options_new"),
+            ),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text.Json.Serialization.Metadata",
+            ClassType::new("DefaultJsonTypeInfoResolver").with_constructor(
+                ConstructorDef::new(0).with_common_backing("dotnet.json_type_info_resolver_new"),
+            ),
+        ),
+        // The five naming policies. Each is a VALUE in .NET — it can be stored
+        // in `JsonSerializerOptions.PropertyNamingPolicy` and have
+        // `ConvertName` called on it later — so each static mints an object
+        // rather than folding at the call site.
+        DotnetClassExport::new(
+            "dotnet.System.Text.Json",
+            ClassType::new("JsonNamingPolicy")
+                .with_method(MethodDef::static_method(
+                    "SnakeCaseLower",
+                    0,
+                    MethodBody::Common("dotnet.json_naming_snake_lower".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SnakeCaseUpper",
+                    0,
+                    MethodBody::Common("dotnet.json_naming_snake_upper".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "KebabCaseLower",
+                    0,
+                    MethodBody::Common("dotnet.json_naming_kebab_lower".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "KebabCaseUpper",
+                    0,
+                    MethodBody::Common("dotnet.json_naming_kebab_upper".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CamelCase",
+                    0,
+                    MethodBody::Common("dotnet.json_naming_camel".into()),
                 )),
         ),
         DotnetClassExport::new(

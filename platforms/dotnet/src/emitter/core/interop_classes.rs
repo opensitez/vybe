@@ -238,7 +238,7 @@ fn shared_const(name: &str, value: i64) -> ClassMember {
     }
 }
 
-fn ident(name: &str) -> Expression {
+pub(super) fn ident(name: &str) -> Expression {
     Expression::new(ExprKind::Ident(name.into()))
 }
 
@@ -443,7 +443,7 @@ fn eq(left: Expression, right: Expression) -> Expression {
     })
 }
 
-fn ret(value: Expression) -> Statement {
+pub(super) fn ret(value: Expression) -> Statement {
     Statement::new(StmtKind::Return(Some(value)))
 }
 

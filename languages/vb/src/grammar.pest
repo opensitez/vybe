@@ -773,7 +773,16 @@ member_chain_xml_child_axis = { "." ~ "<" ~ xml_name ~ ">" }
 // attribute read was a parse error.
 member_chain_xml_attribute_axis = { "." ~ "@" ~ xml_name }
 member_chain_access = { "." ~ member_identifier }
-member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_xml_attribute_axis | member_chain_invoke | member_chain_call | member_chain_access }
+// VB's null-conditional operators, `a?.B`, `a?.B()` and `a?(i)`. Each WRAPS the
+// plain chain rule rather than restating it, so the walker reuses one code path
+// and only marks the result — restating them is how the two spellings drift.
+// ⛔ `member_chain_null_call` must precede `member_chain_null_access`: PEG takes
+// the first alternative that succeeds, and the access rule matches the call's
+// prefix.
+member_chain_null_invoke = { "?" ~ member_chain_invoke }
+member_chain_null_call = { "?" ~ member_chain_call }
+member_chain_null_access = { "?" ~ member_chain_access }
+member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_xml_attribute_axis | member_chain_null_invoke | member_chain_null_call | member_chain_null_access | member_chain_invoke | member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
 call_statement = {
     call_keyword? ~ (

@@ -19,6 +19,40 @@ fn inst_host(name: &'static str, argc: u8, iface: &'static str, func: &'static s
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
+        // ── BitArray ──────────────────────────────────────────────────────
+        //
+        // Declared under `System.Collections`, where .NET puts it, rather than
+        // the `Specialized` namespace this file's other types live in.
+        //
+        // The representation is a plain boolean ARRAY, so the indexer, `Count`,
+        // `Clone` and `foreach` are the array's own members and the operators
+        // are the shared `bits.array_*` primitives. `And`/`Or`/`Xor`/`Not`
+        // mutate the receiver and return it, as .NET documents.
+        //
+        // `Length` reads as the element count and WRITES as a resize, so it is
+        // declared at both arities: arity 0 is the getter, arity 1 the setter.
+        DotnetClassExport::new(
+            "dotnet.System.Collections",
+            ClassType::new("BitArray")
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.bitarray_new"))
+                .with_method(inst("And", 1, "bits.array_and"))
+                .with_method(inst("Or", 1, "bits.array_or"))
+                .with_method(inst("Xor", 1, "bits.array_xor"))
+                .with_method(inst("Not", 0, "bits.array_not"))
+                .with_method(inst("SetAll", 1, "collections.fill_all"))
+                .with_method(inst("CopyTo", 2, "dotnet.bitarray_copy_to"))
+                .with_method(inst_host("Get", 1, "ecma:array", "get"))
+                .with_method(inst_host("Item", 1, "ecma:array", "get"))
+                .with_method(inst_host("Set", 2, "ecma:array", "set"))
+                .with_method(inst("Length", 0, "collections.length"))
+                .with_method(inst("Length", 1, "dotnet.bitarray_resize"))
+                .with_method(inst("Count", 0, "collections.length"))
+                .with_method(inst("Clone", 0, "collections.clone"))
+                // A BitArray is never synchronized and always has a lock
+                // object; the receiver serves as its own.
+                .with_method(inst("IsSynchronized", 0, "dotnet.bitarray_is_synchronized"))
+                .with_method(inst("SyncRoot", 0, "collections.identity")),
+        ),
         // ── BitVector32 ───────────────────────────────────────────────────
         //
         // A STRUCT wrapping a single `int`, so the value IS the int and `Data`

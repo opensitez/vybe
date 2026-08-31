@@ -226,6 +226,93 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_end(line);
     struct_set_drop(chunk, "HostNameType", line);
 
+    // The rest of `System.Uri`'s read surface, every member a pure function of
+    // what WHATWG already parsed. Values checked against pwsh 7.6.4 on
+    // `https://user:pw@example.com:8443/a/b?q=1&p=2#frag`.
+    set_alias_from_field(chunk, obj_slot, "hostname", "DnsSafeHost", line);
+    set_alias_from_field(chunk, obj_slot, "pathname", "LocalPath", line);
+    set_alias_from_field(chunk, obj_slot, "href", "AbsoluteUri", line);
+    set_alias_from_field(chunk, obj_slot, "href", "OriginalString", line);
+    set_alias_from_field(chunk, obj_slot, "host", "Authority", line);
+
+    // `Uri` is what `GetType().Name` owes, whatever spelling reached the cast.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    push_str(chunk, "Uri", line);
+    struct_set_drop(chunk, "__type", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    push_str(chunk, "Uri", line);
+    struct_set_drop(chunk, "name", line);
+
+    // A parsed absolute URL is absolute by construction; the relative form
+    // never reaches this finalizer.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(chunk, line, true);
+    struct_set_drop(chunk, "IsAbsoluteUri", line);
+
+    // `UserInfo` is `user[:pass]`, and EMPTY when there is no user — not
+    // `":"`, which a bare concatenation would give.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "username", line);
+    push_str(chunk, "", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "username", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "password", line);
+    push_str(chunk, "", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "", line);
+    chunk.emit_else(line);
+    push_str(chunk, ":", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "password", line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_end(line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_end(line);
+    struct_set_drop(chunk, "UserInfo", line);
+
+    // `PathAndQuery` keeps the `?`, which is how `search` already spells it.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "pathname", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "search", line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    struct_set_drop(chunk, "PathAndQuery", line);
+
+    // Loopback is the host, not the address family: .NET answers True for
+    // `127.0.0.1`, `localhost` and `::1`.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    push_str(chunk, "^(127\\.|localhost$|\\[?::1\\]?$)", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "hostname", line);
+    host::emit(chunk, "ecma:regexp", "test", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    struct_set_drop(chunk, "IsLoopback", line);
+
+    // `Segments` keeps each separator: `/a/b/c/` is `/`, `a/`, `b/`, `c/`, and
+    // `/a/b` is `/`, `a/`, `b`. One global match expresses both — a run up to
+    // and including a slash, or a final run without one.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "pathname", line);
+    // ⛔THE FLAGS RIDE IN THE PATTERN. `extract_pattern` reads `/pat/flags`
+    // out of the string it is handed; a third argument is not read, so a
+    // separate `"g"` left the match non-global and `Segments` answered `/`
+    // alone. The inner slashes are escaped because the delimiter is a slash.
+    push_str(chunk, "/[^\\/]*\\/|[^\\/]+$/g", line);
+    // `match` with the global flag answers an array of the matched STRINGS,
+    // which is the shape `Segments` is; `matchAll` answers match objects.
+    host::emit(chunk, "ecma:regexp", "match", 2, line);
+    struct_set_drop(chunk, "Segments", line);
+
     bind_uri_methods(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }

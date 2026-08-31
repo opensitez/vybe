@@ -62,6 +62,12 @@ tuple_literals_tagged = true
 # result is the type's NAME so it agrees with `typeof(X)`.
 __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 }
 
+# The `unchecked` byte narrowing — TRUNCATES, where `Convert.ToByte` THROWS.
+# ⛔ The walker used to spell this `Convert.ToByte`, which is not what .NET's
+# `Convert.ToByte` does: it range-checks in every context, checked or not. That
+# only looked right while ours was a bare `parseInt`.
+__vybe_csharp_unchecked_byte = { emit = "intrinsic:unchecked_byte", min_args = 1, max_args = 1 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
@@ -93,6 +99,8 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 # `platforms/dotnet/.../numerics_classes.rs` call these; they cannot be written
 # in C# source because ECMA's `asIntN`/`asUintN` have no C# spelling.
 "__vybe_bi_is_num" = { emit = "common:dotnet.i128_is_numeric", min_args = 1, max_args = 1 }
+"__vybe_bi_is_pow2" = { emit = "common:dotnet.i128_is_pow2", min_args = 1, max_args = 1 }
+"__vybe_bi_hex"     = { emit = "common:dotnet.i128_hex",     min_args = 2, max_args = 2 }
 "__vybe_bi_str"     = { emit = "common:dotnet.i128_str",     min_args = 1, max_args = 1 }
 "__vybe_bi_sign"    = { emit = "common:dotnet.i128_sign",    min_args = 1, max_args = 1 }
 "__vybe_bi_abs"     = { emit = "common:dotnet.i128_abs",     min_args = 1, max_args = 1 }
@@ -456,3 +464,14 @@ to_string = "host:ecma:string:String"
 # row — so this adds no mechanism, it points an existing slot at the renderer
 # that was always correct for .NET.
 to_string = "common:dotnet.tostring_runtime"
+
+# ────────────────────────────────────────────────────────────────────────────
+# INTRINSIC DEFINITIONS — multi-opcode sequences
+# ────────────────────────────────────────────────────────────────────────────
+
+[intrinsics]
+# The `unchecked` byte narrowing: mask to 0-255 and WRAP.
+# ⛔ Neither `Convert.ToByte` nor `dotnet.to_byte` can serve here — BOTH throw
+# `OverflowException` out of range, which is right for a checked conversion and
+# wrong for `unchecked { }`. Same sequence VB's `CByte` intrinsic uses.
+unchecked_byte = "to_int, const_i32(255), i32_and"

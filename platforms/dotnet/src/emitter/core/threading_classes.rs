@@ -41,6 +41,7 @@ pub fn is_synthesized_threading_class(name: &str) -> bool {
             | "readerwriterlockslim"
             | "periodictimer"
             | "threadlocal"
+            | "lock"
 
     )
 }
@@ -64,6 +65,15 @@ pub fn synthesize_threading_classes(source: &str) -> Vec<Statement> {
     }
     if lowered.contains("spinlock") {
         out.push(spin_lock_class());
+    }
+    // ⛔ GATED ON THE QUALIFIED SPELLING, NOT ON `"lock"`. Every other type here
+    // has a name distinctive enough to match as a bare substring; `lock` is a
+    // C# KEYWORD and a fragment of `unlock`, `block`, `deadlock` and `locked`,
+    // so `lowered.contains("lock")` would inject this class into a large part
+    // of the corpus. `System.Threading.Lock` (C# 13) is how the type is
+    // written, and `new Lock(` covers the `using System.Threading;` form.
+    if lowered.contains("threading.lock") || lowered.contains("new lock(") {
+        out.push(lock_class());
     }
     if lowered.contains("barrier") {
         out.push(barrier_class());
@@ -617,5 +627,107 @@ fn thread_local_class() -> Statement {
     )
 }
 
-
-
+/// `System.Threading.Lock` — C# 13's dedicated lock object.
+///
+/// `lock (obj) { … }` already works on ANY object in this runtime, so what was
+/// missing was only the TYPE: `new System.Threading.Lock()` answered
+/// `undefined is not callable`. The members below are .NET 9's real surface.
+///
+/// ⚠ Single-threaded-deterministic, for the reason the module header gives:
+/// `Enter`/`Exit` maintain the recursion count that `IsHeldByCurrentThread`
+/// reports, and `TryEnter` always succeeds because on one thread it always
+/// would. A contended `TryEnter` returning false is not expressible here.
+fn lock_class() -> Statement {
+    let depth = "__depth";
+    class(
+        "Lock",
+        Vec::new(),
+        vec![
+            typed_field(depth, "Integer"),
+            ctor(Vec::new(), vec![assign(depth, int_lit(0))]),
+            method(
+                "Enter",
+                Vec::new(),
+                vec![assign(
+                    depth,
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(me(depth)),
+                        right: Box::new(int_lit(1)),
+                    }),
+                )],
+                true,
+            ),
+            method(
+                "Exit",
+                Vec::new(),
+                vec![assign(
+                    depth,
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Sub,
+                        left: Box::new(me(depth)),
+                        right: Box::new(int_lit(1)),
+                    }),
+                )],
+                true,
+            ),
+            method(
+                "TryEnter",
+                Vec::new(),
+                vec![
+                    assign(
+                        depth,
+                        Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(me(depth)),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ),
+                    Statement::new(StmtKind::Return(Some(bool_lit(true)))),
+                ],
+                false,
+            ),
+            // `using (lk.EnterScope())` — the scope IS the lock here, and its
+            // `Dispose` releases, which is the observable contract.
+            method(
+                "EnterScope",
+                Vec::new(),
+                vec![
+                    assign(
+                        depth,
+                        Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(me(depth)),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ),
+                    Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::This)))),
+                ],
+                false,
+            ),
+            method(
+                "Dispose",
+                Vec::new(),
+                vec![assign(
+                    depth,
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Sub,
+                        left: Box::new(me(depth)),
+                        right: Box::new(int_lit(1)),
+                    }),
+                )],
+                true,
+            ),
+            getter(
+                "IsHeldByCurrentThread",
+                vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::Gt,
+                        left: Box::new(me(depth)),
+                        right: Box::new(int_lit(0)),
+                    },
+                ))))],
+            ),
+        ],
+    )
+}

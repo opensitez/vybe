@@ -604,3 +604,140 @@ pub fn emit_span_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
+
+/// `Memory<T>.ToString()` / `ReadOnlyMemory<T>.ToString()`.
+///
+/// ⛔ ONLY `T = char` RENDERS AS TEXT. .NET returns the string for a char
+/// memory and a type description (`System.ReadOnlyMemory<Byte>[3]`) for
+/// anything else — so this cannot simply join. The element type is not known at
+/// the call site, so the test is made at runtime on the first element: a string
+/// element means a char memory and joins with no separator; anything else falls
+/// through to the receiver's ordinary rendering rather than inventing a
+/// description this emitter has no way to spell correctly.
+///
+/// Without this, `"Hello_World".AsMemory().Slice(0, 5).ToString()` rendered
+/// `H,e,l,l,o` — the array's comma join, which is what a char memory is.
+pub fn emit_memory_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let recv = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
+
+    // `length > 0 && typeof self[0] === "string"`
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    let len = chunk.add_import("ecma:array", "length");
+    chunk.emit_call(len, 1, line);
+    chunk.emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    let is_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_string_const(&std::sync::Arc::from(""), line);
+    let join = chunk.add_import("ecma:array", "join");
+    chunk.emit_call(join, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    let to_str = chunk.add_import("ecma:object", "toString");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_end(line);
+}
+
+/// `Memory<T>.Slice(...)` / `AsMemory()` — the shared slice, then the ToString
+/// SLOT bound on the result.
+///
+/// ⛔ TWO CHANNELS REACH `ToString`, AND ONLY ONE NEEDS INFERENCE.
+/// A `MethodDef::new("ToString", …)` on the `ClassType` is reached by SPELLING,
+/// through the receiver's inferred type — so it fired for an explicitly
+/// annotated `ReadOnlyMemory<char>` and not through `var`. Binding
+/// `ProtocolSlot::ToString` puts it on the VALUE, which is how `IPAddress` and
+/// `JsonElement` answer correctly through `var` with no inference at all.
+///
+/// It is a separate emit rather than a binding inside `get_range_checked`
+/// because that one is SHARED — `List` and plain arrays slice through it too,
+/// and a `ToString` bound there would change `intArray.Slice(0, 2)` as well.
+pub fn emit_memory_slice(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc >= 3 {
+        crate::emitter::core::array_adapter::emit_get_range_checked(chunks, current, line);
+    } else {
+        let chunk = &mut chunks[current];
+        let idx = chunk.add_import("ecma:array", "slice");
+        chunk.emit_call(idx, argc.max(1), line);
+    }
+    bind_memory_to_string(chunks, current, line);
+}
+
+/// `"text".AsMemory()` — the characters, with the slot bound.
+pub fn emit_as_memory(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        for _ in 1..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        let split = chunk.add_import("ecma:string", "split");
+        chunk.emit_string_const(&std::sync::Arc::from(""), line);
+        chunk.emit_call(split, 2, line);
+    }
+    bind_memory_to_string(chunks, current, line);
+}
+
+/// Bind the ToString ROLE on the value currently on the stack, leaving it there.
+fn bind_memory_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let method_idx = push_memory_to_string_chunk(chunks, line);
+    let slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    vybe_compiler::primitives::object::emit_bind_method(
+        &mut chunks[current],
+        slot,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
+        method_idx,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn push_memory_to_string_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    const NAME: &str = "__dotnet_memory_tostring";
+    if let Some(idx) = chunks.iter().position(|chunk| chunk.name == NAME) {
+        return idx;
+    }
+    // ⛔ ONLY A CHAR VIEW RENDERS AS TEXT. .NET gives the string for a char
+    // memory and a type description for anything else, so this cannot simply
+    // join — the same binding rides on `Span<int>` slices, where joining would
+    // turn one wrong rendering into a different wrong one. The element is
+    // tested at run time and a non-string view keeps its ordinary rendering.
+    let mut c = Chunk::new(NAME);
+    c.arity = 1;
+    c.local_count = 1;
+    let recv = 0u16;
+    c.emit_op_u16(Op::LOCAL_GET, recv, line);
+    let len = c.add_import("ecma:array", "length");
+    c.emit_call(len, 1, line);
+    c.emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut c, line);
+    c.emit_op_u16(Op::LOCAL_GET, recv, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    let is_str = c.add_import("wasm:js-string", "test");
+    c.emit_call(is_str, 1, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, recv, line);
+    let join = c.add_import("ecma:array", "join");
+    c.emit_string_const(&std::sync::Arc::from(""), line);
+    c.emit_call(join, 2, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, recv, line);
+    let to_str = c.add_import("ecma:object", "toString");
+    c.emit_call(to_str, 1, line);
+    c.emit_end(line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}

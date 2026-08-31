@@ -387,6 +387,33 @@ pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _ar
     vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
 }
 
+/// `Convert.ToHexString(byte[])` — UPPERCASE hex, two characters per byte and
+/// no separator.
+///
+/// Composed from the primitives that already exist rather than a new byte loop:
+/// a byte array becomes a binary string, `bin2hex` renders it, and the case
+/// fold is the last step because `bin2hex` answers lowercase.
+pub fn emit_convert_to_hex_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let bytes_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+    emit_throw_if_null(&mut chunks[current], bytes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    vybe_compiler::primitives::base64::emit_byte_array_to_binary_string(chunks, current, line);
+    vybe_compiler::primitives::string_encoding::emit_bin2hex(chunks, current, 1, line);
+    vybe_compiler::primitives::strings::emit_to_upper(&mut chunks[current], line);
+}
+
+/// `Convert.FromHexString(string)` — the inverse, and the same composition
+/// backwards. `hex2bin` reads either case, so no fold is needed on the way in.
+pub fn emit_convert_from_hex_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let text_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_throw_if_null(&mut chunks[current], text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    vybe_compiler::primitives::string_encoding::emit_hex2bin(chunks, current, 1, line);
+    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+}
+
 fn emit_bool_int_pair(chunks: &mut [Chunk], current: usize, ok: bool, value_slot: u16, line: u32) {
     if ok {
         vybe_compiler::primitives::instructions::core_wasm::bool_const(
@@ -572,4 +599,51 @@ pub fn emit_convert_to_base64_char_array(
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+}
+
+/// `Convert.To<Integral>` — .NET's NARROWING conversions, which THROW
+/// `OverflowException` outside the target's range rather than wrapping or
+/// saturating.
+///
+/// ⛔ These were bare `ecma:number.parseInt`, so `Convert.ToByte(-1)` answered
+/// `255` and `Convert.ToSByte`/`ToUInt16` were not registered at all — an
+/// unregistered `To*` reads null and renders NaN.
+///
+/// .NET also ROUNDS on the way in (banker's rounding, `Convert.ToInt32(2.5)`
+/// is 2), which is what separates this from a truncating cast.
+pub fn emit_convert_checked(
+    chunks: &mut [Chunk],
+    current: usize,
+    min: f64,
+    max: f64,
+    type_name: &str,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let value = reserve_slot(chunk);
+    // Round to nearest, ties to EVEN — `Math.round` is ties-away, so the
+    // shared rounding primitive is the one that matches .NET here.
+    vybe_compiler::primitives::math::emit_round(
+        chunk,
+        vybe_ast::MidpointPolicy::HalfEven,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_f64_const(min, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_f64_const(max, line);
+    chunk.emit_op(Op::F64_GT, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunk,
+        "OverflowException",
+        &format!("Value was either too large or too small for a {type_name}."),
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
 }

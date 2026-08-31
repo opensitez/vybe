@@ -64,7 +64,11 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(key)), line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let idx = chunk.add_import("ecma:object", "set");
+    // pushed a result it should not have; the VM was fixed and the other
     chunk.emit_call(idx, 3, line);
+    // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN, so this call leaves a
+    // value and the assignment's own result is `V` (§13.15.2), not it.
+    // Removing this `DROP` made `++o.x` evaluate to null.
     chunk.emit_op(Op::DROP, line);
 }
 

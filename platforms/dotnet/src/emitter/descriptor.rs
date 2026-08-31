@@ -85,7 +85,7 @@ fn register_component_class_imports(
         }
     }
 
-    if let Some(constructor) = &class.constructor {
+    if let Some(constructor) = class.constructor() {
         if let Some(ConstructorTarget::Host(target)) = &constructor.backing {
             register_host_import(descriptor, seen_host_imports, target, constructor.arity);
         }

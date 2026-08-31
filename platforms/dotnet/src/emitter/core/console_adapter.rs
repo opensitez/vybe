@@ -40,7 +40,13 @@ pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_loca
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
+    // ⛔ A VALUE BLOCK: both arms push a string and the result is consumed
+    // below. A bare `emit_if` declares `(0,0)` — the VM tolerates it because it
+    // shares one operand stack, but WASM rejects it as `values remaining on
+    // stack at end of block`, which is why a two-line `Console.WriteLine`
+    // never validated. See `ops.rs` — every bool-producing helper there already
+    // uses `emit_if_value` for exactly this reason.
+    chunk.emit_if_value(line);
     chunk.emit_string_const("True", line);
     chunk.emit_else(line);
     chunk.emit_string_const("False", line);

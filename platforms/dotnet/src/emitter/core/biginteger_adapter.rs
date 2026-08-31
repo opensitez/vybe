@@ -215,7 +215,7 @@ fn emit_predicate_fields(chunk: &mut Chunk, obj: u16, payload: u16, line: u32) {
 
 /// The binary operator chunks, memoised by name. Built with the unary one by
 /// [`ensure_value_chunks`], which owns the two-phase order.
-const BIGINT_OPS: [(&str, &str, vybe_ast::ProtocolSlot); 6] = [
+const BIGINT_OPS: [(&str, &str, vybe_ast::ProtocolSlot); 11] = [
     ("__bigint_add", "add", vybe_ast::ProtocolSlot::Add),
     ("__bigint_sub", "sub", vybe_ast::ProtocolSlot::Sub),
     ("__bigint_mul", "mul", vybe_ast::ProtocolSlot::Mul),
@@ -226,6 +226,15 @@ const BIGINT_OPS: [(&str, &str, vybe_ast::ProtocolSlot); 6] = [
     // .NET's `BigInteger` division and VB's `\` both mean. Binding only `Div`
     // left `a \ b` answering NaN while `a / b` was exact.
     ("__bigint_idiv", "div", vybe_ast::ProtocolSlot::IDiv),
+    // ⛔ The BITWISE slots were never bound, so `a And b` on two BigIntegers
+    // fell through to the i32 path, which coerces a BigInt to 0 — every one of
+    // `And`/`Or`/`Xor`/`<<`/`>>` answered 0. `ecma:bigint` has had `and`, `or`,
+    // `xor`, `shl` and `shr` all along.
+    ("__bigint_and", "and", vybe_ast::ProtocolSlot::And),
+    ("__bigint_or", "or", vybe_ast::ProtocolSlot::Or),
+    ("__bigint_xor", "xor", vybe_ast::ProtocolSlot::Xor),
+    ("__bigint_shl", "shl", vybe_ast::ProtocolSlot::LShift),
+    ("__bigint_shr", "shr", vybe_ast::ProtocolSlot::RShift),
 ];
 
 /// Unary negation, published on the VALUE. `emit_rich_unary` already reads
@@ -244,18 +253,17 @@ const BIGINT_COMPARE_TO: &str = "__bigint_compare_to";
 /// Every chunk that answers a slot on a BigInteger value: the six operators
 /// then unary negation. All seven RETURN a BigInteger, which is why they are
 /// built together — see [`ensure_value_chunks`].
-fn ensure_value_chunks(chunks: &mut Vec<Chunk>, line: u32) -> [usize; 7] {
-    let names: [&str; 7] = [
-        BIGINT_OPS[0].0,
-        BIGINT_OPS[1].0,
-        BIGINT_OPS[2].0,
-        BIGINT_OPS[3].0,
-        BIGINT_OPS[4].0,
-        BIGINT_OPS[5].0,
-        BIGINT_NEG,
-    ];
+/// One chunk per binary operator, plus unary negation last.
+const VALUE_CHUNKS: usize = BIGINT_OPS.len() + 1;
+
+fn ensure_value_chunks(chunks: &mut Vec<Chunk>, line: u32) -> [usize; VALUE_CHUNKS] {
+    let mut names: [&str; VALUE_CHUNKS] = [BIGINT_NEG; VALUE_CHUNKS];
+    for (i, (name, _, _)) in BIGINT_OPS.iter().enumerate() {
+        names[i] = name;
+    }
+    names[VALUE_CHUNKS - 1] = BIGINT_NEG;
     if chunks.iter().any(|c| c.name == BIGINT_NEG) {
-        let mut found = [0usize; 7];
+        let mut found = [0usize; VALUE_CHUNKS];
         for (i, name) in names.iter().enumerate() {
             found[i] = chunks
                 .iter()
@@ -266,8 +274,8 @@ fn ensure_value_chunks(chunks: &mut Vec<Chunk>, line: u32) -> [usize; 7] {
     }
 
     // Phase 1 — arithmetic and the result value, no binds, no return.
-    let mut idxs = [0usize; 7];
-    let mut obj_slots = [0u16; 7];
+    let mut idxs = [0usize; VALUE_CHUNKS];
+    let mut obj_slots = [0u16; VALUE_CHUNKS];
     for (i, (name, op, _)) in BIGINT_OPS.iter().enumerate() {
         let mut method = create_function_chunk(name, 2);
         method.local_count = 2;
@@ -285,9 +293,9 @@ fn ensure_value_chunks(chunks: &mut Vec<Chunk>, line: u32) -> [usize; 7] {
     get(&mut neg, 0, line);
     unwrap_payload(&mut neg, line);
     call(&mut neg, "ecma:bigint", "neg", 1, line);
-    obj_slots[6] = emit_value_body(&mut neg, line);
+    obj_slots[VALUE_CHUNKS - 1] = emit_value_body(&mut neg, line);
     chunks.push(neg);
-    idxs[6] = chunks.len() - 1;
+    idxs[VALUE_CHUNKS - 1] = chunks.len() - 1;
 
     // Phase 2 — now every index exists, so each result can carry the slots.
     //
@@ -312,7 +320,7 @@ fn bind_slots_on(
     chunks: &mut Vec<Chunk>,
     target: usize,
     obj_slot: u16,
-    idxs: &[usize; 7],
+    idxs: &[usize; VALUE_CHUNKS],
     to_string: usize,
     compare_to: usize,
     line: u32,
@@ -332,7 +340,7 @@ fn bind_slots_on(
     bind(
         chunks,
         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Neg),
-        idxs[6],
+        idxs[VALUE_CHUNKS - 1],
     );
     // ToString twice — the shared stringification slot AND the .NET spelling,
     // which is a member call, not the slot. Both have to answer, and an

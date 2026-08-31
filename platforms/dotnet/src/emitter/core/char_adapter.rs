@@ -470,3 +470,190 @@ pub fn emit_get_unicode_category(chunks: &mut [Chunk], current: usize, argc: u8,
         chunks[current].emit_end(line);
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// `System.Text.Rune` — one Unicode SCALAR value.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `new Rune(char)` / `new Rune(int)`.
+///
+/// A Rune is a value struct whose whole state is the scalar value, and every
+/// other member is a pure function of it — so they are COMPUTED ONCE and stored
+/// as fields rather than reached through property machinery. `System.Index` is
+/// registered the same way.
+///
+/// The lengths are the encoded sizes, read off the SDK: U+0041 is 1 UTF-8 byte
+/// and 1 UTF-16 unit; U+1F600 is 4 and 2.
+pub fn emit_rune_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    // `emit_char_code` takes either spelling: it tests for a string first and
+    // coerces a bare number through `ecma:number`, which is what lets one
+    // constructor serve `Rune('A')` and `Rune(0x1F600)`.
+    strings::emit_char_code(&mut chunks[current], line);
+    set(&mut chunks[current], value, line);
+
+    get(&mut chunks[current], value, line);
+    rune_is_ascii(&mut chunks[current], value, line);
+    rune_is_bmp(&mut chunks[current], value, line);
+    rune_utf8_length(&mut chunks[current], value, line);
+    rune_utf16_length(&mut chunks[current], value, line);
+    crate::emitter::dispatch::emit_value_type_new(
+        &mut chunks[current],
+        "Rune",
+        &[
+            "Value",
+            "IsAscii",
+            "IsBmp",
+            "Utf8SequenceLength",
+            "Utf16SequenceLength",
+        ],
+        line,
+    );
+}
+
+fn rune_is_ascii(chunk: &mut Chunk, value: u16, line: u32) {
+    get(chunk, value, line);
+    chunk.emit_i32_const(0x80, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    emit_i32_to_bool(chunk, line);
+}
+
+fn rune_is_bmp(chunk: &mut Chunk, value: u16, line: u32) {
+    get(chunk, value, line);
+    chunk.emit_i32_const(0x10000, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    emit_i32_to_bool(chunk, line);
+}
+
+/// 1 below U+0080, 2 below U+0800, 3 below U+10000, else 4.
+fn rune_utf8_length(chunk: &mut Chunk, value: u16, line: u32) {
+    for (limit, len) in [(0x80, 1), (0x800, 2), (0x10000, 3)] {
+        get(chunk, value, line);
+        chunk.emit_i32_const(limit, line);
+        chunk.emit_op(Op::I32_LT_S, line);
+        chunk.emit_if_value(line);
+        chunk.emit_f64_const(len as f64, line);
+        chunk.emit_else(line);
+    }
+    chunk.emit_f64_const(4.0, line);
+    for _ in 0..3 {
+        chunk.emit_end(line);
+    }
+}
+
+/// A scalar outside the BMP needs a surrogate PAIR.
+fn rune_utf16_length(chunk: &mut Chunk, value: u16, line: u32) {
+    get(chunk, value, line);
+    chunk.emit_i32_const(0x10000, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(2.0, line);
+    chunk.emit_end(line);
+}
+
+/// Read `Value` off a Rune receiver, leaving the scalar on the stack.
+///
+/// The static classifiers are declared on `Rune` and take a Rune, but the code
+/// predicates above already answer for a scalar — `emit_char_code` coerces a
+/// bare number — so each static is the unwrap plus the classifier it shares
+/// with `System.Char`, not a second copy of the tables.
+fn rune_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Stack,
+        &super::object_fields::field_slot("Value"),
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
+}
+
+/// `Rune.ToString()` — the character the scalar denotes, surrogate pair and all.
+pub fn emit_rune_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    rune_value(chunks, current, line);
+    strings::emit_from_code_point(&mut chunks[current], line);
+}
+
+/// `Rune.GetHashCode()` — the scalar itself, which is what the SDK answers.
+pub fn emit_rune_hash(chunks: &mut [Chunk], current: usize, line: u32) {
+    rune_value(chunks, current, line);
+}
+
+/// `a.CompareTo(b)` — ordinal on the scalar: negative, zero or positive.
+pub fn emit_rune_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let mine = chunks[current].alloc_scratch(1);
+    rune_value(chunks, current, line);
+    set(&mut chunks[current], other, line);
+    rune_value(chunks, current, line);
+    set(&mut chunks[current], mine, line);
+    get(&mut chunks[current], mine, line);
+    get(&mut chunks[current], other, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    // .NET answers −1/0/1 rather than the raw difference.
+    let sign = chunks[current].add_import("ecma:math", "sign");
+    chunks[current].emit_call(sign, 1, line);
+}
+
+/// `a.Equals(b)` — two Runes are equal exactly when their scalars are.
+pub fn emit_rune_equals(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    rune_value(chunks, current, line);
+    set(&mut chunks[current], other, line);
+    rune_value(chunks, current, line);
+    get(&mut chunks[current], other, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// A `Rune` static classifier: unwrap the scalar, then run the shared code
+/// predicate named by `kind`.
+pub fn emit_rune_predicate(chunks: &mut [Chunk], current: usize, kind: &str, line: u32) {
+    rune_value(chunks, current, line);
+    strings::emit_from_code_point(&mut chunks[current], line);
+    match kind {
+        "digit" => strings::emit_is_digit(chunks, current, line),
+        "letter" => strings::emit_is_alpha(chunks, current, line),
+        "letterordigit" => strings::emit_is_alnum(chunks, current, line),
+        "upper" => strings::emit_is_upper(chunks, current, line),
+        "lower" => strings::emit_is_lower(chunks, current, line),
+        "whitespace" => strings::emit_is_space(chunks, current, line),
+        "control" => emit_is_control(chunks, current, 1, line),
+        _ => emit_is_punctuation(chunks, current, 1, line),
+    }
+}
+
+/// `Rune.ToUpperInvariant(r)` / `Rune.ToLowerInvariant(r)` — a Rune in, a Rune
+/// out, so the case fold runs on the character and the result is re-wrapped.
+pub fn emit_rune_case(chunks: &mut [Chunk], current: usize, upper: bool, line: u32) {
+    rune_value(chunks, current, line);
+    strings::emit_from_code_point(&mut chunks[current], line);
+    if upper {
+        strings::emit_to_upper(&mut chunks[current], line);
+    } else {
+        strings::emit_to_lower(&mut chunks[current], line);
+    }
+    emit_rune_new(chunks, current, line);
+}
+
+/// `Rune.ReplacementChar` — U+FFFD, the scalar a decoder substitutes.
+pub fn emit_rune_replacement_char(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_f64_const(0xFFFD as f64, line);
+    emit_rune_new(chunks, current, line);
+}
+
+/// `Rune.GetNumericValue(r)` — the digit's value, or −1 when it has none.
+pub fn emit_rune_numeric_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let code = chunks[current].alloc_scratch(1);
+    rune_value(chunks, current, line);
+    set(&mut chunks[current], code, line);
+    in_range(&mut chunks[current], code, 0x30, 0x39, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], code, line);
+    chunks[current].emit_f64_const(0x30 as f64, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_end(line);
+}

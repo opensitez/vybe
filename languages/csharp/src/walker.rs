@@ -53,6 +53,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Fresh capture per parse (thread-local persists across calls).
     __w.interface_defaults.clear();
     __w.custom_events.clear();
+    __w.declared_events.clear();
     __w.named_tuple_vars.clear();
     // `DECLARED_ENUMS` was the one registry missing from this reset. It records
     // every `enum` name the program declares and is read back to decide whether
@@ -70,8 +71,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // warm and the whole php suite from 1042 to 1014 failures.
     __w.declared_enums.clear();
     __w.declared_types.clear();
+    __w.generic_typeof_types.clear();
+    __w.multi_index_types.clear();
+    __w.multi_index_vars.clear();
     for pair in pairs.clone() {
         collect_declared_types(&pair, &mut __w.declared_types);
+        collect_generic_typeof_types(&pair, &mut __w.generic_typeof_types);
+        collect_declared_members(&pair, &mut __w.declared_members);
+        collect_multi_index_types(&pair, &mut __w.multi_index_types);
+        collect_custom_events(&pair, &mut __w.custom_events, &mut __w.declared_events);
+    }
+    // Second sweep: a variable is only interesting once the type it names is
+    // known to declare a multi-parameter indexer, and §7.1 puts the use above
+    // the declaration.
+    if !__w.multi_index_types.is_empty() {
+        let types = __w.multi_index_types.clone();
+        let mut vars = std::mem::take(&mut __w.multi_index_vars);
+        for pair in pairs.clone() {
+            collect_multi_index_vars(&pair, &types, &mut vars);
+        }
+        __w.multi_index_vars = vars;
     }
 
     for top in pairs {
@@ -1361,19 +1380,139 @@ fn split_csharp_top_level(text: &str, separator: char) -> Vec<String> {
     parts
 }
 
-fn normalize_attribute_type_name(name: &str) -> String {
+/// Split one attribute SECTION — the text inside `[...]` — into its attributes.
+///
+/// ⛔ Not [`split_csharp_top_level`]: that tracks `()`, `[]` and `{}` but not
+/// `<>`, so `[Pair<int, string>]` split at the type-argument comma and produced
+/// TWO attributes named `Pair<int` and `string>`. The class name reaching the
+/// AST was literally `"PairAttribute_7<int"` and every member read off the
+/// instance answered `NaN` — silently, because a malformed attribute name still
+/// constructs something.
+///
+/// Angle depth is only counted OUTSIDE parentheses. Inside an argument list `<`
+/// is a comparison (`[Foo(a < b, c > d)]`) and the paren depth already protects
+/// those commas, which is exactly why the shared splitter cannot take this rule.
+fn split_csharp_attribute_section(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string = false;
+    let mut string_delim = '\0';
+    let mut escaped = false;
+
+    for ch in text.chars() {
+        if in_string {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == string_delim {
+                in_string = false;
+                string_delim = '\0';
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_string = true;
+                string_delim = ch;
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '[' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '{' => {
+                brace_depth += 1;
+                current.push(ch);
+            }
+            '}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '<' if paren_depth == 0 => {
+                angle_depth += 1;
+                current.push(ch);
+            }
+            '>' if paren_depth == 0 => {
+                angle_depth = angle_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                let piece = current.trim();
+                if !piece.is_empty() {
+                    parts.push(piece.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    let piece = current.trim();
+    if !piece.is_empty() {
+        parts.push(piece.to_string());
+    }
+    parts
+}
+
+/// ECMA-334 §22.3: an attribute name `N` names EITHER the type `N` or the type
+/// `NAttribute`, and both spellings are looked up. Appending unconditionally
+/// invents a type that need not exist: `[MarkA]` became `new MarkAAttribute()`,
+/// which constructs nothing, so the object reaching `GetCustomAttributes`
+/// was a plain `Object` and every member read off it answered `NaN`.
+///
+/// A type this unit DECLARES wins as spelled; everything else keeps the append,
+/// because a platform attribute really is suffixed — `System.AttributeUsage` is
+/// `System.AttributeUsageAttribute`, and the filter on the read side depends on
+/// it. ⛔ The suffix belongs on the type NAME, never after its type arguments.
+fn normalize_attribute_type_name(
+    name: &str,
+    declared_types: &std::collections::HashSet<String>,
+) -> String {
     let trimmed = name.trim();
-    let Some((prefix, leaf)) = trimmed.rsplit_once('.') else {
-        return if trimmed.ends_with("Attribute") {
-            trimmed.to_string()
-        } else {
-            format!("{trimmed}Attribute")
-        };
+    let (base, generics) = match trimmed.find('<') {
+        Some(idx) => (trimmed[..idx].trim_end(), &trimmed[idx..]),
+        None => (trimmed, ""),
     };
-    if leaf.ends_with("Attribute") {
-        trimmed.to_string()
+    let (prefix, leaf) = match base.rsplit_once('.') {
+        Some((prefix, leaf)) => (Some(prefix), leaf),
+        None => (None, base),
+    };
+    // Both spellings declared is a §22.3 ambiguity error; prefer what was written.
+    let resolved = if leaf.ends_with("Attribute") || declared_types.contains(leaf) {
+        leaf.to_string()
     } else {
-        format!("{prefix}.{}Attribute", leaf)
+        format!("{leaf}Attribute")
+    };
+    match prefix {
+        Some(prefix) => format!("{prefix}.{resolved}{generics}"),
+        None => format!("{resolved}{generics}"),
     }
 }
 
@@ -1410,7 +1549,11 @@ fn parse_attribute_argument(__w: &mut CsWalker, text: &str) -> Option<Argument> 
 
 fn parse_attribute_specs(__w: &mut CsWalker, raw: &str) -> Vec<Expression> {
     let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
-    split_csharp_top_level(inner, ',')
+    // Cloned up front: the closure below needs `__w` mutably for the arguments,
+    // so it cannot also hold a borrow of the walker's declared-type sets.
+    let declared_types = __w.declared_types.clone();
+    let generic_typeof_types = __w.generic_typeof_types.clone();
+    split_csharp_attribute_section(inner)
         .into_iter()
         .filter_map(|part| {
             let trimmed = part.trim();
@@ -1433,10 +1576,50 @@ fn parse_attribute_specs(__w: &mut CsWalker, raw: &str) -> Vec<Expression> {
                 (trimmed, Vec::new())
             };
 
+            let resolved = normalize_attribute_type_name(name, &declared_types);
+            let mut args = args;
+            // A generic attribute — `[Validator<int>]` — is the one construction
+            // site that must stay a bare `New`: `compile_reflection_attribute_instance`
+            // matches on that shape and falls back to a plain compile of anything
+            // else, which would lose the attribute-type resolution the read side
+            // filters on. So the type-argument names ride as NAMED arguments,
+            // which that same function already assigns onto the instance after
+            // construction — the IIFE the ordinary `new C<int>()` path uses is
+            // not available here.
+            args.extend(csharp_generic_name_binding_args(
+                &resolved,
+                &generic_typeof_types,
+            ));
+
             Some(Expression::new(ExprKind::New {
-                class: Box::new(build_dotted_expr(&normalize_attribute_type_name(name))),
+                class: Box::new(build_dotted_expr(&resolved)),
                 args,
             }))
+        })
+        .collect()
+}
+
+/// Named arguments carrying each class-level type argument's `typeof` name, for
+/// a generic type this unit declares that actually reads `typeof(T)`. Empty for
+/// everything else: the `__vybe_generic_name_{i}` fields exist only where
+/// [`inject_csharp_generic_ctor_fields`] put them, and nothing else reads one.
+fn csharp_generic_name_binding_args(
+    resolved_type_name: &str,
+    generic_typeof_types: &std::collections::HashSet<String>,
+) -> Vec<Argument> {
+    let stripped = strip_csharp_type_path_generic_args(resolved_type_name);
+    let leaf = stripped.rsplit('.').next().unwrap_or(&stripped).trim();
+    if !generic_typeof_types.contains(leaf) {
+        return Vec::new();
+    }
+    parse_csharp_generic_type_args(resolved_type_name)
+        .into_iter()
+        .enumerate()
+        .map(|(index, type_name)| Argument {
+            value: csharp_generic_type_value_expr(&type_name),
+            name: Some(csharp_generic_name_field_name(index)),
+            by_ref: false,
+            spread: false,
         })
         .collect()
 }
@@ -3609,8 +3792,10 @@ fn wrap_checked_byte_value(value: Expression, is_checked: bool) -> Expression {
             optional: false,
         })
     } else {
+        // TRUNCATING, not checking — see the profile row. `Convert.ToByte`
+        // throws in every context, so it was never the right spelling here.
         Expression::new(ExprKind::Call {
-            callee: Box::new(build_dotted_expr("Convert.ToByte")),
+            callee: Box::new(Expression::ident("__vybe_csharp_unchecked_byte")),
             args: vec![Argument::positional(value)],
             optional: false,
         })
@@ -3632,7 +3817,7 @@ fn is_checked_byte_wrapper_call(expr: &Expression, is_checked: bool) -> bool {
     if is_checked {
         matches!(&callee.kind, ExprKind::Ident(name) if name == "__vybe_csharp_checked_byte_cast")
     } else {
-        expr_dotted_name(callee).as_deref() == Some("Convert.ToByte")
+        matches!(&callee.kind, ExprKind::Ident(name) if name == "__vybe_csharp_unchecked_byte")
     }
 }
 
@@ -4261,6 +4446,17 @@ fn nullable_value_expr(expr: &mut Expression, scopes: &[HashMap<String, String>]
             if lb.is_none() && rb.is_none() {
                 return None;
             }
+            // Equality is NOT lifted: `==` and `!=` on a nullable answer a
+            // plain `bool`, never `bool?` (§12.12.7). Reported as nullable,
+            // `x != null` took the `Nullable<T>.ToString()` arm below, which
+            // re-evaluates its subject in every branch — three calls for
+            // `((v = F()) != null).ToString()`.
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::NotEq | BinOp::StrictEq | BinOp::StrictNotEq
+            ) {
+                return None;
+            }
             let both_liftable =
                 nullable_liftable_operand(left) && nullable_liftable_operand(right);
             if !both_liftable {
@@ -4801,6 +4997,42 @@ fn normalize_task_expr(expr: &mut Expression) {
                 span,
             ))))
         }
+        // `Task.WhenAny(…).Result` — a SYNCHRONOUS read of the winning task.
+        // A raced promise settles on a microtask, so nothing is there to read
+        // yet; the tree's `WhenAnyCompleted` answers the winner itself. Matched
+        // on the already-normalized receiver, since this pass runs
+        // children-first.
+        ExprKind::Member { object, field, .. }
+            if field == "Result"
+                && matches!(
+                    &object.kind,
+                    ExprKind::Async(AsyncOp::Join {
+                        mode: JoinMode::Race,
+                        ..
+                    })
+                ) =>
+        {
+            let ExprKind::Async(AsyncOp::Join { sources, .. }) = &mut object.kind else {
+                return;
+            };
+            let args = std::mem::take(sources)
+                .into_iter()
+                .map(Argument::positional)
+                .collect();
+            expr.kind = ExprKind::Call {
+                callee: Box::new(Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(build_dotted_expr("System.Threading.Tasks.Task")),
+                        field: "WhenAnyCompleted".into(),
+                        null_safe: false,
+                    },
+                    span,
+                )),
+                args,
+                optional: false,
+            };
+            return;
+        }
         ExprKind::Call { callee, args, .. } => {
             if is_task_static(callee, "FromResult") {
                 first_arg(args).map(|value| AsyncOp::Resolved(Box::new(value)))
@@ -5018,6 +5250,10 @@ fn normalize_task_expr(expr: &mut Expression) {
 /// qualified EVERY bare call, so a single `using static System.Math` silently
 /// rewrote the file's own helpers to `System.Math.__P` and they resolved to
 /// nothing at runtime.
+/// Platform types the walker's own lowering calls by their bare spelling,
+/// with no `__` prefix to mark them as compiler-provided.
+const CSHARP_LOWERED_TYPE_CALLEES: &[&str] = &["Array"];
+
 struct UsingStaticScope {
     paths: Vec<String>,
     declared: HashSet<String>,
@@ -5057,6 +5293,21 @@ impl UsingStaticScope {
         // why this cannot key on a bare `__` prefix.
         if name.starts_with("__csharp_") || name.starts_with("__dotnet_") || name.starts_with("__vybe_")
         {
+            return None;
+        }
+        // ⛔ AND A LOWERED CONSTRUCT CAN NAME A TYPE, NOT ONLY A `__` HELPER.
+        //
+        // `new int[3]` lowers to a bare call to `Array` — a platform type,
+        // spelled exactly as a user would spell it — so the prefix test above
+        // waves it through and the first-path guess below rewrote it to
+        // `System.Math.Array`, which resolves to nothing. ONE `using static`
+        // anywhere in the file was enough: every class with an array field
+        // initializer then died in its constructor with `undefined is not
+        // callable`, and a top-level `new T[n]` died the same way.
+        //
+        // §13.5.4 imports a type's static MEMBERS. A type is not one of them,
+        // so no spelling here can be shadowed by the directive.
+        if CSHARP_LOWERED_TYPE_CALLEES.contains(&name) {
             return None;
         }
         if let Some(owner) = self.local_statics.get(name) {
@@ -5157,6 +5408,11 @@ fn collect_using_static_members(
 struct DeclaredCallables<'a> {
     skip_types: &'a HashSet<String>,
     names: HashSet<String>,
+    /// Locals declared as a SEQUENCE of delegates (`Action[] actions`), so a
+    /// `foreach` over one can hand its loop variable the same treatment a
+    /// delegate-typed local gets. The element type is what makes `action()`
+    /// a call; the array itself is never invoked.
+    delegate_sequences: HashSet<String>,
 }
 
 fn collect_declared_callables(body: &[Statement], out: &mut DeclaredCallables) {
@@ -5167,8 +5423,18 @@ fn collect_declared_callables(body: &[Statement], out: &mut DeclaredCallables) {
 
 fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallables) {
     match kind {
-        StmtKind::FunctionDecl { name, body, .. } => {
+        StmtKind::FunctionDecl {
+            name, params, body, ..
+        } => {
             out.names.insert(name.clone());
+            // A DELEGATE-TYPED PARAMETER IS CALLED BY ITS BARE NAME.
+            //
+            //   static int Compute(Func<int> getValue) { return getValue() + 1; }
+            //
+            // Same §13.5.4 question as the local arm — the unit declares the
+            // name, as a parameter rather than a method — and the same narrow
+            // test, so a parameter named `Abs` holding an int changes nothing.
+            collect_delegate_param_names(params, out);
             collect_declared_callables(body, out);
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
@@ -5185,8 +5451,53 @@ fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallabl
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
                         collect_declared_callables_in_stmt(&stmt.kind, out);
                     }
-                    ClassMember::Constructor { body, .. } => collect_declared_callables(body, out),
-                    ClassMember::Property { getter, setter, .. } => {
+                    ClassMember::Constructor { params, body, .. } => {
+                        collect_delegate_param_names(params, out);
+                        collect_declared_callables(body, out);
+                    }
+                    // ⛔ A DELEGATE-VALUED *MEMBER* IS A CALLABLE THE UNIT DECLARES.
+                    //
+                    // Exactly the §13.5.4 reasoning of the local-variable arm below,
+                    // one level in: a member can be the callee of a bare call too.
+                    //
+                    //   class Alarm { public event Action Triggered;
+                    //                 public void Fire() { Triggered(); } }
+                    //
+                    // `Triggered` is neither a method nor a local, so without this arm
+                    // `qualification_for` fell through to the first-path guess and
+                    // rewrote the raise to `__Harness.Triggered` — undefined at
+                    // runtime. ONE `using static` anywhere in the file was enough, and
+                    // the corpus harness puts one in every test, so every class that
+                    // raised an event through its BARE spelling died in the raiser
+                    // with "undefined is not callable". Writing `Triggered?.Invoke()`
+                    // instead survived, which is why this hid behind a spelling.
+                    //
+                    // An event is delegate-typed by definition (§15.8) so it needs no
+                    // test; a field or property is admitted only when its declared
+                    // type is one, keeping the same narrowness the local arm argues
+                    // for — a field named `Abs` holding an int must not stop
+                    // `Abs(x)` resolving to `System.Math.Abs` elsewhere in the unit.
+                    ClassMember::Event { name, .. } => {
+                        out.names.insert(name.clone());
+                    }
+                    ClassMember::Field {
+                        name, type_hint, ..
+                    } if type_hint
+                        .as_deref()
+                        .is_some_and(is_csharp_delegate_type) =>
+                    {
+                        out.names.insert(name.clone());
+                    }
+                    ClassMember::Property {
+                        name,
+                        type_hint,
+                        getter,
+                        setter,
+                        ..
+                    } => {
+                        if type_hint.as_deref().is_some_and(is_csharp_delegate_type) {
+                            out.names.insert(name.clone());
+                        }
                         if let Some(getter) = getter {
                             collect_declared_callables(getter, out);
                         }
@@ -5217,6 +5528,23 @@ fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallabl
                 collect_declared_callables_in_stmt(&init.kind, out);
             }
             collect_declared_callables(body, out);
+        }
+        // `foreach (var action in actions) action();` — the loop variable is a
+        // delegate because the sequence's ELEMENT type is, and `var` writes no
+        // hint of its own. Only a sequence this unit declared as delegate-typed
+        // counts, so the loop variable of an ordinary `foreach` is untouched.
+        StmtKind::ForIn {
+            var,
+            iter,
+            body,
+            else_body,
+            ..
+        } if matches!(&iter.kind, ExprKind::Ident(n) if out.delegate_sequences.contains(n)) => {
+            out.names.insert(var.clone());
+            collect_declared_callables(body, out);
+            if let Some(else_body) = else_body {
+                collect_declared_callables(else_body, out);
+            }
         }
         StmtKind::ForIn {
             body, else_body, ..
@@ -5278,12 +5606,12 @@ fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut DeclaredCallabl
                     decl.init.as_ref().map(|e| &e.kind),
                     Some(ExprKind::Lambda { .. })
                 );
-                let is_delegate_typed = decl
-                    .type_hint
-                    .as_ref()
-                    .is_some_and(|hint| is_csharp_delegate_type(hint.spelling()));
+                let spelling = decl.type_hint.as_ref().map(|hint| hint.spelling());
+                let is_delegate_typed = spelling.is_some_and(is_csharp_delegate_type);
                 if is_lambda || is_delegate_typed {
                     out.names.insert(name.clone());
+                } else if spelling.is_some_and(is_csharp_delegate_sequence_type) {
+                    out.delegate_sequences.insert(name.clone());
                 }
             }
         }
@@ -5313,6 +5641,44 @@ fn is_csharp_delegate_type(spelling: &str) -> bool {
     ) || head.ends_with("Handler")
         || head.ends_with("Callback")
         || head.ends_with("Delegate")
+}
+
+/// Whether a declared type spelling names a SEQUENCE of delegates — `Action[]`,
+/// `List<Func<int>>`, `IEnumerable<EventHandler>`. Its elements are callable
+/// even though it is not.
+fn is_csharp_delegate_sequence_type(spelling: &str) -> bool {
+    let spelling = spelling.trim();
+    if let Some(element) = spelling.strip_suffix("[]") {
+        return is_csharp_delegate_type(element);
+    }
+    // `List<Func<int>>` — take everything between the OUTER angle brackets so a
+    // generic delegate element keeps its own arguments.
+    let (head, rest) = match spelling.split_once('<') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let head = head.rsplit('.').next().unwrap_or(head).trim();
+    if !matches!(
+        head,
+        "List" | "IList" | "IEnumerable" | "ICollection" | "IReadOnlyList" | "Queue" | "Stack"
+    ) {
+        return false;
+    }
+    rest.strip_suffix('>')
+        .is_some_and(is_csharp_delegate_type)
+}
+
+/// Records every delegate-typed parameter as a name the unit declares.
+fn collect_delegate_param_names(params: &[Param], out: &mut DeclaredCallables) {
+    for param in params {
+        if param
+            .type_hint
+            .as_ref()
+            .is_some_and(|hint| is_csharp_delegate_type(hint.spelling()))
+        {
+            out.names.insert(param.name.clone());
+        }
+    }
 }
 
 fn rewrite_using_imports(module: &mut Module) {
@@ -5346,6 +5712,7 @@ fn rewrite_using_imports(module: &mut Module) {
     let mut declared = DeclaredCallables {
         skip_types: &skip_types,
         names: HashSet::new(),
+        delegate_sequences: HashSet::new(),
     };
     collect_declared_callables(&module.body, &mut declared);
     let statics = UsingStaticScope {
@@ -8696,11 +9063,30 @@ fn classify_expr_stmt(__w: &mut CsWalker, expr: Expression) -> StmtKind {
                                         optional: false,
                                     }));
                                 }
-                                if vybe_compiler::primitives::events::is_known_gui_event_field(
-                                    field,
-                                ) && vybe_compiler::primitives::events::is_event_handler_expr(
-                                    &right,
-                                ) {
+                                // ⛔ A SPELLING TABLE CLAIMED A USER TYPE'S OWN
+                                // EVENT. `is_known_gui_event_field` is a shared
+                                // list of WinForms names — `click`, `load`,
+                                // `resize` — and it does not ask who the
+                                // receiver is. `class Button { public event
+                                // Action Click; }` is an ordinary user class,
+                                // but `btn.Click += h` matched the table and
+                                // lowered to `AddHandler`, routing a plain
+                                // delegate subscription into the GUI host.
+                                //
+                                // The unit's own declaration is the authority:
+                                // if this name is declared here as an event,
+                                // it is not the framework's. Only the GUI arm
+                                // is skipped — the subscription then lowers
+                                // through the ordinary delegate path, which is
+                                // where §15.8.2 says it belongs.
+                                if !__w.declared_events.contains(field)
+                                    && vybe_compiler::primitives::events::is_known_gui_event_field(
+                                        field,
+                                    )
+                                    && vybe_compiler::primitives::events::is_event_handler_expr(
+                                        &right,
+                                    )
+                                {
                                     let control = (**object).clone();
                                     let event = field.to_lowercase();
                                     let handler = (**right).clone();
@@ -10382,7 +10768,26 @@ fn infer_csharp_expr_type(
 /// so comparisons / `foreach` / interpolation then flow through ordinary JS
 /// string handling.
 fn csharp_storage_type_hint(type_name: &str) -> String {
-    match type_name.trim().to_lowercase().as_str() {
+    let trimmed = type_name.trim();
+    // ⛔ A RECTANGULAR ARRAY IS STILL AN ARRAY. `int[,]` is lowered to NESTED
+    // arrays (`build_csharp_sized_array_expr` emits `Array(2, Array(3, 0))`),
+    // but the declared spelling reached the storage binding intact — and the
+    // shared "is this a collection" test is `ends_with("[]")`, which `int[,]`
+    // fails. So a CONVERTING hint coerced the array numerically: `int[,] d =
+    // new int[2,3]` left `d` as `NaN`, `d.Length` was `NaN` and `d[1]` was
+    // null, while the identical `var d = ...` worked. Every multidimensional
+    // indexer test failed on this, not on indexers.
+    //
+    // Normalised to the rank-1 spelling because that IS the representation;
+    // the rank lives in the nesting, not in the hint.
+    if let Some(open) = trimmed.rfind('[') {
+        let rank = &trimmed[open + 1..];
+        if rank.starts_with(',') || (rank.ends_with(']') && rank[..rank.len() - 1].chars().all(|c| c == ',') && !rank.is_empty() && rank.len() > 1)
+        {
+            return format!("{}[]", &trimmed[..open]);
+        }
+    }
+    match trimmed.to_lowercase().as_str() {
         "char" | "system.char" => "string".to_string(),
         _ => type_name.to_string(),
     }
@@ -11413,6 +11818,129 @@ fn csharp_generic_default_param_name(index: usize) -> String {
     format!("__vybe_generic_default_{index}")
 }
 
+/// Field carrying a class-level type argument's .NET type NAME, in the exact
+/// spelling `typeof(X)` folds to. `typeof` is a walk-time fold, so `typeof(T)`
+/// on a type parameter has nothing to resolve and collapses to the literal
+/// `"System.T"`; only the construction site knows the closed type. This field
+/// is where the site leaves it, and [`rewrite_generic_ctor_news_in_expr`]
+/// redirects the fold to read it.
+fn csharp_generic_name_field_name(index: usize) -> String {
+    format!("__vybe_generic_name_{index}")
+}
+
+/// The string `typeof(<type_name>)` folds to, reconstructed with the same
+/// `dotnet_type_name` call the `typeof_expression` arm makes — so a binding
+/// written here is indistinguishable from the fold it replaces.
+fn csharp_generic_type_name_literal(type_name: &str) -> String {
+    let stripped = strip_global_namespace_qualifier(type_name.trim());
+    format!("System.{}", dotnet_type_name(stripped.trim()))
+}
+
+/// The value a carried `typeof(T)` evaluates to. `.Name` / `.FullName` on a
+/// `Type` are resolved ENTIRELY by walk-time pattern matching on the receiver's
+/// SHAPE (`canonicalize_member_access`), so a plain string only answers them
+/// when the fold can see it written in place. Reached through a property —
+/// `attr.TargetType.Name`, which is what a generic attribute is read with —
+/// there is no shape left to match and a string answers nothing.
+///
+/// So the carried value is the same `{ __typename, Name, FullName }` object
+/// `compile_reflection_attribute_instance` already uses for a `System.*`
+/// attribute with no runtime shape: the members are then ordinary reads that
+/// need no fold. `typeof(ConcreteType)` keeps the string fold untouched — only
+/// `typeof(T)` on a type parameter, which could not resolve at all, changes.
+fn csharp_generic_type_value_expr(type_name: &str) -> Expression {
+    let full = csharp_generic_type_name_literal(type_name);
+    let short = full.rsplit('.').next().unwrap_or(&full).to_string();
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__typename"),
+            value: Expression::string(&full),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Name"),
+            value: Expression::string(&short),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("FullName"),
+            value: Expression::string(&full),
+        },
+    ]))
+}
+
+/// A `Type` object for a fully-qualified type NAME known at walk time.
+///
+/// The same `{ __typename, Name, FullName }` shape
+/// `csharp_generic_type_value_expr` carries, built from a name rather than from
+/// a type parameter: `.Name` on a `Type` resolves only by walk-time shape
+/// matching, so an element of `GenericTypeArguments` has to arrive as an object
+/// with the member already on it.
+fn csharp_type_object_expr(full: &str) -> Expression {
+    let short = full.rsplit('.').next().unwrap_or(full).to_string();
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__typename"),
+            value: Expression::string(full),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Name"),
+            value: Expression::string(&short),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("FullName"),
+            value: Expression::string(full),
+        },
+    ]))
+}
+
+/// The value `typeof(List<>)` evaluates to — an OPEN generic definition.
+///
+/// ⛔ A concrete `typeof(X)` deliberately stays the string fold: printing
+/// `typeof(int)` must keep answering `System.Int32`. An UNBOUND one cannot be
+/// a string usefully — every use of it is reflective (`IsGenericTypeDefinition`,
+/// `MakeGenericType`), and against a string every one of those answered
+/// `undefined is not callable`.
+///
+/// .NET spells the arity into the name (`List\`1`, `Dictionary\`2`) and
+/// reports `GenericTypeArguments` as EMPTY for an open definition — the
+/// arguments appear only once it is closed.
+fn csharp_open_generic_type_value_expr(type_name: &str) -> Expression {
+    let stripped = strip_global_namespace_qualifier(type_name.trim());
+    let head = stripped.split('<').next().unwrap_or(stripped).trim();
+    let arity = stripped
+        .chars()
+        .filter(|c| *c == ',')
+        .count()
+        .saturating_add(1);
+    let full = format!("System.{}`{arity}", dotnet_type_name(head));
+    let short = full.rsplit('.').next().unwrap_or(&full).to_string();
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__typename"),
+            value: Expression::string(&full),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Name"),
+            value: Expression::string(&short),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("FullName"),
+            value: Expression::string(&full),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("IsGenericType"),
+            value: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("IsGenericTypeDefinition"),
+            value: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("GenericTypeArguments"),
+            value: Expression::new(ExprKind::Array(Vec::new())),
+        },
+    ]))
+}
+
 fn inject_csharp_generic_binding_params(params: &mut Vec<Param>, generic_count: usize) {
     for index in 0..generic_count {
         params.push(Param {
@@ -11440,6 +11968,18 @@ fn inject_csharp_generic_binding_params(params: &mut Vec<Param>, generic_count: 
 
 fn inject_csharp_generic_ctor_fields(members: &mut Vec<ClassMember>, generic_count: usize) {
     for index in (0..generic_count).rev() {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: csharp_generic_name_field_name(index),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+                storage: None,
+            },
+        );
         members.insert(
             0,
             ClassMember::Field {
@@ -11686,6 +12226,25 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
 
 fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[String]) {
     match &mut expr.kind {
+        // `typeof(T)` where `T` is one of THIS class's type parameters. The
+        // `typeof_expression` arm folds to a string at walk time, long before
+        // any type parameter is bound, so `typeof(T)` had already collapsed to
+        // the literal `"System.T"` and printed as such. Redirect the fold to
+        // the field the construction site fills with the closed type's name.
+        // The literal is rebuilt through the same `dotnet_type_name` call the
+        // fold used, so this matches exactly what it emitted and nothing else.
+        ExprKind::Lit(Literal::Str(text)) => {
+            if let Some(index) = generic_params
+                .iter()
+                .position(|param| *text == csharp_generic_type_name_literal(param))
+            {
+                expr.kind = ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: csharp_generic_name_field_name(index),
+                    null_safe: false,
+                };
+            }
+        }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_generic_ctor_news_in_expr(left, generic_params);
             rewrite_generic_ctor_news_in_expr(right, generic_params);
@@ -11835,13 +12394,21 @@ fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[St
     }
 }
 
-fn rewrite_generic_bindings_in_statements(body: &mut [Statement], generic_params: &[String]) {
+fn rewrite_generic_bindings_in_statements(
+    body: &mut [Statement],
+    generic_params: &[String],
+    default_target: Option<&str>,
+) {
     for stmt in body {
-        rewrite_generic_bindings_in_statement(stmt, generic_params);
+        rewrite_generic_bindings_in_statement(stmt, generic_params, default_target);
     }
 }
 
-fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &[String]) {
+fn rewrite_generic_bindings_in_statement(
+    stmt: &mut Statement,
+    generic_params: &[String],
+    default_target: Option<&str>,
+) {
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
@@ -11852,30 +12419,30 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
-            rewrite_generic_bindings_in_expr(expr, generic_params);
+            rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
         }
         StmtKind::Throw {
             expr: Some(expr),
             cause: Some(cause),
         } => {
-            rewrite_generic_bindings_in_expr(expr, generic_params);
-            rewrite_generic_bindings_in_expr(cause, generic_params);
+            rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(cause, generic_params, default_target);
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_generic_bindings_in_expr(init, generic_params);
+                    rewrite_generic_bindings_in_expr(init, generic_params, default_target);
                 }
                 if let Some(bounds) = &mut decl.array_bounds {
                     for bound in bounds {
-                        rewrite_generic_bindings_in_expr(bound, generic_params);
+                        rewrite_generic_bindings_in_expr(bound, generic_params, default_target);
                     }
                 }
             }
         }
         StmtKind::FunctionDecl { .. } => {}
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
         }
         StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::ModuleDecl { .. } => {}
         StmtKind::If {
@@ -11884,14 +12451,14 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             elifs,
             else_body,
         } => {
-            rewrite_generic_bindings_in_expr(cond, generic_params);
-            rewrite_generic_bindings_in_statements(then_body, generic_params);
+            rewrite_generic_bindings_in_expr(cond, generic_params, default_target);
+            rewrite_generic_bindings_in_statements(then_body, generic_params, default_target);
             for (elif_cond, elif_body) in elifs {
-                rewrite_generic_bindings_in_expr(elif_cond, generic_params);
-                rewrite_generic_bindings_in_statements(elif_body, generic_params);
+                rewrite_generic_bindings_in_expr(elif_cond, generic_params, default_target);
+                rewrite_generic_bindings_in_statements(elif_body, generic_params, default_target);
             }
             if let Some(else_body) = else_body {
-                rewrite_generic_bindings_in_statements(else_body, generic_params);
+                rewrite_generic_bindings_in_statements(else_body, generic_params, default_target);
             }
         }
         StmtKind::For {
@@ -11901,15 +12468,15 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             body,
         } => {
             if let Some(init) = init {
-                rewrite_generic_bindings_in_statement(init, generic_params);
+                rewrite_generic_bindings_in_statement(init, generic_params, default_target);
             }
             if let Some(cond) = cond {
-                rewrite_generic_bindings_in_expr(cond, generic_params);
+                rewrite_generic_bindings_in_expr(cond, generic_params, default_target);
             }
             if let Some(update) = update {
-                rewrite_generic_bindings_in_expr(update, generic_params);
+                rewrite_generic_bindings_in_expr(update, generic_params, default_target);
             }
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
         }
         StmtKind::ForIn {
             iter,
@@ -11917,10 +12484,10 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             else_body,
             ..
         } => {
-            rewrite_generic_bindings_in_expr(iter, generic_params);
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_expr(iter, generic_params, default_target);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
             if let Some(else_body) = else_body {
-                rewrite_generic_bindings_in_statements(else_body, generic_params);
+                rewrite_generic_bindings_in_statements(else_body, generic_params, default_target);
             }
         }
         StmtKind::While {
@@ -11928,41 +12495,41 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             body,
             else_body,
         } => {
-            rewrite_generic_bindings_in_expr(cond, generic_params);
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_expr(cond, generic_params, default_target);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
             if let Some(else_body) = else_body {
-                rewrite_generic_bindings_in_statements(else_body, generic_params);
+                rewrite_generic_bindings_in_statements(else_body, generic_params, default_target);
             }
         }
         StmtKind::DoWhile { body, cond, .. } => {
-            rewrite_generic_bindings_in_statements(body, generic_params);
-            rewrite_generic_bindings_in_expr(cond, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(cond, generic_params, default_target);
         }
         StmtKind::Switch {
             expr,
             cases,
             default,
         } => {
-            rewrite_generic_bindings_in_expr(expr, generic_params);
+            rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
                         CaseCondition::Value(expr) => {
-                            rewrite_generic_bindings_in_expr(expr, generic_params)
+                            rewrite_generic_bindings_in_expr(expr, generic_params, default_target)
                         }
                         CaseCondition::Range { from, to } => {
-                            rewrite_generic_bindings_in_expr(from, generic_params);
-                            rewrite_generic_bindings_in_expr(to, generic_params);
+                            rewrite_generic_bindings_in_expr(from, generic_params, default_target);
+                            rewrite_generic_bindings_in_expr(to, generic_params, default_target);
                         }
                         CaseCondition::Comparison { expr, .. } => {
-                            rewrite_generic_bindings_in_expr(expr, generic_params);
+                            rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
                         }
                     }
                 }
-                rewrite_generic_bindings_in_statements(&mut case.body, generic_params);
+                rewrite_generic_bindings_in_statements(&mut case.body, generic_params, default_target);
             }
             if let Some(default) = default {
-                rewrite_generic_bindings_in_statements(default, generic_params);
+                rewrite_generic_bindings_in_statements(default, generic_params, default_target);
             }
         }
         StmtKind::Try {
@@ -11971,41 +12538,45 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             else_body,
             finally,
         } => {
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_generic_bindings_in_expr(when_clause, generic_params);
+                    rewrite_generic_bindings_in_expr(when_clause, generic_params, default_target);
                 }
-                rewrite_generic_bindings_in_statements(&mut catch.body, generic_params);
+                rewrite_generic_bindings_in_statements(&mut catch.body, generic_params, default_target);
             }
             if let Some(else_body) = else_body {
-                rewrite_generic_bindings_in_statements(else_body, generic_params);
+                rewrite_generic_bindings_in_statements(else_body, generic_params, default_target);
             }
             if let Some(finally) = finally {
-                rewrite_generic_bindings_in_statements(finally, generic_params);
+                rewrite_generic_bindings_in_statements(finally, generic_params, default_target);
             }
         }
         StmtKind::With { items, body, .. } => {
             for item in items {
-                rewrite_generic_bindings_in_expr(&mut item.expr, generic_params);
+                rewrite_generic_bindings_in_expr(&mut item.expr, generic_params, default_target);
             }
-            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params, default_target);
         }
         StmtKind::Assign { targets, value, .. } => {
             for target in targets {
-                rewrite_generic_bindings_in_expr(target, generic_params);
+                rewrite_generic_bindings_in_expr(target, generic_params, default_target);
             }
-            rewrite_generic_bindings_in_expr(value, generic_params);
+            rewrite_generic_bindings_in_expr(value, generic_params, default_target);
         }
         _ => {}
     }
 }
 
-fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[String]) {
+fn rewrite_generic_bindings_in_expr(
+    expr: &mut Expression,
+    generic_params: &[String],
+    default_target: Option<&str>,
+) {
     match &mut expr.kind {
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
-            rewrite_generic_bindings_in_expr(left, generic_params);
-            rewrite_generic_bindings_in_expr(right, generic_params);
+            rewrite_generic_bindings_in_expr(left, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(right, generic_params, default_target);
         }
         ExprKind::Unary { expr, .. }
         | ExprKind::Await(expr)
@@ -12015,59 +12586,96 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
         | ExprKind::TypeOf(expr)
         | ExprKind::Spread(expr)
         | ExprKind::Cast { expr, .. } => {
-            rewrite_generic_bindings_in_expr(expr, generic_params);
+            rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
         }
         ExprKind::DefaultOf(type_name) => {
-            if let Some(index) = generic_params.iter().position(|param| param == type_name) {
+            // ⛔ A BARE `default` IS TARGET-TYPED (§12.8.21) and reaches here as
+            // `DefaultOf("")` — no type name to match, so this arm never fired
+            // for it and `T Zero<T>() where T : struct => default;` returned
+            // NULL where C# returns `0`. The target is the enclosing method's
+            // declared return type: the only thing in scope that says what the
+            // literal is a default OF. `default(T)` spelled out was already
+            // handled, which is why this hid behind the shorter spelling.
+            // ⛔ TRIMMED. `return_type` is `p.as_str()` on the `type_name`
+            // rule, which CAPTURES THE TRAILING SPACE — measured `Some("T ")`
+            // in `--dump-ast`. Compared untrimmed it never equalled the
+            // generic parameter `"T"`, so this arm silently did nothing for
+            // the bare spelling while `default(T)` — whose name comes from
+            // inside parentheses and carries no space — worked. The two
+            // spellings then disagreed only where `DefaultOf("")` happens to
+            // lower differently: `0` in an arithmetic context, `null` as a
+            // member-call receiver.
+            let target = if type_name.is_empty() {
+                default_target.unwrap_or_default()
+            } else {
+                type_name.as_str()
+            }
+            .trim();
+            if let Some(index) = generic_params.iter().position(|param| param.trim() == target) {
                 expr.kind = ExprKind::Ident(csharp_generic_default_param_name(index));
             }
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_generic_bindings_in_expr(cond, generic_params);
-            rewrite_generic_bindings_in_expr(then, generic_params);
-            rewrite_generic_bindings_in_expr(else_, generic_params);
+            rewrite_generic_bindings_in_expr(cond, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(then, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(else_, generic_params, default_target);
         }
-        ExprKind::Member { object, .. } => rewrite_generic_bindings_in_expr(object, generic_params),
+        // `T.GetValue()` — C# 11 static abstract interface members, where the
+        // RECEIVER is a type parameter. The call site already passes the type
+        // argument as `__vybe_generic_ctor_{i}` and the declaration already
+        // receives it; only the body never connected the two, so `T` resolved
+        // to nothing and every one of those calls answered `undefined is not
+        // callable`. Exactly parallel to the `New { class: Ident(T) }` arm
+        // below — a type parameter naming a type is the same substitution
+        // whether it is constructed or called through.
+        ExprKind::Member { object, .. } => {
+            rewrite_generic_bindings_in_expr(object, generic_params, default_target);
+            if let ExprKind::Ident(name) = &object.kind {
+                if let Some(index) = generic_params.iter().position(|param| param == name) {
+                    object.kind = ExprKind::Ident(csharp_generic_ctor_param_name(index));
+                }
+            }
+        }
         ExprKind::Index { object, index, .. } => {
-            rewrite_generic_bindings_in_expr(object, generic_params);
-            rewrite_generic_bindings_in_expr(index, generic_params);
+            rewrite_generic_bindings_in_expr(object, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(index, generic_params, default_target);
         }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_generic_bindings_in_expr(callee, generic_params);
+            rewrite_generic_bindings_in_expr(callee, generic_params, default_target);
             for arg in args {
-                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params);
+                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params, default_target);
             }
         }
         ExprKind::New { class, args } => {
-            rewrite_generic_bindings_in_expr(class, generic_params);
+            rewrite_generic_bindings_in_expr(class, generic_params, default_target);
             if let ExprKind::Ident(name) = &class.kind {
                 if let Some(index) = generic_params.iter().position(|param| param == name) {
                     class.kind = ExprKind::Ident(csharp_generic_ctor_param_name(index));
                 }
             }
             for arg in args {
-                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params);
+                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params, default_target);
             }
         }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
-            rewrite_generic_bindings_in_expr(target, generic_params);
-            rewrite_generic_bindings_in_expr(value, generic_params);
+            rewrite_generic_bindings_in_expr(target, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(value, generic_params, default_target);
         }
         ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
-            LambdaBody::Block(body) => rewrite_generic_bindings_in_statements(body, generic_params),
+            LambdaBody::Expr(expr) => rewrite_generic_bindings_in_expr(expr, generic_params, default_target),
+            LambdaBody::Block(body) => rewrite_generic_bindings_in_statements(body, generic_params, default_target),
         },
         ExprKind::Array(items) => {
             for item in items {
-                rewrite_generic_bindings_in_expr(&mut item.value, generic_params);
+                rewrite_generic_bindings_in_expr(&mut item.value, generic_params, default_target);
                 if let Some(key) = &mut item.key {
-                    rewrite_generic_bindings_in_expr(key, generic_params);
+                    rewrite_generic_bindings_in_expr(key, generic_params, default_target);
                 }
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
-                rewrite_generic_bindings_in_expr(item, generic_params);
+                rewrite_generic_bindings_in_expr(item, generic_params, default_target);
             }
         }
         ExprKind::Object(props) => {
@@ -12075,15 +12683,15 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
                 match prop {
                     ObjectProperty::KeyValue { key, value }
                     | ObjectProperty::Computed { key, value } => {
-                        rewrite_generic_bindings_in_expr(key, generic_params);
-                        rewrite_generic_bindings_in_expr(value, generic_params);
+                        rewrite_generic_bindings_in_expr(key, generic_params, default_target);
+                        rewrite_generic_bindings_in_expr(value, generic_params, default_target);
                     }
                     ObjectProperty::Spread(expr) => {
-                        rewrite_generic_bindings_in_expr(expr, generic_params)
+                        rewrite_generic_bindings_in_expr(expr, generic_params, default_target)
                     }
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
-                        rewrite_generic_bindings_in_statement(value, generic_params);
+                        rewrite_generic_bindings_in_statement(value, generic_params, default_target);
                     }
                     ObjectProperty::Shorthand(_) => {}
                 }
@@ -12093,7 +12701,7 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
             for part in parts {
                 match part {
                     InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                        rewrite_generic_bindings_in_expr(expr, generic_params);
+                        rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
                     }
                     InterpolPart::Text(_) => {}
                 }
@@ -12104,43 +12712,43 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
             generators,
             ..
         } => {
-            rewrite_generic_bindings_in_expr(element, generic_params);
+            rewrite_generic_bindings_in_expr(element, generic_params, default_target);
             for generator in generators {
-                rewrite_generic_bindings_in_expr(&mut generator.iter, generic_params);
+                rewrite_generic_bindings_in_expr(&mut generator.iter, generic_params, default_target);
                 for condition in &mut generator.conditions {
-                    rewrite_generic_bindings_in_expr(condition, generic_params);
+                    rewrite_generic_bindings_in_expr(condition, generic_params, default_target);
                 }
             }
         }
         ExprKind::Slice { lower, upper, step } => {
             if let Some(lower) = lower {
-                rewrite_generic_bindings_in_expr(lower, generic_params);
+                rewrite_generic_bindings_in_expr(lower, generic_params, default_target);
             }
             if let Some(upper) = upper {
-                rewrite_generic_bindings_in_expr(upper, generic_params);
+                rewrite_generic_bindings_in_expr(upper, generic_params, default_target);
             }
             if let Some(step) = step {
-                rewrite_generic_bindings_in_expr(step, generic_params);
+                rewrite_generic_bindings_in_expr(step, generic_params, default_target);
             }
         }
         ExprKind::Range { start, end, .. } => {
-            rewrite_generic_bindings_in_expr(start, generic_params);
-            rewrite_generic_bindings_in_expr(end, generic_params);
+            rewrite_generic_bindings_in_expr(start, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(end, generic_params, default_target);
         }
         ExprKind::Match { subject, arms } => {
-            rewrite_generic_bindings_in_expr(subject, generic_params);
+            rewrite_generic_bindings_in_expr(subject, generic_params, default_target);
             for arm in arms {
                 if let Some(conditions) = &mut arm.conditions {
                     for expr in conditions {
-                        rewrite_generic_bindings_in_expr(expr, generic_params);
+                        rewrite_generic_bindings_in_expr(expr, generic_params, default_target);
                     }
                 }
-                rewrite_generic_bindings_in_expr(&mut arm.body, generic_params);
+                rewrite_generic_bindings_in_expr(&mut arm.body, generic_params, default_target);
             }
         }
         ExprKind::StaticAccess { class, member } => {
-            rewrite_generic_bindings_in_expr(class, generic_params);
-            rewrite_generic_bindings_in_expr(member, generic_params);
+            rewrite_generic_bindings_in_expr(class, generic_params, default_target);
+            rewrite_generic_bindings_in_expr(member, generic_params, default_target);
         }
         _ => {}
     }
@@ -12491,6 +13099,10 @@ fn walk_property(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Resul
 #[derive(Default)]
 pub(crate) struct CsWalker {
     custom_events: std::collections::HashSet<String>,
+    /// EVERY event the unit declares, accessors or not. Read only to stop the
+    /// shared GUI-event spelling table claiming a user type's own event —
+    /// never to rewrite anything.
+    declared_events: std::collections::HashSet<String>,
     /// Conditional-compilation symbols still defined at end of file
     /// (`#define`), consumed by `[Conditional("SYM")]` call elision.
     defined_symbols: std::collections::HashSet<String>,
@@ -12515,6 +13127,332 @@ pub(crate) struct CsWalker {
     /// and a registry filled during the walk would answer "not declared" for
     /// every type in a legal file.
     declared_types: std::collections::HashSet<String>,
+    /// Generic types this unit declares that actually read `typeof(T)` on one
+    /// of their own type parameters — the only ones a construction site needs
+    /// to bind. See [`collect_generic_typeof_types`] for why it is not every
+    /// generic type.
+    generic_typeof_types: std::collections::HashSet<String>,
+    /// Field and property names this compilation unit DECLARES.
+    ///
+    /// ⛔ A FRAMEWORK SPELLING MUST NOT OUTRANK A USER'S OWN MEMBER.
+    /// `canonicalize_member_access` rewrites `.Span` to its receiver — correct
+    /// for `Memory<T>.Span`, and applied to EVERY `.Span` read, so a
+    /// `ref struct` with a field called `Span` answered the OBJECT and
+    /// `holder.Span[0]` came back undefined. Collected from the parse tree
+    /// before the walk, for the same reason `declared_types` is: a registry
+    /// filled during the walk answers "not declared" for anything used above
+    /// its declaration, and C# has no forward-declaration rule.
+    declared_members: std::collections::HashSet<String>,
+    /// Types whose `this[…]` indexer declares TWO OR MORE parameters.
+    ///
+    /// A comma index is two different constructs wearing one spelling.
+    /// `data[r, c]` on a rectangular array is a nested lookup, because the
+    /// backing store IS nested arrays. `m[r, c]` on a receiver whose type
+    /// declares `this[int, int]` is ONE call to that indexer with TWO
+    /// arguments. Nesting the second reads the row through the getter and
+    /// then indexes whatever came back — a silent zero, never an error.
+    ///
+    /// Collected from the parse tree before the walk, for the reason
+    /// `declared_types` is: §7.1 puts top-level statements above the types
+    /// they name, so `m[0, 1]` is walked before `class MatrixStore` is seen.
+    multi_index_types: std::collections::HashSet<String>,
+    /// Locals, fields and parameters whose declared — or constructed — type
+    /// is one of [`CsWalker::multi_index_types`].
+    ///
+    /// A WHITELIST on purpose. It changes the lowering only where this unit
+    /// can NAME the receiver's type as such; every unknown receiver keeps the
+    /// nested-array shape it has always had.
+    multi_index_vars: std::collections::HashSet<String>,
+}
+
+/// The accessor pair `walk_indexer` emits for `this[…]`. The shared
+/// single-argument index site resolves the same `__get___index__` internally,
+/// so both arities reach a receiver through one member and cannot drift.
+const CSHARP_INDEX_GETTER: &str = "__get___index__";
+const CSHARP_INDEX_SETTER: &str = "__set___index__";
+
+/// A type name reduced to the leaf the declaration registry holds:
+/// `System.Text.Grid<int>` → `Grid`.
+fn csharp_bare_type_name(spelling: &str) -> String {
+    let trimmed = spelling.trim();
+    let head = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    head.rsplit('.').next().unwrap_or(head).trim().to_string()
+}
+
+/// Fill [`CsWalker::multi_index_types`] from the parse tree.
+fn collect_multi_index_types(pair: &Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+    if is_csharp_type_declaration_rule(pair.as_rule())
+        && type_declares_multi_index(pair)
+        && let Some(name) = pair
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::ident_name)
+    {
+        out.insert(name.as_str().to_string());
+    }
+    for inner in pair.clone().into_inner() {
+        collect_multi_index_types(&inner, out);
+    }
+}
+
+/// Every event in the unit that declares `add`/`remove` accessors of its own.
+///
+/// ⛔ COLLECTED IN THE PRE-PASS, NOT WHILE WALKING THE CLASS. `walk_event` also
+/// records the name, but it runs when the declaration is reached — and §7.1
+/// puts the USE above the declaration. Top-level statements are walked first
+/// and the corpus writes the class beneath them, so `b.Click += h` saw an empty
+/// set, stayed an arithmetic `+=` on the event's backing field, and the
+/// accessor bodies never ran: the subscription was silently dropped and the
+/// raise printed nothing. Moving the class above its use made the same file
+/// pass, which is what hid this behind file layout.
+fn collect_custom_events(
+    pair: &Pair<Rule>,
+    custom: &mut std::collections::HashSet<String>,
+    declared: &mut std::collections::HashSet<String>,
+) {
+    if pair.as_rule() == Rule::event_declaration {
+        let inner: Vec<_> = pair.clone().into_inner().collect();
+        if let Some(name) = inner.iter().find(|p| p.as_rule() == Rule::ident_name) {
+            declared.insert(name.as_str().to_string());
+            if inner.iter().any(|p| p.as_rule() == Rule::event_accessor) {
+                custom.insert(name.as_str().to_string());
+            }
+        }
+    }
+    for inner in pair.clone().into_inner() {
+        collect_custom_events(&inner, custom, declared);
+    }
+}
+
+fn is_csharp_type_declaration_rule(rule: Rule) -> bool {
+    matches!(
+        rule,
+        Rule::class_declaration
+            | Rule::struct_declaration
+            | Rule::record_declaration
+            | Rule::record_struct_declaration
+            | Rule::interface_declaration
+    )
+}
+
+/// Does this type declare a multi-parameter indexer OF ITS OWN? A nested
+/// type's indexer belongs to the nested type, so the scan stops at one.
+///
+/// `explicit_interface_indexer_declaration` is deliberately not counted.
+/// `walk_indexer` mangles the accessor names for an explicit implementation
+/// and emits no role member at all, so an access rewritten to the plain
+/// accessor would name a member that does not exist — strictly worse than
+/// the nested shape it replaced.
+fn type_declares_multi_index(pair: &Pair<Rule>) -> bool {
+    fn scan(pair: &Pair<Rule>, top: bool) -> bool {
+        if !top && is_csharp_type_declaration_rule(pair.as_rule()) {
+            return false;
+        }
+        if pair.as_rule() == Rule::indexer_declaration {
+            return csharp_indexer_param_count(pair) >= 2;
+        }
+        pair.clone().into_inner().any(|inner| scan(&inner, false))
+    }
+    scan(pair, true)
+}
+
+fn csharp_indexer_param_count(pair: &Pair<Rule>) -> usize {
+    pair.clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::param_list)
+        .map_or(0, |list| {
+            list.into_inner()
+                .filter(|p| p.as_rule() == Rule::param)
+                .count()
+        })
+}
+
+/// Fill [`CsWalker::multi_index_vars`] — every name bound to a type that
+/// declares a multi-parameter indexer, whether by its declared type
+/// (`Grid g;`) or by the type it constructs (`var g = new Grid();`).
+fn collect_multi_index_vars(
+    pair: &Pair<Rule>,
+    types: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match pair.as_rule() {
+        Rule::local_var_declaration
+        | Rule::local_var_declaration_no_semi
+        | Rule::field_declaration => {
+            let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+            let declared_matches = inner
+                .iter()
+                .find(|p| p.as_rule() == Rule::type_name)
+                .is_some_and(|p| types.contains(&csharp_bare_type_name(p.as_str())));
+            for list in inner.iter().filter(|p| p.as_rule() == Rule::var_declarator_list) {
+                for declarator in list.clone().into_inner() {
+                    if declarator.as_rule() != Rule::var_declarator {
+                        continue;
+                    }
+                    let Some(name) = declarator
+                        .clone()
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::ident_name)
+                    else {
+                        continue;
+                    };
+                    if declared_matches || constructs_multi_index_type(&declarator, types) {
+                        out.insert(name.as_str().to_string());
+                    }
+                }
+            }
+        }
+        Rule::param => {
+            let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+            let declared = inner.iter().find(|p| p.as_rule() == Rule::type_name);
+            let name = inner.iter().filter(|p| p.as_rule() == Rule::ident_name).next_back();
+            if let (Some(declared), Some(name)) = (declared, name)
+                && types.contains(&csharp_bare_type_name(declared.as_str()))
+            {
+                out.insert(name.as_str().to_string());
+            }
+        }
+        _ => {}
+    }
+    for inner in pair.clone().into_inner() {
+        collect_multi_index_vars(&inner, types, out);
+    }
+}
+
+fn constructs_multi_index_type(
+    pair: &Pair<Rule>,
+    types: &std::collections::HashSet<String>,
+) -> bool {
+    if pair.as_rule() == Rule::new_expression
+        && let Some(constructed) = pair
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::type_name_for_new)
+        && types.contains(&csharp_bare_type_name(constructed.as_str()))
+    {
+        return true;
+    }
+    pair.clone()
+        .into_inner()
+        .any(|inner| constructs_multi_index_type(&inner, types))
+}
+
+/// Is this receiver one whose type this unit knows declares `this[a, b]`?
+fn receiver_declares_multi_index(__w: &CsWalker, receiver: &Expression) -> bool {
+    match &receiver.kind {
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => __w.multi_index_types.contains(name),
+            _ => false,
+        },
+        ExprKind::Ident(name) => __w.multi_index_vars.contains(name),
+        ExprKind::Member { object, field, .. } => {
+            matches!(object.kind, ExprKind::This) && __w.multi_index_vars.contains(field)
+        }
+        _ => false,
+    }
+}
+
+/// An expression that can be evaluated twice without an observable
+/// difference — what a compound assignment through the indexer needs, since
+/// its read and its write each name the receiver and the indices.
+fn csharp_index_arg_is_repeatable(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) | ExprKind::Lit(_) | ExprKind::This => true,
+        ExprKind::Member { object, .. } => csharp_index_arg_is_repeatable(object),
+        _ => false,
+    }
+}
+
+/// `m[r, c] = v` where `m[r, c]` resolved to the two-argument indexer.
+///
+/// The read built a getter CALL, and a call is not an assignable place, so
+/// the write is spelled the way C# itself emits it: one call to the setter
+/// with the indices and the value.
+fn csharp_multi_index_write(
+    target: &Expression,
+    value: &Expression,
+    compound: Option<BinOp>,
+) -> Option<ExprKind> {
+    let ExprKind::Call { callee, args, .. } = &target.kind else {
+        return None;
+    };
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe,
+    } = &callee.kind
+    else {
+        return None;
+    };
+    if field != CSHARP_INDEX_GETTER {
+        return None;
+    }
+    // A compound assignment reads and writes the same element, and the getter
+    // call IS the read — so the receiver and the indices are named twice.
+    // Anything that would not survive that keeps its old shape rather than
+    // firing a side effect an extra time.
+    if compound.is_some()
+        && !(csharp_index_arg_is_repeatable(object)
+            && args
+                .iter()
+                .all(|arg| csharp_index_arg_is_repeatable(&arg.value)))
+    {
+        return None;
+    }
+    let written = match compound {
+        None => value.clone(),
+        Some(op) => Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(target.clone()),
+            right: Box::new(value.clone()),
+        }),
+    };
+    let mut set_args = args.clone();
+    set_args.push(Argument::positional(written));
+    Some(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: object.clone(),
+            field: CSHARP_INDEX_SETTER.to_string(),
+            null_safe: *null_safe,
+        })),
+        args: set_args,
+        optional: false,
+    })
+}
+
+/// Fill [`CsWalker::declared_members`] from the parse tree.
+fn collect_declared_members(pair: &Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+    match pair.as_rule() {
+        Rule::field_declaration => {
+            for decl in pair
+                .clone()
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::var_declarator_list)
+            {
+                for v in decl.into_inner() {
+                    if let Some(name) = v
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::ident_name)
+                    {
+                        out.insert(name.as_str().to_string());
+                    }
+                }
+            }
+        }
+        Rule::property_declaration => {
+            if let Some(name) = pair
+                .clone()
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::property_name)
+            {
+                out.insert(name.as_str().trim().to_string());
+            }
+        }
+        _ => {}
+    }
+    for inner in pair.clone().into_inner() {
+        collect_declared_members(&inner, out);
+    }
 }
 
 /// Fill [`CsWalker::declared_types`] from the parse tree.
@@ -12538,6 +13476,63 @@ fn collect_declared_types(pair: &Pair<Rule>, out: &mut std::collections::HashSet
     for inner in pair.clone().into_inner() {
         collect_declared_types(&inner, out);
     }
+}
+
+/// Fill [`CsWalker::generic_typeof_types`] — the generic types this unit
+/// declares whose body actually mentions `typeof(<one of its own type
+/// parameters>)`.
+///
+/// ⛔ Binding a type argument turns `new C<int>()` from a plain `New` into the
+/// binding IIFE, and calling a GENERATOR method straight off an IIFE is broken
+/// (`new Bag<Foo>().Single(v).First()` → `RuntimeError: [object]`, which
+/// predates this pass — an uppercase type argument already took that path).
+/// So the binding is emitted only where something reads it, which keeps every
+/// generic class that never says `typeof(T)` on the plain-`New` path it was on.
+///
+/// A pre-pass for the same §7.1 reason `declared_types` is one: the
+/// construction site is above the declaration in a legal file.
+fn collect_generic_typeof_types(pair: &Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+    if matches!(
+        pair.as_rule(),
+        Rule::class_declaration | Rule::struct_declaration | Rule::record_declaration
+    ) {
+        let mut name: Option<String> = None;
+        let mut generic_params: Vec<String> = Vec::new();
+        for p in pair.clone().into_inner() {
+            if p.as_rule() == Rule::ident_name {
+                match &name {
+                    None => name = Some(p.as_str().to_string()),
+                    Some(_) => generic_params.extend(csharp_single_generic_param_names(p.as_str())),
+                }
+            }
+        }
+        if let Some(name) = name {
+            if !generic_params.is_empty() && pair_mentions_typeof_of(pair, &generic_params) {
+                out.insert(name);
+            }
+        }
+    }
+    for inner in pair.clone().into_inner() {
+        collect_generic_typeof_types(&inner, out);
+    }
+}
+
+/// Whether any `typeof(X)` below this pair names one of `params`.
+fn pair_mentions_typeof_of(pair: &Pair<Rule>, params: &[String]) -> bool {
+    if pair.as_rule() == Rule::typeof_expression {
+        let named = pair
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::type_name)
+            .map(|p| p.as_str().trim().to_string())
+            .unwrap_or_default();
+        if params.iter().any(|param| *param == named) {
+            return true;
+        }
+    }
+    pair.clone()
+        .into_inner()
+        .any(|inner| pair_mentions_typeof_of(&inner, params))
 }
 
 
@@ -12637,10 +13632,40 @@ fn rewrite_event_accessor_delegate_ops(stmts: &mut [Statement]) {
                     rewrite_event_accessor_delegate_ops(eb);
                 }
             }
+            // ⛔ `lock` IS THE IDIOMATIC WRAPPER FOR AN EVENT ACCESSOR, and it
+            // was the one statement this descent did not enter, so
+            // `add { lock (_gate) { _c += value; } }` kept an arithmetic `+=`
+            // on a delegate and trapped with `toF64 — not a number`. `using`
+            // and `try` are here for the same reason: any statement that can
+            // hold the combine must be walked, not just the loops.
             StmtKind::For { body, .. }
             | StmtKind::ForIn { body, .. }
             | StmtKind::While { body, .. }
-            | StmtKind::DoWhile { body, .. } => rewrite_event_accessor_delegate_ops(body),
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::Lock { body, .. }
+            | StmtKind::Using { body, .. } => rewrite_event_accessor_delegate_ops(body),
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                rewrite_event_accessor_delegate_ops(body);
+                for catch in catches.iter_mut() {
+                    rewrite_event_accessor_delegate_ops(&mut catch.body);
+                }
+                if let Some(finally) = finally {
+                    rewrite_event_accessor_delegate_ops(finally);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases.iter_mut() {
+                    rewrite_event_accessor_delegate_ops(&mut case.body);
+                }
+                if let Some(default) = default {
+                    rewrite_event_accessor_delegate_ops(default);
+                }
+            }
             _ => {}
         }
     }
@@ -13017,7 +14042,7 @@ fn walk_local_function(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind,
     }
     if !generic_params.is_empty() {
         inject_csharp_generic_binding_params(&mut params, generic_params.len());
-        rewrite_generic_bindings_in_statements(&mut body, &generic_params);
+        rewrite_generic_bindings_in_statements(&mut body, &generic_params, return_type.as_deref());
     }
     apply_named_tuple_return_normalization(&mut body, return_type.as_deref());
     let is_sub = return_type.as_deref() == Some("void");
@@ -13521,7 +14546,7 @@ fn walk_method(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<
     }
     if !generic_params.is_empty() {
         inject_csharp_generic_binding_params(&mut params, generic_params.len());
-        rewrite_generic_bindings_in_statements(&mut body, &generic_params);
+        rewrite_generic_bindings_in_statements(&mut body, &generic_params, return_type.as_deref());
     }
     apply_named_tuple_return_normalization(&mut body, return_type.as_deref());
     if name.eq_ignore_ascii_case("InitializeComponent") {
@@ -13557,7 +14582,11 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => {
-                type_hint = Some(p.as_str().to_string());
+                // ⛔ TRIMMED. The rule spans the whitespace before the
+                // declarator, so the hint arrives as `"int "` — and a declared
+                // type is matched by SPELLING, so an uninitialized `int` field
+                // read back `null` instead of `default(T)`.
+                type_hint = Some(p.as_str().trim().to_string());
                 __w.target_new_type = type_hint.clone();
             }
             // `public int A, B;` declares one field per comma-separated
@@ -13581,10 +14610,13 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
                 BindingPattern::Ident(n) => n,
                 _ => String::new(),
             };
+            let init = decl
+                .init
+                .or_else(|| type_hint.as_deref().and_then(csharp_field_type_default));
             ClassMember::Field {
                 name,
                 type_hint: type_hint.clone(),
-                init: decl.init,
+                init,
                 modifiers: mods.clone(),
                 with_events: false,
                 array_bounds: None,
@@ -13592,6 +14624,27 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
             }
         })
         .collect())
+}
+
+/// `default(T)` for a field declared without an initializer.
+///
+/// §9.3: a field of a value type starts at its default — `0` for the numerics,
+/// `False` for `bool`. Only the SIMPLE types are answered here; a reference
+/// type and a `T?` both start `null`, which is what an absent initializer
+/// already produces.
+fn csharp_field_type_default(type_hint: &str) -> Option<Expression> {
+    let name = type_hint.trim();
+    if name.ends_with('?') {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Lit(match name {
+        "int" | "long" | "short" | "byte" | "sbyte" | "uint" | "ulong" | "ushort" | "nint"
+        | "nuint" | "Int32" | "Int64" | "Int16" | "Byte" | "SByte" | "UInt32" | "UInt64"
+        | "UInt16" | "IntPtr" | "UIntPtr" => Literal::Int(0),
+        "float" | "double" | "decimal" | "Single" | "Double" | "Decimal" => Literal::Float(0.0),
+        "bool" | "Boolean" => Literal::Bool(false),
+        _ => return None,
+    })))
 }
 
 // ── Struct ──────────────────────────────────────────────────────────────────
@@ -15927,6 +16980,30 @@ fn parse_csharp_query_expression(__w: &mut CsWalker, pair: Pair<Rule>) -> Result
     Ok(Expression::with_span(lowered.kind, span))
 }
 
+/// A C# integer literal in base 16 or 2, as the 64 BITS it denotes.
+///
+/// ⛔ THIS USED TO ABORT THE WHOLE WALK. `i64::from_str_radix` on
+/// `0xFFFFFFFFFFFFFFFF` — `ulong.MaxValue`, a perfectly ordinary C# literal —
+/// overflows, and the `?` carried that `Err` out of the walker. The error was
+/// then swallowed above: `Console.WriteLine(0xFFFFFFFFFFFFFFFFUL)` compiled to
+/// NOTHING and the process exited **0**, with no output and no diagnostic. A
+/// corpus whose verdict is the exit code cannot see that at all.
+///
+/// §6.4.5.3 is explicit that a hex literal denotes a BIT PATTERN, not a signed
+/// magnitude: the type is the first of int/uint/long/ulong it fits, so the same
+/// digits are `ulong.MaxValue` and `-1L` depending only on how they are read.
+/// Parsing as `u64` and reinterpreting keeps every one of the 64 bits, which is
+/// what the source wrote. Only a literal too wide for 64 bits is an error now,
+/// and it is reported rather than swallowed.
+fn parse_csharp_radix(digits: &str, radix: u32) -> Result<i64, String> {
+    if let Ok(value) = i64::from_str_radix(digits, radix) {
+        return Ok(value);
+    }
+    u64::from_str_radix(digits, radix)
+        .map(|value| value as i64)
+        .map_err(|e| format!("{e}"))
+}
+
 fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // Literals
@@ -15952,6 +17029,19 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
             } else {
                 raw.trim_end_matches(|c: char| c.is_ascii_alphabetic())
             };
+            // ⛔ THE SUFFIX IS NOT NOISE — `f`/`d`/`m` CHANGE THE TYPE.
+            //
+            // §6.4.5.3: `1f`, `1d` and `1m` are `float`, `double` and `decimal`,
+            // and only `u`/`l` and their pairs keep an integral type. Stripping
+            // all of them alike made `1f` an INTEGER, so `1f/2` did integer
+            // division and printed `0` where C# prints `0.5` — measured, in
+            // every one of the three spellings. A literal with no `.` and no
+            // exponent looked integral to the arms below, which is why the
+            // whole class of `1f`-style constants was silently wrong.
+            let real_suffix = raw
+                .rsplit(|c: char| c.is_ascii_digit())
+                .next()
+                .is_some_and(|suffix| matches!(suffix, "f" | "F" | "d" | "D" | "m" | "M"));
             // Underscores are allowed as digit separators in C# 7.0+.
             let s_owned;
             let s = if s.contains('_') {
@@ -15960,20 +17050,25 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
             } else {
                 s
             };
-            if s.starts_with("0x") || s.starts_with("0X") {
-                Ok(ExprKind::Lit(Literal::Int(
-                    i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?,
-                )))
-            } else if s.starts_with("0b") || s.starts_with("0B") {
-                Ok(ExprKind::Lit(Literal::Int(
-                    i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?,
-                )))
-            } else if s.contains('.') || s.contains('e') || s.contains('E') {
+            if let Some(digits) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                Ok(ExprKind::Lit(Literal::Int(parse_csharp_radix(digits, 16)?)))
+            } else if let Some(digits) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+                Ok(ExprKind::Lit(Literal::Int(parse_csharp_radix(digits, 2)?)))
+            } else if real_suffix || s.contains('.') || s.contains('e') || s.contains('E') {
                 Ok(ExprKind::Lit(Literal::Float(
                     s.parse().map_err(|e| format!("{}", e))?,
                 )))
+            } else if let Ok(value) = s.parse::<i64>() {
+                Ok(ExprKind::Lit(Literal::Int(value)))
+            } else if let Ok(value) = s.parse::<u64>() {
+                // ⛔ WAS `unwrap_or(0)`. §6.4.5.3 gives an unsuffixed decimal the
+                // first of int/uint/long/ulong that fits, so `ulong.MaxValue`
+                // written in decimal is LEGAL and does not fit `i64` — and the
+                // fallback turned it into `0`, which reads as an uninitialised
+                // value rather than a bug. Same bit pattern, reinterpreted.
+                Ok(ExprKind::Lit(Literal::Int(value as i64)))
             } else {
-                Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
+                Err(format!("integer literal out of range: {s}"))
             }
         }
         Rule::string_literal => {
@@ -16090,6 +17185,9 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                 let op_str = inner.remove(0).as_str();
                 let right = walk_expression(__w, inner.remove(0))?;
                 if op_str == "=" {
+                    if let Some(kind) = csharp_multi_index_write(&left, &right, None) {
+                        return Ok(kind);
+                    }
                     Ok(ExprKind::Assign {
                         target: Box::new(strip_object_get_lvalue(left)),
                         value: Box::new(right),
@@ -16109,6 +17207,11 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                         "??=" => CompoundOp::NullCoalesce,
                         _ => CompoundOp::Add,
                     };
+                    if let Some(kind) =
+                        csharp_multi_index_write(&left, &right, Some(compound_to_binop(op)))
+                    {
+                        return Ok(kind);
+                    }
                     Ok(ExprKind::Assign {
                         target: Box::new(strip_object_get_lvalue(left.clone())),
                         value: Box::new(Expression::new(ExprKind::Binary {
@@ -16326,6 +17429,17 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                 .find(|p| p.as_rule() == Rule::type_name)
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
+            // An UNBOUND type argument list (`List<>`, `Dictionary<,>`) is the
+            // one form a string cannot serve — see
+            // `csharp_open_generic_type_value_expr`.
+            if type_name.contains('<')
+                && type_name
+                    .split('<')
+                    .nth(1)
+                    .is_some_and(|rest| rest.trim_end_matches('>').chars().all(|c| c == ','))
+            {
+                return Ok(csharp_open_generic_type_value_expr(&type_name).kind);
+            }
             let net_name = dotnet_type_name(&type_name);
             Ok(ExprKind::Lit(Literal::Str(format!("System.{}", net_name))))
         }
@@ -16818,6 +17932,23 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                     *field = stripped;
                 }
             }
+            // ⛔ THE TYPE ARGUMENT IS ONLY VISIBLE HERE. `Unsafe.SizeOf<int>`
+            // does not arrive as a member segment carrying `<int>` — the whole
+            // dotted name reaches the CALL branch as one `Ident`, which is why
+            // the extraction above reads the args off `name` rather than off a
+            // `.` segment. A fold placed on the member segment therefore never
+            // saw a `<`, and silently did nothing.
+            //
+            // §23.5 makes `SizeOf<T>()` a compile-time constant, and the width
+            // table is `System.*` knowledge living in `platforms/dotnet` beside
+            // `canonical_type_name`. A type it does not know stays a call.
+            if let Some(folded) = fold_csharp_sizeof(&expr, &generic_type_args) {
+                // The fold IS the whole call — the argument list is empty and
+                // there is nothing left to apply. Falling through would emit
+                // `4()` and trap with `f64 is not callable`.
+                expr = folded;
+                continue;
+            }
             let mut args = if let Some(arg_pair) = chain_inner
                 .into_iter()
                 .find(|p| p.as_rule() == Rule::argument_list)
@@ -16826,6 +17957,21 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
             } else {
                 Vec::new()
             };
+            // `MemoryMarshal.Cast<TFrom, TTo>(src)` → `CastBytes(src, from, to)`.
+            // The two widths ARE the operation and the emitter never sees the
+            // type arguments, so they become ordinary arguments here — the same
+            // route `Unsafe.SizeOf<T>` takes for the same reason: a framework
+            // generic's arguments are not passed at runtime, so anything that
+            // depends on them has to be resolved where they still exist.
+            if let Some((from_size, to_size)) =
+                csharp_memory_cast_sizes(&expr, &generic_type_args)
+                && let ExprKind::Member { field, .. } = &mut expr.kind
+            {
+                *field = "CastBytes".into();
+                args.push(Argument::positional(Expression::int(from_size)));
+                args.push(Argument::positional(Expression::int(to_size)));
+                generic_type_args = Vec::new();
+            }
             if !generic_type_args.is_empty() {
                 let method_name = match &expr.kind {
                     ExprKind::Ident(name) => Some(name.as_str()),
@@ -16889,6 +18035,20 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
         } else if chain_src.starts_with(".") {
             // Member access — normalize known property accessors to canonical builtins
             strip_static_receiver_type_args(__w, &mut expr);
+            // ⛔ `SizeOf<int>()` LOSES ITS TYPE ARGUMENT ONE LINE BELOW.
+            //
+            // `strip_csharp_terminal_type_args` discards the `<…>` and nothing
+            // downstream ever sees it — `--dump-ast` shows the call reaching the
+            // AST as a bare `SizeOf` with no trace of `int`. That is right for
+            // every other member, because a framework generic's type argument is
+            // not passed at runtime; it is fatal for the one member whose ENTIRE
+            // meaning is the type argument.
+            //
+            // §23.5 makes the answer a compile-time constant, so folding here —
+            // where the argument still exists — is the correct layer, not a
+            // workaround for losing it. The width table is `System.*` knowledge
+            // and lives in `platforms/dotnet` beside `canonical_type_name`; a
+            // type it does not know stays a call rather than becoming a guess.
             let name = strip_csharp_terminal_type_args(chain_src[1..].trim());
             // `System.Numerics.Vector3.UnitX` — collapse the NAMESPACE prefix
             // so the chain continues from the synthesized class itself.
@@ -16904,6 +18064,41 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
             if vybe_platform_dotnet::emitter::core::numerics_classes::
                 is_synthesized_numerics_class(&name)
                 && dotted_path_of(&expr).as_deref() == Some("System.Numerics")
+            {
+                expr = Expression::ident(&name);
+                continue;
+            }
+            // ⛔ THE SAME GAP, ONE NAMESPACE OVER. `System.Runtime.InteropServices`
+            // classes are synthesized too, and their qualified path was never
+            // collapsed — so
+            //
+            //   using System.Runtime.InteropServices;
+            //   GCHandle.Alloc(a, GCHandleType.Pinned)                    → works
+            //   System.Runtime.InteropServices.GCHandle.Alloc(a, …)       → undefined
+            //
+            // answered differently for the same call. The corpus writes the
+            // qualified form throughout, which is why whole directories read
+            // 0/20 while the identical API worked interactively.
+            // `HashAlgorithmName.SHA256` → the `wasi:crypto` spelling.
+            //
+            // ⛔ IT CANNOT COME FROM THE TREE. Measured: `StringComparison.Ordinal`
+            // answers `NaN` too, so the whole `NamespaceNode::Const` path is
+            // unreachable from C# — a constant registered there resolves to
+            // nothing, and this member read would have joined it. Folding here
+            // is the same route `Unsafe.SizeOf<T>` takes; the spelling table is
+            // `System.*` knowledge and stays in `platforms/dotnet`.
+            if dotted_path_of(&expr)
+                .as_deref()
+                .is_some_and(|path| path.ends_with("HashAlgorithmName"))
+                && let Some(wasi) =
+                    vybe_platform_dotnet::emitter::hash_algorithm_wasi_name(&name)
+            {
+                expr = Expression::string(wasi);
+                continue;
+            }
+            if vybe_platform_dotnet::emitter::core::interop_classes::
+                is_synthesized_interop_class(&name)
+                && dotted_path_of(&expr).as_deref() == Some("System.Runtime.InteropServices")
             {
                 expr = Expression::ident(&name);
                 continue;
@@ -16978,6 +18173,14 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                     field: name,
                     null_safe: false,
                 });
+            } else if __w.declared_members.contains(&name) {
+                // The program declares a member with this name, so it is the
+                // user's, not the framework's — see `declared_members`.
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(expr),
+                    field: name,
+                    null_safe: false,
+                });
             } else {
                 expr = canonicalize_member_access(expr, &name);
             }
@@ -17034,6 +18237,27 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                         object: Box::new(expr),
                         index: Box::new(range),
                         null_safe,
+                    });
+                } else if parts.len() >= 2 && receiver_declares_multi_index(__w, &expr) {
+                    // `m[r, c]` on a receiver whose type declares
+                    // `this[int, int]` is ONE call to that indexer, not a
+                    // nested lookup — see `CsWalker::multi_index_types`.
+                    let mut args = Vec::new();
+                    for p in parts {
+                        args.push(Argument::positional(walk_index_part(
+                            __w,
+                            p,
+                            expr.clone(),
+                        )?));
+                    }
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(expr),
+                            field: CSHARP_INDEX_GETTER.to_string(),
+                            null_safe,
+                        })),
+                        args,
+                        optional: false,
                     });
                 } else {
                     // Multi-arg index `m[i, j]` lowers to nested
@@ -17430,7 +18654,7 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
             class: Box::new(class_expr),
             args,
         });
-        let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
+        let generic_bindings = csharp_generic_ctor_bindings(__w, &raw_type_name, &type_name);
         let new_call = if generic_bindings.is_empty() {
             new_call
         } else {
@@ -17443,7 +18667,7 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
         ));
     }
 
-    let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
+    let generic_bindings = csharp_generic_ctor_bindings(__w, &raw_type_name, &type_name);
     if !generic_bindings.is_empty() {
         let new_call = Expression::new(ExprKind::New {
             class: Box::new(class_expr),
@@ -17609,29 +18833,51 @@ fn is_csharp_builtin_generic_type(base_type: &str) -> bool {
 }
 
 fn csharp_generic_ctor_bindings(
+    __w: &CsWalker,
     raw_type_name: &str,
     base_type_name: &str,
-) -> Vec<(usize, Expression)> {
+) -> Vec<(String, Expression)> {
     if is_csharp_builtin_generic_type(base_type_name) {
         return Vec::new();
     }
 
-    parse_csharp_generic_type_args(raw_type_name)
+    // The `__vybe_generic_*` fields exist only on a class THIS unit declared —
+    // `inject_csharp_generic_ctor_fields` is what creates them — and the name
+    // binding is narrower still: only a class that actually reads `typeof(T)`.
+    // Binding turns a plain `New` into the IIFE, and a generator method called
+    // straight off that IIFE is broken, so this must not widen the set of
+    // constructions that take that path. The ctor binding keeps its own
+    // long-standing rule.
+    let leaf = base_type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(base_type_name)
+        .trim();
+    let declared = __w.generic_typeof_types.contains(leaf);
+
+    let mut bindings = Vec::new();
+    for (index, type_name) in parse_csharp_generic_type_args(raw_type_name)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, type_name)| {
-            looks_like_csharp_runtime_ctor_type(&type_name).then(|| {
-                let stripped = strip_global_namespace_qualifier(type_name.trim());
-                let bare = common_generics::generic_base_name(&stripped).to_string();
-                (index, build_dotted_expr(&bare))
-            })
-        })
-        .collect()
+    {
+        if looks_like_csharp_runtime_ctor_type(&type_name) {
+            let stripped = strip_global_namespace_qualifier(type_name.trim());
+            let bare = common_generics::generic_base_name(&stripped).to_string();
+            bindings.push((csharp_generic_ctor_field_name(index), build_dotted_expr(&bare)));
+        }
+        if declared {
+            bindings.push((
+                csharp_generic_name_field_name(index),
+                csharp_generic_type_value_expr(&type_name),
+            ));
+        }
+    }
+    bindings
 }
 
 fn emit_generic_ctor_binding_iife(
     new_call: Expression,
-    bindings: Vec<(usize, Expression)>,
+    bindings: Vec<(String, Expression)>,
 ) -> ExprKind {
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
@@ -17647,11 +18893,11 @@ fn emit_generic_ctor_binding_iife(
         },
         Span::default(),
     ));
-    for (index, binding_expr) in bindings {
+    for (field, binding_expr) in bindings {
         let assign = Expression::new(ExprKind::Assign {
             target: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__obj")),
-                field: csharp_generic_ctor_field_name(index),
+                field,
                 null_safe: false,
             })),
             value: Box::new(binding_expr),
@@ -17703,17 +18949,27 @@ fn emit_object_init_iife(
         Span::default(),
     ));
     for (name, value) in props {
-        // __obj.<name> = value;
-        let assign = Expression::new(ExprKind::Assign {
-            target: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident("__obj")),
-                field: name,
-                null_safe: false,
-            })),
-            value: Box::new(value),
-        });
+        // `__obj.<name> = value;` — an assignment STATEMENT, not a statement
+        // wrapping an assignment EXPRESSION.
+        //
+        // ⛔ THE EXPRESSION FORM DROPS AN ARRAY VALUE. `new C { S = new int[]{7} }`
+        // left `S` unset while a sibling `N = 5` in the SAME initializer landed,
+        // so the object came back half-built and the failure surfaced as
+        // `holder.Span[0]` being undefined — nothing named the initializer.
+        // A plain `a.S = new int[]{7}` always worked, and the ONLY difference
+        // in the two dumps was `StmtKind::Expr(ExprKind::Assign)` here versus
+        // `StmtKind::Assign` there. Nothing needs the assignment's VALUE in
+        // statement position, so this is the form to emit.
         body.push(Statement::with_span(
-            StmtKind::Expr(assign),
+            StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("__obj")),
+                    field: name,
+                    null_safe: false,
+                })],
+                value,
+                by_ref: false,
+            },
             Span::default(),
         ));
     }
@@ -17830,6 +19086,40 @@ fn strip_static_receiver_type_args(__w: &CsWalker, expr: &mut Expression) {
         return;
     }
     *expr = build_dotted_expr(&stripped);
+}
+
+/// `Unsafe.SizeOf<T>()` / `Marshal.SizeOf<T>()` → the width as a literal.
+///
+/// `None` unless the receiver really names one of those two types and the width
+/// is known, so nothing else is folded by accident.
+/// The two element widths of a `MemoryMarshal.Cast<TFrom, TTo>`, from the
+/// platform's own size table. `None` for anything else.
+fn csharp_memory_cast_sizes(callee: &Expression, type_args: &[String]) -> Option<(i64, i64)> {
+    let [from, to] = type_args else { return None };
+    let path = expr_dotted_name(callee)?;
+    let mut segments = path.rsplit('.');
+    if segments.next()? != "Cast" || segments.next()? != "MemoryMarshal" {
+        return None;
+    }
+    Some((
+        vybe_platform_dotnet::emitter::primitive_type_size(from.trim())?,
+        vybe_platform_dotnet::emitter::primitive_type_size(to.trim())?,
+    ))
+}
+
+fn fold_csharp_sizeof(callee: &Expression, type_args: &[String]) -> Option<Expression> {
+    let [type_arg] = type_args else { return None };
+    let path = expr_dotted_name(callee)?;
+    let mut segments = path.rsplit('.');
+    if segments.next()? != "SizeOf" {
+        return None;
+    }
+    let owner = segments.next()?;
+    if !matches!(owner, "Unsafe" | "Marshal") {
+        return None;
+    }
+    let size = vybe_platform_dotnet::emitter::primitive_type_size(type_arg.trim())?;
+    Some(Expression::int(size))
 }
 
 fn strip_csharp_type_path_generic_args(name: &str) -> String {
@@ -20617,6 +21907,88 @@ fn csharp_chan_pair_out_desugar(op: ChanOp, out_target: &Expression) -> Expressi
 /// The generic argument arrives as a TRAILING binding pair appended by
 /// `csharp_method_generic_binding_args`, so the visible arguments are
 /// everything before it and the type name is the ctor binding's spelling.
+/// `reader.TryRead(out v)` → `(v = reader.ReadNext()) != null`.
+///
+/// ⛔ THE COMMON TREE HAS NO OUT-PARAMETERS — the same reason
+/// `csharp_enum_try_parse_desugar` exists, and the same shape: the platform
+/// method answers the VALUE or null, and the `out` write becomes an ordinary
+/// assignment here. It cannot be done on the platform side at all:
+/// `MethodDef` carries only an arity, so `mode_needs_call_writeback` — which
+/// routes on the parameter's declared `PassBy` — can never fire for a
+/// tree-registered method. Measured before writing this: the call returned
+/// `True` correctly while the out argument kept its default, because the
+/// writeback half never ran.
+fn csharp_try_read_desugar(receiver: &Expression, args: &[Argument]) -> Option<Expression> {
+    let [out_arg] = args else { return None };
+    if !out_arg.by_ref {
+        return None;
+    }
+    let read = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver.clone()),
+            field: "ReadNext".into(),
+            null_safe: false,
+        })),
+        args: Vec::new(),
+        optional: false,
+    });
+    let store = Expression::new(ExprKind::Assign {
+        target: Box::new(out_arg.value.clone()),
+        value: Box::new(read),
+    });
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(store),
+        right: Box::new(Expression::null()),
+    }))
+}
+
+/// `bag.TryTake(out v)` / `queue.TryDequeue(out v)` / `dict.TryRemove(k, out v)`
+/// and the `TryPeek` / `TryPop` beside them.
+///
+/// ⛔ A TREE-REGISTERED METHOD CANNOT HAVE AN `out` PARAMETER. `MethodDef`
+/// carries an arity and nothing else — no `PassBy` — so `mode_needs_call_writeback`
+/// has nothing to route on and the argument is copied in and never copied back.
+/// The rewrite is the same one `TryRead` uses: call the VALUE-returning
+/// overload, assign what it answers, and let the null test be the Boolean.
+///
+/// `platforms/dotnet` registers that overload one arity shorter, so the shape
+/// is shared with every .NET language; only this rewrite is C#'s.
+fn csharp_concurrent_try_desugar(
+    receiver: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !matches!(
+        field,
+        "TryTake" | "TryPeek" | "TryDequeue" | "TryPop" | "TryRemove"
+    ) {
+        return None;
+    }
+    let (out_arg, kept) = args.split_last()?;
+    if !out_arg.by_ref || kept.iter().any(|a| a.by_ref) {
+        return None;
+    }
+    let take = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver.clone()),
+            field: field.into(),
+            null_safe: false,
+        })),
+        args: kept.to_vec(),
+        optional: false,
+    });
+    let store = Expression::new(ExprKind::Assign {
+        target: Box::new(out_arg.value.clone()),
+        value: Box::new(take),
+    });
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(store),
+        right: Box::new(Expression::null()),
+    }))
+}
+
 fn csharp_enum_try_parse_desugar(args: &[Argument]) -> Option<Expression> {
     let type_name = expr_dotted_name(&args.get(args.len().checked_sub(2)?)?.value)?;
     let visible = &args[..args.len() - 2];
@@ -20863,6 +22235,94 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 optional: false,
             });
         }
+    }
+
+    // `t.MakeGenericType(typeof(int))` — §11.7.15 closes an open generic
+    // definition. `typeof(List<>)` folds to an open-definition Type OBJECT (see
+    // `csharp_open_generic_type_value_expr`), and this closes it at WALK time
+    // rather than at run time, because every ingredient is already a literal:
+    // a concrete `typeof(X)` folds to the string `"System.X"`, so the argument's
+    // short name is known here.
+    //
+    // ⛔ Folding is what makes it work at all. The obvious alternative — a
+    // `MakeGenericType` LAMBDA on the open-definition object — needs the short
+    // name computed at run time, and `a.Substring(a.LastIndexOf('.') + 1)` on a
+    // LAMBDA PARAMETER traps with `undefined is not callable` today (measured,
+    // even with the parameter declared `Func<string, string>`). That is a
+    // separate defect; this construct does not have to wait for it.
+    //
+    // The receiver is restricted to a plain name or a dotted path so the three
+    // name fields can read it without evaluating it three times.
+    if let ExprKind::Member { object, field, .. } = &callee.kind
+        && field == "MakeGenericType"
+        && !args.is_empty()
+        && matches!(object.kind, ExprKind::Ident(_))
+    {
+        let type_arguments: Vec<ArrayElement> = args
+            .iter()
+            .map(|arg| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: match &arg.value.kind {
+                    // A concrete `typeof(X)` is already the folded string.
+                    ExprKind::Lit(Literal::Str(full)) => {
+                        csharp_type_object_expr(full)
+                    }
+                    // Anything else — a carried `typeof(T)` object, a variable —
+                    // is passed through as it is. Inventing a `Name` for a value
+                    // this fold cannot read would be worse than answering
+                    // nothing.
+                    _ => arg.value.clone(),
+                },
+            })
+            .collect();
+        let read = |name: &str| {
+            Expression::new(ExprKind::Member {
+                object: object.clone(),
+                field: name.to_string(),
+                null_safe: false,
+            })
+        };
+        return Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("__typename"),
+                value: read("__typename"),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("Name"),
+                value: read("Name"),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("FullName"),
+                value: read("FullName"),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("IsGenericType"),
+                value: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("IsGenericTypeDefinition"),
+                value: Expression::new(ExprKind::Lit(Literal::Bool(false))),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("GenericTypeArguments"),
+                value: Expression::new(ExprKind::Array(type_arguments)),
+            },
+        ]));
+    }
+
+    if let ExprKind::Member { object, field, .. } = &callee.kind
+        && field == "TryRead"
+        && let Some(desugared) = csharp_try_read_desugar(object, &args)
+    {
+        return desugared;
+    }
+
+    if let ExprKind::Member { object, field, .. } = &callee.kind
+        && let Some(desugared) = csharp_concurrent_try_desugar(object, field, &args)
+    {
+        return desugared;
     }
 
     if let ExprKind::Member { object, field, .. } = &callee.kind {

@@ -72,6 +72,14 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "WhenAny",
                 n,
                 MethodBody::Common("dotnet.task_when_any".into()),
+            ))
+            // The winning task, answered directly. `Task.WhenAny(…).Result` is
+            // a SYNCHRONOUS read and a raced promise settles on a microtask, so
+            // the front end rewrites that chain onto this entry point.
+            .with_method(MethodDef::static_method(
+                "WhenAnyCompleted",
+                n,
+                MethodBody::Common("dotnet.task_when_any_completed".into()),
             ));
     }
     vec![
@@ -120,6 +128,83 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.tcs_try_set_canceled".into()),
                 )),
+        ),
+        // `Parallel` — the data-parallel entry points, run as an in-order
+        // schedule. See `parallel_adapter` for why that is the contract and not
+        // a stand-in.
+        DotnetClassExport::new(
+            "dotnet.System.Threading.Tasks",
+            ClassType::new("Parallel")
+                .with_method(MethodDef::static_method(
+                    "For",
+                    3,
+                    MethodBody::Common("dotnet.parallel_for".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "For",
+                    4,
+                    MethodBody::Common("dotnet.parallel_for".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ForEach",
+                    2,
+                    MethodBody::Common("dotnet.parallel_for_each".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ForEach",
+                    3,
+                    MethodBody::Common("dotnet.parallel_for_each".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ForEachAsync",
+                    2,
+                    MethodBody::Common("dotnet.parallel_for_each".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ForEachAsync",
+                    3,
+                    MethodBody::Common("dotnet.parallel_for_each".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Invoke",
+                    1,
+                    MethodBody::Common("dotnet.parallel_invoke".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Invoke",
+                    2,
+                    MethodBody::Common("dotnet.parallel_invoke".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Invoke",
+                    3,
+                    MethodBody::Common("dotnet.parallel_invoke".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Invoke",
+                    4,
+                    MethodBody::Common("dotnet.parallel_invoke".into()),
+                )),
+        ),
+        // `ParallelOptions` — plain settings. The corpus writes
+        // `MaxDegreeOfParallelism` through an object initializer and reads it
+        // back, so the field has to exist with .NET's `-1` default.
+        DotnetClassExport::new(
+            "dotnet.System.Threading.Tasks",
+            ClassType::new("ParallelOptions").with_constructor(
+                ConstructorDef::new(0).with_common_backing("dotnet.parallel_options_new"),
+            ),
+        ),
+        // `AsyncLocal(Of T)` — ambient context for one flow of execution.
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("AsyncLocal")
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.async_local_new"),
+                )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.async_local_new"),
+                ),
         ),
         DotnetClassExport::new(
             "dotnet.System.Threading",
@@ -365,6 +450,113 @@ fn wait_handle_export(name: &'static str, ctor: &'static str) -> DotnetClassExpo
 /// above does the same): "a module member read as a value invokes the leaf".
 pub(super) fn globalization_exports() -> Vec<DotnetClassExport> {
     vec![
+        // `System.Globalization.HijriCalendar` — absent from the catalog, so
+        // `new System.Globalization.HijriCalendar()` trapped with
+        // `undefined is not callable`. The conversion is pure arithmetic; see
+        // `core::hijri_calendar_adapter` for the closed form and the values it
+        // was measured against.
+        //
+        // ⛔ `HebrewCalendar` is deliberately NOT here. Its year length depends
+        // on the molad of Tishri and four postponement rules, which is a
+        // different order of work from the tabular Hijri cycle, and no corpus
+        // test reaches it — the directory named for both only ever constructs
+        // a `HijriCalendar`. Adding a WRONG Hebrew calendar to make the name
+        // true would be worse than the trap.
+        DotnetClassExport::new(
+            "dotnet.System.Globalization",
+            ClassType::new("HijriCalendar")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.hijri_new"))
+                .with_method(MethodDef::new(
+                    "GetYear",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetMonth",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDayOfMonth",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_day_of_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDayOfYear",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_day_of_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDayOfWeek",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_day_of_week".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetEra",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_era".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsLeapYear",
+                    1,
+                    MethodBody::Common("dotnet.hijri_is_leap_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsLeapYear",
+                    2,
+                    MethodBody::Common("dotnet.hijri_is_leap_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDaysInYear",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_days_in_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDaysInYear",
+                    2,
+                    MethodBody::Common("dotnet.hijri_get_days_in_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetMonthsInYear",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_months_in_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetMonthsInYear",
+                    2,
+                    MethodBody::Common("dotnet.hijri_get_months_in_year".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetLeapMonth",
+                    1,
+                    MethodBody::Common("dotnet.hijri_get_leap_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetLeapMonth",
+                    2,
+                    MethodBody::Common("dotnet.hijri_get_leap_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDaysInMonth",
+                    2,
+                    MethodBody::Common("dotnet.hijri_get_days_in_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDaysInMonth",
+                    3,
+                    MethodBody::Common("dotnet.hijri_get_days_in_month".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToDateTime",
+                    7,
+                    MethodBody::Common("dotnet.hijri_to_datetime".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToDateTime",
+                    8,
+                    MethodBody::Common("dotnet.hijri_to_datetime".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Globalization",
             ClassType::new("CultureInfo")

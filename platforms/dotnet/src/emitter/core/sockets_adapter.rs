@@ -164,12 +164,64 @@ pub fn emit_ip_address_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     struct_set_drop(chunk, "__value", line);
 
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("InterNetwork")), line);
-    struct_set_drop(chunk, "AddressFamily", line);
+    // ⛔ The family was HARDCODED to `InterNetwork`, so `IPAddress.Parse("::1")`
+    // reported IPv4 — a WRONG answer, never a failure. A textual address is
+    // IPv6 exactly when it contains a colon, which .NET agrees with for every
+    // form: `::`, `::1`, `fe80::1` and `2001:db8::ff00:42:8329` are all
+    // `InterNetworkV6`, and every dotted quad is `InterNetwork`. Measured
+    // against `dotnet` 10.
+    //
+    // Both spellings, like every other stamped field: a case-insensitive
+    // frontend folds the member name, and a PascalCase-only field reads
+    // `undefined` rather than erroring.
+    for spelling in ["AddressFamily", "addressfamily"] {
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from(":")), line);
+        let index_of = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(index_of, 2, line);
+        push_const(chunk, Value::I32(0), line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_if_value(line);
+        push_const(chunk, Value::String(Arc::from("InterNetwork")), line);
+        chunk.emit_else(line);
+        push_const(chunk, Value::String(Arc::from("InterNetworkV6")), line);
+        chunk.emit_end(line);
+        struct_set_drop(chunk, spelling, line);
+    }
 
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+
+    // ⛔ Bind `ToString`, do not rely on the declared method alone: the
+    // registered `ToString` only fires when the receiver's type is INFERRED,
+    // and `IPAddress.Parse(...)` carried none — so `"" + ip` and `ip.ToString()`
+    // both rendered `[object IPAddress]`. The bound protocol slot answers
+    // whatever the inference misses.
+    {
+        let mut method = Chunk::new("__dotnet_ipaddress_tostring");
+        method.arity = 1;
+        method.local_count = 1;
+        method.emit_op_u16(Op::LOCAL_GET, 0, line);
+        class_slots::emit_class_get(
+            &mut method,
+            ObjSource::Stack,
+            &field_slot("__value"),
+            Dest::Stack,
+            line,
+        );
+        method.emit_op(Op::RETURN, line);
+        chunks.push(method);
+        let method_idx = chunks.len() - 1;
+        vybe_compiler::primitives::object::emit_bind_method(
+            &mut chunks[current],
+            obj_slot,
+            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
+            method_idx,
+            line,
+        );
+    }
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 pub fn emit_ip_address_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {

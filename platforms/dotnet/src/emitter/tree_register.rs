@@ -9,7 +9,7 @@
 //! `dotnet.*` namespace-tree registration (namespaceplan.md, dotnet phase).
 //!
 //! The dotnet platform contributes DATA — its component-model class
-//! descriptors — to the shared namespace tree in `vybe_runtime::namespaces`.
+//! descriptors — to the shared namespace tree in `vybe_compiler::primitives::namespaces`.
 //! Resolution LOGIC lives only in the common resolver: VB, C#, and every
 //! other language resolve `dotnet.system.console.writeline` through the
 //! same tree walk, instead of a platform-owned dotted-name cascade
@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_runtime::component_model::{ConstructorTarget, MethodBody};
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 /// Register every component class descriptor as a `Type` node at
 /// `<interface path>.<class name>` — statics become `CommonEmit`/host-fn
@@ -280,8 +280,7 @@ pub fn register_namespace_tree() {
             // `CtorSpec`) — `new Dictionary()` is a host factory call, so it
             // registers here in the same vocabulary as every other member.
             let ctor_call = class
-                .constructor
-                .as_ref()
+                .constructor()
                 .and_then(|c| c.backing.as_ref())
                 .map(|backing| {
                     Box::new(match backing {
@@ -348,24 +347,187 @@ pub fn register_namespace_tree() {
             namespaces::register_namespace_tree(&segments.pop().expect("root"), node);
         }
         register_color_statics();
+        register_bcl_constants();
     });
 }
 
-/// `Color.Red`, `Color.White`, … — the named colour statics.
+/// .NET enum members and string constants, as TREE DATA.
 ///
-/// `Color` reaches the tree through `constructor_class(…, "Color", …)`, which
-/// declares a CONSTRUCTOR and no properties, so its `statics` arrived empty and
-/// `Red` was not a leaf at all. `Color.White` then resolved to nothing and the
-/// chain fell back to a runtime read of the bare root name — `global.get
-/// system`, a global that does not exist — so every colour came out `null` and
-/// painted `#00000000`. Silent, because a missed leaf under a registered root
-/// reads as null rather than failing.
+/// A constant is a `NamespaceNode::Const` — the node `namespaces.rs` documents
+/// as "a compile-time constant value (`Math.PI`-class leaves)" — so
+/// `[System.DayOfWeek]::Monday` resolves by the same path walk that answers
+/// `Math.PI`, in every language, with nothing per-language to write.
+/// `platforms/jvm` registers `java.util.Locale.JAPAN` exactly this way.
 ///
-/// Registered as PATH, one node per segment: `dotnet` → `system` → `drawing` →
-/// `color` → `red`. `merge_into` creates the levels that are missing and reuses
-/// the ones that exist, and because `color` is already a `Type`, its
-/// `Type{statics} × Namespace` arm folds these in as that type's statics.
-/// Registration order does not matter — the mirror arm handles the reverse.
+/// ⛔ **A CONSTANT IS A VALUE, NOT A SPELLING.** The alternative in this crate
+/// is `static_member_constant`, a name-keyed table each WALKER has to call, so
+/// a constant resolves only in the languages that remember to call it. What it
+/// hands back for `StringComparison` is the marker
+/// `__dotnet_stringcomparison_ordinalignorecase`, which
+/// `string_adapter::emit_ignore_case_flag` then compares AS A STRING at run
+/// time. An ordinal needs no such agreement: it is the value .NET defines.
+///
+/// Only members read as VALUES belong here. One whose NAME must render
+/// (`"$e"` printing `RegularFile`) is a declared enum's job —
+/// `primitives/enum_lowering.rs` builds those member objects — not a constant.
+fn register_bcl_constants() {
+    // Path segments ending in the TYPE, then members. DECLARED casing: the
+    // main loop builds `System`/`Drawing`/`Color` that way, and a lowercase
+    // path builds a SECOND branch that resolves only by folding.
+    const ENUMS: &[(&[&str], &[(&str, i32)])] = &[
+        (
+            &["System", "StringComparison"],
+            &[
+                ("CurrentCulture", 0),
+                ("CurrentCultureIgnoreCase", 1),
+                ("InvariantCulture", 2),
+                ("InvariantCultureIgnoreCase", 3),
+                ("Ordinal", 4),
+                ("OrdinalIgnoreCase", 5),
+            ],
+        ),
+        (
+            &["System", "DayOfWeek"],
+            &[
+                ("Sunday", 0),
+                ("Monday", 1),
+                ("Tuesday", 2),
+                ("Wednesday", 3),
+                ("Thursday", 4),
+                ("Friday", 5),
+                ("Saturday", 6),
+            ],
+        ),
+        // How `Math.Round` breaks a tie. `ToEven` is 0 AND the default, which
+        // is why an unrecognised mode and no mode at all agree.
+        (
+            &["System", "MidpointRounding"],
+            &[
+                ("ToEven", 0),
+                ("AwayFromZero", 1),
+                ("ToZero", 2),
+                ("ToNegativeInfinity", 3),
+                ("ToPositiveInfinity", 4),
+            ],
+        ),
+        // The four Unicode normalization forms. The values are NOT 0..3 —
+        // .NET numbers them after the Win32 `NORM_FORM` constants, so `FormKC`
+        // and `FormKD` skip to 5 and 6.
+        (
+            &["System", "Text", "NormalizationForm"],
+            &[("FormC", 1), ("FormD", 2), ("FormKC", 5), ("FormKD", 6)],
+        ),
+        // The typeflag BYTE the tar header carries, which is why `RegularFile`
+        // is 48 rather than 0 — it is ASCII `'0'`.
+        (
+            &["System", "Formats", "Tar", "TarEntryType"],
+            &[
+                ("V7RegularFile", 0),
+                ("RegularFile", 48),
+                ("HardLink", 49),
+                ("SymbolicLink", 50),
+                ("CharacterDevice", 51),
+                ("BlockDevice", 52),
+                ("Directory", 53),
+                ("Fifo", 54),
+                ("ContiguousFile", 55),
+                ("DirectoryList", 68),
+                ("LongLink", 75),
+                ("LongPath", 76),
+                ("MultiVolume", 77),
+                ("RenamedOrSymlinked", 78),
+                ("SparseFile", 83),
+                ("TapeVolume", 86),
+                ("GlobalExtendedAttributes", 103),
+                ("ExtendedAttributes", 120),
+            ],
+        ),
+    ];
+
+    // .NET declares these as `const string Json = "Json"`: the member's own
+    // name IS its value, by definition rather than by convention.
+    const STRING_CONSTS: &[(&[&str], &[&str])] = &[(
+        &[
+            "System",
+            "Diagnostics",
+            "CodeAnalysis",
+            "StringSyntaxAttribute",
+        ],
+        &[
+            "CompositeFormat",
+            "DateOnlyFormat",
+            "DateTimeFormat",
+            "EnumFormat",
+            "GuidFormat",
+            "Json",
+            "NumericFormat",
+            "Regex",
+            "TimeOnlyFormat",
+            "TimeSpanFormat",
+            "Uri",
+            "Xml",
+        ],
+    )];
+
+    for (path, members) in ENUMS {
+        let mut leaves = Subtree::new();
+        for (member, value) in *members {
+            leaves.insert(member.to_string(), NamespaceNode::Const(vybe_runtime::Value::I32(*value)));
+        }
+        register_under(path, leaves);
+    }
+    for (path, members) in STRING_CONSTS {
+        let mut leaves = Subtree::new();
+        for member in *members {
+            leaves.insert(
+                member.to_string(),
+                NamespaceNode::Const(vybe_runtime::Value::String((*member).into())),
+            );
+        }
+        register_under(path, leaves);
+    }
+    // ⛔ NAME AND VALUE DIFFER HERE, so these cannot ride `STRING_CONSTS` —
+    // that table uses the member's own spelling as its value.
+    // `HashAlgorithmName.SHA256` is the .NET spelling; `SHA-256` is the
+    // `wasi:crypto` algorithm name its consumers pass to
+    // `symmetric-state-open`, and carrying the wasi spelling as the VALUE is
+    // what lets the adapter hand it straight through with no per-call mapping.
+    const NAMED_STRING_CONSTS: &[(&[&str], &[(&str, &str)])] = &[(
+        &["System", "Security", "Cryptography", "HashAlgorithmName"],
+        &[
+            ("SHA256", "SHA-256"),
+            ("SHA384", "SHA-384"),
+            ("SHA512", "SHA-512"),
+            ("MD5", "MD5"),
+            ("SHA1", "SHA-1"),
+        ],
+    )];
+    for (path, members) in NAMED_STRING_CONSTS {
+        let mut leaves = Subtree::new();
+        for (member, value) in *members {
+            leaves.insert(
+                member.to_string(),
+                NamespaceNode::Const(vybe_runtime::Value::String((*value).into())),
+            );
+        }
+        register_under(path, leaves);
+    }
+}
+
+/// Mount `leaves` at `path` under the `dotnet` root, wrapping outwards so each
+/// segment merges with whatever the main loop already registered there.
+fn register_under(path: &[&str], leaves: Subtree) {
+    let mut node = NamespaceNode::Namespace(leaves);
+    for segment in path.iter().skip(1).rev() {
+        let mut parent = Subtree::new();
+        parent.insert((*segment).to_string(), node);
+        node = NamespaceNode::Namespace(parent);
+    }
+    let mut root = Subtree::new();
+    root.insert(path[0].to_string(), node);
+    namespaces::register_namespace_tree("dotnet", NamespaceNode::Namespace(root));
+}
+
 fn register_color_statics() {
     let mut colors = Subtree::new();
     for (member, _) in super::classes::drawing::COLOR_STATICS {
@@ -985,8 +1147,8 @@ fn control_ancestry(class_name: &str) -> Vec<String> {
 /// unlike a Flutter widget whose children arrive as constructor arguments. So
 /// `control_fn` is the only thing making this a construction, and the object
 /// IS the element.
-fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespaces::CtorSpec {
-    vybe_runtime::namespaces::CtorSpec {
+fn control_ctor_spec(class_name: &str, element: &str) -> vybe_compiler::primitives::namespaces::CtorSpec {
+    vybe_compiler::primitives::namespaces::CtorSpec {
         params: Vec::new(),
         fields: Vec::new(),
         field_gui: Vec::new(),
@@ -1485,7 +1647,7 @@ fn console_stderr_writer_node() -> NamespaceNode {
 
 #[cfg(test)]
 mod resolve_gap_tests {
-    use vybe_runtime::namespaces::{NamespaceNode, registry_read};
+    use vybe_compiler::primitives::namespaces::{NamespaceNode, registry_read};
 
     /// These assert what this file is responsible for — that the entries are
     /// REGISTERED — rather than resolving through them. Resolution moved to
@@ -1538,13 +1700,12 @@ mod ctor_parity_tests {
         for export in crate::emitter::class_exports::dotnet_class_exports() {
             let Some(want) = export
                 .class
-                .constructor
-                .as_ref()
+                .constructor()
                 .and_then(|c| c.backing.clone())
             else {
                 continue;
             };
-            let got = vybe_runtime::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
+            let got = vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
             if got.as_ref() != Some(&want) {
                 gaps.push(format!(
                     "{}: want {:?} got {:?}",
@@ -1576,7 +1737,7 @@ mod member_parity_tests {
                     &m.name,
                     m.arity,
                 );
-                let got = vybe_runtime::namespaces::lookup_type_instance_target(
+                let got = vybe_compiler::primitives::namespaces::lookup_type_instance_target(
                     &scope,
                     &export.class.name,
                     &m.name,
@@ -1616,13 +1777,13 @@ mod property_parity_tests {
                             .lookup_instance_property(&export.class.name, &p.name)
                     };
                     let got = if want_setter {
-                        vybe_runtime::namespaces::lookup_type_property_setter_target(
+                        vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
                             &scope,
                             &export.class.name,
                             &p.name,
                         )
                     } else {
-                        vybe_runtime::namespaces::lookup_type_property_target(
+                        vybe_compiler::primitives::namespaces::lookup_type_property_target(
                             &scope,
                             &export.class.name,
                             &p.name,

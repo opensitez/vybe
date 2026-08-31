@@ -130,17 +130,20 @@ cdbl    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cbool   = { emit = "common:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "common:dotnet.vb_to_number",    min_args = 1, max_args = 1 }
-cbyte   = { emit = "common:dotnet.to_byte",        min_args = 1, max_args = 1 }
+cbyte   = { emit = "common:dotnet.convert_to_byte",   min_args = 1, max_args = 1 }
 cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 
 # `Integer.TryParse(s, r)` is normalized in the walker to the out-param desugar
 # `((r = Integer.TryParse(s)) != null) OrElse ((r = 0) = Nothing)`, so the
 # compiler only ever sees the 1-arg core, which parses to int-or-null.
-cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
-cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
-cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+# VB's narrowing conversions ROUND (banker's) and THROW `OverflowException`
+# outside range. All five used to be the same bare `opcode:i32_from_f64`, so
+# `CShort` and `CUInt` were literally identical and neither checked anything.
+cshort  = { emit = "common:dotnet.convert_to_int16",  min_args = 1, max_args = 1 }
+cushort = { emit = "common:dotnet.convert_to_uint16", min_args = 1, max_args = 1 }
+cuint   = { emit = "common:dotnet.convert_to_uint32", min_args = 1, max_args = 1 }
 culng   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
-csbyte  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+csbyte  = { emit = "common:dotnet.convert_to_sbyte",  min_args = 1, max_args = 1 }
 ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cdec    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
@@ -176,6 +179,10 @@ vartype    = { emit = "common:dotnet.vartype",         min_args = 1, max_args = 
 
 abs           = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 fix           = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
+# The unsigned view a `UInteger`/`UShort`/`Byte` result needs after a bitwise
+# op — the lane is signed, so `Not 0UI` lands as -1 without it. Emitted by the
+# walker, never written in source.
+"__vb_as_unsigned32" = { emit = "common:bits.as_unsigned32", min_args = 1, max_args = 1 }
 int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
 sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
 # VB `Round`/`Math.Round` is BANKER'S rounding — `Round(2.5)` is 2, `Round(3.5)`
@@ -192,6 +199,8 @@ round         = { emit = "common:math.round_half_even", min_args = 1, max_args =
 # carries. The emitters they name live in `platforms/dotnet`, which VB already
 # runs on, so this is a binding, not a second implementation.
 "__vybe_bi_is_num" = { emit = "common:dotnet.i128_is_numeric", min_args = 1, max_args = 1 }
+"__vybe_bi_is_pow2" = { emit = "common:dotnet.i128_is_pow2", min_args = 1, max_args = 1 }
+"__vybe_bi_hex"     = { emit = "common:dotnet.i128_hex",     min_args = 2, max_args = 2 }
 "__vybe_bi_str"     = { emit = "common:dotnet.i128_str",     min_args = 1, max_args = 1 }
 "__vybe_bi_sign"    = { emit = "common:dotnet.i128_sign",    min_args = 1, max_args = 1 }
 "__vybe_bi_abs"     = { emit = "common:dotnet.i128_abs",     min_args = 1, max_args = 1 }
@@ -223,7 +232,9 @@ round         = { emit = "common:math.round_half_even", min_args = 1, max_args =
 # ── Math — host calls ───────────────────────────────────────────────────────
 
 rnd        = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 1 }
-randomize  = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 0 }
+# `Randomize(seed)` takes an OPTIONAL seed — capped at 0 it matched no call and
+# resolved to nothing, so `Randomize(42)` read `undefined is not callable`.
+randomize  = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 1 }
 
 # ── Financial functions ─────────────────────────────────────────────────────
 

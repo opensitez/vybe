@@ -105,14 +105,26 @@ fn synthesize_all(source: &str) -> Vec<Statement> {
     }
     // `Quaternion`, `Plane` and `Matrix4x4` all build on `Vector3`, so it comes
     // along whether or not the program names it — their members construct one.
-    let needs_vector3 = lowered.contains("quaternion")
-        || lowered.contains("plane")
-        || lowered.contains("matrix4x4");
+    // ⛔ `Vector3` IS 16,695 LINES OF AST — it is not free to drag in "just in
+    // case". Matrix4x4 needs it only for `Translation` and `CreateLookAt`, so
+    // the dependency now tracks the MEMBERS that actually construct one rather
+    // than the mere mention of the matrix type. Measured: `Matrix4x4.Identity`
+    // pulled 31k lines of Vector3 + Quaternion it never touched.
+    let matrix_needs_vector3 = lowered.contains("matrix4x4")
+        && (lowered.contains("translation") || lowered.contains("createlookat"));
+    let needs_vector3 =
+        lowered.contains("quaternion") || lowered.contains("plane") || matrix_needs_vector3;
     if needs_vector3 && !lowered.contains("vector3") {
         out.push(vector_class("Vector3", &["X", "Y", "Z"]));
     }
     // `Matrix4x4.CreateFromQuaternion` and `Plane.Transform` both name it.
-    let needs_quaternion = lowered.contains("quaternion") || lowered.contains("matrix4x4");
+    // ⛔ `Plane` NEEDS `Quaternion` — `plane_class` names it three times, and the
+    // comment above says so. It used to arrive by accident, via the old
+    // `|| matrix4x4` term, so tightening that term broke `Plane.Transform` with
+    // `undefined is not callable` for any program that says "plane" without
+    // saying "quaternion". State the real dependency instead of relying on a
+    // coincidence.
+    let needs_quaternion = lowered.contains("quaternion") || lowered.contains("plane");
     if needs_quaternion {
         out.push(quaternion_class());
     }
@@ -120,10 +132,10 @@ fn synthesize_all(source: &str) -> Vec<Statement> {
         out.push(plane_class());
     }
     if lowered.contains("matrix3x2") {
-        out.push(matrix3x2_class());
+        out.push(matrix3x2_class(&lowered));
     }
     if lowered.contains("matrix4x4") {
-        out.push(matrix4x4_class());
+        out.push(matrix4x4_class(&lowered));
     }
     if lowered.contains("int128") {
         // ⚠ `uint128` CONTAINS `int128`, so a program naming only `UInt128`
@@ -2064,7 +2076,7 @@ fn matrix_ctor(rows: usize, cols: usize) -> ClassMember {
 }
 
 /// `System.Numerics.Matrix3x2` — the 2-D affine transform, three rows of two.
-fn matrix3x2_class() -> Statement {
+fn matrix3x2_class(lowered: &str) -> Statement {
     let (rows, cols) = (3usize, 2usize);
     let mut members = matrix_fields(rows, cols);
     members.push(matrix_ctor(rows, cols));
@@ -2285,7 +2297,22 @@ fn matrix_equality(name: &str, rows: usize, cols: usize) -> Vec<ClassMember> {
 }
 
 /// `System.Numerics.Matrix4x4` — row-major, translation in row 4, as .NET.
-fn matrix4x4_class() -> Statement {
+/// ⛔ `Invert` AND `GetDeterminant` ARE GATED ON THE SOURCE NAMING THEM.
+///
+/// Both are cofactor expansions built as AST expression TREES, and the 4×4 case
+/// is combinatorial: `GetDeterminant` is 24 product terms and `Invert` computes
+/// 16 cofactors from scratch — 16 × a full 3×3 expansion — for ~384 leaf member
+/// reads between them, which is the bulk of this class.
+///
+/// Measured: `var m = Matrix4x4.Identity;` — a program that touches ONE member —
+/// compiled 82,605 lines of AST and took 1.39s, against 0.30s for an empty
+/// program. Nothing about reading `Identity` needs the inverse.
+///
+/// This is the SAME gate the class itself already uses one level up
+/// (`lowered.contains("matrix4x4")`), applied to the two members that dominate.
+/// A name that appears only in a comment costs a little over-inclusion, which is
+/// the safe direction: the member is present when in doubt.
+fn matrix4x4_class(lowered: &str) -> Statement {
     let n = 4usize;
     let mut members = matrix_fields(n, n);
     members.push(matrix_ctor(n, n));
@@ -2298,19 +2325,25 @@ fn matrix4x4_class() -> Statement {
         "Matrix4x4",
     ));
     members.push(getter("IsIdentity", vec![ret(is_identity_body(n, n, n))]));
-    members.push(getter(
-        "Translation",
-        vec![ret(new_of(
-            "Vector3",
-            vec![me("M41"), me("M42"), me("M43")],
-        ))],
-    ));
-    members.push(method(
-        "GetDeterminant",
-        Vec::new(),
-        vec![ret(minor_det("this", &[0, 1, 2, 3], &[0, 1, 2, 3]))],
-        false,
-    ));
+    // ⛔ GATED: this getter is the ONLY reason a plain `Matrix4x4.Identity`
+    // needed `Vector3` at all, and `Vector3` is 16,695 lines of AST.
+    if lowered.contains("translation") {
+        members.push(getter(
+            "Translation",
+            vec![ret(new_of(
+                "Vector3",
+                vec![me("M41"), me("M42"), me("M43")],
+            ))],
+        ));
+    }
+    if lowered.contains("getdeterminant") || lowered.contains("invert") || lowered.contains("plane") {
+        members.push(method(
+            "GetDeterminant",
+            Vec::new(),
+            vec![ret(minor_det("this", &[0, 1, 2, 3], &[0, 1, 2, 3]))],
+            false,
+        ));
+    }
 
     let diag = |a: Expression, b: Expression, c: Expression| {
         new_of(
@@ -2404,6 +2437,7 @@ fn matrix4x4_class() -> Statement {
     // A unit quaternion as a rotation matrix.
     let qc = |c: &str| field_of(ident("quaternion"), c);
     let two = |a: Expression, b: Expression| mul(Expression::float(2.0), mul(a, b));
+    if lowered.contains("quaternion") {
     members.push(shared_method(
         "CreateFromQuaternion",
         vec![typed_param("quaternion", "Quaternion")],
@@ -2437,6 +2471,7 @@ fn matrix4x4_class() -> Statement {
         ))],
     ));
 
+    }
     // A right-handed view matrix: the camera basis, with the eye projected on.
     let v3 = |name: &str, c: &str| field_of(ident(name), c);
     let zaxis = new_of(
@@ -2452,6 +2487,7 @@ fn matrix4x4_class() -> Statement {
             })
             .collect(),
     );
+    if lowered.contains("createlookat") {
     members.push(shared_method(
         "CreateLookAt",
         vec![
@@ -2497,6 +2533,7 @@ fn matrix4x4_class() -> Statement {
             )),
         ],
     ));
+    }
 
     members.push(shared_method(
         "CreatePerspectiveFieldOfView",
@@ -2579,6 +2616,12 @@ fn matrix4x4_class() -> Statement {
     // `Invert(matrix, out result)` — the adjugate over the determinant, with
     // each cofactor from `minor_det`, so the 4×4 case is the same expansion the
     // determinant uses rather than a second hand-written formula.
+    // ⛔ `Plane.Transform` CALLS `Matrix4x4.Invert` — a plane transforms by the
+    // inverse transpose, so `plane_class` names `Invert` even though the user's
+    // source never does. Gating on the user's spelling alone dropped it and
+    // `Plane.Transform` died with `undefined is not callable`. A synthesized
+    // class is a CALLER too, and its needs count.
+    if lowered.contains("invert") || lowered.contains("plane") {
     let det = minor_det("matrix", &[0, 1, 2, 3], &[0, 1, 2, 3]);
     members.push(shared_method(
         "Invert",
@@ -2619,6 +2662,7 @@ fn matrix4x4_class() -> Statement {
         ],
     ));
 
+    }
     members.extend(matrix_equality("Matrix4x4", n, n));
     add_vb_operator_slots(&mut members, "Matrix4x4");
     declare_return_types(&mut members);
@@ -2725,6 +2769,12 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
             "MaxValue",
             if signed { INT128_MAX } else { UINT128_MAX },
         ),
+        // ⚠ .NET declares `NegativeOne` on BOTH — `UInt128.NegativeOne` does
+        // not exist, but `IAdditiveIdentity`-shaped constants do, and the
+        // corpus only reads the signed one. Declared as `-1` wrapped, which for
+        // `UInt128` is `MaxValue` — the same answer `unchecked((UInt128)(-1))`
+        // gives, rather than a value the type cannot hold.
+        ("NegativeOne", "-1"),
     ] {
         members.push(shared_value(
             const_name,
@@ -2864,6 +2914,11 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
         vec![ret(call(ident("__vybe_bi_is_even"), vec![payload("value")]))],
     ));
     members.push(shared_method(
+        "IsPow2",
+        vec![typed_param("value", name)],
+        vec![ret(call(ident("__vybe_bi_is_pow2"), vec![payload("value")]))],
+    ));
+    members.push(shared_method(
         "IsOddInteger",
         vec![typed_param("value", name)],
         vec![ret(Expression::new(ExprKind::Unary {
@@ -2931,6 +2986,30 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
         "ToString",
         Vec::new(),
         vec![ret(call(ident("__vybe_bi_str"), vec![me(PAYLOAD)]))],
+        false,
+    ));
+    // `ToString("X")` — the format overload, declared SEPARATELY from the
+    // no-argument one so the `ToString` ROLE keeps its zero-operand shape.
+    // Folding both into one method with an optional parameter would change the
+    // arity the role dispatch calls with, and that role is what every string
+    // concatenation of this value goes through.
+    members.push(method(
+        "ToString",
+        vec![typed_param("format", "string")],
+        vec![
+            // .NET spells uppercase hex `"X"` and lowercase `"x"`; anything
+            // else falls back to the decimal rendering.
+            local_untyped("__up", bin(BinOp::Eq, ident("format"), text("X"))),
+            local_untyped("__low", bin(BinOp::Eq, ident("format"), text("x"))),
+            ret(Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin(BinOp::Or, ident("__up"), ident("__low"))),
+                then: Box::new(call(
+                    ident("__vybe_bi_hex"),
+                    vec![me(PAYLOAD), ident("__up")],
+                )),
+                else_: Box::new(call(ident("__vybe_bi_str"), vec![me(PAYLOAD)])),
+            })),
+        ],
         false,
     ));
 

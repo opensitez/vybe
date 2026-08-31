@@ -264,6 +264,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_nested_member_arg_calls(&mut module);
     normalize_vb_zero_arg_field_member_calls(&mut module.body);
     normalize_vb_task_surface(&mut module);
+    normalize_vb_interlocked_surface(&mut module);
     normalize_vb_binary_writer_writes(&mut module.body);
     // LAST: the reflection passes above still need `ExprKind::TypeOf` intact.
     normalize_vb_enum_type_tokens(&mut module);
@@ -683,6 +684,110 @@ fn normalize_vb_task_expr(expr: &mut Expression) {
     if let Some(op) = replacement {
         expr.kind = ExprKind::Async(op);
     }
+}
+
+/// VB's `Interlocked` spellings → the shared `AtomicOp` vocabulary.
+///
+/// The place operand must resolve to an ADDRESS in shared linear memory, which
+/// is what `collect_atomic_place_idents` promotes a named binding into once an
+/// `AtomicOp` names it. Without this pass the call reaches the tree as an
+/// ordinary static, and the leaf receives the variable's VALUE where the
+/// address belongs — `Dim total As Integer = 50` traps as `addr=50`.
+///
+/// VB has no `ByRef` marker at the CALL site: `Interlocked.Add(total, 25)` is
+/// the whole spelling, because every `Interlocked` overload declares its first
+/// parameter `ByRef`. So the first argument IS the place, with nothing to
+/// unwrap — the one shape difference from C#'s `ref total`.
+///
+/// C# normalizes the same surface in `normalize_interlocked_surface`; this is
+/// the VB spelling of it, case-insensitive throughout.
+fn normalize_vb_interlocked_surface(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut normalize_vb_interlocked_expr);
+    }
+}
+
+fn normalize_vb_interlocked_expr(expr: &mut Expression) {
+    // `walk_exprs_mut` does not descend into statement-carrying bodies; this
+    // pass drives into them, because `Task.Run(Sub() Interlocked.Increment(n))`
+    // is the canonical atomics shape.
+    match &mut expr.kind {
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(inner) => inner.walk_exprs_mut(&mut normalize_vb_interlocked_expr),
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts {
+                    stmt.walk_exprs_mut(&mut normalize_vb_interlocked_expr);
+                }
+            }
+        },
+        ExprKind::FunctionExpr(decl) => decl.walk_exprs_mut(&mut normalize_vb_interlocked_expr),
+        _ => {}
+    }
+    let span = expr.span;
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return;
+    };
+    if !dotted_expr_name(object).is_some_and(|path| {
+        path.eq_ignore_ascii_case("Interlocked")
+            || path.eq_ignore_ascii_case("System.Threading.Interlocked")
+            || path.eq_ignore_ascii_case("Threading.Interlocked")
+    }) {
+        return;
+    }
+    let take = |args: &mut Vec<Argument>, index: usize| Box::new(args[index].value.clone());
+    let one = || Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(1)), span));
+    // .NET specifies every `Interlocked` op as a full fence.
+    let ordering = MemoryOrder::SeqCst;
+    // `Add`/`Increment`/`Decrement` answer the NEW value; `Exchange`,
+    // `CompareExchange`, `And` and `Or` answer the ORIGINAL one.
+    let rmw = |op, place, operand, result| AtomicOp::Rmw {
+        op,
+        place,
+        operand,
+        result,
+        ordering,
+    };
+    let atomic = match (field.to_ascii_lowercase().as_str(), args.len()) {
+        ("add", 2) => rmw(
+            AtomicRmw::Add,
+            take(args, 0),
+            take(args, 1),
+            RmwResult::New,
+        ),
+        ("increment", 1) => rmw(AtomicRmw::Add, take(args, 0), one(), RmwResult::New),
+        ("decrement", 1) => rmw(AtomicRmw::Sub, take(args, 0), one(), RmwResult::New),
+        ("exchange", 2) => rmw(
+            AtomicRmw::Xchg,
+            take(args, 0),
+            take(args, 1),
+            RmwResult::Old,
+        ),
+        ("and", 2) => rmw(
+            AtomicRmw::And,
+            take(args, 0),
+            take(args, 1),
+            RmwResult::Old,
+        ),
+        ("or", 2) => rmw(AtomicRmw::Or, take(args, 0), take(args, 1), RmwResult::Old),
+        ("compareexchange", 3) => AtomicOp::CompareExchange {
+            place: take(args, 0),
+            // .NET argument 2 is the REPLACEMENT, argument 3 the EXPECTED.
+            replacement: take(args, 1),
+            expected: take(args, 2),
+            result: RmwResult::Old,
+            ordering,
+        },
+        ("read", 1) => AtomicOp::Load {
+            place: take(args, 0),
+            ordering,
+        },
+        ("memorybarrier", 0) => AtomicOp::Fence { ordering },
+        _ => return,
+    };
+    expr.kind = ExprKind::Atomic(atomic);
 }
 
 fn normalize_vb_type_hint_whitespace(module: &mut Module) {
@@ -2670,6 +2775,56 @@ fn normalize_vb_char_storage_member(member: &mut ClassMember) {
     }
 }
 
+/// Byte offset of the first ` As ` that separates a declarator list from its
+/// type — depth 0, outside any string literal.
+///
+/// ⛔ A field TYPE carries `As` of its own: `(Key As String, Value As T)` is one
+/// tuple type, not three declarators. Scanning for the last ` As ` split that
+/// tuple down the middle and handed the parser `Public Data As (Key As String
+/// T)`, which is why every tuple-typed field was a parse error.
+fn vb_top_level_as(lower: &str) -> Option<usize> {
+    let bytes = lower.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_string = !in_string,
+            _ if in_string => {}
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b' ' if depth == 0 && lower[i..].starts_with(" as ") => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on the commas that separate DECLARATORS — depth 0, outside a string.
+///
+/// ⛔ `Dictionary(Of String, Integer)` and `(Key As String, Value As T)` both
+/// spell a comma inside their own type. Only a depth-0 comma ends a name.
+fn vb_split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut start = 0usize;
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
 fn normalize_vb_multi_field_lines(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     for line in source.lines() {
@@ -2688,7 +2843,9 @@ fn normalize_vb_multi_field_lines(source: &str) -> String {
             && !lower.contains(" operator ")
             && !lower.contains(" event ")
         {
-            let Some(as_idx) = lower.rfind(" as ") else {
+            // The FIRST depth-0 `As` ends the declarator list; everything after
+            // it is one type, however many `As`es and commas that type spells.
+            let Some(as_idx) = vb_top_level_as(&lower) else {
                 out.push_str(line);
                 out.push('\n');
                 continue;
@@ -2702,11 +2859,15 @@ fn normalize_vb_multi_field_lines(source: &str) -> String {
                 continue;
             };
             let names_text = left[modifier.len()..].trim();
-            for name in names_text
-                .split(',')
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
+            let names = vb_split_top_level_commas(names_text);
+            // One declarator is not a multi-field line — leave it exactly as
+            // written rather than round-tripping it through this rewrite.
+            if names.len() < 2 {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            for name in names.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
                 out.push_str(indent);
                 out.push_str(modifier);
                 out.push(' ');
@@ -15613,6 +15774,7 @@ fn rewrite_vb_import_aliases(module: &mut Module) {
                 aliases.insert(alias.clone(), path.clone());
             } else {
                 add_vb_dotnet_namespace_import_aliases(path, &mut aliases);
+                add_vb_dotnet_type_import_aliases(path, &mut aliases, module);
             }
         }
     }
@@ -15653,6 +15815,161 @@ fn add_vb_dotnet_namespace_import_aliases(path: &str, aliases: &mut HashMap<Stri
         let qualified = format!("{export_namespace}.{}", class.name);
         aliases.entry(class.name).or_insert(qualified);
     }
+}
+
+/// `Imports System.Math` — VB's import of a TYPE, which puts that type's SHARED
+/// members in scope unqualified. C#'s `using static` for VB.
+///
+/// ⛔ Only the NAMESPACE form was handled, so `Sqrt(16)` under
+/// `Imports System.Math` resolved to nothing and read
+/// `undefined is not callable`.
+///
+/// ⛔ A member is aliased only when the program does not DECLARE that name
+/// itself: VB resolves an unqualified name against the enclosing module before
+/// its imports, and the alias rewrite is unconditional, so without this guard a
+/// user `Function Max(...)` would be rewritten into `Math.Max`.
+fn add_vb_dotnet_type_import_aliases(
+    path: &str,
+    aliases: &mut HashMap<String, String>,
+    module: &Module,
+) {
+    let trimmed = path
+        .strip_prefix("Global.")
+        .unwrap_or(path)
+        .strip_prefix("dotnet.")
+        .unwrap_or_else(|| path.strip_prefix("Dotnet.").unwrap_or(path));
+    let Some((namespace, type_name)) = trimmed.rsplit_once('.') else {
+        return;
+    };
+    let declared = vb_module_declared_names(module);
+    let descriptor = vybe_platform_dotnet::emitter::dotnet_component_descriptor();
+    for export in descriptor.exports {
+        let export_namespace = export
+            .interface
+            .strip_prefix("dotnet.")
+            .unwrap_or(export.interface.as_str());
+        if !export_namespace.eq_ignore_ascii_case(namespace) {
+            continue;
+        }
+        let vybe_runtime::component_model::ComponentItemKind::Class(class) = export.kind else {
+            continue;
+        };
+        if !class.name.eq_ignore_ascii_case(type_name) {
+            continue;
+        }
+        for method in &class.methods {
+            if !method.is_static || declared.contains(&method.name.to_ascii_lowercase()) {
+                continue;
+            }
+            aliases
+                .entry(method.name.clone())
+                .or_insert_with(|| format!("{}.{}", class.name, method.name));
+        }
+    }
+}
+
+/// Every Sub/Function/Property name the program declares at module or class
+/// level, lowercased — VB folds.
+fn vb_module_declared_names(module: &Module) -> HashSet<String> {
+    fn walk(body: &[Statement], out: &mut HashSet<String>) {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::FunctionDecl { name, .. } => {
+                    out.insert(name.to_ascii_lowercase());
+                }
+                StmtKind::ClassDecl { members, .. }
+                | StmtKind::StructDecl { members, .. }
+                | StmtKind::ModuleDecl { members, .. } => {
+                    for member in members {
+                        match member {
+                            ClassMember::Method(inner) | ClassMember::NestedType(inner) => {
+                                walk(std::slice::from_ref(inner), out)
+                            }
+                            ClassMember::Property { name, .. } => {
+                                out.insert(name.to_ascii_lowercase());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => walk(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(&module.body, &mut out);
+    out
+}
+
+/// VB's unsigned 32-bit integral types.
+fn vb_is_unsigned32_type(type_name: &str) -> bool {
+    matches!(
+        vb_canonical_type_name(type_name).to_ascii_lowercase().as_str(),
+        "uinteger" | "uint32" | "ushort" | "uint16" | "byte"
+    )
+}
+
+/// Give a bitwise result on an UNSIGNED operand its unsigned value.
+///
+/// ⛔ The bitwise lane is SIGNED (`I32_AND`, `I32_SHL`, …), so `Not 0UI` lands
+/// as −1 and `1UI << 31` as −2147483648. VB's declared type says the result is
+/// unsigned, and that is knowable only here — the target of `Dim comp = Not val`
+/// carries no hint, so the OPERAND's type is what decides.
+///
+/// Returns true when it wrapped, so the caller stops rewriting the node.
+fn vb_wrap_unsigned32_bitwise(expr: &mut Expression, locals: &HashMap<String, String>) -> bool {
+    let operand = match &expr.kind {
+        ExprKind::Binary { op, left, .. }
+            if matches!(
+                op,
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+            ) =>
+        {
+            (**left).clone()
+        }
+        // ⛔ BOTH spellings. VB's `Not` parses as `UnaryOp::Not` and only a LATER
+        // pass retypes it to `BitNot` once the operand is known numeric, so this
+        // pass sees the un-retyped node. The unsigned-type test below is what
+        // keeps a boolean `Not` out.
+        ExprKind::Unary {
+            op: UnaryOp::BitNot | UnaryOp::Not,
+            expr: inner,
+        } => (**inner).clone(),
+        _ => return false,
+    };
+    // ⛔ THE DECLARED TYPE WINS. `vb_infer_expr_type` answers from the local's
+    // recorded VALUE where it has one, so a `Dim val As UInteger = 0UI` infers
+    // as `Integer` and the unsignedness — the only thing being asked about — is
+    // lost. Read the declaration first, infer only when there is none.
+    let operand_type = match &operand.kind {
+        ExprKind::Ident(name) => locals.get(&name.to_ascii_lowercase()).cloned(),
+        _ => None,
+    }
+    .or_else(|| vb_infer_expr_type(&operand, locals));
+    if !operand_type.is_some_and(|t| vb_is_unsigned32_type(&t)) {
+        return false;
+    }
+    // ⛔ `>>` ON AN UNSIGNED OPERAND IS A LOGICAL SHIFT. Wrapping the result of
+    // an ARITHMETIC shift cannot fix it: `&HFFFFFFFFUI >> 1` sign-extends to −1
+    // and the unsigned view then reads 4294967295, where VB answers 2147483647.
+    // The OP has to change, not just its rendering.
+    if let ExprKind::Binary { op, .. } = &mut expr.kind {
+        if *op == BinOp::Shr {
+            *op = BinOp::UShr;
+        }
+    }
+    let span = expr.span;
+    let inner = std::mem::replace(expr, Expression::null());
+    *expr = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__vb_as_unsigned32")),
+            args: vec![Argument::positional(inner)],
+            optional: false,
+        },
+        span,
+    );
+    true
 }
 
 fn normalize_vb_system_static_receivers(module: &mut Module) {
@@ -18056,6 +18373,24 @@ fn format_vb_number(value: f64) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// Seed a function's PARAMETERS into the local-type map before normalizing its
+/// body.
+///
+/// ⛔ The body pass started from an EMPTY map, so a parameter's declared type
+/// was invisible inside its own function: `Function RotateLeft(val As UInteger,
+/// …)` could not tell that `val` was unsigned, while the identical declaration
+/// as a `Dim` could.
+fn normalize_vb_local_type_body_with_params(body: &mut Vec<Statement>, parameters: &[Param]) {
+    normalize_vb_binary_writer_writes(body);
+    let mut locals = HashMap::new();
+    for param in parameters {
+        if let Some(type_hint) = &param.type_hint {
+            locals.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+        }
+    }
+    normalize_vb_local_type_statements(body, &mut locals);
 }
 
 fn normalize_vb_local_type_body(body: &mut Vec<Statement>) {
@@ -21769,6 +22104,18 @@ fn normalize_vb_dotnet_collection_statement(
                                 .eq_ignore_ascii_case("HashSet")
                         {
                             "HashSet#OrdinalIgnoreCase".to_string()
+                        } else if dotnet_vb::collection_base_type_name(&type_name)
+                            .eq_ignore_ascii_case("SortedDictionary")
+                            && decl
+                                .init
+                                .as_ref()
+                                .is_some_and(vb_new_sorted_dictionary_uses_ignorecase)
+                        {
+                            // The `#` marker keeps the SORTED type resolvable
+                            // while `is_case_insensitive_string_key_type_hint`
+                            // still sees it — `DictionaryIgnoreCase` is a
+                            // distinct type name and would lose the ordering.
+                            "SortedDictionary#OrdinalIgnoreCase".to_string()
                         } else {
                             type_name
                         };
@@ -24079,17 +24426,28 @@ fn vb_hashset_remove_where_expr(
     }))
 }
 
-fn vb_new_dictionary_uses_ignorecase(expr: &Expression) -> bool {
+/// `New <base>(…, StringComparer.OrdinalIgnoreCase)` — the ignore-case
+/// construction, for whichever keyed collection is asking.
+fn vb_new_collection_uses_ignorecase(expr: &Expression, base: &str) -> bool {
     let ExprKind::New { class, args } = &expr.kind else {
         return false;
     };
-    dotted_expr_name(class).as_deref().is_some_and(|name| {
-        dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case("Dictionary")
-    }) && args.iter().any(|arg| {
-        literal_string(&arg.value).is_some_and(|text| {
-            text.eq_ignore_ascii_case("__dotnet_stringcomparer_ordinalignorecase")
+    dotted_expr_name(class)
+        .as_deref()
+        .is_some_and(|name| dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case(base))
+        && args.iter().any(|arg| {
+            literal_string(&arg.value).is_some_and(|text| {
+                text.eq_ignore_ascii_case("__dotnet_stringcomparer_ordinalignorecase")
+            })
         })
-    })
+}
+
+fn vb_new_dictionary_uses_ignorecase(expr: &Expression) -> bool {
+    vb_new_collection_uses_ignorecase(expr, "Dictionary")
+}
+
+fn vb_new_sorted_dictionary_uses_ignorecase(expr: &Expression) -> bool {
+    vb_new_collection_uses_ignorecase(expr, "SortedDictionary")
 }
 
 fn vb_new_hashset_uses_ignorecase(expr: &Expression) -> bool {
@@ -26079,11 +26437,13 @@ fn vb_default_indexer_setter_call_from_root(
                     set_value_args,
                 ));
             }
+            // ⛔ `d(k) = v` is the Item SETTER — add-or-replace — not `Add`,
+            // which throws on a duplicate key. Declining here keeps the
+            // `Index` assignment, so the write and the read reach the key
+            // through the same path; routing them differently is why a tuple
+            // key stored by `Add` read back `undefined`.
             if vb_is_dictionary_local_type(type_name) {
-                return Some(call_expr(
-                    member_expr(Expression::ident(name), "Add"),
-                    new_args,
-                ));
+                return None;
             }
             if default_indexer_types.contains_key(&vb_default_indexer_type_key(type_name))
                 && dotnet_vb::collection_local_type(type_name).is_none()
@@ -27758,6 +28118,7 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 normalize_vb_named_tuple_decl(decl);
+                wrap_vb_checked_narrowing_init(decl);
                 let init_type_before_normalize =
                     decl.init.as_ref().and_then(|init| match &init.kind {
                         ExprKind::Cast { type_name, .. } => Some(vb_canonical_type_name(
@@ -27788,6 +28149,7 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
                     if let Some(bounds) = decl.array_bounds.as_ref() {
                         record_vb_array_bounds_metadata(locals, name, bounds);
                     }
+                    record_vb_tuple_field_names(locals, name, decl);
                     let key = name.to_ascii_lowercase();
                     let mutable_local = locals.contains_key(&format!("$mutable:{key}"));
                     if let Some(init) = &decl.init {
@@ -28267,6 +28629,10 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                 return;
             }
             normalize_vb_local_type_expr(object, locals);
+            if let Some(read) = vb_tuple_positional_read(object, field, locals) {
+                *expr = read;
+                return;
+            }
             if field.eq_ignore_ascii_case("HasValue") {
                 *expr = Expression::new(ExprKind::Binary {
                     op: BinOp::IsNot,
@@ -28658,6 +29024,9 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                     return;
                 }
             }
+            if vb_wrap_unsigned32_bitwise(expr, locals) {
+                return;
+            }
             // `vb_fold_decimal_comparison` stood here: a COMPILE-TIME `Decimal`
             // comparison that compared two `f64`s with a 1e-13 epsilon. That is
             // not `System.Decimal` (exact base-10) by any reading, and it only
@@ -28711,6 +29080,13 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
             if !matches!(value.kind, ExprKind::Ident(_)) {
                 *expr = value;
             }
+        }
+        ExprKind::Unary {
+            op: UnaryOp::BitNot | UnaryOp::Not,
+            expr: inner,
+        } => {
+            normalize_vb_local_type_expr(inner, locals);
+            vb_wrap_unsigned32_bitwise(expr, locals);
         }
         ExprKind::Unary { expr, .. }
         | ExprKind::RefLoad(expr)
@@ -29812,7 +30188,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::identifier | Rule::member_identifier | Rule::sub_name => {
-                name = p.as_str().to_string()
+                name = normalize_vb_identifier(p.as_str())
             }
             Rule::generic_suffix => consume_vb_generic_suffix(p.as_str()),
             Rule::param_list => parameters = parse_param_list(p)?,
@@ -29854,7 +30230,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     normalize_vb_legacy_error_body(&mut body);
     normalize_vb_date_literal_body(&mut body);
-    normalize_vb_local_type_body(&mut body);
+    normalize_vb_local_type_body_with_params(&mut body, &parameters);
     body = lower_vb_gotos(body);
 
     let is_generator = body_has_yield(&body);
@@ -29944,7 +30320,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::identifier | Rule::member_identifier | Rule::function_name => {
-                name = p.as_str().to_string()
+                name = normalize_vb_identifier(p.as_str())
             }
             Rule::generic_suffix => consume_vb_generic_suffix(p.as_str()),
             Rule::param_list => parameters = parse_param_list(p)?,
@@ -29992,7 +30368,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     normalize_vb_legacy_error_body(&mut body);
     normalize_vb_date_literal_body(&mut body);
-    normalize_vb_local_type_body(&mut body);
+    normalize_vb_local_type_body_with_params(&mut body, &parameters);
     body = lower_vb_gotos(body);
 
     let is_generator = body_has_yield(&body);
@@ -30070,7 +30446,7 @@ fn parse_operator_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }
 
     normalize_vb_date_literal_body(&mut body);
-    normalize_vb_local_type_body(&mut body);
+    normalize_vb_local_type_body_with_params(&mut body, &parameters);
     let source_arity = parameters.len();
     let is_conversion_operator = symbol.eq_ignore_ascii_case("CType");
     let instance_operator = if is_conversion_operator {
@@ -30820,6 +31196,136 @@ fn vb_tuple_element_name(part: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The `Convert.To*` that range-checks a declared integral type, or `None` for
+/// a type whose range f64 already covers exactly.
+fn vb_checked_convert_for_type(type_name: &str) -> Option<&'static str> {
+    Some(
+        match vb_canonical_type_name(type_name).to_ascii_lowercase().as_str() {
+            "byte" => "ToByte",
+            "sbyte" => "ToSByte",
+            "short" | "int16" => "ToInt16",
+            "ushort" | "uint16" => "ToUInt16",
+            "integer" | "int32" => "ToInt32",
+            "uinteger" | "uint32" => "ToUInt32",
+            _ => return None,
+        },
+    )
+}
+
+/// ⛔ **VB.NET IS CHECKED BY DEFAULT** — unlike C#, integral arithmetic that
+/// leaves the declared type's range throws `OverflowException`. Nothing emitted
+/// a range check, so `Dim y As Integer = Integer.MaxValue + 1` answered
+/// `2147483648`.
+///
+/// The declared type is the whole basis for the check, so the wrap happens
+/// where the declaration is: `Dim y As Integer = <arith>` becomes
+/// `Convert.ToInt32(<arith>)`, which range-checks and throws.
+///
+/// ⛔ ONLY an arithmetic initializer is wrapped. A plain copy, a literal or a
+/// call already carries its own type, and wrapping those would put a rounding
+/// conversion in front of every integer assignment in the program.
+fn wrap_vb_checked_narrowing_init(decl: &mut VarDeclarator) {
+    let Some(convert) = decl
+        .type_hint
+        .as_deref()
+        .and_then(vb_checked_convert_for_type)
+    else {
+        return;
+    };
+    let Some(init) = decl.init.as_mut() else {
+        return;
+    };
+    let is_arithmetic = match &init.kind {
+        ExprKind::Binary { op, .. } => matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Pow | BinOp::Shl
+        ),
+        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Neg),
+        _ => false,
+    };
+    if !is_arithmetic {
+        return;
+    }
+    let span = init.span;
+    let inner = std::mem::replace(init, Expression::null());
+    *init = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(member_expr(Expression::ident("Convert"), convert)),
+            args: vec![Argument::positional(inner)],
+            optional: false,
+        },
+        span,
+    );
+}
+
+/// `locals` key holding a tuple local's element names, in order.
+const VB_TUPLE_FIELDS_KEY: &str = "$tuplefields:";
+
+/// Record the element names a tuple local reads its fields BY.
+///
+/// The DECLARED type wins over the literal's own names, because that is the
+/// name set .NET resolves against: `Dim t2 As (W As Integer, H As Integer) = t1`
+/// reads `t2.W`, whatever `t1` called its elements.
+fn record_vb_tuple_field_names(
+    locals: &mut HashMap<String, String>,
+    name: &str,
+    decl: &VarDeclarator,
+) {
+    let declared = decl
+        .type_hint
+        .as_ref()
+        .and_then(|hint| vb_tuple_type_field_names(hint.spelling()));
+    let names = declared.or_else(|| match decl.init.as_ref().map(|init| &init.kind) {
+        Some(ExprKind::NamedTuple { fields, .. }) => {
+            fields.iter().map(|(name, _)| name.clone()).collect()
+        }
+        _ => None,
+    });
+    let key = format!("{VB_TUPLE_FIELDS_KEY}{}", name.to_ascii_lowercase());
+    match names {
+        Some(names) if !names.is_empty() => {
+            locals.insert(key, names.join(","));
+        }
+        // A redeclaration with no tuple names retires the old entry rather than
+        // letting a stale one answer for a different value.
+        _ => {
+            locals.remove(&key);
+        }
+    }
+}
+
+/// `t.Name` → `t[i]` when `t` is a tuple local and `Name` is one of its declared
+/// elements.
+///
+/// ⛔ .NET ERASES tuple element names at runtime — `t.W` is compile-time sugar
+/// for `t[0]`, resolved against the DECLARED type of `t` and nothing else. A
+/// by-name key on the VALUE answers only while the declaration and the value
+/// agree, which is exactly what `Dim t2 As (W, H) = t1` breaks: `t1` carries
+/// `width`/`height`, so `t2.W` read a key that was never written and rendered
+/// empty. Resolving the index here is what makes the two spellings one.
+///
+/// ⛔ Matching a DECLARED element name cannot capture a method call: .NET
+/// forbids naming a tuple element `ToString`, `Equals`, `GetHashCode`,
+/// `CompareTo`, `Deconstruct`, `Rest`, or a mispositioned `ItemN`.
+fn vb_tuple_positional_read(
+    object: &Expression,
+    field: &str,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let key = format!("{VB_TUPLE_FIELDS_KEY}{}", name.to_ascii_lowercase());
+    let index = locals
+        .get(&key)?
+        .split(',')
+        .position(|declared| declared.eq_ignore_ascii_case(field))?;
+    Some(vybe_compiler::primitives::tuples::positional_read(
+        object.clone(),
+        index,
+    ))
 }
 
 fn normalize_vb_named_tuple_decl(decl: &mut VarDeclarator) {
@@ -34591,7 +35097,7 @@ fn parse_parameter(pair: Pair<Rule>) -> Result<Param, String> {
                 pass_by = PassBy::Value; // ParamArray is always ByVal
             }
             Rule::identifier => {
-                name = p.as_str().to_string();
+                name = normalize_vb_identifier(p.as_str());
             }
             Rule::type_name => param_type = Some(p.as_str().to_string()),
             Rule::nullable_marker => is_nullable = true,
@@ -37257,8 +37763,42 @@ fn parse_postfix_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(expr)
 }
 
+/// Mark the node a null-conditional chain segment produced, so `a?.B` reads as
+/// null instead of throwing when `a` is Nothing.
+///
+/// The segment was parsed by the PLAIN rule it wraps, so this only has to say
+/// which node carries the flag: a member read and an index both spell it
+/// `null_safe`, and a call spells it `optional`. `a?.B()` marks the CALL — .NET
+/// short-circuits the whole invocation, not just the member read.
+fn mark_vb_null_conditional(mut expr: Expression) -> Expression {
+    match &mut expr.kind {
+        ExprKind::Member { null_safe, .. } | ExprKind::Index { null_safe, .. } => *null_safe = true,
+        ExprKind::Call { callee, optional, .. } => {
+            *optional = true;
+            if let ExprKind::Member { null_safe, .. } = &mut callee.kind {
+                *null_safe = true;
+            }
+        }
+        _ => {}
+    }
+    expr
+}
+
 fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expression, String> {
     match chain.as_rule() {
+        // `a?.B`, `a?.B()`, `a?(i)` — each wraps the plain rule, so the segment
+        // takes the identical path and is only marked afterwards.
+        Rule::member_chain_null_invoke
+        | Rule::member_chain_null_call
+        | Rule::member_chain_null_access => {
+            let inner = chain
+                .into_inner()
+                .next()
+                .ok_or_else(|| "VB null-conditional chain segment is empty".to_string())?;
+            return Ok(mark_vb_null_conditional(parse_member_chain_node(
+                inner, expr,
+            )?));
+        }
         Rule::member_chain_invoke => {
             let arguments = chain
                 .into_inner()

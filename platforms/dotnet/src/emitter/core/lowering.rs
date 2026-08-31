@@ -118,10 +118,12 @@ pub fn collection_local_type(type_name: &str) -> Option<String> {
 pub fn collection_storage_type(type_name: &str) -> &str {
     let type_name = type_name.trim().strip_suffix("()").unwrap_or(type_name);
     if type_name == "DictionaryIgnoreCase" {
-        "Dictionary"
-    } else {
-        type_name
+        return "Dictionary";
     }
+    // `SortedDictionary#OrdinalIgnoreCase` STORES as `SortedDictionary`; the
+    // `#` marker exists so `is_case_insensitive_string_key_type_hint` can still
+    // see the comparer while the type keeps resolving to its own class.
+    type_name.split('#').next().unwrap_or(type_name)
 }
 
 pub fn collection_property_method(type_name: &str, field: &str) -> bool {
@@ -213,6 +215,38 @@ pub fn encoding_static_name(expr: &Expression) -> Option<&'static str> {
         "bigendianunicode" => Some("bigendianunicode"),
         _ => None,
     }
+}
+
+/// Whether `expr` names a `MidpointRounding` member.
+///
+/// `Math.Round` has two two-argument overloads — `(double, int)` and
+/// `(double, MidpointRounding)` — and .NET picks between them by the argument's
+/// TYPE. Both arrive here as a number, and their values OVERLAP (`ToEven` is 0
+/// and so is a request for 0 decimal places), so the value cannot decide it.
+/// The spelling can, and this is the only place that has it.
+pub fn is_midpoint_rounding_member(expr: &Expression) -> bool {
+    dotted_expr_name(expr).is_some_and(|path| {
+        path.rsplit_once('.')
+            .is_some_and(|(owner, _)| owner.rsplit('.').next() == Some("MidpointRounding"))
+    })
+}
+
+/// `Math.Round(value, mode)` → `Math.Round(value, 0, mode)`.
+///
+/// Not an approximation: measured against the .NET SDK across all five modes ×
+/// midpoint, non-midpoint and negative values, the two forms agree everywhere.
+/// Rewriting to the unambiguous three-argument overload is what lets one
+/// emitter serve every arity without guessing at a bare number.
+pub fn round_mode_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
+    let [value, mode] = args else { return None };
+    if value.name.is_some() || mode.name.is_some() || !is_midpoint_rounding_member(&mode.value) {
+        return None;
+    }
+    Some(vec![
+        value.clone(),
+        Argument::positional(Expression::int(0)),
+        mode.clone(),
+    ])
 }
 
 /// Build a runtime expression that yields the .NET short type name of `expr`.

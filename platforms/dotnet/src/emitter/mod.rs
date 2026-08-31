@@ -219,7 +219,7 @@ impl DotnetSurface {
             .find(|class| {
                 class.name.eq_ignore_ascii_case(&base) || class.name.eq_ignore_ascii_case(short)
             })
-            .and_then(|class| class.constructor.as_ref())
+            .and_then(|class| class.constructor())
             .and_then(|ctor| ctor.backing.clone())
     }
 
@@ -630,6 +630,59 @@ pub fn instance_method_return_type(class_name: &str, method_name: &str) -> Optio
 
 fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    // ⛔ THE TYPE ARGUMENT IS STILL ON THE NAME. A declared
+    // `ReadOnlyMemory<char>` reaches here spelled with its `<char>`, so a bare
+    // `eq_ignore_ascii_case("ReadOnlyMemory")` misses — which is why the rows
+    // below did nothing until the suffix came off. `.rsplit('.')` strips the
+    // namespace and nothing else.
+    let class_head = class.split('<').next().unwrap_or(class).trim();
+    // ⛔ THE CHAIN'S TYPE IS WHAT MAKES `ToString` REACHABLE. `"s".AsMemory()`
+    // and `.Slice(…)` both answer a memory view, and without saying so the
+    // receiver read back untyped — so `ReadOnlyMemory<char>.ToString()` fell
+    // through to the ARRAY's rendering and printed `H,e,l,l,o` for `Hello`.
+    // Same shape as `ArrayPool<T>.Shared`: register the type, register the
+    // method, and the entry point's declared type is still what connects them.
+    if matches!(
+        method_name.to_ascii_lowercase().as_str(),
+        "asmemory" | "trimstart" | "trimend" | "trim"
+    ) && (class_head.eq_ignore_ascii_case("String")
+        || class_head.eq_ignore_ascii_case("Memory")
+        || class_head.eq_ignore_ascii_case("ReadOnlyMemory"))
+    {
+        return Some("ReadOnlyMemory".into());
+    }
+    // The LINQ-to-XML chain: `doc.Root` and `elem.Element(name)` answer an
+    // `XElement`, and `Attribute(name)` an `XAttribute`. Undeclared, the chain
+    // stops at the first hop — `doc.Root.Elements(…)` had no receiver type for
+    // the second call.
+    if matches!(
+        class_head.to_ascii_lowercase().as_str(),
+        "xdocument" | "xelement"
+    ) {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "root" | "element"
+        ) {
+            return Some("XElement".into());
+        }
+        if method_name.eq_ignore_ascii_case("Attribute") {
+            return Some("XAttribute".into());
+        }
+    }
+    // `req.CreateSelfSigned(...)` answers a certificate, and the corpus reads
+    // `.Subject` off it — undeclared, that read had no receiver type and
+    // answered NaN.
+    if class_head.eq_ignore_ascii_case("CertificateRequest")
+        && method_name.eq_ignore_ascii_case("CreateSelfSigned")
+    {
+        return Some("X509Certificate2".into());
+    }
+    if (class_head.eq_ignore_ascii_case("Memory")
+        || class_head.eq_ignore_ascii_case("ReadOnlyMemory"))
+        && method_name.eq_ignore_ascii_case("Slice")
+    {
+        return Some(class_head.to_string());
+    }
     if class.eq_ignore_ascii_case("TimeZoneInfo") {
         return match method_name.to_ascii_lowercase().as_str() {
             "getutcoffset" => Some("TimeSpan".into()),
@@ -657,6 +710,30 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             "compareto" | "compare" | "year" | "month" | "day" | "hour" | "minute" | "second"
             | "millisecond" | "dayofyear" | "daysinmonth" => Some("Int32".into()),
             "equals" | "isleapyear" | "isdaylightsavingtime" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "adddays" | "addmonths" | "addyears" | "fromdatetime" | "fromdaynumber" | "parse"
+            | "minvalue" | "maxvalue" => Some("DateOnly".into()),
+            "todatetime" => Some("DateTime".into()),
+            "tostring" => Some("String".into()),
+            "compareto" | "year" | "month" | "day" | "dayofyear" | "daynumber" => {
+                Some("Int32".into())
+            }
+            "equals" => Some("Boolean".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "addhours" | "addminutes" | "fromdatetime" | "fromtimespan" | "parse"
+            | "minvalue" | "maxvalue" => Some("TimeOnly".into()),
+            "totimespan" => Some("TimeSpan".into()),
+            "tostring" => Some("String".into()),
+            "compareto" | "hour" | "minute" | "second" | "millisecond" => Some("Int32".into()),
+            "equals" | "isbetween" => Some("Boolean".into()),
             _ => None,
         };
     }
@@ -878,6 +955,26 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             "tostring" | "toshortdatestring" => Some("string".into()),
             "tobinary" | "tofiletimeutc" => Some("Int64".into()),
             "tooadate" => Some("Double".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "adddays" | "addmonths" | "addyears" => Some("DateOnly".into()),
+            "todatetime" => Some("DateTime".into()),
+            "compareto" | "gethashcode" => Some("Int32".into()),
+            "equals" => Some("Boolean".into()),
+            "tostring" => Some("string".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "addhours" | "addminutes" => Some("TimeOnly".into()),
+            "totimespan" => Some("TimeSpan".into()),
+            "compareto" | "gethashcode" => Some("Int32".into()),
+            "equals" | "isbetween" => Some("Boolean".into()),
+            "tostring" => Some("string".into()),
             _ => None,
         };
     }
@@ -1470,6 +1567,26 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
     {
         return true;
     }
+    // `JsonNamingPolicy.CamelCase` — a value-shaped static with no parentheses,
+    // so the walker reads it as a FIELD unless declared here.
+    // `AesGcm.IsSupported` — a value-shaped static with no parentheses.
+    if member_name.eq_ignore_ascii_case("IsSupported")
+        && matches!(
+            dotnet_type_path_leaf(normalized).to_ascii_lowercase().as_str(),
+            "aesgcm" | "chacha20poly1305" | "aesccm" | "sha3_256" | "sha3_384" | "sha3_512"
+        )
+    {
+        return true;
+    }
+    if (normalized.eq_ignore_ascii_case("JsonNamingPolicy")
+        || normalized.eq_ignore_ascii_case("System.Text.Json.JsonNamingPolicy"))
+        && matches!(
+            member_name.to_ascii_lowercase().as_str(),
+            "snakecaselower" | "snakecaseupper" | "kebabcaselower" | "kebabcaseupper" | "camelcase"
+        )
+    {
+        return true;
+    }
     if (normalized.eq_ignore_ascii_case("CancellationToken")
         || normalized.eq_ignore_ascii_case("System.Threading.CancellationToken"))
         && member_name.eq_ignore_ascii_case("None")
@@ -1484,6 +1601,27 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
         || ((normalized.eq_ignore_ascii_case("TimeSpan")
             || normalized.eq_ignore_ascii_case("System.TimeSpan"))
             && member_name.eq_ignore_ascii_case("Zero"))
+        // `HttpMethod.Get` and its siblings are static PROPERTIES returning a
+        // minted instance, so the bare read has to invoke the zero-arity static
+        // the tree declares — exactly as `TimeSpan.Zero` above does.
+        || ((normalized.eq_ignore_ascii_case("HttpMethod")
+            || normalized.eq_ignore_ascii_case("System.Net.Http.HttpMethod"))
+            && matches!(
+                member_name.to_ascii_lowercase().as_str(),
+                "get" | "post" | "put" | "delete" | "head" | "options" | "trace" | "patch"
+            ))
+        // `DateOnly.MinValue` / `TimeOnly.MaxValue` are static PROPERTIES, and
+        // the tree backs a minted value with a zero-arity static METHOD — so
+        // without this row the read never invokes the leaf and answers
+        // `undefined`, the same shape `BigInteger.Zero` documents below.
+        || ((normalized.eq_ignore_ascii_case("DateOnly")
+            || normalized.eq_ignore_ascii_case("System.DateOnly")
+            || normalized.eq_ignore_ascii_case("TimeOnly")
+            || normalized.eq_ignore_ascii_case("System.TimeOnly"))
+            && matches!(
+                member_name.to_ascii_lowercase().as_str(),
+                "minvalue" | "maxvalue"
+            ))
         // ⛔ `BigInteger.Zero` is a .NET static PROPERTY, but its value is an
         // object this platform MINTS (payload plus operator slots), so the tree
         // backs it with a zero-arity static METHOD — `class.properties` only
@@ -1584,6 +1722,45 @@ pub fn lookup_component_static_property(
     surface().lookup_static_property(prefix, property_name)
 }
 
+/// The byte width of a .NET primitive, for `Unsafe.SizeOf<T>()` and
+/// `Marshal.SizeOf<T>()`.
+///
+/// ⛔ It lives HERE, not in a walker. This is `System.*` knowledge — how wide
+/// .NET says an `Int32` is — and a language frontend that encoded it would be
+/// the fourth place .NET facts have leaked into one. The C# walker calls it the
+/// same way it already calls `canonical_type_name`.
+///
+/// A reference type has no meaningful width in this runtime, so it is `None`
+/// rather than a guessed pointer size: answering 8 would be inventing a fact.
+/// The `wasi:crypto` algorithm name for a `HashAlgorithmName` member.
+///
+/// ⛔ .NET AND WASI SPELL IT DIFFERENTLY — `SHA256` against `SHA-256` — and
+/// `wasi:crypto`'s `hash_named` accepts only its own spelling. The mapping is
+/// `System.*` knowledge and lives here beside `canonical_type_name`, so the
+/// walker that folds the member read does not carry a .NET table of its own.
+pub fn hash_algorithm_wasi_name(member: &str) -> Option<&'static str> {
+    Some(match member.to_ascii_uppercase().as_str() {
+        "SHA256" => "SHA-256",
+        "SHA384" => "SHA-384",
+        "SHA512" => "SHA-512",
+        "SHA1" => "SHA-1",
+        "MD5" => "MD5",
+        _ => return None,
+    })
+}
+
+pub fn primitive_type_size(type_name: &str) -> Option<i64> {
+    let leaf = type_name.rsplit('.').next().unwrap_or(type_name).trim();
+    Some(match leaf.to_ascii_lowercase().as_str() {
+        "bool" | "boolean" | "byte" | "sbyte" => 1,
+        "char" | "short" | "int16" | "ushort" | "uint16" | "half" => 2,
+        "int" | "int32" | "uint" | "uint32" | "float" | "single" => 4,
+        "long" | "int64" | "ulong" | "uint64" | "double" | "datetime" | "timespan" => 8,
+        "decimal" | "int128" | "uint128" | "guid" => 16,
+        _ => return None,
+    })
+}
+
 pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<&'static str> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
     // `Type.GetTypeCode` and `Nullable.GetUnderlyingType` — declared here so the
@@ -1593,6 +1770,59 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     // language frontend where no other .NET consumer could see it.
     if class.eq_ignore_ascii_case("Type") && method_name.eq_ignore_ascii_case("GetTypeCode") {
         return Some("TypeCode");
+    }
+    // Same shape again: `XDocument.Parse` / `XElement.Parse` are the ENTRY
+    // POINT into LINQ-to-XML, and undeclared they leave `Dim doc =
+    // XDocument.Parse(…)` untyped — so `doc.Descendants(…)` never reaches the
+    // tree at all and the whole query surface is unreachable however
+    // completely it is registered.
+    if matches!(class.to_ascii_lowercase().as_str(), "xdocument" | "xelement")
+        && method_name.eq_ignore_ascii_case("Parse")
+    {
+        return Some(if class.eq_ignore_ascii_case("xelement") {
+            "XElement"
+        } else {
+            "XDocument"
+        });
+    }
+    // ⛔ `ArrayPool<T>.Shared` ANSWERS AN `ArrayPool`, and saying so is what
+    // makes its instance methods reachable. Undeclared, the pool read back
+    // untyped: `Rent` still resolved by runtime dispatch on the constructed
+    // object, but `Return` — void, so nothing downstream forced a lookup —
+    // answered `undefined is not callable` at BOTH declared arities, and via a
+    // local receiver too. The type was registered, the method was registered,
+    // the dispatch arm existed; only the ENTRY POINT's type was missing.
+    // Same shape as the DateOnly/TimeOnly chaining gap.
+    if class.eq_ignore_ascii_case("ArrayPool") && method_name.eq_ignore_ascii_case("Shared") {
+        return Some("ArrayPool");
+    }
+    // Same shape: `IncrementalHash.CreateHash(...)` answers an `IncrementalHash`,
+    // and without saying so `AppendData` / `GetHashAndReset` are unreachable on
+    // the result — the factory is the entry point that has to declare its type.
+    if class.eq_ignore_ascii_case("IncrementalHash")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "createhash" | "createhmac"
+        )
+    {
+        return Some("IncrementalHash");
+    }
+    // The crypto factories, for the same reason — and here the member that goes
+    // missing is `Dispose`, because every one of these is written
+    // `using var x = …`. An undeclared factory makes the `using` fail with
+    // `undefined is not callable` while the object itself is perfectly good.
+    if matches!(
+        class.to_ascii_lowercase().as_str(),
+        "rsa" | "ecdsa" | "aes" | "ecdiffiehellman" | "md5" | "sha1"
+    ) && method_name.eq_ignore_ascii_case("Create")
+    {
+        return Some(match class.to_ascii_lowercase().as_str() {
+            "rsa" => "RSA",
+            "ecdsa" => "ECDsa",
+            "aes" => "Aes",
+            "md5" | "sha1" => "HashAlgorithm",
+            _ => "ECDiffieHellman",
+        });
     }
     // `System.Collections.Immutable` factories answer their own type — the
     // ENTRY point into a chain that `self_member_returns` then carries. A
@@ -1647,6 +1877,46 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("TimeSpan") && method_name.eq_ignore_ascii_case("Compare") {
         return Some("Int32");
+    }
+    // `IPAddress.Parse` answers an `IPAddress`, so `Parse(t).AddressFamily`
+    // resolves through the tree instead of against nothing.
+    if class.eq_ignore_ascii_case("IPAddress")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "parse" | "loopback" | "any" | "ipv6loopback" | "ipv6any" | "none" | "broadcast"
+        )
+    {
+        return Some("IPAddress");
+    }
+    if class.eq_ignore_ascii_case("MediaTypeHeaderValue") && method_name.eq_ignore_ascii_case("Parse")
+    {
+        return Some("MediaTypeHeaderValue");
+    }
+    // `DateOnly` / `TimeOnly` factories. Without these the STATIC entry point
+    // into a chain carried no type, so `TimeOnly.FromDateTime(dt).AddHours(-2)`
+    // resolved `AddHours` against nothing and trapped with
+    // `undefined is not callable` — while the same call through a local
+    // (`var t = TimeOnly.FromDateTime(dt); t.AddHours(-2)`) worked, because the
+    // local picked its type up from the instance table instead.
+    if class.eq_ignore_ascii_case("DateOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "fromdatetime" | "fromdaynumber" | "parse" | "minvalue" | "maxvalue" => {
+                Some("DateOnly")
+            }
+            "compare" => Some("Int32"),
+            "equals" | "tryparse" | "tryparseexact" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeOnly") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "fromdatetime" | "fromtimespan" | "parse" | "minvalue" | "maxvalue" => {
+                Some("TimeOnly")
+            }
+            "compare" => Some("Int32"),
+            "equals" | "tryparse" | "tryparseexact" => Some("Boolean"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("DateTime")
         && matches!(
@@ -1801,10 +2071,22 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("Task")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "delay" | "yield" | "whenall" | "whenany" | "fromresult" | "run"
+            "delay"
+                | "yield"
+                | "whenall"
+                | "whenany"
+                | "whenanycompleted"
+                | "fromresult"
+                | "run"
         )
     {
         return Some("Task");
+    }
+    // `Partitioner.Create(…)` answers the partitioner the corpus then asks for
+    // partitions on; without the declared type that receiver is untyped and
+    // `GetOrderablePartitions` resolves against nothing.
+    if class.eq_ignore_ascii_case("Partitioner") && method_name.eq_ignore_ascii_case("Create") {
+        return Some("Partitioner");
     }
     if class.eq_ignore_ascii_case("Encoding")
         && matches!(
@@ -1940,6 +2222,25 @@ pub fn declared_instance_property_types(
         // even though `Task` declares both, because the receiver never said
         // what it was.
         "taskcompletionsource" => &[("Task", "Task")],
+        // ⛔ THE RAISE SIDE WAS BUILT AND THE SUBSCRIBE SIDE HAD NO TYPE.
+        //
+        // `emit_observable_collection_changed` already reads a `CollectionChanged`
+        // field off the receiver and invokes it as a multicast delegate, and the
+        // `PropertyChanged` pair beside it does the same. What was missing is any
+        // statement of WHAT those members are: `oc.CollectionChanged += handler`
+        // asks `expr_is_delegate_typed`, which asks the tree, which said nothing —
+        // so the subscription stayed an arithmetic `+=` on a null field and
+        // trapped with `toF64 — not a number` before a single handler was stored.
+        //
+        // Naming the delegate type is the whole fix. Neither handler type is
+        // registered (only `NotifyCollectionChangedEventArgs` is), so
+        // `type_hint_is_delegate_like` answers yes for exactly the right reason:
+        // a delegate type is the one kind that is declared and never appears as
+        // a real type.
+        "observablecollection" | "readonlyobservablecollection" => &[
+            ("CollectionChanged", "NotifyCollectionChangedEventHandler"),
+            ("PropertyChanged", "PropertyChangedEventHandler"),
+        ],
         _ => &[],
     }
 }
@@ -1995,6 +2296,20 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
             "date" => Some("DateTime"),
             "timeofday" => Some("TimeSpan"),
             "kind" | "dayofweek" => Some("String"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateOnly") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "year" | "month" | "day" | "dayofyear" | "daynumber" => Some("Int32"),
+            "dayofweek" => Some("String"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeOnly") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "hour" | "minute" | "second" | "millisecond" => Some("Int32"),
+            "ticks" => Some("Int64"),
             _ => None,
         };
     }

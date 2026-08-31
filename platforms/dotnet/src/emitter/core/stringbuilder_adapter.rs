@@ -59,11 +59,17 @@ fn emit_format_append_value(chunk: &mut Chunk, value_slot: u16, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "wasm:js-boolean", "test", 1, line);
-    chunk.emit_if(line);
+    // ⛔ A VALUE BLOCK: both arms push a string and the result is consumed
+    // below. A bare `emit_if` declares `(0,0)` — the VM tolerates it because it
+    // shares one operand stack, but WASM rejects it as `values remaining on
+    // stack at end of block`, which is why a two-line `Console.WriteLine`
+    // never validated. See `ops.rs` — every bool-producing helper there already
+    // uses `emit_if_value` for exactly this reason.
+    chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "wasm:js-boolean", "cast", 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     push_const(chunk, Value::String(Arc::from("True")), line);
     chunk.emit_else(line);
     push_const(chunk, Value::String(Arc::from("False")), line);

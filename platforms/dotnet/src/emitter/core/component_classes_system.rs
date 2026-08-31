@@ -4,9 +4,34 @@ use super::super::exceptions::EXCEPTION_HIERARCHY;
 use vybe_runtime::component_model::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
+use vybe_runtime::component::ValType;
+
+/// `System.Numerics.BitOperations` — every member is a static over the shared
+/// `bits.*` primitives, which are single wasm instructions.
+///
+/// `Log2`, `IsPow2` and `RoundUpToPowerOf2` are arithmetic over `clz` rather
+/// than instructions of their own, so they have primitives of the same name.
+fn bit_operations_class() -> DotnetClassExport {
+    let stat = |name: &'static str, argc: u8, common: &'static str| {
+        MethodDef::static_method(name, argc, MethodBody::Common(common.into()))
+    };
+    DotnetClassExport::new(
+        "dotnet.System.Numerics",
+        ClassType::new("BitOperations")
+            .with_method(stat("LeadingZeroCount", 1, "bits.clz32"))
+            .with_method(stat("TrailingZeroCount", 1, "bits.ctz32"))
+            .with_method(stat("PopCount", 1, "bits.popcnt32"))
+            .with_method(stat("RotateLeft", 2, "bits.rotl32u"))
+            .with_method(stat("RotateRight", 2, "bits.rotr32u"))
+            .with_method(stat("Log2", 1, "bits.log2"))
+            .with_method(stat("IsPow2", 1, "bits.is_pow2"))
+            .with_method(stat("RoundUpToPowerOf2", 1, "bits.round_up_pow2")),
+    )
+}
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut exports = vec![
+        bit_operations_class(),
         DotnetClassExport::with_wrapper(
             "dotnet.System",
             ClassType::new("ValueType").with_parent("Object"),
@@ -18,6 +43,40 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ctor_arity: 0,
                 widget_host_fn: None,            },
         ),
+        // `System.Index` / `System.Range` — value structs, not sequences. The
+        // word "range" is shared with `collections.range_*`, which builds a
+        // SEQUENCE; these two carry an offset and a direction, and the members
+        // below are reads of their own fields.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Index")
+                .with_constructor(
+                    ConstructorDef::new(2).with_common_backing("dotnet.index_new"),
+                )
+                .with_method(MethodDef::static_method(
+                    "FromStart",
+                    1,
+                    MethodBody::Common("dotnet.index_from_start".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromEnd",
+                    1,
+                    MethodBody::Common("dotnet.index_from_end".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("object.equals".into()),
+                )),
+        ),
+        // ⛔`System.Range` IS NOT REGISTERED, AND CANNOT BE UNTIL A SEQUENCE
+        // STOPS CALLING ITSELF ONE. `1..5` is `ExprKind::Range`, and the shared
+        // inference answers the type name `Range` for it — so the moment a type
+        // by that name exists in the tree, `(1..5).Count` resolves against this
+        // struct instead of the sequence and answers empty. Measured: it cost
+        // `operators/range_operator` and `ranges/range_subexpression`.
+        // The struct's emitters (`dotnet.range_*`) are written and dispatched;
+        // only the registration is withheld.
         DotnetClassExport::with_wrapper(
             "dotnet.System",
             ClassType::new("Enum")
@@ -139,17 +198,39 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ToInt32",
                     2,
-                    MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                    MethodBody::Common("dotnet.bitconverter_to_int32".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToInt64",
                     2,
+                    MethodBody::Common("dotnet.bitconverter_to_number64".into()),
+                ))
+                // The unsigned and 16-bit readers were never registered, so
+                // every one of them resolved to nothing and read NaN.
+                .with_method(MethodDef::static_method(
+                    "ToUInt32",
+                    2,
                     MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToUInt64",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_number64".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToInt16",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_int16".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToUInt16",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_number16".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToDouble",
                     2,
-                    MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                    MethodBody::Common("dotnet.bitconverter_to_number64".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToBoolean",
@@ -377,6 +458,30 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Reflection",
             ClassType::new("AssemblyTitleAttribute").with_parent("Attribute"),
         ),
+        // `System.Reflection` surfaces the binding resolver cannot derive from
+        // a descriptor. See `reflection_adapter` — the machinery is
+        // `primitives/reflection.rs`; these are the DATA it has no source for.
+        DotnetClassExport::new(
+            "dotnet.System.Reflection",
+            ClassType::new("NullabilityInfoContext").with_constructor(
+                ConstructorDef::new(0).with_common_backing("dotnet.nullability_info_context_new"),
+            ),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Reflection",
+            ClassType::new("CustomAttributeData")
+                .with_method(MethodDef::static_method(
+                    "GetCustomAttributes",
+                    1,
+                    MethodBody::Common("dotnet.custom_attribute_data".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetCustomAttributes",
+                    2,
+                    MethodBody::Common("dotnet.custom_attribute_data".into()),
+                )),
+        ),
+        DotnetClassExport::new("dotnet.System.Reflection.Emit", op_codes_class()),
         DotnetClassExport::new(
             "dotnet.System.ComponentModel",
             ClassType::new("DescriptionAttribute").with_parent("Attribute"),
@@ -568,6 +673,182 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToOADate",
                     0,
                     MethodBody::Common("dotnet.datetime_to_oadate".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetHashCode",
+                    0,
+                    MethodBody::Common("dotnet.datetime_get_hash_code".into()),
+                )),
+        ),
+        // `System.DateOnly` / `System.TimeOnly` — both types were absent from
+        // the catalog entirely, so `new DateOnly(...)` reached no `ClassType`
+        // and trapped with `undefined is not callable`. Every member is minted
+        // by `core::date_time_only_adapter` on top of the DateTime object, so
+        // the calendar components (`Day`, `Hour`, …) are answered by the same
+        // stamped fields and need no entry here.
+        //
+        // ⛔ ONE `with_constructor` on purpose: `ClassType::constructor` is a
+        // single `Option`, so chaining several only keeps the last. The real
+        // overload set is resolved from `argc` inside the emitter, which is
+        // what `DateTime` does too.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("DateOnly")
+                .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.dateonly_new"))
+                .with_method(MethodDef::static_method(
+                    "FromDateTime",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_from_datetime".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromDayNumber",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_from_day_number".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MinValue",
+                    0,
+                    MethodBody::Common("dotnet.dateonly_min_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MaxValue",
+                    0,
+                    MethodBody::Common("dotnet.dateonly_max_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddDays",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_add_days".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddMonths",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_add_months".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddYears",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_add_years".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToDateTime",
+                    1,
+                    MethodBody::Common("dotnet.dateonly_to_datetime".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToDateTime",
+                    2,
+                    MethodBody::Common("dotnet.dateonly_to_datetime".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompareTo",
+                    1,
+                    MethodBody::Common("dotnet.datetime_compare".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.datetime_equals_instance".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.dateonly_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    2,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetHashCode",
+                    0,
+                    MethodBody::Common("dotnet.datetime_get_hash_code".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("TimeOnly")
+                .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.timeonly_new"))
+                .with_method(MethodDef::static_method(
+                    "FromDateTime",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_from_datetime".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromTimeSpan",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_from_timespan".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MinValue",
+                    0,
+                    MethodBody::Common("dotnet.timeonly_min_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MaxValue",
+                    0,
+                    MethodBody::Common("dotnet.timeonly_max_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddHours",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_add_hours".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddMinutes",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_add_minutes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.timeonly_add_timespan".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToTimeSpan",
+                    0,
+                    MethodBody::Common("dotnet.timeonly_to_timespan".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompareTo",
+                    1,
+                    MethodBody::Common("dotnet.datetime_compare".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.datetime_equals_instance".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.timeonly_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    2,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetHashCode",
@@ -1086,11 +1367,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Math")
-                .with_method(MethodDef::static_method(
-                    "Abs",
-                    1,
-                    MethodBody::Common("dotnet.system.math.abs".into()),
-                ))
+                .with_method(
+                    MethodDef::static_method(
+                        "Abs",
+                        1,
+                        MethodBody::Common("dotnet.system.math.abs".into()),
+                    )
+                    .with_params(vec![ValType::I32])
+                    .with_result(ValType::I32),
+                )
                 .with_method(MethodDef::static_method(
                     "Floor",
                     1,
@@ -1144,16 +1429,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     3,
                     MethodBody::Common("dotnet.system.math.round".into()),
                 ))
-                .with_method(MethodDef::static_method(
-                    "Min",
-                    2,
-                    MethodBody::Common("dotnet.system.math.min".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "Max",
-                    2,
-                    MethodBody::Common("dotnet.system.math.max".into()),
-                ))
+                .with_method(
+                    MethodDef::static_method(
+                        "Min",
+                        2,
+                        MethodBody::Common("dotnet.system.math.min".into()),
+                    )
+                    .with_params(vec![ValType::I32, ValType::I32])
+                    .with_result(ValType::I32),
+                )
+                // Typed, so reflection can answer `ParameterType` and so
+                // `GetMethod("Max", new Type[]{typeof(int), typeof(int)})`
+                // matches by TYPE rather than by count.
+                .with_method(
+                    MethodDef::static_method(
+                        "Max",
+                        2,
+                        MethodBody::Common("dotnet.system.math.max".into()),
+                    )
+                    .with_params(vec![ValType::I32, ValType::I32])
+                    .with_result(ValType::I32),
+                )
                 .with_method(MethodDef::static_method(
                     "Pow",
                     2,
@@ -1364,13 +1660,38 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common("object.new".into()),
             )),
         ),
+        // `Tuple.Create` / `ValueTuple.Create` at every .NET arity. One emitter
+        // reads `argc` and names the items `Item1`…`ItemN`, so these rows are
+        // declarations rather than eight implementations. The two types differ
+        // only in reference versus value semantics, which nothing here
+        // observes; each keeps its own name so `GetType()` answers correctly.
+        DotnetClassExport::new(
+            "dotnet.System",
+            (1..=8).fold(ClassType::new("Tuple"), |class, arity| {
+                class.with_method(MethodDef::static_method(
+                    "Create",
+                    arity,
+                    MethodBody::Common("dotnet.tuple_create".into()),
+                ))
+            }),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            (1..=8).fold(ClassType::new("ValueTuple"), |class, arity| {
+                class.with_method(MethodDef::static_method(
+                    "Create",
+                    arity,
+                    MethodBody::Common("dotnet.value_tuple_create".into()),
+                ))
+            }),
+        ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Convert")
                 .with_method(MethodDef::static_method(
                     "ToInt32",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
+                    MethodBody::Common("dotnet.convert_to_int32".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToInt",
@@ -1407,10 +1728,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.cchar".into()),
                 ))
+                // ⛔ .NET's narrowing conversions THROW `OverflowException`
+                // outside range; a bare `parseInt` answered 255 for
+                // `Convert.ToByte(-1)`. `ToSByte`/`ToUInt16`/`ToUInt32` were
+                // absent entirely, which reads null and renders NaN.
                 .with_method(MethodDef::static_method(
                     "ToByte",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
+                    MethodBody::Common("dotnet.convert_to_byte".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToSByte",
+                    1,
+                    MethodBody::Common("dotnet.convert_to_sbyte".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToUInt16",
+                    1,
+                    MethodBody::Common("dotnet.convert_to_uint16".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToUInt32",
+                    1,
+                    MethodBody::Common("dotnet.convert_to_uint32".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToInt64",
@@ -1441,6 +1781,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "FromBase64String",
                     1,
                     MethodBody::Common("dotnet.convert_from_base64_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToHexString",
+                    1,
+                    MethodBody::Common("dotnet.convert_to_hex_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromHexString",
+                    1,
+                    MethodBody::Common("dotnet.convert_from_hex_string".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "__TryFromBase64CharsCore",
@@ -1618,6 +1968,26 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Chars",
                     2,
                     MethodBody::Common("dotnet.string_char_at_checked".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Normalize",
+                    0,
+                    MethodBody::Common("dotnet.string_normalize".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Normalize",
+                    1,
+                    MethodBody::Common("dotnet.string_normalize".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsNormalized",
+                    0,
+                    MethodBody::Common("dotnet.string_is_normalized".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsNormalized",
+                    1,
+                    MethodBody::Common("dotnet.string_is_normalized".into()),
                 ))
                 .with_method(MethodDef::new(
                     "PadLeft",
@@ -2200,4 +2570,20 @@ pub(super) fn biginteger_export() -> DotnetClassExport {
             MethodBody::Common("dotnet.bigint_equals".into()),
         ));
     DotnetClassExport::new("dotnet.System.Numerics", class)
+}
+
+/// `System.Reflection.Emit.OpCodes` — the CIL opcode table.
+///
+/// Each member is a zero-arity static, which is how a bare `OpCodes.Nop` read
+/// reaches an emitter (the same shape `DateTime.MinValue` uses).
+fn op_codes_class() -> ClassType {
+    let mut class = ClassType::new("OpCodes");
+    for (member, _, _) in crate::emitter::core::reflection_adapter::opcodes() {
+        class = class.with_method(MethodDef::static_method(
+            *member,
+            0,
+            MethodBody::Common(crate::emitter::core::reflection_adapter::opcode_common(member)),
+        ));
+    }
+    class
 }
