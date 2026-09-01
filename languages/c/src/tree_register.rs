@@ -15,7 +15,7 @@
 
 use std::sync::Once;
 
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::profile::{BuiltinEmit, parse_profile};
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
