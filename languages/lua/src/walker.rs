@@ -35,12 +35,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports: Vec::new(),
         // `self` is an ordinary leading parameter — `function t:m()` is sugar
-        // that DECLARES it, so it is passed like any other argument. Stated
-        // rather than defaulted because Lua says it in its own syntax.
-        directives: vybe_ast::Directives {
-            receiver_binding: Some(vybe_ast::ReceiverBinding::ExplicitParameter),
-            ..Default::default()
-        },
+        // that DECLARES it, so it is passed like any other argument, which is
+        // what every language without a declared binding already does.
+        //
+        // ⛔ IT USED TO SAY `ReceiverBinding::ExplicitParameter`, AND NOTHING
+        // READ IT — zero readers across `crates/` and `platforms/`. A variant
+        // that only ever gets written is not a protocol, it is a comment with
+        // a type, and it made the receiver look like it had four mechanisms
+        // when it had two.
+        directives: vybe_ast::Directives::default(),
     };
     super::normalize::normalize_module(&mut module);
     Ok(module)

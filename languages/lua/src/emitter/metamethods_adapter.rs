@@ -1978,7 +1978,9 @@ fn raw_integer_or_float_binary(chunk: &mut Chunk, line: u32, int_op: Op, float_o
     emit_lua_integer_guard(chunk, left, type_of, str_compare, to_f64, line);
     emit_lua_integer_guard(chunk, right, type_of, str_compare, to_f64, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
+    // ⛔ A VALUE BLOCK: both arms leave the arithmetic result, and it IS this
+    // function's result. A bare `emit_if` declares `(0,0)`.
+    chunk.emit_if_value(line);
     load(chunk, left, line);
     load(chunk, right, line);
     chunk.emit_op(int_op, line);
@@ -2101,7 +2103,14 @@ fn emit_lua_integer_guard(
     let number = chunk.alloc_scratch(1);
     let is_finite = chunk.add_import("ecma:number", "isFinite");
     emit_lua_type_is_slot(chunk, slot, type_of, str_compare, "number", line);
-    chunk.emit_if(line);
+    // ⛔ AN i32 BLOCK, AND THE ARMS MUST AGREE. Every caller does
+    // `guard(left); guard(right); I32_AND`, so this has to leave a RAW i32.
+    // It was a bare `emit_if` — `(0,0)` — whose then-arm left an i32 from
+    // `I32_AND` while the else-arm left a BOXED `Bool` from `emit_bool_const`.
+    // Two faults at once: a void block whose arms both produce, and arms that
+    // disagree on type. WASM rejects it as `values remaining on stack at end
+    // of block`; the VM never noticed because it shares one operand stack.
+    chunk.emit_if_i32(line);
     load(chunk, slot, line);
     call1(chunk, to_f64, line);
     save(chunk, number, line);
@@ -2113,7 +2122,7 @@ fn emit_lua_integer_guard(
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_else(line);
-    chunk.emit_bool_const(false, line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
 }
 

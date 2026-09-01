@@ -8,8 +8,6 @@ name = "lua"
 extensions = ["lua"]
 
 [compiler]
-# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
-global_namespace = "_G"
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "constructor"
