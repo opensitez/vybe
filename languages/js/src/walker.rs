@@ -121,34 +121,43 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // module global with a hand-rolled save/restore around every call —
         // not a WASM concept, and M5 is its removal.)
         directives: vybe_ast::Directives {
-            // ⛔ STILL `Ambient` — the flip to `UniversalParameter` is this one
-            // line and everything it needs is built and inert. Measured on the
-            // flip: 250 js tests regressed (down from 287), dart 0, vb 0.
+            // ✅ FLIPPED, AND LANDED. The comment that stood here said "STILL
+            // `Ambient`" long after this line said otherwise, which is the
+            // decoy failure mode: a stale comment reads as current design and
+            // gets built on. Corrected 2026-08-30.
             //
-            // What it is waiting on is the HOST-FUNCTION callee, which is a
-            // design decision and not a defect. `getMethodForCall` no longer
-            // binds a host receiver under `Parameter` (it takes a
-            // `bind_receiver` argument now), which is what exposes the real
-            // question: `d.resolve(42)` on a promise capability pushes `d` as
-            // argument 0, and a host function reads `args[0]` as its VALUE, so
-            // every real argument shifts one place. ~50 of the 250, the whole
-            // promise cluster.
+            // Measured on the current tree: an emitted js module contains
+            // **ZERO** `__js_this` references — the ambient global, a mutable
+            // module global with a hand-rolled save/restore around every call
+            // and not a WASM concept, is gone from js output. Corpus: 713 js
+            // failures against a 737 pre-flip baseline, 2 regressed / 26 fixed
+            // over 10557 tests, with dart 0 regressed over 6344.
             //
-            // Three fixes are open — drop the leading receiver in the VM's
-            // `HostFunction` arm, keep `getMethodForCall` binding it under
-            // `Parameter`, or give host functions the receiver as a real first
-            // parameter — touching the VM, `platforms/ecma` and every host
-            // signature respectively. ⛔ They are NOT interchangeable: the VM
-            // arm cannot drop unconditionally, because `invoke_callback`
-            // prepends NO receiver for a host callee and the drop would eat a
-            // real argument there. See flexclassplan.md, M5.
-            receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            // The host-function callee question that blocked the flip is
+            // settled: a host callee reads its receiver at argument 0 and is
+            // told which kind of call it is via `HostContext::receiver_argc()`
+            // — but ⛔ THAT NUMBER DESCRIBES THE MODULE AND THE DISPATCHER,
+            // NOT THE ARGUMENT LIST. Where an emitter forgets to push the
+            // implicit receiver it still reads 1 and `user_args` eats a real
+            // argument. Fix the emitter, then trust the number.
+            //
+            // ⛔ js is the ONLY language on `UniversalParameter`. The other
+            // fourteen are `Ambient`, so the ambient machinery stays; each flip
+            // is its own change with its own gate.
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             // A method call takes its receiver from PROTOTYPE dispatch: the
             // callable rides `__js_this` plus a bound-receiver marker, rather
             // than the call site passing it (php) or the READ binding it in
             // (python). Stated here so shared code reads a property of this
             // UNIT instead of the profile string `class_method_dispatch`.
             method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
+            // ECMA-262 §15.7: a class body's methods and accessors are
+            // properties of `C.prototype`, shared by every instance, never own
+            // to one. Measured against node, binding accessors per instance made
+            // `hasOwnProperty(a,"g")` true and put `g` in `Object.keys(a)` and
+            // `for-in`. Also load-bearing for V8: a member resident in the
+            // object itself is invisible to JS there.
+            members_on_prototype: Some(true),
             // ECMA-262 §10.2.1.1: an argument the caller omitted binds
             // `undefined`, it is not an arity error.
             missing_arg_is_undefined: Some(true),

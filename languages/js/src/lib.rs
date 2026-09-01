@@ -264,6 +264,18 @@ impl vybe_runtime::Plugin for Plugin {
     fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
         register();
     }
+    /// ⛔ `new Function(...)` STATE IS PER-TENANT AND WAS NEVER RECLAIMED.
+    /// Each one boxes a whole `VM` into a process-global map in
+    /// `vybe_compiler::dynamic` and leaks it: the map is thread-local, so
+    /// `VM::reset_to` cannot reach it — which is precisely the case this hook
+    /// exists for ("process-global state a plugin owns directly"). Without
+    /// this, a warm worker carried every dynamic function every earlier
+    /// program had built, and the id counter never restarted, so identical
+    /// source lowered to different generated names depending on what had
+    /// compiled before it.
+    fn reset(&self) {
+        vybe_compiler::dynamic::reset_dynamic_compilation_state();
+    }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.
