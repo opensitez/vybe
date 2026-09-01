@@ -1686,9 +1686,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Dart,
         body,
         imports,
-        // `this` is ambient, as in ECMA — a Dart method never declares it.
+        // ⛔ THE RECEIVER IS PARAMETER 0, NOT AN AMBIENT GLOBAL. Dart methods
+        // never DECLARE `this`, but that is a surface fact about the language,
+        // not a statement about the calling convention: wasm has no `this`, so
+        // a mutable module global standing in for a parameter cannot survive
+        // reentrancy and no stock engine can execute it. `UniversalParameter`
+        // is ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)` taken
+        // literally, which is also the only shape expressible as a functype.
         directives: vybe_ast::Directives {
-            receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             // Prototype dispatch, as js — the callable carries its own
             // receiver. Replaces the profile string `class_method_dispatch`.
             method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
@@ -4384,6 +4390,53 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
             changed = true;
         }
         if !changed {
+            break;
+        }
+    }
+
+    // ⛔ AN AUGMENTATION PROPAGATES THE OTHER WAY FROM A PARENT.
+    // The climb above is parent → child, which is right for `extends` and
+    // BACKWARDS for an augmentation: `extension E on B` and `class C with M`
+    // both mean the TARGET gains the source's members, not the reverse.
+    //
+    // `apply_user_extensions` has already run and pushed `ClassMember::Augment`
+    // onto each target, so the relationship is read from the AST rather than
+    // tracked in a second walker-side map — the augmentation IS the record.
+    //
+    // Measured against the dart SDK: `extension E on B { B operator +(B o) }`
+    // then `b + o` reached `wasm:js-number.toF64 — not a number`, because `+`
+    // resolved against `B`, which this table said had no `+`. Methods, getters,
+    // setters and statics were already correct — the operator is the ONLY
+    // member kind the table governs, every other kind resolving by member name.
+    //
+    // ⚠ A member the target DECLARES wins: `or_insert` never overwrites.
+    let mut augment_sources: Vec<(String, String)> = Vec::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            for member in members {
+                if let ClassMember::Augment(decl) = member {
+                    augment_sources.push((name.clone(), decl.from.clone()));
+                }
+            }
+        }
+    }
+    for _ in 0..augment_sources.len().max(1) {
+        let inherited: Vec<((String, String), Option<String>)> = augment_sources
+            .iter()
+            .flat_map(|(target, source)| {
+                operator_return_types
+                    .iter()
+                    .filter(move |((owner, _), _)| owner == source)
+                    .map(move |((_, member), ty)| {
+                        ((target.clone(), member.clone()), ty.clone())
+                    })
+            })
+            .collect();
+        let before = operator_return_types.len();
+        for (key, ty) in inherited {
+            operator_return_types.entry(key).or_insert(ty);
+        }
+        if operator_return_types.len() == before {
             break;
         }
     }
@@ -9113,6 +9166,28 @@ fn nsm_rewrite_expr(__w: &mut DartWalker, expr: &mut Expression, dynamic_vars: &
                 nsm_rewrite_expr(__w, item, dynamic_vars);
             }
         }
+        // ⛔ A STRING INTERPOLATION IS A CONTAINER OF EXPRESSIONS, and this
+        // arm was missing — `"${c.zzz()}"` fell into the `_ => {}` below, so
+        // the miss hook was never installed for any call written inside a
+        // string. `print(c.zzz())` worked while `print("${c.zzz()}")` answered
+        // null, which reads as a noSuchMethod bug and is really a walk that
+        // stops at the quote.
+        //
+        // ⚠ The catch-all is what hid it. Every container kind added to
+        // `ExprKind` after this function was written is silently NOT walked,
+        // and the symptom is always "the feature works except inside <new
+        // syntax>". If a third one turns up, make this match exhaustive rather
+        // than adding a fourth arm.
+        ExprKind::Interpolation(parts) => {
+            for part in parts.iter_mut() {
+                match part {
+                    InterpolPart::Expr(inner) | InterpolPart::Formatted(inner, _) => {
+                        nsm_rewrite_expr(__w, inner, dynamic_vars)
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
         ExprKind::Lambda { body, params, .. } => {
             let mut inner = dynamic_vars.clone();
             for param in params.iter() {
@@ -9501,6 +9576,7 @@ fn walk_extension_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKin
     if name.is_empty() {
         name = "__extension__".to_string();
     }
+
 
     Ok(StmtKind::ClassDecl {
         name,

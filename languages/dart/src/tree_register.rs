@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::profile::{BuiltinEmit, EsmDefault, parse_profile};
 
 #[derive(Clone, Copy)]
@@ -161,7 +161,7 @@ fn module_tree_path(module: &str) -> String {
 /// property getters/setters live under the type's `methods`"*, and the leaf
 /// kind for a member read and written as a VALUE is `Property { get, set }` —
 /// whose own doc names `sb_length` / `sb_set_length` as the motivating case
-/// (`vybe_runtime::namespaces`). This is that declaration.
+/// (`vybe_compiler::primitives::namespaces`). This is that declaration.
 ///
 /// The shared member read consumes it directly (`expressions.rs:3081`): with
 /// `type_scopes` non-empty and the receiver's static type hint naming a
