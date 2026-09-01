@@ -7,7 +7,7 @@
 use std::sync::Once;
 
 use vybe_runtime::Value;
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
     // ⛔ The path keeps the spelling written above it. It used to be lowercased

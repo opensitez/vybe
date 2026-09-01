@@ -12751,7 +12751,7 @@ fn kotlin_type_is_double_like(ty: &str) -> bool {
 /// carries — so declaring a fold there is the ONLY edit needed to change it.
 /// Kotlin states no `callable_case` today, so `CaseMatch::Exact` applies and
 /// a miss is a miss.
-fn kotlin_tree_fold() -> vybe_runtime::namespaces::Fold {
+fn kotlin_tree_fold() -> vybe_compiler::primitives::namespaces::Fold {
     language_directives().callable_fold()
 }
 
@@ -12822,7 +12822,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
             if !recv.starts_with("java.") {
                 return None;
             }
-            vybe_runtime::namespaces::lookup_type_member_return(
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
                 &["jvm".to_string(), "kotlin".to_string()],
                 &recv,
                 field,
@@ -13046,7 +13046,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 // jvm platform says so), same resolver as dispatch.
                 if let Some(recv) = kotlin_expr_type(__w, object, locals, operators)
                     && (recv.starts_with("java.") || recv.starts_with("kotlin."))
-                    && let Some(ret) = vybe_runtime::namespaces::lookup_type_member_return(
+                    && let Some(ret) = vybe_compiler::primitives::namespaces::lookup_type_member_return(
                         &["jvm".to_string(), "kotlin".to_string()],
                         &recv,
                         field,
@@ -13265,7 +13265,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 // to KOTLIN shapes — `List`, `Map` — for this walker's own
                 // rewrites, not to the java type the tree declares.)
                 if let Some((class_path, member)) = path.rsplit_once('.')
-                    && let Some(ret) = vybe_runtime::namespaces::lookup_type_member_return(
+                    && let Some(ret) = vybe_compiler::primitives::namespaces::lookup_type_member_return(
                         &["jvm".to_string(), "kotlin".to_string()],
                         class_path,
                         member,

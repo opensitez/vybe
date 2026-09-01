@@ -3508,6 +3508,9 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         lget(chunk, val_slot, line);
         let set_idx = chunk.add_import("ecma:object", "set");
         chunk.emit_call(set_idx, 3, line);
+        // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN, so this call leaves a
+        // value and the assignment's own result is `V` (§13.15.2), not it.
+        // Removing this `DROP` made `++o.x` evaluate to null.
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
