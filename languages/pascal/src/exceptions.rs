@@ -19,7 +19,7 @@
 //! name unchanged — which is the correct answer for a genuinely Pascal-only
 //! exception.
 
-use vybe_runtime::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
 
 /// The `SysUtils` exception family, and the shared exception each one names.
 ///

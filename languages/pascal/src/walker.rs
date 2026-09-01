@@ -5465,7 +5465,7 @@ fn pascal_member_expr_type(
     if let Some(ty) = pascal_declared_member_type(return_types, recv, field) {
         return Some(ty);
     }
-    vybe_runtime::namespaces::lookup_type_member_return(
+    vybe_compiler::primitives::namespaces::lookup_type_member_return(
         &["plib".to_string()],
         recv,
         field,
@@ -5493,7 +5493,7 @@ fn language_directives() -> vybe_ast::Directives {
 
 /// The case policy the namespace tree must use for Pascal lookups — read off
 /// the declaration above, never restated.
-fn pascal_tree_fold() -> vybe_runtime::namespaces::Fold {
+fn pascal_tree_fold() -> vybe_compiler::primitives::namespaces::Fold {
     language_directives().callable_fold()
 }
 
