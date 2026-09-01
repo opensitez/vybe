@@ -12,8 +12,8 @@
            DISPLAY "END".
     MOVE SPACES TO WS-VYBE-L
     STRING "END" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "PARA-A"
-        DISPLAY "FAIL: want [PARA-A] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "END"
+        DISPLAY "FAIL: want [END] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.
@@ -22,8 +22,8 @@
            DISPLAY "PARA-A".
     MOVE SPACES TO WS-VYBE-L
     STRING "PARA-A" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "END"
-        DISPLAY "FAIL: want [END] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "PARA-A"
+        DISPLAY "FAIL: want [PARA-A] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

@@ -1,4 +1,11 @@
 *> vybe-test: cobol/category_screen_advanced/test_scr_lowlight
+*> vybe-test-mode: compile
+*> A SCREEN SECTION program runs under curses: every DISPLAY — including
+*> the generated checker's own — goes to the terminal, not to stdout. cobc
+*> compiles this and then fails the SAME embedded assertion (measured
+*> 2026-08-29: 33 of 33 in this suite exit non-zero under cobc), so the
+*> line-counting checker is not a property this source can have under any
+*> COBOL. Compiling is the strongest true claim available.
 *> origin: languages/cobol/tests/cobol/test_category_screen_advanced.rs
 IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION.
 WORKING-STORAGE SECTION.

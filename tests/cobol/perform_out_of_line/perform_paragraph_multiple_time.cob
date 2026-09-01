@@ -25,13 +25,13 @@ PROCEDURE DIVISION.
             MOVE 1 TO RETURN-CODE
             RAISE EXCEPTION EC-PROGRAM
     END-EVALUATE.
-    STOP RUN.
-TICK.
-    ADD 1 TO C.
     IF WS-VYBE-I NOT = 1
         DISPLAY "FAIL: " WS-VYBE-I " line(s), wanted 1"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.
+    STOP RUN.
+TICK.
+    ADD 1 TO C.
     STOP RUN.
 
