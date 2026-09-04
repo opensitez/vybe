@@ -225,12 +225,27 @@ pub fn canonical_exception_name(name: &str) -> &str {
             "ZeroDivisionError"
         }
         "filenotfounderror" | "filenotfoundexception" => "FileNotFoundError",
+        "directorynotfoundexception" => "DirectoryNotFoundException",
         "importerror" => "ImportError",
         "notimplementederror" | "unimplementederror" => "NotImplementedError",
         "overflowerror" | "overflowexception" | "stackoverflowerror" => "OverflowError",
         "operationcanceledexception" | "taskcanceledexception" => "OperationCanceledException",
         "aggregateexception" => "AggregateException",
         "uriformatexception" => "UriFormatException",
+        "arithmeticexception" => "ArithmeticException",
+        "argumentexception" => "ArgumentException",
+        "argumentnullexception" => "ArgumentNullException",
+        "argumentoutofrangeexception" => "ArgumentOutOfRangeException",
+        "applicationexception" => "ApplicationException",
+        "systemexception" => "SystemException",
+        "invalidoperationexception" => "InvalidOperationException",
+        "typeinitializationexception" => "TypeInitializationException",
+        "invalidcastexception" => "InvalidCastException",
+        "notimplementedexception" => "NotImplementedException",
+        "notsupportedexception" => "NotSupportedException",
+        "nullreferenceexception" => "NullReferenceException",
+        "objectdisposedexception" => "ObjectDisposedException",
+        "timeoutexception" => "TimeoutException",
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
@@ -401,10 +416,10 @@ pub fn is_exception_type(name: &str) -> bool {
         | "indexoutofrangeexception" | "keynotfoundexception"
         | "formatexception" | "stackoverflowerror" | "stackoverflowexception"
         | "integerdivisionbyzeroexception" | "dividebyzeroexception" | "rangerror" | "stateexception"
-        | "filenotfoundexception" | "ioexception" | "formaterror"
+        | "filenotfoundexception" | "directorynotfoundexception" | "ioexception" | "formaterror"
         | "nosuchmethoderror" | "unimplementederror" | "overflowexception"
         | "operationcanceledexception" | "taskcanceledexception"
-        | "uriformatexception"
+        | "typeinitializationexception" | "uriformatexception"
         // These six are declared by `platforms/dotnet`'s own
         // `EXCEPTION_HIERARCHY` and were missing here, so the two tables
         // disagreed about the same types: `AggregateException::new(…)`
@@ -458,6 +473,41 @@ pub fn is_exception_type(name: &str) -> bool {
 ///
 /// Stack before: `[]` (or `[msg]` with `ValueSource::Stack`).
 /// Stack after: `[exception]`.
+/// Allocates an exception instance AS its reserved WASM type, `ancestry`
+/// (leaf first) declared as the supertype chain — so a typed catch, `is` and
+/// `GetType()` are `ref.test`, with no string identity to keep in step.
+pub fn emit_exception_alloc(chunks: &mut [Chunk], current: usize, ancestry: &[String], line: u32) {
+    let typeidx = crate::primitives::classes::reserve_platform_type(chunks, ancestry);
+    chunks[current].emit_struct_new(typeidx, 0, line);
+}
+
+/// [`emit_exception_new`] for a typed instance: the platform supplies the
+/// class's ancestry, the shape and stamps are the shared ones.
+pub fn emit_exception_new_typed(
+    chunks: &mut [Chunk],
+    current: usize,
+    exc_name: &str,
+    ancestry: &[String],
+    msg: class_slots::ValueSource,
+    line: u32,
+) {
+    match msg {
+        class_slots::ValueSource::Stack => {
+            let tmp = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, tmp, line);
+            emit_exception_alloc(chunks, current, ancestry, line);
+            chunks[current].emit_dup(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
+        }
+        other => {
+            emit_exception_alloc(chunks, current, ancestry, line);
+            chunks[current].emit_dup(line);
+            class_slots::push_value_public(&mut chunks[current], &other, line);
+        }
+    }
+    emit_exception_new_finalize(&mut chunks[current], exc_name, line);
+}
+
 pub fn emit_exception_new(
     chunk: &mut Chunk,
     exc_name: &str,
@@ -705,6 +755,170 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         "GeneratorExit" => &["GeneratorExit", "BaseException"],
         "BaseException" => &["BaseException"],
         "Exception" => &["Exception", "BaseException"],
+        // .NET branch. Keep the .NET names as their own catchable ancestry so
+        // PowerShell/C#/VB base catches such as `ArithmeticException` and
+        // `IOException` match values thrown by shared adapters that stamp
+        // string ancestry instead of allocating through the dotnet class chain.
+        "SystemException" => &["SystemException", "Exception", "BaseException"],
+        "ApplicationException" => &["ApplicationException", "Exception", "BaseException"],
+        "AggregateException" => &[
+            "AggregateException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ArithmeticException" => &[
+            "ArithmeticException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "OverflowError" => &[
+            "OverflowError",
+            "ArithmeticError",
+            "ArithmeticException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ArgumentException" => &[
+            "ArgumentException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ArgumentNullException" => &[
+            "ArgumentNullException",
+            "ArgumentException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ArgumentOutOfRangeException" => &[
+            "ArgumentOutOfRangeException",
+            "ArgumentException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "InvalidOperationException" => &[
+            "InvalidOperationException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "TypeInitializationException" => &[
+            "TypeInitializationException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "InvalidCastException" => &[
+            "InvalidCastException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "NotImplementedException" => &[
+            "NotImplementedException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "NotSupportedException" => &[
+            "NotSupportedException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "NullReferenceException" => &[
+            "NullReferenceException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "IndexError" => &[
+            "IndexError",
+            "LookupError",
+            "IndexOutOfRangeException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "KeyError" => &[
+            "KeyError",
+            "LookupError",
+            "KeyNotFoundException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "IndexOutOfRangeException" => &[
+            "IndexOutOfRangeException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "KeyNotFoundException" => &[
+            "KeyNotFoundException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "IOException" | "IOError" | "OSError" | "EnvironmentError" => &[
+            "IOError",
+            "IOException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "FileNotFoundError" => &[
+            "FileNotFoundError",
+            "FileNotFoundException",
+            "IOException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "DirectoryNotFoundException" => &[
+            "DirectoryNotFoundException",
+            "IOException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "TimeoutException" => &[
+            "TimeoutException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "OperationCanceledException" => &[
+            "OperationCanceledException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ObjectDisposedException" => &[
+            "ObjectDisposedException",
+            "InvalidOperationException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "UriFormatException" => &[
+            "UriFormatException",
+            "FormatException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ValueError" => &[
+            "ValueError",
+            "FormatException",
+            "Exception",
+            "BaseException",
+        ],
         // PHP `PDOException extends RuntimeException`, so a `catch
         // (RuntimeException)` / `catch (Exception)` / `catch (Throwable)` must
         // all match it while `catch (PDOException)` stays narrow. Without an
@@ -712,18 +926,10 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         // an exact-name catch matches.
         "PDOException" => &["PDOException", "RuntimeError", "Exception", "BaseException"],
         // LookupError branch
-        "KeyError" => &["KeyError", "LookupError", "Exception", "BaseException"],
-        "IndexError" => &["IndexError", "LookupError", "Exception", "BaseException"],
         "LookupError" => &["LookupError", "Exception", "BaseException"],
         // ArithmeticError branch
         "ZeroDivisionError" => &[
             "ZeroDivisionError",
-            "ArithmeticError",
-            "Exception",
-            "BaseException",
-        ],
-        "OverflowError" => &[
-            "OverflowError",
             "ArithmeticError",
             "Exception",
             "BaseException",
@@ -749,20 +955,7 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "RuntimeError" => &["RuntimeError", "Exception", "BaseException"],
-        "OperationCanceledException" => &[
-            "OperationCanceledException",
-            "SystemException",
-            "Exception",
-            "BaseException",
-        ],
-        "AggregateException" => &[
-            "AggregateException",
-            "SystemException",
-            "Exception",
-            "BaseException",
-        ],
         // OSError branch (IOError/EnvironmentError are aliases in Py3)
-        "FileNotFoundError" => &["FileNotFoundError", "OSError", "Exception", "BaseException"],
         "PermissionError" => &["PermissionError", "OSError", "Exception", "BaseException"],
         "TimeoutError" => &["TimeoutError", "OSError", "Exception", "BaseException"],
         "FileExistsError" => &["FileExistsError", "OSError", "Exception", "BaseException"],
@@ -811,7 +1004,6 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         ],
         "InterruptedError" => &["InterruptedError", "OSError", "Exception", "BaseException"],
         "ChildProcessError" => &["ChildProcessError", "OSError", "Exception", "BaseException"],
-        "IOError" | "OSError" | "EnvironmentError" => &["OSError", "Exception", "BaseException"],
         // ValueError branch (Unicode* extend ValueError)
         "UnicodeDecodeError" => &[
             "UnicodeDecodeError",
@@ -828,7 +1020,6 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "UnicodeError" => &["UnicodeError", "ValueError", "Exception", "BaseException"],
-        "ValueError" => &["ValueError", "Exception", "BaseException"],
         // NameError / ImportError / SyntaxError branches
         "UnboundLocalError" => &[
             "UnboundLocalError",

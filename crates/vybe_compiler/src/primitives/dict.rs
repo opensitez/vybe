@@ -21,6 +21,74 @@ use vybe_runtime::{Chunk, Value};
 
 /// Emit bytecode to create an empty dict with key tracking.
 /// Stack: [] → [dict_object]
+/// The map property holding `rendered key -> the key object first stored`.
+const TUPLE_KEYS_KEY: &str = "__tuple_keys";
+
+/// Rewrite `key_slot` to the map's canonical key for that value.
+///
+/// A tuple IS its contents, so two equal tuples must reach one entry. The map
+/// itself still holds the original key object — enumeration yields tuples, not
+/// rendered strings — and a side map remembers which object a rendering was
+/// first stored under. A key that is not a tuple is left alone, so a class
+/// instance keeps reference identity.
+pub fn emit_canonical_key_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    map_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
+    let keys = chunks[current].alloc_scratch(1);
+    let rendered = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::primitives::tuples::emit_is_tuple(chunks, current, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_string_const(TUPLE_KEYS_KEY, line);
+    call_host(chunks, current, "ecma:object", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    call_host(chunks, current, "ecma:map", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_string_const(TUPLE_KEYS_KEY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    call_host(chunks, current, "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    call_host(chunks, current, "ecma:json", "stringify", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rendered, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
+    call_host(chunks, current, "ecma:map", "has", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
+    call_host(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    call_host(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+}
+
+fn call_host(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import(module, name);
+    chunks[current].emit_call(idx, argc, line);
+}
+
 pub fn emit_new(chunks: &mut [Chunk], current: usize, line: u32) {
     // Create empty Object
     class_slots::emit_class_alloc(&mut chunks[current], line);

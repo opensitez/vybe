@@ -14,6 +14,72 @@ impl Compiler {
     /// differently keeps its own value. The shared table is the FLOOR: `Math.PI`
     /// resolves to π whether or not the compiling language remembered to write
     /// it down, and no language needs a platform linked to reach a number.
+    /// The tree's ancestor chain for a class, as the `__types` a fresh
+    /// instance carries.
+    ///
+    /// An exception class also carries the canonical spellings of its chain
+    /// (`DivideByZeroException` → `ZeroDivisionError`, …) because a typed
+    /// catch compares the canonical name; the two spellings are one identity.
+    pub(crate) fn tree_exception_type_names(&self, class_name: &str) -> Vec<String> {
+        let Some(spec) = self.tree_ctor_spec(class_name) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = Vec::new();
+        let mut push = |name: &str| {
+            let name = name.trim();
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name.to_string());
+            }
+        };
+        for ancestor in &spec.ancestry {
+            push(ancestor);
+        }
+        if common::errors::is_exception_type(class_name) {
+            for ancestor in spec.ancestry.clone() {
+                push(common::errors::canonical_exception_name(&ancestor));
+                for canonical in common::errors::exception_ancestors(&ancestor) {
+                    push(canonical);
+                }
+            }
+            push("Exception");
+        }
+        names
+    }
+
+    /// Stack: [instance] → [instance], with `__types` stamped from the tree.
+    pub(crate) fn emit_tree_ancestry_stamp(&mut self, class_name: &str) {
+        if common::errors::is_exception_type(class_name) {
+            return;
+        }
+        let names = self.tree_exception_type_names(class_name);
+        if names.is_empty() {
+            return;
+        }
+        let line = self.line;
+        inst!(self, core_wasm::dup);
+        for name in &names {
+            self.emit_const(Value::String(Arc::from(name.as_str())));
+        }
+        crate::primitives::collections::emit_array_new(
+            &mut self.chunks,
+            self.current,
+            names.len() as u16,
+            line,
+        );
+        let types_key = class_slots::resolve_interned(
+            self.chunk(),
+            &class_slots::ClassSlot::internal(crate::primitives::reflection::FIELD_TYPES),
+            &class_slots::PlainNames,
+        );
+        class_slots::emit_class_set(
+            self.chunk(),
+            class_slots::ObjSource::Stack,
+            &types_key,
+            class_slots::ValueSource::Stack,
+            line,
+        );
+    }
+
     pub(super) fn lookup_named_constant(&self, key: &str) -> Option<ConstantValue> {
         if let Some(cv) = self.profile.lookup_constant(key) {
             return Some(cv.clone());
@@ -935,7 +1001,23 @@ impl Compiler {
                 if !is_local && self.is_class_field(name) {
                     if self.emit_self_ref() {
                         let field_name = self.canon(name);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&field_name));
+                        // ▶ SEAM 3. A language that reaches its fields WITHOUT
+                        // a member expression — COBOL's bare `WS-BALANCE`,
+                        // resolved by implicit self — still reads the same
+                        // declared storage, so it resolves the same way. The
+                        // write half already routes here by synthesizing
+                        // `this.<name>` (`compile_assign_target_valued`), and a
+                        // read left on the string key while that write indexed
+                        // would put the two halves on different storage.
+                        let this_member = Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: name.clone(),
+                            null_safe: false,
+                        });
+                        let slot = self
+                            .indexed_member_slot(&this_member, name, &field_name)
+                            .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                        self.class_get(class_slots::ObjSource::Stack, &slot);
                         return Ok(());
                     }
                 }
@@ -2086,6 +2168,10 @@ impl Compiler {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
+                if let Some(owner) = self.static_constructor_owner_for_type_use(object) {
+                    let line = self.line;
+                    self.emit_static_constructor_guard_for_class(&owner, line);
+                }
                 let source_member_parts = self.flatten_member_chain(expr);
                 if source_member_parts.len() >= 2 {
                     if let Some(source_function) =
@@ -2964,13 +3050,10 @@ impl Compiler {
                         let obj_slot = self.define_local("__js_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
 
-                        // Bind `__js_this = obj` so a getter installed
-                        // by `Object.defineProperty` (which runs via
-                        // STRUCT_GET's `__get_<name>` accessor dispatch)
-                        // sees the receiver. The VM's accessor-call
-                        // path doesn't set `__js_this` itself; doing it
-                        // here keeps the semantics consistent with the
-                        // explicit method-call path.
+                        // Bind the receiver so a getter installed by
+                        // `Object.defineProperty` (which runs via STRUCT_GET's
+                        // `__get_<name>` accessor dispatch) sees it, the same
+                        // way the explicit method-call path does.
                         let saved_this = self.begin_receiver_bind("__js_prev_this_member");
                         if saved_this.is_active() {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -3075,8 +3158,7 @@ impl Compiler {
                         self.chunk().emit_else(lookup_line);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.chunk().emit_end(lookup_line);
-                        // Restore the caller's __js_this — value already
-                        // on stack as the access result.
+                        // The access result is already on the stack.
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         if let Some(line) = symbol_end {
                             self.chunk().emit_end(line);
@@ -3223,7 +3305,7 @@ impl Compiler {
                 // `dotnet.sb_length` rather than bind them.
                 //
                 // Tree registrations carry no `ProtocolSlot` at all today
-                // (`component_model.rs` has no slot field), so the ask has
+                // (`component_classes.rs` has no slot field), so the ask has
                 // nothing to read. Giving them one is the tree-side half of
                 // `builtinslotplan.md` §2a/§4b, and until it lands the .NET
                 // spellings stay here — MEASURED: removing them alone strands
@@ -3469,7 +3551,9 @@ impl Compiler {
                         // Case-blind on its own terms — the tree lookup
                         // beside it is not; see
                         // `user_owns_type_spelling`.
-                        if self.user_owns_type_spelling(&class_name) {
+                        if self.user_owns_type_spelling(type_hint)
+                            || self.user_owns_type_spelling(&class_name)
+                        {
                             return None;
                         }
                         self.tree_property_target(&class_name, field)
@@ -3477,7 +3561,7 @@ impl Compiler {
                 {
                     self.compile_expr(object)?;
                     match target {
-                        vybe_runtime::component_model::InstancePropertyTarget::Host {
+                        crate::component_classes::InstancePropertyTarget::Host {
                             module,
                             func,
                             key,
@@ -3491,7 +3575,7 @@ impl Compiler {
                             }
                             return Ok(());
                         }
-                        vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => {
+                        crate::component_classes::InstancePropertyTarget::Common { emit } => {
                             self.emit_common(&emit, 1, self.line);
                             return Ok(());
                         }
@@ -3526,7 +3610,7 @@ impl Compiler {
                     };
 
                 if let Some(target) = namespace_tree_zero_arg_method {
-                    if let vybe_runtime::component_model::InstanceMethodTarget::Common {
+                    if let crate::component_classes::InstanceMethodTarget::Common {
                         emit,
                         ..
                     } = &target
@@ -3577,7 +3661,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match target {
-                        vybe_runtime::component_model::InstanceMethodTarget::Host {
+                        crate::component_classes::InstanceMethodTarget::Host {
                             module,
                             func,
                             ..
@@ -3585,7 +3669,7 @@ impl Compiler {
                             let idx = self.import(&module, &func);
                             self.emit_host_call(idx, 1);
                         }
-                        vybe_runtime::component_model::InstanceMethodTarget::Common {
+                        crate::component_classes::InstanceMethodTarget::Common {
                             emit,
                             ..
                         } => {
@@ -4656,6 +4740,8 @@ impl Compiler {
                         return Ok(());
                     }
                     if self.defined_classes.contains(&canon_type) {
+                        let line = self.line;
+                        self.emit_static_constructor_guard_for_class(&canon_type, line);
                         // §14.1.13 (JS): rest parameter in a constructor —
                         // pack surplus positional args into an Array so the
                         // ctor's rest slot receives a proper Array (no
@@ -4728,11 +4814,10 @@ impl Compiler {
                             "__js_prev_this_new_{}",
                             self.chunks[self.current].local_count
                         ));
-                        // `new` ALWAYS allocates. The constructor allocates only
-                        // when `__js_this` is absent, so leaving the caller's
-                        // receiver live made a construction inside an instance
-                        // method write into that receiver and hand it back.
-                        self.clear_js_this();
+                        // `new` ALWAYS allocates, and nothing has to be
+                        // cleared for it to: a constructor allocates because
+                        // its own frame has no receiver to adopt, the caller's
+                        // receiver being a parameter of the CALLER's frame.
                         self.emit_direct_callable_invoke(effective_len as u8);
                         self.end_receiver_bind(saved_this);
                         self.restore_js_new_target(saved_nt);
@@ -4883,7 +4968,10 @@ impl Compiler {
                     // keeps `get_class` and the `__types` inheritance chain
                     // language-faithful. Not a special case: an intrinsic name
                     // shadowed by a real class is no longer an intrinsic.
+                    // A tree adapter constructor for the name wins over the
+                    // generic shape.
                     let is_intrinsic_exception = common::errors::is_exception_type(bare_str)
+                        && self.tree_ctor_target(bare_src_str).is_none()
                         && !self.defined_classes.contains(type_name)
                         && !self.defined_classes.contains(&self.canon(type_name))
                         && !self.defined_classes.contains(bare_str);
@@ -5035,11 +5123,11 @@ impl Compiler {
                             .unwrap_or(type_name)
                             .to_string();
                         match target {
-                            vybe_runtime::component_model::ConstructorTarget::Host(target) => {
+                            crate::component_classes::ConstructorTarget::Host(target) => {
                                 let idx = self.import(&target.module, &target.name);
                                 self.emit_host_call(idx, args.len() as u8);
                             }
-                            vybe_runtime::component_model::ConstructorTarget::Common(name) => {
+                            crate::component_classes::ConstructorTarget::Common(name) => {
                                 let line = self.line;
                                 self.emit_common(&name, args.len() as u8, line);
                             }
@@ -5076,36 +5164,7 @@ impl Compiler {
                         // carried a hardcoded ~30-name list plus a
                         // `__java_class_is_instance` helper for exactly this.
                         // The ancestry is data the platform already declares.
-                        if let Some(spec) = self.tree_ctor_spec(bare_src_str) {
-                            if !spec.ancestry.is_empty() {
-                                let line = self.line;
-                                inst!(self, core_wasm::dup);
-                                for ancestor in &spec.ancestry {
-                                    self.emit_const(Value::String(Arc::from(ancestor.as_str())));
-                                }
-                                crate::primitives::collections::emit_array_new(
-                                    &mut self.chunks,
-                                    self.current,
-                                    spec.ancestry.len() as u16,
-                                    line,
-                                );
-                                let line = self.line;
-                                let types_key = class_slots::resolve_interned(
-                                    self.chunk(),
-                                    &class_slots::ClassSlot::internal(
-                                        crate::primitives::reflection::FIELD_TYPES,
-                                    ),
-                                    &class_slots::PlainNames,
-                                );
-                                class_slots::emit_class_set(
-                                    self.chunk(),
-                                    class_slots::ObjSource::Stack,
-                                    &types_key,
-                                    class_slots::ValueSource::Stack,
-                                    line,
-                                );
-                            }
-                        }
+                        self.emit_tree_ancestry_stamp(bare_src_str);
 
                         // .NET List / ArrayList instance calls like `list.Sort()`
                         // should stay on the shared compare-aware frontend path
@@ -5834,6 +5893,49 @@ impl Compiler {
             }
 
             ExprKind::Object(props) => {
+                // A literal whose FIRST member is a spread of a DECLARED CLASS
+                // instance is a copy-with-overrides — C# `p with { B = 9 }`
+                // arrives exactly so. That object must be a typed clone of the
+                // receiver: `struct.new 0` + `ecma:object.assign` copies the
+                // property bag only, so every field a licensed class keeps in
+                // INDEXED storage is silently absent and the copy answers NaN.
+                // The typed clone allocates with the receiver's own typeidx and
+                // copies each declared field through the seam; the overrides
+                // then write through the same seam. Nothing here is C#-shaped:
+                // any language whose walker states "copy this instance, then
+                // set these members" takes the same path.
+                if let Some(ObjectProperty::Spread(recv)) = props.first()
+                    && let Some(hint) = self.infer_expr_type_hint(recv)
+                    && let Some(class) = self.resolve_pending_class_name_for_type_hint(&hint)
+                    && self.pending_classes.contains_key(&class)
+                    && props[1..].iter().all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
+                {
+                    self.compile_expr(recv)?;
+                    self.emit_user_value_type_clone_from_stack(&class);
+                    let copy = self.define_local("__with_copy");
+                    self.emit_u16(Op::LOCAL_SET, copy);
+                    for prop in &props[1..] {
+                        let ObjectProperty::KeyValue { key, value } = prop else { unreachable!() };
+                        let ExprKind::Lit(Literal::Str(field)) = &key.kind else {
+                            return Err("copy-with-overrides: member key must be a name".to_string());
+                        };
+                        let field_name = self
+                            .field_storage_name_for_class(&class, field)
+                            .unwrap_or_else(|| self.js_member_storage_name(field));
+                        self.emit_u16(Op::LOCAL_GET, copy);
+                        self.compile_expr(value)?;
+                        let slot = self
+                            .indexed_member_slot(recv, field, &field_name)
+                            .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                        self.class_set_checked(
+                            class_slots::ObjSource::Stack,
+                            &slot,
+                            class_slots::ValueSource::Stack,
+                        );
+                    }
+                    self.emit_u16(Op::LOCAL_GET, copy);
+                    return Ok(());
+                }
                 let line = self.line;
                 common::dict::emit_new(&mut self.chunks, self.current, line);
                 for prop in props {
@@ -6130,9 +6232,8 @@ impl Compiler {
                 // on Objects calls ToPrimitive(hint=string) which prefers
                 // toString over valueOf — exactly what the
                 // `__vybe_to_primitive` polyfill implements. Routing
-                // through it ensures user `toString` overrides fire
-                // (sets `__js_this` via the JS method-call protocol),
-                // then `"" + primitive` produces the final string.
+                // through it ensures user `toString` overrides fire, then
+                // `"" + primitive` produces the final string.
                 let use_to_primitive = self.profile.ecma_to_primitive;
                 // How ONE substitution becomes a string is the LANGUAGE's rule,
                 // not a shared one: PHP renders `null` and `false` as `""` and
@@ -6254,8 +6355,18 @@ impl Compiler {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
+                        // ⛔ THE .NET SPELLINGS BELONG HERE TOO. A value type's
+                        // identity at run time is the WASM value tag, which
+                        // `wasm:js-number.test` reads — there is no `__type` on
+                        // a boxed number to fall through to. VB normalizes
+                        // `Integer` to `Int32` before the compiler sees it, so
+                        // listing only the bare spellings sent every
+                        // `TypeOf x Is Integer` down the CLASS path, where a
+                        // boxed 42 has no type stamp and the answer was False.
                         "number" | "float" | "double" | "int" | "integer" | "long" | "single"
-                        | "decimal" => {
+                        | "decimal" | "int16" | "int32" | "int64" | "uint16" | "uint32"
+                        | "uint64" | "byte" | "sbyte" | "short" | "ushort" | "uint"
+                        | "ulong" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-number", "test", 1);
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
@@ -7173,6 +7284,10 @@ impl Compiler {
                         } else {
                             Op::CALL_WITH_TAG
                         };
+                        // This op's immediate is still 16-bit; narrowing is
+                        // checked so it cannot resolve to a different tag name.
+                        let tag_idx = u16::try_from(tag_idx)
+                            .expect("tag-name constant exceeds this op's u16 immediate");
                         let chunk = &mut self.chunks[self.current];
                         chunk.emit_op_u16(op, tag_idx, line);
                         chunk.emit(args.len() as u8, line);
@@ -7401,79 +7516,37 @@ impl Compiler {
             // ── SuperCall (VB/Python) ───────────────────────────────────
             ExprKind::SuperCall { method, args } => {
                 let self_kw = self.profile.self_keyword.clone();
-                let ctor_name = self.profile.constructor_name.clone();
-                let is_ctor_call = method.is_none()
-                    || method.as_ref().map_or(false, |m| {
-                        if self.case_sensitive {
-                            m == &ctor_name || m == "new" || m == "__init__"
-                        } else {
-                            m.eq_ignore_ascii_case(&ctor_name)
-                                || m.eq_ignore_ascii_case("new")
-                                || m.eq_ignore_ascii_case("__init__")
-                        }
-                    });
+                // One predicate decides "parent constructor" for the emitter,
+                // the prologue's preamble split and the auto-injection check.
+                let is_ctor_call = self.parent_ctor_call_args(expr).is_some();
 
                 if is_ctor_call {
-                    // super() / MyBase.New(args) → call parent constructor
-                    if let Some(ref class_name) = self.current_class.clone() {
-                        if let Some(parent_name) = self
-                            .pending_classes
+                    // super() / MyBase.New(args) / inherited Create(args):
+                    // the parent constructor, through the one emitter.
+                    let chain = self.current_class.clone().and_then(|class_name| {
+                        self.pending_classes
                             .get(class_name.as_str())
                             .and_then(|c| c.parent.clone())
-                        {
-                            if !self.shadows_builtin_type(&parent_name)
-                                && common::errors::is_exception_type(&parent_name)
-                            {
-                                let arg_exprs: Vec<&Expression> =
-                                    args.iter().map(|arg| &arg.value).collect();
-                                self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
-                                if let Some(slot) = self.scope().resolve(&self_kw) {
-                                    inst!(self, core_wasm::dup);
-                                    self.emit_u16(Op::LOCAL_SET, slot);
-                                }
-                                return Ok(());
-                            }
-                            // §13.3.7.2 (JS): super() may only run once —
-                            // a second call sees this_slot already
-                            // initialized and throws a ReferenceError.
-                            if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
-                                if ctx_chunk == self.current {
-                                    let l = self.line;
-                                    crate::primitives::classes::emit_super_once_guard(
-                                        self.chunk(),
-                                        ctx_slot,
-                                        l,
-                                    );
-                                }
-                            }
-                            // Framework GUI control parent (`MyBase.New()` /
-                            // `super()` over `Form`/`Button`/…): construct the
-                            // control directly, the same path the auto-base
-                            // construction uses. Control leaves have no ctor
-                            // global to CALL_REF.
-                            if self.is_framework_control_parent(&parent_name) {
-                                let _canonical = common::gui::canonical_control_name(&parent_name);
-                                for a in args {
-                                    self.compile_expr(&a.value)?;
-                                }
-                                let line = self.line;
-                                self.emit_control_element(&parent_name, args.len() as u8, line);
-                            } else {
-                                self.emit_var_get(&parent_name);
-                                for a in args {
-                                    self.compile_expr(&a.value)?;
-                                }
-                                self.emit_direct_callable_invoke(args.len() as u8);
-                            }
-                            if let Some(slot) = self.scope().resolve(&self_kw) {
-                                inst!(self, core_wasm::dup);
-                                self.emit_u16(Op::LOCAL_SET, slot);
-                            }
-                        } else {
-                            self.emit_null();
+                            .map(|parent_name| (class_name, parent_name))
+                    });
+                    match chain {
+                        Some((class_name, parent_name)) => {
+                            let arg_exprs: Vec<&Expression> =
+                                args.iter().map(|arg| &arg.value).collect();
+                            let Some(this_slot) = self.scope().resolve(&self_kw) else {
+                                return Err(format!(
+                                    "parent constructor call outside a constructor: `{self_kw}` is not bound"
+                                ));
+                            };
+                            self.emit_parent_ctor_call(
+                                &class_name,
+                                &parent_name,
+                                &arg_exprs,
+                                this_slot,
+                                crate::primitives::classes::CtorResult::Keep,
+                            )?;
                         }
-                    } else {
-                        self.emit_null();
+                        None => self.emit_null(),
                     }
                 } else if let Some(mname) = method {
                     let parent_name = self
@@ -9279,7 +9352,7 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 /// known at build time, so the indirection buys nothing. Panics on
 /// non-primitive constants: an `Object`/`WeakRef`/`V128` has no
 /// immediate encoding and must stay pool-resident.
-pub(crate) fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
+pub(crate) fn emit_const_index(chunk: &mut Chunk, idx: u32, line: u32) {
     match chunk.constants[idx as usize].clone() {
         Value::Null | Value::TypedNull(_) => {
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)

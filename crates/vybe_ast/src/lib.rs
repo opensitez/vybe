@@ -20,6 +20,7 @@ pub mod builtin_types;
 pub mod canon;
 pub mod class_normalize;
 pub mod datetime;
+pub mod line_index;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Module (top-level compilation unit)
@@ -1078,6 +1079,12 @@ pub enum ClassKind {
 pub enum ConstructorInitializerTarget {
     Base,
     This,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticConstructorTiming {
+    Definition,
+    FirstTypeUse,
 }
 
 #[derive(Debug, Clone)]
@@ -4099,7 +4106,7 @@ pub struct Modifiers {
     /// is a method of a class by every definition this AST uses — a name, an
     /// arity, a receiver, visibility, a parent chain — and the only thing it
     /// lacks is text in a file. Unable to say that, the platform BCL tables went
-    /// to the one model that could (`vybe_runtime::component_model::ClassType`),
+    /// to the one model that could (`vybe_compiler::component_classes::ClassType`),
     /// which put a class model in the VM. See flexclassplan §4a-octies.
     ///
     /// ⚠ [`Modifiers::is_abstract`] is the degenerate case of this field, and
@@ -4511,8 +4518,8 @@ pub struct Directives {
     /// How a method CALL obtains its receiver.
     ///
     /// Three models exist and shared code has to pick one per unit:
-    /// - **prototype dispatch** (JS/Dart) — the callable rides `__js_this` and
-    ///   a bound-receiver marker;
+    /// - **prototype dispatch** (JS/Dart) — the callable rides a
+    ///   bound-receiver marker;
     /// - **bind-on-access** (Python) — reading the method burns the receiver
     ///   into a fresh bound method;
     /// - [`MethodReceiver::CallSite`] — the callable is the raw function off
@@ -4534,7 +4541,6 @@ pub struct Directives {
     /// have to change its shape.
     pub method_receiver: Option<MethodReceiver>,
 
-
     /// Is a parameter with no supplied argument bound to `undefined`, rather
     /// than being an error or a language-specific sentinel? ECMA-262 §10.2.1.1.
     pub missing_arg_is_undefined: Option<bool>,
@@ -4543,6 +4549,15 @@ pub struct Directives {
     /// enumerable through the ordinary object surface — or a separate storage
     /// that reflection does not see?
     pub static_fields_are_own_properties: Option<bool>,
+
+    /// When does a class-level initializer method run?
+    ///
+    /// ECMAScript static blocks run while the class object is defined. .NET
+    /// type initializers (`Shared Sub New`, `.cctor`) run once before first
+    /// type use. Both are class lifecycle roles, but they have different
+    /// timing, so the unit states its semantic mode here instead of the shared
+    /// compiler guessing from a language name.
+    pub static_constructor_timing: Option<StaticConstructorTiming>,
 
     /// Is a declared function a first-class OBJECT carrying properties —
     /// `name`, `length`, `prototype`, a `__nonenum` set — or just code?
@@ -4641,18 +4656,6 @@ pub struct Directives {
     /// withheld the licence and the same field became visible, which is the
     /// signature of a storage split rather than a field bug.
     pub instance_fields_are_own_properties: Option<bool>,
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// How LOCAL and PARAMETER names compare in this region.
     ///
@@ -4942,29 +4945,23 @@ pub enum AppShell {
 /// [`Directives::receiver_binding`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReceiverBinding {
-    /// An explicit leading parameter: Pascal `Self`, Python `self`, C# `this`.
-    #[default]
     /// **Every** callable takes a leading receiver parameter, not just methods
     /// — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`, where the
     /// receiver is an argument of the call itself rather than a property of
     /// being a method.
     ///
-    /// ⛔ This is a THIRD fact, not a spelling of [`Self::ExplicitParameter`],
-    /// and the difference is load-bearing for M5. Under `ExplicitParameter`
-    /// (python, pascal, C#) a plain `def f(x)` takes NO receiver, so a caller
-    /// must know whether the callee is a method to know the argument count.
-    /// That is answerable in those languages because their method calls are
-    /// resolved statically. It is NOT answerable in JS: `o.m(1)` compiles to a
-    /// dynamic `call_ref` after a runtime property lookup, and `const f = o.m;
-    /// f()` reaches the identical instruction — so a receiver that only
-    /// METHODS take is a receiver the call site cannot count.
+    /// ⛔ UNIFORM ARITY IS WHAT MAKES THE RECEIVER EXPRESSIBLE AS A PARAMETER.
+    /// Where only METHODS took one, a caller would have to know whether the
+    /// callee is a method to know the argument count. That question has no
+    /// answer under dynamic dispatch: `o.m(1)` compiles to a `call_ref` after a
+    /// runtime property lookup, and `const f = o.m; f()` reaches the identical
+    /// instruction. A plain call passes the undefined receiver explicitly
+    /// (§10.2.1.1 OrdinaryCallBindThis with a non-object thisArgument), which
+    /// is the ECMA answer rather than a filler value.
     ///
-    /// ⇒ Uniform arity is what makes the receiver expressible as a parameter
-    /// at all in an ambient-dispatch language, which is why M5 moves js and
-    /// dart HERE rather than to `ExplicitParameter`. A plain call passes the
-    /// undefined receiver explicitly (§10.2.1.1 OrdinaryCallBindThis with a
-    /// non-object thisArgument), which is also the ECMA answer rather than a
-    /// filler value.
+    /// A unit that does not declare this binds its receiver its own way; the
+    /// directive is per unit and each language declares it on its own terms.
+    #[default]
     UniversalParameter,
 }
 

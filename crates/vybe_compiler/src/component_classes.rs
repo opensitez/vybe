@@ -1,26 +1,16 @@
-//! Component Model resource and class patterns for WASM GC integration.
+//! Class and resource descriptors for platform-supplied types.
 //!
-//! This module extends the Component Model (component.rs) with richer typed
-//! descriptors for both resources and classes. Resources follow the WASM
-//! Component Model's `resource` pattern:
+//! ⛔ COMPILE-TIME ONLY. A class is a compiler concept: it lowers to functions,
+//! GC structs, custom descriptors and annotations, and nothing class-shaped
+//! survives into the runtime, which executes `struct.new` / `ref.get_desc` /
+//! `call_ref` and knows nothing of classes. The VM neither stores nor consults
+//! any of this.
 //!
-//! - A resource has a constructor, methods, and a destructor (drop).
-//! - Resources are owned — they have a single owner and are dropped when the owner
-//!   goes out of scope (or calls `[resource-drop]`).
-//! - Resources can be borrowed — `borrow<T>` gives temporary access without ownership.
-//!
-//! Examples:
-//! - A file handle is a resource: `open()` creates it, `read()`/`write()` use it,
-//!   `close()` or drop destroys it.
-//! - A GUI control is a resource: the host manages the actual widget, the guest
-//!   holds an opaque handle.
-//! - A database connection is a resource.
-//!
-//! Integration with TypeRegistry:
-//! - Each resource type is registered in TypeRegistry (has a type_id).
-//! - Resource instances carry `type_id` on the Object.
-//! - Resource methods are resolved via vtable (TypeRegistry.resolve_method).
-//! - `ref_test` / `instanceof` work with resource types.
+//! Resources follow the Component Model's `resource` pattern: a constructor,
+//! methods and a destructor; owned by one holder, droppable, borrowable.
+//! Classes are NOT a Component Model type — they are this compiler's
+//! description of the platform types a language surfaces (the .NET BCL,
+//! WinForms), used to resolve member access to host calls at compile time.
 
 use std::collections::HashMap;
 
@@ -52,9 +42,9 @@ pub struct ResourceMethod {
     /// Whether this method takes `borrow<self>` (read-only) or `own<self>` (consuming).
     pub borrows_self: bool,
     /// Parameter types (excluding self)
-    pub params: Vec<super::component::ValType>,
+    pub params: Vec<vybe_runtime::component::ValType>,
     /// Return type(s)
-    pub results: Vec<super::component::ValType>,
+    pub results: Vec<vybe_runtime::component::ValType>,
 }
 
 /// A class type definition in the Component Model.
@@ -129,23 +119,22 @@ pub struct PropertyDef {
 pub struct MethodDef {
     pub name: String,
     pub is_static: bool,
-    /// User-visible arity. For instance methods this excludes the implicit `this`.
-    pub arity: u8,
     pub body: MethodBody,
-    /// Declared parameter types, in Component Model `ValType`s.
+    /// The declared parameters — the Component Model's `(param "name" type)`
+    /// list, and the ONLY statement of how many arguments the method takes.
+    /// For instance methods this excludes the implicit `this`.
     ///
-    /// An arity says how MANY, never WHAT — and a descriptor that states only a
-    /// count is not a typed interface member. Overload selection by type
-    /// (`GetMethod(name, Type[])`) and reflection's `ParameterType` both need
-    /// the types, so a platform that has them declares them here rather than in
-    /// a table beside the descriptor: the seeder reads descriptors as DATA
-    /// across a crate boundary and cannot call back into the platform.
-    ///
-    /// `None` means undeclared — the arity is all this leaf carries, which is
-    /// what every registration starts as.
-    pub params: Option<Vec<super::component::ValType>>,
+    /// Arity is derived from it ([`MethodDef::arity`]), never stored beside
+    /// it: a stored count next to a derivable one is two statements of one
+    /// fact, and they drift. A registrar that knows only a count
+    /// (`MethodDef::new`) declares that many unnamed `any` parameters; one
+    /// that knows the types (`with_params`) states them unnamed; one that
+    /// knows the names too (`with_signature`) lets a caller bind arguments by
+    /// name. Overload selection by type and reflection's `ParameterType` read
+    /// the same list, as DATA across the crate boundary.
+    pub params: Vec<vybe_runtime::component::Param>,
     /// Declared result type, when the platform states one.
-    pub result: Option<super::component::ValType>,
+    pub result: Option<vybe_runtime::component::ValType>,
 }
 
 /// The body for a class method.
@@ -162,15 +151,21 @@ pub enum MethodBody {
 /// Constructor definition for a class type.
 #[derive(Debug, Clone)]
 pub struct ConstructorDef {
-    pub arity: u8,
     /// Optional backing that materializes the runtime object.
     pub backing: Option<ConstructorTarget>,
-    /// Declared parameter types. See [`MethodDef::params`].
-    pub params: Option<Vec<super::component::ValType>>,
+    /// Declared parameters, the only statement of the count. See
+    /// [`MethodDef::params`].
+    pub params: Vec<vybe_runtime::component::Param>,
 }
 
 /// A constructor backing can either be a host import or a canonical
 /// compiler-side common emit.
+/// Appended to a `Common` constructor backing name when the compiler passes an
+/// already-allocated receiver — a derived class's own typed instance — on top
+/// of the arguments; the platform initialises that object instead of
+/// allocating one.
+pub const CTOR_INTO_SUFFIX: &str = "#into";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstructorTarget {
     Host(HostTarget),
@@ -188,7 +183,7 @@ pub struct HostTarget {
 #[derive(Debug, Clone)]
 pub enum ComponentItemKind {
     /// A function import/export
-    Function(super::component::FuncSig),
+    Function(vybe_runtime::component::FuncSig),
     /// A class type import/export
     Class(ClassType),
     /// A resource type import/export
@@ -201,7 +196,7 @@ pub enum ComponentItemKind {
 #[derive(Debug, Clone)]
 pub struct TypeAlias {
     pub name: String,
-    pub target: super::component::ValType,
+    pub target: vybe_runtime::component::ValType,
 }
 
 /// A component import with kind information.
@@ -264,7 +259,7 @@ impl ComponentDescriptor {
     }
 
     /// Add a function import.
-    pub fn add_import_fn(&mut self, interface: &str, name: &str, sig: super::component::FuncSig) {
+    pub fn add_import_fn(&mut self, interface: &str, name: &str, sig: vybe_runtime::component::FuncSig) {
         self.imports.push(ComponentImport {
             interface: interface.into(),
             name: name.into(),
@@ -291,7 +286,7 @@ impl ComponentDescriptor {
     }
 
     /// Add a function export.
-    pub fn add_export_fn(&mut self, interface: &str, name: &str, sig: super::component::FuncSig) {
+    pub fn add_export_fn(&mut self, interface: &str, name: &str, sig: vybe_runtime::component::FuncSig) {
         self.exports.push(ComponentExport {
             interface: interface.into(),
             name: name.into(),
@@ -429,14 +424,20 @@ impl PropertyDef {
     }
 }
 
+/// `arity` unnamed `any` parameters — what a registrar that states only a
+/// count declares. `any` is the type's honest spelling of "not stated".
+fn counted_params(arity: u8) -> Vec<vybe_runtime::component::Param> {
+    use vybe_runtime::component::{Param, ValType};
+    Param::unnamed_list(vec![ValType::Any; arity as usize])
+}
+
 impl MethodDef {
     pub fn new(name: impl Into<String>, arity: u8, body: MethodBody) -> Self {
         MethodDef {
             name: name.into(),
             is_static: false,
-            arity,
             body,
-            params: None,
+            params: counted_params(arity),
             result: None,
         }
     }
@@ -445,23 +446,62 @@ impl MethodDef {
         MethodDef {
             name: name.into(),
             is_static: true,
-            arity,
             body,
-            params: None,
+            params: counted_params(arity),
             result: None,
         }
     }
 
-    /// Declare this method's parameter types. The arity is taken from them, so
-    /// the count and the types cannot disagree.
-    pub fn with_params(mut self, params: Vec<super::component::ValType>) -> Self {
-        self.arity = params.len() as u8;
-        self.params = Some(params);
+    /// User-visible argument count, derived from the parameter list.
+    pub fn arity(&self) -> u8 {
+        u8::try_from(self.params.len()).unwrap_or(u8::MAX)
+    }
+
+    /// Re-declare the parameter list as `arity` unnamed `any` parameters —
+    /// how an adapter that rewrites a descriptor's shape states the new
+    /// count. It REPLACES the list, because the count and the parameters are
+    /// one fact: a count that outlived the list it described is the drift
+    /// this type exists to prevent.
+    pub fn set_arity(&mut self, arity: u8) {
+        self.params = counted_params(arity);
+    }
+
+    /// Declare this method's parameter types. The count IS their count.
+    /// Names stay undeclared; see [`MethodDef::with_signature`].
+    pub fn with_params(self, params: Vec<vybe_runtime::component::ValType>) -> Self {
+        self.with_signature(vybe_runtime::component::Param::unnamed_list(params))
+    }
+
+    /// Declare this method's parameters with their NAMES — the full
+    /// `(param "name" type)` list. Arity is derived from it. Names describe
+    /// the declared parameters only: the receiver of an instance method is
+    /// never one of them, so `this`/`self` are refused at registration —
+    /// a leaf naming its receiver would be read as taking one more argument
+    /// than every caller passes.
+    pub fn with_signature(mut self, params: Vec<vybe_runtime::component::Param>) -> Self {
+        assert!(
+            !params.iter().any(|p| p.name.eq_ignore_ascii_case("this") || p.name.eq_ignore_ascii_case("self")),
+            "method `{}` names its receiver as a parameter; parameter names describe declared parameters only",
+            self.name
+        );
+        self.params = params;
         self
     }
 
+    /// The Component Model signature this method declares. The result is
+    /// `any` unless declared. A leaf built from this carries exactly what the
+    /// descriptor states.
+    pub fn signature(&self, func_name: &str) -> vybe_runtime::component::FuncSig {
+        use vybe_runtime::component::{FuncSig, ValType};
+        FuncSig {
+            name: func_name.to_string(),
+            params: self.params.clone(),
+            results: vec![self.result.clone().unwrap_or(ValType::Any)],
+        }
+    }
+
     /// Declare this method's result type.
-    pub fn with_result(mut self, result: super::component::ValType) -> Self {
+    pub fn with_result(mut self, result: vybe_runtime::component::ValType) -> Self {
         self.result = Some(result);
         self
     }
@@ -469,18 +509,21 @@ impl MethodDef {
 
 impl ConstructorDef {
     /// Declare this constructor's parameter types. See [`MethodDef::with_params`].
-    pub fn with_params(mut self, params: Vec<super::component::ValType>) -> Self {
-        self.arity = params.len() as u8;
-        self.params = Some(params);
+    pub fn with_params(mut self, params: Vec<vybe_runtime::component::ValType>) -> Self {
+        self.params = vybe_runtime::component::Param::unnamed_list(params);
         self
     }
 
     pub fn new(arity: u8) -> Self {
         ConstructorDef {
-            arity,
             backing: None,
-            params: None,
+            params: counted_params(arity),
         }
+    }
+
+    /// Argument count, derived from the parameter list.
+    pub fn arity(&self) -> u8 {
+        u8::try_from(self.params.len()).unwrap_or(u8::MAX)
     }
 
     pub fn with_backing(mut self, backing: HostTarget) -> Self {
@@ -555,12 +598,12 @@ impl ResourceMethod {
         }
     }
 
-    pub fn with_params(mut self, params: Vec<super::component::ValType>) -> Self {
+    pub fn with_params(mut self, params: Vec<vybe_runtime::component::ValType>) -> Self {
         self.params = params;
         self
     }
 
-    pub fn with_results(mut self, results: Vec<super::component::ValType>) -> Self {
+    pub fn with_results(mut self, results: Vec<vybe_runtime::component::ValType>) -> Self {
         self.results = results;
         self
     }
@@ -571,153 +614,14 @@ impl ResourceMethod {
     }
 }
 
-/// Register a resource type in both the ComponentDescriptor and the VM's TypeRegistry.
-/// Returns the type_id assigned by the registry.
-pub fn register_resource_type(
-    vm: &mut super::VM,
-    resource: &mut ResourceType,
-    parent_type_id: Option<usize>,
-) -> usize {
-    let mut typedef = super::TypeDef::new(&resource.name);
-    if let Some(pid) = parent_type_id {
-        typedef.parent = Some(pid);
-    }
-    let tid = vm.type_registry.register(typedef);
-    resource.type_id = tid;
-    tid
-}
-
-/// A resource table — tracks live resource handles for ownership/borrowing.
-/// Each resource handle maps to its underlying data (stored as a Value).
-#[derive(Debug, Default)]
-pub struct ResourceTable {
-    /// handle_id → (type_id, data, borrow_count)
-    entries: HashMap<u32, ResourceEntry>,
-    next_handle: u32,
-}
-
-#[derive(Debug, Clone)]
-struct ResourceEntry {
-    /// Type ID from TypeRegistry
-    type_id: usize,
-    /// The actual resource data (typically an Object with properties)
-    data: super::Value,
-    /// Number of active borrows (0 = can be dropped or moved)
-    borrow_count: u32,
-    /// Whether this resource has been dropped
-    dropped: bool,
-}
-
-impl ResourceTable {
-    pub fn new() -> Self {
-        ResourceTable {
-            entries: HashMap::new(),
-            next_handle: 1,
-        }
-    }
-
-    /// Create a new resource, returning its handle ID.
-    pub fn create(&mut self, type_id: usize, data: super::Value) -> u32 {
-        let handle = self.next_handle;
-        self.next_handle += 1;
-        self.entries.insert(
-            handle,
-            ResourceEntry {
-                type_id,
-                data,
-                borrow_count: 0,
-                dropped: false,
-            },
-        );
-        handle
-    }
-
-    /// Borrow a resource (read-only access). Returns the data if valid.
-    pub fn borrow(&mut self, handle: u32) -> Option<super::Value> {
-        let entry = self.entries.get_mut(&handle)?;
-        if entry.dropped {
-            return None;
-        }
-        entry.borrow_count += 1;
-        Some(entry.data.clone())
-    }
-
-    /// Release a borrow.
-    pub fn release_borrow(&mut self, handle: u32) {
-        if let Some(entry) = self.entries.get_mut(&handle) {
-            if entry.borrow_count > 0 {
-                entry.borrow_count -= 1;
-            }
-        }
-    }
-
-    /// Drop a resource (destroy it). Fails if there are active borrows.
-    pub fn drop_resource(&mut self, handle: u32) -> Result<super::Value, String> {
-        let entry = self
-            .entries
-            .get_mut(&handle)
-            .ok_or_else(|| format!("Invalid resource handle: {}", handle))?;
-        if entry.dropped {
-            return Err(format!("Resource {} already dropped", handle));
-        }
-        if entry.borrow_count > 0 {
-            return Err(format!(
-                "Cannot drop resource {}: {} active borrows",
-                handle, entry.borrow_count
-            ));
-        }
-        entry.dropped = true;
-        Ok(entry.data.clone())
-    }
-
-    /// Get the type_id of a resource handle.
-    pub fn type_id(&self, handle: u32) -> Option<usize> {
-        self.entries.get(&handle).map(|e| e.type_id)
-    }
-
-    /// Check if a handle is valid and not dropped.
-    pub fn is_valid(&self, handle: u32) -> bool {
-        self.entries
-            .get(&handle)
-            .map(|e| !e.dropped)
-            .unwrap_or(false)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_resource_table_lifecycle() {
-        let mut table = ResourceTable::new();
-
-        // Create a resource
-        use std::sync::Arc;
-        let handle = table.create(1, crate::Value::String(Arc::from("file_data")));
-        assert!(table.is_valid(handle));
-        assert_eq!(table.type_id(handle), Some(1));
-
-        // Borrow it
-        let data = table.borrow(handle).unwrap();
-        assert!(matches!(data, crate::Value::String(_)));
-
-        // Can't drop while borrowed
-        assert!(table.drop_resource(handle).is_err());
-
-        // Release borrow, then drop
-        table.release_borrow(handle);
-        let dropped = table.drop_resource(handle);
-        assert!(dropped.is_ok());
-
-        // Can't use after drop
-        assert!(!table.is_valid(handle));
-        assert!(table.borrow(handle).is_none());
-    }
 
     #[test]
     fn test_component_descriptor() {
-        use crate::component::{FuncSig, ValType};
+        use crate::component::{FuncSig, Param, ValType};
 
         let mut comp = ComponentDescriptor::new("my-component");
 
@@ -773,7 +677,7 @@ mod tests {
             "read",
             FuncSig {
                 name: "read".into(),
-                params: vec![ValType::I32],
+                params: Param::unnamed_list(vec![ValType::I32]),
                 results: vec![ValType::String],
             },
         );
@@ -783,7 +687,7 @@ mod tests {
             "add",
             FuncSig {
                 name: "add".into(),
-                params: vec![ValType::I32, ValType::I32],
+                params: Param::unnamed_list(vec![ValType::I32, ValType::I32]),
                 results: vec![ValType::I32],
             },
         );

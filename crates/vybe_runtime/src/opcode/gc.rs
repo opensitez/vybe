@@ -137,10 +137,14 @@ opcode_category! {
     // `idx` is a constant-pool index for a field NAME (the dynamic path every
     // language front end emits); non-zero means `idx` is a spec `fieldidx`
     // into the instance's indexed storage.
-    [0x02] struct_get         => U16_U16, "struct.get";
-    [0x03] struct_get_s       => U16_U16, "struct.get_s";
-    [0x04] struct_get_u       => U16_U16, "struct.get_u";
-    [0x05] struct_set         => U16_U16, "struct.set";
+    //
+    // Both immediates are LEB128 `u32`: `typeidx` and `fieldidx` are `u32` in
+    // the spec (`syntax idx = u32`), and the constant-pool index `typeidx 0`
+    // selects has to span the whole pool.
+    [0x02] struct_get         => U32Leb_U32Leb, "struct.get";
+    [0x03] struct_get_s       => U32Leb_U32Leb, "struct.get_s";
+    [0x04] struct_get_u       => U32Leb_U32Leb, "struct.get_u";
+    [0x05] struct_set         => U32Leb_U32Leb, "struct.set";
     // Array ops (0x06..=0x13)
     //
     // Note on bytecode vs WASM binary: the spec assigns each of these

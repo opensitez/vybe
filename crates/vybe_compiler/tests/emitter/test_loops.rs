@@ -25,7 +25,17 @@ fn emit_map_produces_bytecode() {
 #[test]
 fn emit_filter_produces_bytecode() {
     let mut chunks = one_chunk(10);
-    loops::emit_filter(&mut chunks, 0, 1, 2, 3, 4, 5, 0);
+    loops::emit_filter(
+        &mut chunks,
+        0,
+        vybe_runtime::chunk::ReceiverAbi::Ambient,
+        1,
+        2,
+        3,
+        4,
+        5,
+        0,
+    );
     assert!(
         chunks[0].code.len() > 20,
         "filter should emit substantial bytecode"
@@ -52,14 +62,14 @@ fn emit_reduce_produces_bytecode() {
 #[test]
 fn emit_any_produces_bytecode() {
     let mut chunks = one_chunk(10);
-    loops::emit_any_every(&mut chunks, 0, 1, 2, 3, true, 0);
+    loops::emit_any_every(&mut chunks, 0, 1, 2, 3, 4, true, 0);
     assert!(chunks[0].code.len() > 15, "any should emit bytecode");
 }
 
 #[test]
 fn emit_every_produces_bytecode() {
     let mut chunks = one_chunk(10);
-    loops::emit_any_every(&mut chunks, 0, 1, 2, 3, false, 0);
+    loops::emit_any_every(&mut chunks, 0, 1, 2, 3, 4, false, 0);
     assert!(chunks[0].code.len() > 15, "every should emit bytecode");
 }
 

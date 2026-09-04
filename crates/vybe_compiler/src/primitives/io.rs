@@ -1111,11 +1111,12 @@ fn emit_ob_pop_and_flush(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
     emit_write_or_buffer(chunks, current, line);
     chunks[current].emit_else(line);
-    // Call convention: [func_ref, arg0] then CALL_REF. One argument — the
-    // buffer — matching the single-parameter handlers languages actually write.
-    chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+    // [func_ref, receiver?, buffer] then CALL_REF — one user argument, the
+    // receiver ahead of it being §10.2.1's argument 0.
+    let recv =
+        crate::primitives::callable::push_callback_from_slot(chunks, current, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
     emit_write_or_buffer(chunks, current, line);
     chunks[current].emit_end(line);
 
@@ -1165,9 +1166,11 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
         emit_write_or_buffer(chunks, current, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+        let recv = crate::primitives::callable::push_callback_from_slot(
+            chunks, current, handler_slot, line,
+        );
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
         emit_write_or_buffer(chunks, current, line);
         chunks[current].emit_end(line);
 
@@ -1439,9 +1442,11 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+        let recv = crate::primitives::callable::push_callback_from_slot(
+            chunks, current, handler_slot, line,
+        );
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);

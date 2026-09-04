@@ -256,6 +256,10 @@ impl Compiler {
         self.chunk().emit_end(line);
 
         let tag_idx = self.str_const(&tag);
+        // `CALL_WITH_TAG`'s immediate is still 16-bit; narrowing is checked so
+        // it cannot resolve to a different tag's name.
+        let tag_idx = u16::try_from(tag_idx)
+            .expect("tag-name constant exceeds CALL_WITH_TAG's u16 immediate");
         let chunk = &mut self.chunks[self.current];
         chunk.emit_op_u16(Op::CALL_WITH_TAG, tag_idx, line);
         chunk.emit(arg_slots.len() as u8 + 1, line);

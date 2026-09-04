@@ -69,36 +69,28 @@ fn disassemble_instruction_inner(
         }
         OperandFormat::U16 => {
             let idx = chunk.read_u16(operand_start);
-            // Ops whose U16 operand indexes the constant pool for a key/name/
-            // value string. Resolving it is essential for reading property
-            // access (`struct.get "prototype"`), global access (`global.get
-            // "B"`), and literals — without it a disassembly of e.g. a super
-            // chain is unreadable (just `struct.get 1/2/3`). LOCAL_GET/SET use
-            // a *slot* index, not the constant pool, so they are excluded.
-            // ⚠ `GLOBAL_GET`/`GLOBAL_SET` carry a GLOBALIDX, not a constant
-            // index — they index the module's global table. Resolving them
-            // against the constant pool (as this did) produces a label only
-            // when the two numbers coincide, which reads as a correct name at
-            // low indices and nothing at high ones. That cost real debugging
-            // time: it looked like a duplicate-name bug in the table when the
-            // table was fine.
-            let references_constant = matches!(
-                op,
-                Op::STRUCT_GET | Op::STRUCT_GET_S | Op::STRUCT_GET_U | Op::STRUCT_SET
-            );
-            let is_global = matches!(op, Op::GLOBAL_GET | Op::GLOBAL_SET);
-            let extra = if is_global {
+            // No U16 op indexes the constant pool: the struct ops carry
+            // `U32Leb_U32Leb` and the global ops `U32`, and both resolve their
+            // name in their own arm below. LOCAL_GET/SET carry a slot index,
+            // which is not a pool index at all.
+            (format!("{} {}", name, idx), operand_start + 2)
+        }
+        // `GLOBAL_GET`/`GLOBAL_SET` carry a GLOBALIDX indexing the module's
+        // global table — NOT the constant pool. Resolving one against the other
+        // yields a label only where the two numbers coincide, which reads as a
+        // correct name at low indices and nothing at high ones.
+        OperandFormat::U32 => {
+            let idx = chunk.read_u32(operand_start);
+            let extra = if matches!(op, Op::GLOBAL_GET | Op::GLOBAL_SET) {
                 match globals.get(idx as usize) {
                     Some(name) => format!(" ({})", name),
                     None if globals.is_empty() => String::new(),
                     None => " (OUT-OF-RANGE)".to_string(),
                 }
-            } else if references_constant && (idx as usize) < chunk.constants.len() {
-                format!(" ({})", chunk.constants[idx as usize])
             } else {
                 String::new()
             };
-            (format!("{} {}{}", name, idx, extra), operand_start + 2)
+            (format!("{} {}{}", name, idx, extra), operand_start + 4)
         }
         OperandFormat::I16 => {
             let off = chunk.read_i16(operand_start);
@@ -177,24 +169,6 @@ fn disassemble_instruction_inner(
             let a = chunk.read_u16(operand_start);
             let b = chunk.read_u16(operand_start + 2);
             let text = match op {
-                // `(typeidx, fieldidx)`. typeidx 0 is the dynamic form, where
-                // the second immediate is a constant-pool property NAME —
-                // resolving it is what makes property access readable
-                // (`struct.get 3 (whoami)`), as documented in
-                // `documentation/debugging.md`. A non-zero typeidx makes it a
-                // spec fieldidx into indexed storage, which has no name.
-                Op::STRUCT_GET | Op::STRUCT_GET_S | Op::STRUCT_GET_U | Op::STRUCT_SET => {
-                    if a == 0 {
-                        let named = (b as usize) < chunk.constants.len();
-                        if named {
-                            format!("{} {} ({})", name, b, chunk.constants[b as usize])
-                        } else {
-                            format!("{} {}", name, b)
-                        }
-                    } else {
-                        format!("{} type={} field={}", name, a, b)
-                    }
-                }
                 // `(typeidx, count)` — typeidx 0 builds a dynamic object from
                 // `count` key/value pairs; non-zero is the spec `struct.new $t`.
                 Op::STRUCT_NEW => format!("{} type={} count={}", name, a, b),
@@ -220,7 +194,26 @@ fn disassemble_instruction_inner(
             let mut next = operand_start;
             let a = read_leb_u32(&chunk.code, &mut next);
             let b = read_leb_u32(&chunk.code, &mut next);
-            (format!("{} {} {}", name, a, b), next)
+            let text = match op {
+                // `(typeidx, fieldidx)`. typeidx 0 is the dynamic form, where
+                // the second immediate is a constant-pool property NAME —
+                // resolving it is what makes property access readable
+                // (`struct.get 3 (whoami)`), as documented in
+                // `documentation/debugging.md`. A non-zero typeidx makes it a
+                // spec fieldidx into indexed storage, which has no name.
+                Op::STRUCT_GET | Op::STRUCT_GET_S | Op::STRUCT_GET_U | Op::STRUCT_SET => {
+                    if a == 0 {
+                        match chunk.constants.get(b as usize) {
+                            Some(c) => format!("{} {} ({})", name, b, c),
+                            None => format!("{} {}", name, b),
+                        }
+                    } else {
+                        format!("{} type={} field={}", name, a, b)
+                    }
+                }
+                _ => format!("{} {} {}", name, a, b),
+            };
+            (text, next)
         }
         OperandFormat::MemArg => {
             let mut next = operand_start;

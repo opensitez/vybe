@@ -328,13 +328,13 @@ impl Compiler {
 /// emit layers, and this is what emitting a global means.
 pub fn emit_read(chunk: &mut Chunk, name: &str, line: u32) {
     let idx = chunk.intern_string_constant(name);
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    chunk.emit_op_u32(Op::GLOBAL_GET, idx, line);
 }
 
 /// Emit a write of module global `name`. See [`emit_read`].
 pub fn emit_write(chunk: &mut Chunk, name: &str, line: u32) {
     let idx = chunk.intern_string_constant(name);
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    chunk.emit_op_u32(Op::GLOBAL_SET, idx, line);
 }
 
 impl Compiler {
@@ -414,15 +414,15 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
     let table =
         vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &defined);
 
-    let mut remaps: Vec<Vec<(u16, u16)>> = Vec::with_capacity(chunks.len());
+    let mut remaps: Vec<Vec<(u32, u32)>> = Vec::with_capacity(chunks.len());
     for chunk in chunks.iter() {
-        let mut remap: Vec<(u16, u16)> = Vec::new();
+        let mut remap: Vec<(u32, u32)> = Vec::new();
         for (const_idx, name) in global_operands(chunk) {
             let Some(gidx) = table.iter().position(|n| *n == name) else {
                 continue;
             };
             if !remap.iter().any(|(c, _)| *c == const_idx) {
-                remap.push((const_idx, gidx as u16));
+                remap.push((const_idx, gidx as u32));
             }
         }
         remaps.push(remap);
@@ -441,12 +441,16 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
             };
             let operand_start = ip + 4;
             let operand_len = op.operand_format().size_in(code, operand_start);
-            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
-                let old = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 3 < code.len() {
+                let old = u32::from_be_bytes([
+                    code[operand_start],
+                    code[operand_start + 1],
+                    code[operand_start + 2],
+                    code[operand_start + 3],
+                ]);
                 if let Some((_, gidx)) = remap.iter().find(|(c, _)| *c == old) {
                     let bytes = gidx.to_be_bytes();
-                    code[operand_start] = bytes[0];
-                    code[operand_start + 1] = bytes[1];
+                    code[operand_start..operand_start + 4].copy_from_slice(&bytes);
                 }
             }
             ip = operand_start + operand_len;
@@ -466,7 +470,7 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
 /// Every `(constant index, global name)` a chunk's `GLOBAL_GET`/`GLOBAL_SET`
 /// operands name. Shared by `declare_free_globals` and
 /// `normalize_global_table` so the two cannot disagree about what a global is.
-fn global_operands(chunk: &Chunk) -> Vec<(u16, String)> {
+fn global_operands(chunk: &Chunk) -> Vec<(u32, String)> {
     let code = &chunk.code;
     let mut out = Vec::new();
     let mut ip = 0usize;
@@ -478,8 +482,13 @@ fn global_operands(chunk: &Chunk) -> Vec<(u16, String)> {
             continue;
         };
         let operand_start = ip + 4;
-        if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
-            let idx = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+        if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 3 < code.len() {
+            let idx = u32::from_be_bytes([
+                code[operand_start],
+                code[operand_start + 1],
+                code[operand_start + 2],
+                code[operand_start + 3],
+            ]);
             if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx as usize) {
                 out.push((idx, name.to_string()));
             }
@@ -549,9 +558,19 @@ pub fn declare_free_globals(chunks: &mut [Chunk]) {
                 continue;
             };
             let operand_start = ip + 4;
-            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
-                let idx =
-                    u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
+            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 3 < code.len() {
+                // ⛔ THE OPERAND WIDTH IS THE OPCODE'S, NOT A LOCAL GUESS.
+                // `global.get`/`global.set` carry a `U32` constant index
+                // (`core_ops.rs`); decoding two bytes reads a DIFFERENT
+                // constant, so a global this module writes was not recorded as
+                // written and was declared an immutable `env` import instead —
+                // `global.set` on an import does not validate.
+                let idx = u32::from_be_bytes([
+                    code[operand_start],
+                    code[operand_start + 1],
+                    code[operand_start + 2],
+                    code[operand_start + 3],
+                ]) as usize;
                 if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx) {
                     let name = name.to_string();
                     if !name.starts_with(vybe_runtime::chunk::STRING_CONSTANTS_MODULE) {

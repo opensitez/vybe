@@ -124,11 +124,16 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
+    // ⛔ A DELEGATE IS A PLAIN CALLABLE. Every argument is data, so the receiver
+    // is argument 0 — `undefined` under §10.2.1.1.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     for j in 0..n {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
     }
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8 + __recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
 
@@ -144,11 +149,14 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].patch_block(block_p);
 
     chunks[current].emit_else(line);
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     for j in 0..n {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
     }
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8 + __recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
 

@@ -71,6 +71,7 @@ pub fn emit_tuple(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
     let base = chunks[current].alloc_scratch(n.max(1));
     crate::primitives::collections::emit_pack_n(chunks, current, n, base, line);
     emit_tag(chunks, current, line);
+    emit_positional_item_fields(chunks, current, n as usize, line);
 }
 
 /// Push an i32 truthiness flag for "is the value on TOS a tagged tuple".
@@ -166,6 +167,39 @@ fn set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 fn call_is_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(idx, 1, line);
+}
+
+fn emit_positional_item_fields(chunks: &mut [Chunk], current: usize, n: usize, line: u32) {
+    for i in 0..n {
+        emit_positional_item_field(chunks, current, i, &format!("Item{}", i + 1), line);
+        emit_positional_item_field(chunks, current, i, &format!("item{}", i + 1), line);
+    }
+}
+
+fn emit_positional_item_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    index: usize,
+    name: &str,
+    line: u32,
+) {
+    let c = &mut chunks[current];
+    c.emit_dup(line);
+    c.emit_dup(line);
+    core_wasm::i32_const(c, line, index as i32);
+    c.emit_op(Op::ARRAY_GET, line);
+    let k = class_slots::resolve_interned(
+        c,
+        &class_slots::ClassSlot::internal(name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        c,
+        class_slots::ObjSource::Stack,
+        &k,
+        class_slots::ValueSource::Stack,
+        line,
+    );
 }
 
 /// Structural `repr` transform shared across languages: rewrite an
@@ -307,6 +341,7 @@ pub fn emit_named_tuple(
 ) {
     // 1. Tuple tag — the value behaves / repr's / slices as a tuple.
     emit_tag(chunks, current, line);
+    emit_positional_item_fields(chunks, current, field_names.len(), line);
 
     // 2. By-name key per named field: `arr.<name> = arr[i]` (re-read the value
     //    from the array so field-value expressions are never re-evaluated).

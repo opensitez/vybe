@@ -3079,8 +3079,8 @@ impl VM {
                     }
                 }
                 let removed = self.handle_table.remove(handle);
-                // ⚠ The destructor is NOT called yet. `component_model.rs`
-                // registers one as a `[resource-drop]` ResourceMethod, but
+                // ⚠ The destructor is NOT called yet. A resource declares one
+                // as a `[resource-drop]` method, but
                 // invoking it from here means re-entering the VM mid-builtin,
                 // which the current dispatch cannot do. Left explicit rather
                 // than silently skipped: an owning drop that runs no destructor
@@ -3930,7 +3930,19 @@ impl VM {
                 (Some(a), Some(b)) => a != b,
                 _ => false,
             };
-            if same_module(want, got) && want != got && shapes_differ {
+            // ⛔ A DECLARED SUBTYPE IS A DIFFERENT NAME AND STILL MATCHES.
+            // `call_indirect` requires the callee's type to MATCH the declared
+            // one, not to equal it, so `(type $t1 (sub $t0 …))` is callable
+            // through `(type $t0)`. Only a pair with no subtype edge between
+            // them is a mismatch.
+            let subtype_ok = match (
+                self.type_registry.get_id(got),
+                self.type_registry.get_id(want),
+            ) {
+                (Some(g), Some(w)) => self.type_registry.is_subtype(g, w),
+                _ => false,
+            };
+            if same_module(want, got) && want != got && shapes_differ && !subtype_ok {
                 return Err(VMError::new(format!(
                     "trap: indirect call type mismatch{how} (callee {got}, expected {want})"
                 )));
@@ -3950,18 +3962,132 @@ impl VM {
             // gate the string: if the two disagree about arity, this reader did
             // not see the same typeuse and abstains. That makes an over-fire
             // impossible — the check can only ever add traps the counts missed.
-            let want_arity = (
-                want.split("->").next().unwrap_or("").split(',').filter(|s| !s.is_empty()).count(),
-                want.split("->").nth(1).unwrap_or("").split(',').filter(|s| !s.is_empty()).count(),
-            );
+            let split = |s: &str| {
+                let mut it = s.splitn(2, "->");
+                let (p, r) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+                let list = |x: &str| {
+                    x.split(',').filter(|t| !t.is_empty()).map(str::to_string).collect::<Vec<_>>()
+                };
+                (list(p), list(r))
+            };
+            let (want_p, want_r) = split(want);
             let got = format!("{params}->{results}");
-            if want_arity == (argc, expected_results) && *want != got {
+            let (got_p, got_r) = split(&got);
+            // ⛔ COMPARE TYPES, NOT SPELLINGS. A function type MATCHES another
+            // when its parameters are supertypes of the declared ones and its
+            // results are subtypes — contravariant in, covariant out. String
+            // equality is the special case where every relation is identity,
+            // and it rejects `(ref null $t1)` against `(ref null func)`, which
+            // the spec accepts.
+            if (want_p.len(), want_r.len()) == (argc, expected_results)
+                && !(got_p.iter().zip(&want_p).all(|(g, w)| self.val_type_matches(w, g))
+                    && got_r.iter().zip(&want_r).all(|(g, w)| self.val_type_matches(g, w)))
+            {
                 return Err(VMError::new(format!(
                     "trap: indirect call type mismatch{how} (callee {got}, expected {want})"
                 )));
             }
         }
         Ok(())
+    }
+
+    /// Is `got` an acceptable value type where `want` is declared — i.e. is it
+    /// a subtype? Numeric and vector types match only themselves; reference
+    /// types match down the heap-type hierarchy, and a nullable reference
+    /// never satisfies a non-nullable one.
+    ///
+    /// ⛔ AN UNDECIDABLE RELATION ANSWERS "MATCHES". This gates a TRAP, and the
+    /// two errors are not symmetric: a missed trap costs one assertion, while
+    /// an over-fire aborts the script and hides everything after it. So a
+    /// spelling this cannot peel, or a name the type table does not hold, is
+    /// treated as a match rather than as a mismatch.
+    pub(crate) fn val_type_matches(&self, got: &str, want: &str) -> bool {
+        if got == want {
+            return true;
+        }
+        // `(ref null $t)` / `(ref $t)` and the shorthand spellings all denote a
+        // nullability plus a heap type; peel both apart before comparing.
+        let peel = |t: &str| -> Option<(bool, String)> {
+            let t = t.trim();
+            if let Some(inner) = t.strip_prefix("(ref").and_then(|r| r.strip_suffix(')')) {
+                let inner = inner.trim();
+                return Some(match inner.strip_prefix("null ") {
+                    Some(h) => (true, h.trim().to_string()),
+                    None => (false, inner.to_string()),
+                });
+            }
+            // The shorthands are all nullable. `anyfunc` is the pre-GC spelling
+            // of `funcref` and does not carry the suffix.
+            if t == "anyfunc" {
+                return Some((true, "func".to_string()));
+            }
+            let ht = t.strip_suffix("ref")?;
+            Some((
+                true,
+                match ht {
+                    "any" | "func" | "extern" | "eq" | "i31" | "struct" | "array" | "exn" => ht,
+                    "null" => "none",
+                    "nullfunc" => "nofunc",
+                    "nullextern" => "noextern",
+                    "nullexn" => "noexn",
+                    other => other,
+                }
+                .to_string(),
+            ))
+        };
+        match (peel(got), peel(want)) {
+            (Some((got_null, got_ht)), Some((want_null, want_ht))) => {
+                // A nullable reference never satisfies a non-nullable one.
+                !(got_null && !want_null) && self.heap_type_matches(&got_ht, &want_ht)
+            }
+            // A side that does not peel is undecidable only if it IS a
+            // reference. A numeric or vector type peels to nothing because it
+            // is not a reference at all, and `i32` against `(ref null func)`
+            // is a mismatch, not an unknown.
+            (None, _) if got.contains("ref") => true,
+            (_, None) if want.contains("ref") => true,
+            _ => false,
+        }
+    }
+
+    /// Is heap type `got` below `want`? The abstract hierarchies are fixed by
+    /// the spec; concrete types are related by the `sub` edges the type table
+    /// already records for `ref.cast`.
+    pub(crate) fn heap_type_matches(&self, got: &str, want: &str) -> bool {
+        if got == want {
+            return true;
+        }
+        let abstract_supers = |h: &str| -> Option<&'static [&'static str]> {
+            Some(match h {
+                "func" => &["func"],
+                "nofunc" => &["nofunc", "func"],
+                "extern" => &["extern"],
+                "noextern" => &["noextern", "extern"],
+                "exn" => &["exn"],
+                "noexn" => &["noexn", "exn"],
+                "any" => &["any"],
+                "eq" => &["eq", "any"],
+                "i31" => &["i31", "eq", "any"],
+                "struct" => &["struct", "eq", "any"],
+                "array" => &["array", "eq", "any"],
+                "none" => &["none", "i31", "struct", "array", "eq", "any"],
+                _ => return None,
+            })
+        };
+        match (abstract_supers(got), abstract_supers(want)) {
+            (Some(supers), Some(_)) => supers.contains(&want),
+            // A bottom type is below every concrete type of its hierarchy; any
+            // other abstract type is a TOP, and no top is below a concrete one.
+            (Some(_), None) => matches!(got, "none" | "nofunc" | "noextern" | "noexn"),
+            // Which hierarchy a concrete type belongs to is not recorded here,
+            // so it is taken to be below the abstract type it is compared with.
+            (None, Some(_)) => true,
+            (None, None) => match (self.type_registry.get_id(got), self.type_registry.get_id(want))
+            {
+                (Some(g), Some(w)) => self.type_registry.is_subtype(g, w),
+                _ => true,
+            },
+        }
     }
 
     /// Pop a memory-op count/index operand, widening per the memory's index
@@ -4257,7 +4383,7 @@ impl VM {
                 Op::GLOBAL_GET => {
                     // A globalidx over `global_imports ++ defined`, exactly as
                     // WASM's `global.get`. No name is consulted here.
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u32() as usize;
                     // An UNASSIGNED slot reads exactly as it did when globals
                     // were a map and the key was simply absent: Undefined.
                     // That matters because emitted code tests "unset" two
@@ -4277,7 +4403,7 @@ impl VM {
                 }
                 Op::GLOBAL_SET => {
                     // See GLOBAL_GET: a globalidx, not a name.
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u32() as usize;
                     let val = self.pop();
                     // Grow each vector against ITS OWN length. Testing only
                     // `globals.len()` assumed the two were already in step, so
@@ -4296,8 +4422,8 @@ impl VM {
 
                 // -- Properties --
                 Op::STRUCT_GET => {
-                    let typeidx = self.read_u16() as usize;
-                    let idx = self.read_u16();
+                    let typeidx = self.read_leb_u32() as usize;
+                    let idx = self.read_leb_u32();
                     if typeidx != 0 {
                         // Spec `struct.get $t i` — indexed read of the
                         // instance's field storage, where a typed
@@ -4417,8 +4543,8 @@ impl VM {
                     self.push(self.resolve_property(&obj, &name)?)?;
                 }
                 Op::STRUCT_SET => {
-                    let typeidx = self.read_u16() as usize;
-                    let idx = self.read_u16();
+                    let typeidx = self.read_leb_u32() as usize;
+                    let idx = self.read_leb_u32();
                     if typeidx != 0 {
                         // Spec `struct.set $t i`. This form did not exist —
                         // `struct.set` was name-keyed only, so nothing could
@@ -5104,7 +5230,7 @@ impl VM {
                 // `table.get tbl` — the index is i64 for a 64-bit (table64)
                 // table, else i32. table64 adds no new opcodes.
                 Op::TABLE_GET => {
-                    let table_idx = self.read_u16() as usize;
+                    let table_idx = self.read_leb_u32() as usize;
                     let idx = if self.tbl_is_64(table_idx) {
                         Self::table64_index(self.pop(), "table.get")?
                     } else {
@@ -5122,7 +5248,7 @@ impl VM {
                 // `table.set tbl` — pop value + index, write into table.
                 // Trap on out-of-bounds index per spec.
                 Op::TABLE_SET => {
-                    let table_idx = self.read_u16() as usize;
+                    let table_idx = self.read_leb_u32() as usize;
                     let val = self.pop();
                     let idx = if self.tbl_is_64(table_idx) {
                         Self::table64_index(self.pop(), "table.set")?
@@ -6473,8 +6599,8 @@ impl VM {
                 // there's no sign extension to do — both behave like
                 // `struct.get`.
                 Op::STRUCT_GET_S | Op::STRUCT_GET_U => {
-                    let _typeidx = self.read_u16();
-                    let field_idx = self.read_u16();
+                    let _typeidx = self.read_leb_u32();
+                    let field_idx = self.read_leb_u32();
                     let obj = self.pop();
                     let val = if let Value::Object(o) = obj {
                         let o = o.lock().unwrap();
@@ -6494,13 +6620,13 @@ impl VM {
                 Op::REF_TEST_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
-                    let result = val.is_null_ref() || self.ref_test_or_declared_name(&val, ht);
+                    let result = val.is_null_ref() || self.ref_test(&val, ht);
                     self.push(Value::I32(if result { 1 } else { 0 }))?;
                 }
                 Op::REF_CAST_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
-                    if !val.is_null_ref() && !self.ref_test_or_declared_name(&val, ht) {
+                    if !val.is_null_ref() && !self.ref_test(&val, ht) {
                         return Err(VMError::new(&format!(
                             "trap: cast failure: value is not {}",
                             self.heaptype_label(ht)
@@ -6590,10 +6716,19 @@ impl VM {
                 // decoded from the spec's signed LEB. Abstract types answer
                 // from the value's shape; a concrete one is an index walk over
                 // declared supertypes.
+                // ⛔ STRUCTURAL ONLY, per `Step_read/ref.test`: the answer is
+                // `$Ref_ok(ref)` — the reference's OWN allocated type — matched
+                // against the immediate. The spec has no step that reads a
+                // field, a property or a name, so neither may this. A
+                // LANGUAGE-level type test that must answer for a value with no
+                // rtt (a platform exception, a dynamic literal) states that
+                // itself: `emit_is_instance_of` emits this instruction AND its
+                // own name comparison, and the name half is the compiler's to
+                // declare — not something the opcode may add underneath it.
                 Op::REF_TEST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
-                    let result = self.ref_test_or_declared_name(&val, ht);
+                    let result = self.ref_test(&val, ht);
                     self.push(wasm_bool(result))?;
                 }
                 // The EXACT forms — `(ref null? (exact $t))`. Identical operand
@@ -6649,7 +6784,7 @@ impl VM {
                 Op::REF_CAST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
-                    if !self.ref_test_or_declared_name(&val, ht) {
+                    if !self.ref_test(&val, ht) {
                         // `trap: ` is not decoration — `VMError::is_trap`
                         // classifies solely on that prefix, and only a message
                         // carrying it is offered to a host-level handler at the
@@ -6671,7 +6806,7 @@ impl VM {
                 Op::BR_ON_CAST => {
                     let type_name_idx = self.read_u16();
                     let depth = self.read_byte() as usize;
-                    let target_name = self.constant_str(type_name_idx);
+                    let target_name = self.constant_str(type_name_idx as u32);
                     let val = self.peek(0).clone();
                     if self.test_type(&val, &target_name) {
                         if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
@@ -6682,7 +6817,7 @@ impl VM {
                 Op::BR_ON_CAST_FAIL => {
                     let type_name_idx = self.read_u16();
                     let depth = self.read_byte() as usize;
-                    let target_name = self.constant_str(type_name_idx);
+                    let target_name = self.constant_str(type_name_idx as u32);
                     let val = self.peek(0).clone();
                     if !self.test_type(&val, &target_name) {
                         if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
@@ -7438,7 +7573,7 @@ impl VM {
 
                 // -- Linear memory --
                 Op::MEMORY_SIZE => {
-                    let memidx = self.read_u16() as usize;
+                    let memidx = self.read_leb_u32() as usize;
                     let pages = self.mem_len(memidx) / 65536;
                     // memory64: page count is i64; 32-bit memory: i32.
                     if self.mem_is_64(memidx) {
@@ -7448,7 +7583,7 @@ impl VM {
                     }
                 }
                 Op::MEMORY_GROW => {
-                    let memidx = self.read_u16() as usize;
+                    let memidx = self.read_leb_u32() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let pages = self.pop_mem_index(is64);
                     let old_pages = self.mem_grow(memidx, pages);
@@ -7972,8 +8107,8 @@ impl VM {
 
                 // -- Multi-Memory --
                 Op::MEMORY_INIT => {
-                    let data_idx = self.read_u16() as u32;
-                    let memidx = self.read_u16() as usize;
+                    let data_idx = self.read_leb_u32() as u32;
+                    let memidx = self.read_leb_u32() as usize;
                     // Spec (bulk-memory Overview §data.drop): a dropped
                     // segment SHRINKS TO ZERO LENGTH — it may still be used
                     // by memory.init, "but only a zero-length access at
@@ -8011,7 +8146,7 @@ impl VM {
                 // proposal works: index 0 maps to `func_table`, indexes
                 // indexed directly in `wasm_tables`.
                 Op::TABLE_SIZE => {
-                    let tidx = self.read_u16() as usize;
+                    let tidx = self.read_leb_u32() as usize;
                     let size = self
                         .table_ref(tidx)
                         .ok_or_else(|| VMError::new("trap: table.size unknown table"))?
@@ -8024,7 +8159,7 @@ impl VM {
                     }
                 }
                 Op::TABLE_GROW => {
-                    let tidx = self.read_u16() as usize;
+                    let tidx = self.read_leb_u32() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let delta = self.pop_table_count(is64);
                     let init = self.pop();
@@ -8060,7 +8195,7 @@ impl VM {
                     }
                 }
                 Op::TABLE_FILL => {
-                    let tidx = self.read_u16() as usize;
+                    let tidx = self.read_leb_u32() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let count = self.pop_table_count(is64);
                     let value = self.pop();
@@ -8077,8 +8212,8 @@ impl VM {
                     }
                 }
                 Op::TABLE_COPY => {
-                    let dst_table_idx = self.read_u16() as usize;
-                    let src_table_idx = self.read_u16() as usize;
+                    let dst_table_idx = self.read_leb_u32() as usize;
+                    let src_table_idx = self.read_leb_u32() as usize;
                     // table64: operands are i64 if either table is 64-bit.
                     let is64 = self.tbl_is_64(dst_table_idx) || self.tbl_is_64(src_table_idx);
                     let count = self.pop_table_count(is64);
@@ -8100,8 +8235,8 @@ impl VM {
                     destination[dst..dst + count].clone_from_slice(&values);
                 }
                 Op::TABLE_INIT => {
-                    let elem_idx = self.read_u16() as u32;
-                    let table_idx = self.read_u16() as usize;
+                    let elem_idx = self.read_leb_u32() as u32;
+                    let table_idx = self.read_leb_u32() as usize;
                     // ⚠ A DROPPED segment is an EMPTY one, not an error of
                     // its own. The spec drops the payload and leaves the
                     // segment in place, so the bounds check is what decides:
@@ -8133,16 +8268,16 @@ impl VM {
                     table[dst..dst + count].clone_from_slice(&values);
                 }
                 Op::ELEM_DROP => {
-                    let elem_idx = self.read_u16() as u32;
+                    let elem_idx = self.read_leb_u32() as u32;
                     self.dropped_elems.insert(elem_idx);
                 }
                 Op::DATA_DROP => {
-                    let data_idx = self.read_u16() as u32;
+                    let data_idx = self.read_leb_u32() as u32;
                     self.dropped_data.insert(data_idx);
                 }
                 Op::MEMORY_COPY => {
-                    let dst_mem = self.read_u16() as usize;
-                    let src_mem = self.read_u16() as usize;
+                    let dst_mem = self.read_leb_u32() as usize;
+                    let src_mem = self.read_leb_u32() as usize;
                     // memory64: operands are i64 if either memory is 64-bit.
                     let is64 = self.mem_is_64(dst_mem) || self.mem_is_64(src_mem);
                     let count = self.pop_mem_index(is64);
@@ -8152,7 +8287,7 @@ impl VM {
                     self.write_memory_bytes(dst_mem, dst, &buf)?;
                 }
                 Op::MEMORY_FILL => {
-                    let memidx = self.read_u16() as usize;
+                    let memidx = self.read_leb_u32() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let count = self.pop_mem_index(is64);
                     let val = self.pop().as_i32() as u8;
@@ -10004,7 +10139,7 @@ impl VM {
                             let a1 = i16::from_le_bytes([va[i * 4 + 2], va[i * 4 + 3]]) as i32;
                             let b1 = i16::from_le_bytes([vb[i * 4 + 2], vb[i * 4 + 3]]) as i32;
                             out[i * 4..i * 4 + 4]
-                                .copy_from_slice(&(a0 * b0 + a1 * b1).to_le_bytes());
+                                .copy_from_slice(&a0.wrapping_mul(b0).wrapping_add(a1.wrapping_mul(b1)).to_le_bytes());
                         }
                         self.push(Value::V128(out))?;
                     } else {
@@ -10814,9 +10949,14 @@ impl VM {
                     }
                 }
                 // -- Relaxed integer dot products --
-                // The i8x16 x i7x16 ops assume the second operand's high
-                // bit is zero (7-bit). The "relaxed" part is that the
-                // implementation may saturate or wrap — we wrap via i32.
+                // Both operands are read as SIGNED i8. The `i7x16` in the name
+                // says the second one is EXPECTED to fit 7 bits, not that its
+                // eighth bit is discarded: masking it to 0x7F turns -127 into
+                // 1, and the suite pins that difference — a lane pair of
+                // (-128, -127) must answer one of -32768 / 32512 / 33024, and
+                // the masked reading answers -256, which is none of them.
+                // What "relaxed" leaves open is only whether the sum saturates
+                // or wraps; this wraps.
                 Op::I16X8_RELAXED_DOT_I8X16_I7X16_S => {
                     let b = self.pop();
                     let a = self.pop();
@@ -10825,8 +10965,8 @@ impl VM {
                         for i in 0..8 {
                             let av0 = va[i * 2] as i8 as i16;
                             let av1 = va[i * 2 + 1] as i8 as i16;
-                            let bv0 = (vb[i * 2] & 0x7F) as i16;
-                            let bv1 = (vb[i * 2 + 1] & 0x7F) as i16;
+                            let bv0 = vb[i * 2] as i8 as i16;
+                            let bv1 = vb[i * 2 + 1] as i8 as i16;
                             let sum = av0.wrapping_mul(bv0).wrapping_add(av1.wrapping_mul(bv1));
                             out[i * 2..i * 2 + 2].copy_from_slice(&sum.to_le_bytes());
                         }
@@ -10846,7 +10986,7 @@ impl VM {
                                 i32::from_le_bytes(vc[i * 4..i * 4 + 4].try_into().unwrap());
                             for j in 0..4 {
                                 let av = va[i * 4 + j] as i8 as i32;
-                                let bv = (vb[i * 4 + j] & 0x7F) as i32;
+                                let bv = vb[i * 4 + j] as i8 as i32;
                                 sum = sum.wrapping_add(av.wrapping_mul(bv));
                             }
                             out[i * 4..i * 4 + 4].copy_from_slice(&sum.to_le_bytes());

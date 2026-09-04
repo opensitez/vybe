@@ -96,8 +96,8 @@ impl Compiler {
         }
 
         // Compile the actual lambda body inside the factory. The inner lambda
-        // upvalue-captures the factory's locals (the by-value captures, including
-        // __js_this). compile_lambda_direct emits REF_FUNC into the factory chunk,
+        // upvalue-captures the factory's locals (the by-value captures,
+        // including the receiver). compile_lambda_direct emits REF_FUNC into the factory chunk,
         // leaving the function reference on the factory's operand stack.
         // PHP `use` closures — never arrows.
         self.compile_lambda_direct(params, body, is_async, is_generator, false)?;
@@ -183,29 +183,21 @@ impl Compiler {
                 .insert(params.len().saturating_sub(1) as u8);
         }
         // §10.2.11 / §15.3: arrows bind `this` and `new.target` LEXICALLY —
-        // captured at CREATION, never read from the ambient call-time
-        // globals (member calls set __js_this to the receiver, plain calls
-        // null __js_new_target; both are [[Call]]-time bindings arrows must
-        // not observe). When the enclosing scope already provides a lexical
+        // captured at CREATION, never from the [[Call]]-time bindings of the
+        // call that reaches them. When the enclosing scope already provides a lexical
         // `this` (method/ctor local, or an outer arrow's capture) the
         // existing upvalue resolution is the capture; otherwise snapshot
         // the current globals into enclosing locals the arrow body's
         // upvalue resolution will find by name.
-        // ⛔ `new.target` IS NOT THE RECEIVER, so it must not ride the
-        // receiver's gate. This snapshot used to sit inside the
-        // `ambient_this()` block above, so flipping to
-        // `ReceiverBinding::UniversalParameter` silently stopped arrows
-        // capturing `new.target` — while `this`, which the flip genuinely does
-        // move, is correctly handled there and by
-        // `capture_receiver_for_inner_closures`. M5 moves the RECEIVER out of
-        // a module global; `__js_new_target` is a different global and M5 does
-        // not touch it.
-        //
-        // Measured: `function NT(){ this.t = (() => new.target)(); }` then
-        // `new NT().t === NT` answered false, because the arrow read the
-        // call-time global — null by then — instead of the value snapshotted
-        // where it was created. §15.3: an arrow has no `new.target` binding of
-        // its own and sees the enclosing one.
+        // ⛔ `new.target` IS NOT THE RECEIVER, so this snapshot must not ride
+        // the receiver's gate. `__js_new_target` stays a module global whatever
+        // channel the receiver travels on; the receiver's own capture is
+        // handled above and by `capture_receiver_for_inner_closures`.
+        // Gate the two together and `function NT(){ this.t = (() => new.target)(); }`
+        // answers `new NT().t === NT` false, the arrow reading the call-time
+        // global — null by then — instead of the value snapshotted where it was
+        // created. §15.3: an arrow has no `new.target` binding of its own and
+        // sees the enclosing one.
         if is_arrow && self.ecma_new_dispatch() {
             let scope_idx = self.scopes.len() - 1;
             let nt_reachable = self.scope().resolve("__js_new_target").is_some()
@@ -349,11 +341,10 @@ impl Compiler {
         // min(upvalues.len(), capture_count) values, so a reserved-but-unused
         // slot costs one local and nothing else.
         self.closure_env_slot();
-        // Snapshot __js_this as a local BEFORE shared env creation so inner
-        // arrows can capture it via the shared env / upvalue chain.
-        // One decision, one place — see `capture_receiver_for_inner_closures`.
-        // This site compiles OBJECT-LITERAL methods, and it is the copy that
-        // was missing the `UniversalParameter` arm.
+        // Snapshot the receiver as a local BEFORE shared env creation so inner
+        // arrows can capture it via the shared env / upvalue chain. This site
+        // compiles OBJECT-LITERAL methods — one decision, one place, see
+        // `capture_receiver_for_inner_closures`.
         if self.scopes.len() > 1 {
             let closures_use_this = match body {
                 LambdaBody::Block(stmts) => {
@@ -386,7 +377,6 @@ impl Compiler {
                 self.shared_env_names = captured_names.clone();
                 let mut local_decls: HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
-                local_decls.insert("__js_this".to_string());
                 if let LambdaBody::Block(stmts) = body {
                     crate::primitives::collect_declared_names(stmts, &mut local_decls);
                 }
@@ -690,14 +680,15 @@ impl Compiler {
                         crate::primitives::namespaces::NamespaceNode::Fn {
                             module,
                             func,
-                            arity,
+                            sig,
                             ..
                         } => {
                             for a in args {
                                 self.compile_expr(a)?;
                             }
                             let idx = self.import(module, func);
-                            self.emit_host_call(idx, arity.unwrap_or(args.len() as u8));
+                            let arity = sig.as_ref().map(|s| s.arity()).unwrap_or(args.len() as u8);
+                            self.emit_host_call(idx, arity);
                             return Ok(true);
                         }
                         _ => {}

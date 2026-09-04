@@ -482,10 +482,36 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     call1(chunk, to_f64, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_else(line);
+    emit_both_object_field_present(
+        chunk,
+        a_slot,
+        b_slot,
+        a_time_slot,
+        b_time_slot,
+        "__value",
+        line,
+    );
+    chunk.emit_if_i32(line);
+    load(chunk, a_time_slot, line);
+    call1(chunk, test_str, line);
+    load(chunk, b_time_slot, line);
+    call1(chunk, test_str, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_i32(line);
+    load(chunk, a_time_slot, line);
+    load(chunk, b_time_slot, line);
+    call2(chunk, str_eq, line);
+    chunk.emit_else(line);
+    load(chunk, a_time_slot, line);
+    load(chunk, b_time_slot, line);
+    chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
     // object / cross-type → reference equality
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line); // __value object
     chunk.emit_end(line); // comparable object
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // boolean

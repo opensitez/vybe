@@ -161,7 +161,10 @@ pub fn emit_hash_array(chunk: &mut Chunk, line: u32) {
 }
 
 /// Null-aware comparator dispatch. Stack: [a, b, comparator] -> [value]
-pub fn emit_compare(chunk: &mut Chunk, line: u32) {
+///
+/// ⛔ THE CONVENTION IS GIVEN, NEVER LOOKED UP. This holds one chunk, so it
+/// cannot ask the module; the caller states what it is emitting for.
+pub fn emit_compare(chunk: &mut Chunk, abi: vybe_runtime::chunk::ReceiverAbi, line: u32) {
     let cmp = chunk.alloc_scratch(3);
     let b = cmp + 1;
     let a = cmp + 2;
@@ -189,10 +192,13 @@ pub fn emit_compare(chunk: &mut Chunk, line: u32) {
     chunk.emit_i32_const(1, line);
     chunk.emit_else(line);
 
+    // ⛔ `a` IS DATA, NOT THE RECEIVER. A comparator is a plain callback, so its
+    // receiver is argument 0 — `undefined` under §10.2.1.1.
     chunk.emit_op_u16(Op::LOCAL_GET, cmp, line);
+    let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
 
     chunk.emit_end(line);
     chunk.emit_end(line);

@@ -62,33 +62,12 @@ pub fn emit_invoke_method(
     argc: u8,
     line: u32,
 ) {
-    // Always go through the receiver-stash path so we can also bind
-    // `__js_this` before the host call. The host's `invokeMethod` →
-    // `dispatch` → `ctx.invoke` chain runs the user method body with
-    // whatever `__js_this` is currently set to (the bridge JS-compiled
-    // class methods read `this` from). Setting `__js_this = receiver`
-    // here lets `obj.method()` reach a body that does `this.x` even
-    // when the method is bound on the instance and dispatched
-    // dynamically.
-    // ⛔ THE AMBIENT SAVE/BIND BELOW IS THE PROTOCOL M5 REMOVES, and this
-    // emitter ran it UNCONDITIONALLY — its comment asserted that "every JS
-    // method call site is responsible for save/restore", which stopped being
-    // true when the receiver became argument 0. Measured: a js module still
-    // emitted three `__js_this` references for `[1,2,3].slice(1)`, an ordinary
-    // array method call, because every dynamic method call came through here.
-    // `.map()` and a user method did not, which is why one-program checks
-    // reported the global as gone.
-    //
-    // Read the MODULE chunk, not the directive stack: this is a free function
-    // over `&mut [Chunk]` with no `Compiler` in scope — the same reason the
-    // bind-XOR-pass decision below reads it here.
-    let param_receiver = crate::primitives::class_context::module_receiver_abi(chunks)
-        == vybe_runtime::chunk::ReceiverAbi::Parameter;
+    // The receiver is stashed so it can be pushed as argument 0 of the call
+    // below — §10.2.1 `[[Call]](thisArgument, argumentsList)`.
     let c = &mut chunks[current];
-    let temp_base = c.alloc_scratch(argc as u16 + 2);
+    let temp_base = c.alloc_scratch(argc as u16 + 1);
     let receiver_slot = temp_base;
-    let prev_this_slot = temp_base + 1;
-    let arg_base = temp_base + 2;
+    let arg_base = temp_base + 1;
 
     // Pop args into temps (LIFO: last arg lands in highest temp slot).
     for i in (0..argc).rev() {
@@ -97,19 +76,6 @@ pub fn emit_invoke_method(
     }
     // Stash receiver.
     c.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-
-    // Under the AMBIENT protocol: save the caller's `__js_this` and bind the
-    // receiver into it, so a JS-compiled body reads the right `this` when
-    // dispatch drives `ctx.invoke`. Under `ReceiverAbi::Parameter` the
-    // receiver travels as argument 0 and this global does not exist for the
-    // module — emitting it anyway is the hand-rolled shadow stack M5 deletes.
-    if !param_receiver {
-        crate::primitives::globals::emit_read(c, "__js_this", line);
-        c.emit_op_u16(Op::LOCAL_SET, prev_this_slot, line);
-
-        c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-        crate::primitives::globals::emit_write(c, "__js_this", line);
-    }
 
     // ⛔ NOTHING IS PUSHED HERE. This is where the pre-decomposition shape
     // rebuilt `receiver, name, args…` to feed one `emit_call(invoke,
@@ -141,10 +107,8 @@ pub fn emit_invoke_method(
     // functype rather than an import, so varying argument counts are expressed
     // by the type system instead of being flattened into one signature.
     //
-    // `__js_this` is still bound around the call by the code above, so the
-    // receiver reaches the body exactly as it did through the host's
-    // `dispatch` chain — this changes how the method is REACHED, not how the
-    // receiver is passed.
+    // The receiver reaches the body as argument 0 of the `call_ref` below —
+    // this changes how the method is REACHED, not how the receiver is passed.
     let lookup = chunks[current].add_import("ecma:value", "getMethodForCall");
     let c = &mut chunks[current];
     c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -167,7 +131,7 @@ pub fn emit_invoke_method(
     // place: bind XOR pass, never both (that is the `[arr, arr, callback]`
     // duplicate the host already warns about) and never neither.
     let c = &mut chunks[current];
-    c.emit_bool_const(!param_receiver, line);
+    c.emit_bool_const(false, line);
     c.emit_call(lookup, 3, line);
 
     // ⛔ A MISS MUST STILL REACH THE HOST. `GetV` here walks USER members —
@@ -205,23 +169,17 @@ pub fn emit_invoke_method(
     // arguments follow it, their count carried by `call_ref`'s functype.
     c.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     // §10.2.1 `[[Call]](thisArgument, argumentsList)` — the receiver is
-    // argument 0 where it travels as a parameter. Nothing is emitted under the
-    // ambient binding, where `__js_this` above is still the channel.
-    let recv_argc = if param_receiver {
-        c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-        1
-    } else {
-        0
-    };
+    // argument 0.
+    c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let recv_argc = 1;
     for i in 0..argc {
         c.emit_op_u16(Op::LOCAL_GET, arg_base + i as u16, line);
     }
     crate::primitives::functions::emit_call(c, argc + recv_argc, line);
     c.emit_end(line);
 
-    // Restore __js_this. Result is on top of stack — stash it, restore
-    // the global, then re-push the result so the caller sees the same
-    // shape as before this helper.
+    // The result is on top of the stack; stash it so the caller sees the same
+    // shape this helper has always left.
     let result_slot = chunks[current].local_count;
     chunks[current].local_count = chunks[current]
         .local_count
@@ -229,12 +187,6 @@ pub fn emit_invoke_method(
         .expect("emit_invoke_method: local slot overflow");
     let c = &mut chunks[current];
     c.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    // The restore half of the pair — it exists only because the save did.
-    // "The restore half of every pair disappears with the global."
-    if !param_receiver {
-        c.emit_op_u16(Op::LOCAL_GET, prev_this_slot, line);
-        crate::primitives::globals::emit_write(c, "__js_this", line);
-    }
     c.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 

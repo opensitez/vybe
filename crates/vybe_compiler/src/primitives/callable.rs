@@ -7,6 +7,7 @@
 
 use vybe_runtime::Chunk;
 
+use crate::primitives::class_slots;
 use super::Compiler;
 
 /// Callable invocation flavor. The argument count excludes the callable value
@@ -66,16 +67,117 @@ pub fn emit_callback_receiver(
     if abi != vybe_runtime::chunk::ReceiverAbi::Parameter {
         return 0;
     }
-    // §10.2.1.1 OrdinaryCallBindThis: a call with no receiver of its own binds
-    // `undefined` — "absent" and "undefined" are not the same slot.
-    crate::primitives::expressions::emit_undefined(chunk, line);
+    // A method reference is a callable value that carries its receiver in the
+    // shared class slot. Plain functions/lambdas have no such slot, and the
+    // read naturally yields `undefined`, matching §10.2.1.1.
+    chunk.emit_dup(line);
+    let receiver_slot = class_slots::resolve(
+        &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Stack,
+        &receiver_slot,
+        class_slots::Dest::Stack,
+        line,
+    );
     1
+}
+
+/// Push a callee held in a local together with its receiver; returns the extra
+/// argument count (0 or 1).
+///
+/// ⛔ USE THIS RATHER THAN A BARE `local.get` OF THE CALLEE. §10.2.1 puts the
+/// receiver at argument 0, so once the real arguments are stacked it is too
+/// late to add one. Returns 0 and emits nothing extra where the region
+/// declares no receiver.
+pub fn push_callback_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    callee_slot: u16,
+    line: u32,
+) -> u8 {
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, callee_slot, line);
+    emit_callback_receiver(&mut chunks[current], abi, line)
+}
+
+/// Invoke the callback in `fn_slot` on the value in `arg_slot`, leaving its
+/// result on the stack.
+///
+/// ⛔ THE ONE PLACE A CALLBACK LOOP PLACES ITS RECEIVER. §10.2.1 puts it at
+/// argument 0, which is not expressible once the argument is already stacked,
+/// so an emitter that writes these four instructions itself cannot be given one
+/// later. Call this rather than emitting the invoke.
+pub fn emit_callback_on(chunks: &mut [Chunk], current: usize, fn_slot: u16, arg_slot: u16, line: u32) {
+    let recv = push_callback_from_slot(chunks, current, fn_slot, line);
+    chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arg_slot, line);
+    emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
+}
+
+/// [`emit_callback_on`] for a two-argument callback — a selector over
+/// `(element, index)`, a result selector over `(outer, inner)`, a fold step
+/// over `(accumulator, element)`.
+pub fn emit_callback_on2(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    a_slot: u16,
+    b_slot: u16,
+    line: u32,
+) {
+    let recv = push_callback_from_slot(chunks, current, fn_slot, line);
+    chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, a_slot, line);
+    chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, b_slot, line);
+    emit_direct_invoke_chunk(&mut chunks[current], 2 + recv, line);
 }
 
 /// Direct lambda/function-reference call for helpers that are already building
 /// a function chunk rather than writing into the active chunk vector.
 pub fn emit_direct_invoke_chunk(chunk: &mut Chunk, arg_count: u8, line: u32) {
     crate::primitives::functions::emit_call(chunk, arg_count, line);
+}
+
+/// Invoke a callable whose arguments are ALREADY stacked above it, inserting the
+/// receiver at argument 0 where the region declares one.
+///
+/// ⛔ THE RECEIVER IS ARGUMENT 0, SO IT CANNOT BE APPENDED. A helper that has
+/// already pushed `[callee, arg0..argN]` has no room left underneath, so the
+/// arguments are spilled to scratch, `undefined` is pushed (§10.2.1.1
+/// OrdinaryCallBindThis — a call with no receiver of its own binds `undefined`)
+/// and the arguments are restacked above it. Under `Ambient` this is the plain
+/// invoke and emits no extra instruction.
+pub fn emit_stacked_invoke(chunks: &mut [Chunk], current: usize, arg_count: u8, line: u32) {
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    emit_stacked_invoke_chunk(&mut chunks[current], abi, arg_count, line);
+}
+
+/// [`emit_stacked_invoke`] for a helper holding a single chunk.
+///
+/// ⛔ THE CONVENTION IS GIVEN, NEVER LOOKED UP BY POSITION. A caller holding one
+/// chunk cannot ask the module for its ABI — `chunks.first()` would be a
+/// function chunk and would answer the default for every module — so it states
+/// what it is building for.
+pub fn emit_stacked_invoke_chunk(
+    chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
+    arg_count: u8,
+    line: u32,
+) {
+    if abi != vybe_runtime::chunk::ReceiverAbi::Parameter {
+        emit_direct_invoke_chunk(chunk, arg_count, line);
+        return;
+    }
+    let slots: Vec<u16> = (0..arg_count).map(|_| chunk.alloc_scratch(1)).collect();
+    for slot in slots.iter().rev() {
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, *slot, line);
+    }
+    crate::primitives::expressions::emit_undefined(chunk, line);
+    for slot in slots.iter() {
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, *slot, line);
+    }
+    emit_direct_invoke_chunk(chunk, arg_count.saturating_add(1), line);
 }
 
 /// .NET-style multicast delegate call. The public callable contract keeps

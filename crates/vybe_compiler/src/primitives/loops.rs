@@ -321,9 +321,15 @@ pub fn emit_map(
 /// Emit `filter(fn, arr)` → new array with elements where fn(x) is true.
 /// Caller must have stored fn in `fn_slot` and array in `arr_slot`.
 /// Stack after: [result_array]
+/// ⛔ `abi` IS GIVEN, NEVER LOOKED UP HERE. `module_receiver_abi(chunks)` reads
+/// `chunks[0]`, which is only stamped once the module frame is in place — a
+/// caller lowering during a pre-pass gets the `Ambient` default and emits a
+/// call one argument short, while the callback chunk still DECLARES a receiver
+/// from the directives. The caller holds the directives; it says which.
 pub fn emit_filter(
     chunks: &mut [Chunk],
     current: usize,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     fn_slot: u16,
     arr_slot: u16,
     result_slot: u16,
@@ -343,9 +349,8 @@ pub fn emit_filter(
     // if fn(element): result.push(element)
     // §10.2.1: the callback's receiver is argument 0 — see
     // `callable::emit_callback_receiver`.
-    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -398,6 +403,36 @@ pub fn emit_foreach(
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
+/// Emit one fold step: `acc = fn(acc, arr[i], i)` — ECMA-262 §23.1.3.26
+/// `callbackfn(accumulator, element, index, array)`.
+///
+/// ⛔ THE SEEDED AND UNSEEDED FOLDS BOTH CALL THIS. Their loops differ — where
+/// they start, and how they measure length, since an ordered map is not a JS
+/// array — but the call is the same call and is spelled once.
+pub fn emit_reduce_step(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arr_slot: u16,
+    acc_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
+    // §10.2.1 `[[Call]](thisArgument, argumentsList)`: the receiver is argument
+    // 0 where the region declares one, pushed after the callee and before the
+    // real arguments.
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3 + recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+}
+
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...
 /// Stack after: [accumulated_value]
 pub fn emit_reduce(
@@ -432,19 +467,7 @@ pub fn emit_reduce(
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     emit_loop_cond(chunks, current, line);
 
-    // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26: callback(acc, elem, index, array)
-    // §10.2.1: the callback's receiver is argument 0 — see
-    // `callable::emit_callback_receiver`.
-    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3 + __recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+    emit_reduce_step(chunks, current, fn_slot, arr_slot, acc_slot, idx_slot, line);
 
     // i += 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -467,6 +490,7 @@ pub fn emit_any_every(
     fn_slot: u16,
     arr_slot: u16,
     idx_slot: u16,
+    result_local: u16,
     is_any: bool,
     line: u32,
 ) {
@@ -479,7 +503,9 @@ pub fn emit_any_every(
     //     if fn(elem) (any) → push true, jump to end
     //     if !fn(elem) (every) → push false, jump to end
     //   (loop fell through with no match) → push false (any) or true (every)
-    let result_local = idx_slot + 1; // assume caller allocated enough locals
+    // ⛔ THE RESULT SLOT IS GIVEN, NEVER DERIVED. Deriving it from `idx_slot`
+    // makes the caller's allocation a convention the signature cannot state and
+    // the compiler cannot check.
 
     // Set default result BEFORE the loop
     if is_any {

@@ -138,7 +138,7 @@ impl Compiler {
         let done_key_c = self.resolve_slot_interned(&class_slots::ClassSlot::internal("done"));
         let value_key_c = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
 
-        // it = iter_slot.iterator() with __js_this = iter_slot
+        // it = iter_slot.iterator(), with iter_slot as the receiver
         let it_slot = self.define_local("__cit_it");
         let next_method_slot = self.define_local("__cit_next");
         let step_slot = self.define_local("__cit_step");
@@ -496,10 +496,28 @@ impl Compiler {
             if let ExprKind::Ident(name) = &callee.kind {
                 if self.multi_return_arity_for_callee(callee).is_some() {
                     self.emit_var_get(name);
+                    // §10.2.1: a multi-value receive is still an ordinary call,
+                    // so the callee's receiver is argument 0 — `undefined`
+                    // (§10.2.1.1). Omitting it binds the first REAL argument
+                    // into the receiver slot and shifts every value the
+                    // destructure reads back out.
+                    let __recv = {
+                        let abi = if self.universal_receiver() {
+                            vybe_runtime::chunk::ReceiverAbi::Parameter
+                        } else {
+                            vybe_runtime::chunk::ReceiverAbi::Ambient
+                        };
+                        let line = self.line;
+                        crate::primitives::callable::emit_callback_receiver(
+                            self.chunk(),
+                            abi,
+                            line,
+                        )
+                    };
                     for arg in args {
                         self.compile_expr(&arg.value)?;
                     }
-                    self.emit_direct_callable_invoke(args.len() as u8);
+                    self.emit_direct_callable_invoke(args.len() as u8 + __recv);
                     return Ok(());
                 }
             }
@@ -1865,8 +1883,8 @@ impl Compiler {
     pub(crate) fn emit_struct_field_op(
         &mut self,
         op: vybe_runtime::opcode::Op,
-        typeidx: u16,
-        idx: u16,
+        typeidx: u32,
+        idx: u32,
     ) {
         let l = self.line;
         self.chunks[self.current].emit_struct_field_op(op, typeidx, idx, l);
@@ -2083,18 +2101,27 @@ pub fn lower_gotos(
     for s in &body {
         collect_goto_targets(s, &mut goto_targets);
     }
+    // ⛔ EVERY statement KEEPS ITS SPAN. This flattening rebuilds each one from
+    // its kind, and rebuilding with `Statement::new` discarded the source
+    // position of the whole body — for every caller, whether or not the body
+    // contains a single `goto`. That is why C and Go carried no line numbers at
+    // all and C# kept only the statements that never reached here.
     let body: Vec<Statement> = body
         .into_iter()
-        .flat_map(|s| match s.kind {
-            StmtKind::Labeled { label, body: inner } if goto_targets.contains(&label) => {
-                let mut out = vec![Statement::new(StmtKind::Label(label))];
-                match inner.kind {
-                    StmtKind::Block(stmts) => out.extend(stmts),
-                    other => out.push(Statement::new(other)),
+        .flat_map(|s| {
+            let span = s.span;
+            match s.kind {
+                StmtKind::Labeled { label, body: inner } if goto_targets.contains(&label) => {
+                    let mut out = vec![Statement::with_span(StmtKind::Label(label), span)];
+                    let inner_span = inner.span;
+                    match inner.kind {
+                        StmtKind::Block(stmts) => out.extend(stmts),
+                        other => out.push(Statement::with_span(other, inner_span)),
+                    }
+                    out
                 }
-                out
+                other => vec![Statement::with_span(other, span)],
             }
-            other => vec![Statement::new(other)],
         })
         .collect();
 

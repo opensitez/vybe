@@ -89,11 +89,9 @@ pub struct HostContext<'a> {
     /// Raw pointer to `VM::host_receiver` — the thisArgument for the NEXT
     /// callback this host function makes.
     ///
-    /// The receiver used to travel in the `__js_this` module global, which the
-    /// host could write because the compiler declared it. Under
-    /// `ReceiverBinding::UniversalParameter` the compiler emits no reference to
-    /// it, so the global does not exist — and `slot_set` deliberately never
-    /// creates one (a module's global index space is fixed at instantiation;
+    /// The compiler emits no ambient receiver global, so the host needs a
+    /// channel of its own — `slot_set` deliberately never creates a global
+    /// (a module's global index space is fixed at instantiation;
     /// a global conjured at runtime cannot exist on a stock engine). Writing it
     /// therefore became a SILENT NO-OP, which is what made `f.call(o)` and
     /// `map(fn, thisArg)` lose their receiver while plain `map(fn)` was fine.
@@ -564,12 +562,9 @@ impl<'a> HostContext<'a> {
         }
     }
 
-    /// Read the current JS receiver binding (`__js_this`) from globals.
+    /// Read the receiver the host will hand the next callback.
     /// Returns `Undefined` when no binding exists.
     pub fn current_js_this(&self) -> Value {
-        if !self.module_uses_host_receiver_channel() {
-            return unsafe { self.slot_get("__js_this") };
-        }
         if self.host_receiver_slot.is_null() {
             return Value::Undefined;
         }
@@ -579,12 +574,6 @@ impl<'a> HostContext<'a> {
     /// Update the current JS receiver binding in whichever channel this module
     /// has. See [`HostContext::host_receiver_slot`] for why there are two.
     pub fn set_js_this(&mut self, value: Value) {
-        if !self.module_uses_host_receiver_channel() {
-            unsafe {
-                self.slot_set("__js_this", value);
-            }
-            return;
-        }
         if !self.host_receiver_slot.is_null() {
             unsafe {
                 *self.host_receiver_slot = value;
@@ -592,24 +581,10 @@ impl<'a> HostContext<'a> {
         }
     }
 
-    /// Does this module carry its host-side receiver in `VM::host_receiver`
-    /// rather than in the ambient `__js_this` global?
+    /// Does this module place a receiver at argument 0?
     ///
-    /// ⛔ THIS ASKS THE MODULE'S ABI, NOT WHETHER THE GLOBAL EXISTS. Keying it
-    /// on `global_index.contains_key("__js_this")` — which is what this did
-    /// first — conflates two different modules: one under
-    /// `UniversalParameter`, which genuinely has no such global, and one under
-    /// `Ambient` that simply never mentions `this`, so `declare_free_globals`
-    /// had no reference to create the global from. The second is the common
-    /// case in vb/dotnet, and it was silently routed onto the host channel:
-    /// `set_js_this` used to be a NO-OP there (`slot_set` never creates a
-    /// global) and `current_js_this` used to read `Undefined`, where the host
-    /// channel makes the write persist and the read return it.
-    ///
-    /// Measured: `tests/vb/vb_event_subscribing_in_constructor` 10 → 17
-    /// failing, `RuntimeError: [object]` in a `Handles`-wired `OnTick`. A
-    /// js+dart gate cannot see this — under `Ambient` both of those DO declare
-    /// the global, so both take the unchanged branch either way.
+    /// ⛔ THIS ASKS THE MODULE'S ABI. It is a property of how the module was
+    /// compiled, never of what its global index space happens to contain.
     fn module_uses_host_receiver_channel(&self) -> bool {
         self.module_receiver_abi == crate::chunk::ReceiverAbi::Parameter
     }
@@ -2070,6 +2045,22 @@ pub struct BlockTargets {
 }
 
 impl VM {
+    /// The receiver this VM hands a callee that declares one — §10.2.1
+    /// `[[Call]](thisArgument, argumentsList)` argument 0.
+    ///
+    /// ⛔ THE ONE CHANNEL. A caller driving this VM from outside (a dynamically
+    /// compiled `Function(...)` body invoked as a constructor) has to place the
+    /// receiver where the prepend reads it, and this is that place.
+    pub fn host_receiver_value(&self) -> Value {
+        self.host_receiver.clone()
+    }
+
+    /// Set the host receiver; returns the previous value so a caller can
+    /// restore it around one invocation.
+    pub fn set_host_receiver(&mut self, value: Value) -> Value {
+        std::mem::replace(&mut self.host_receiver, value)
+    }
+
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
     /// WASM tables in `wasm_tables`, indexed directly (table 0 = `wasm_tables[0]`).
     pub(crate) fn table_ref(&self, idx: usize) -> Option<&Vec<Value>> {
@@ -3724,28 +3715,6 @@ impl VM {
         receiver: Value,
         args: &[Value],
     ) -> Value {
-        if self.module_receiver_abi() != crate::chunk::ReceiverAbi::Parameter {
-            // ⛔ WRITE THE CHANNEL THE PREPEND ACTUALLY READS. Under the
-            // ambient ABI `invoke_callback` resolves the receiver it prepends
-            // from the `__js_this` GLOBAL, falling back to `host_receiver`
-            // only when no such global exists — so writing `host_receiver`
-            // unconditionally here left the global in force and the callee
-            // was handed whatever receiver happened to be bound last. Same
-            // selection as the read at the prepend site, or the write and the
-            // read disagree.
-            if self.global("__js_this").is_some() {
-                let previous = self.global("__js_this").cloned().unwrap_or(Value::Undefined);
-                self.set_global("__js_this", receiver);
-                let out = self.invoke_callback(func_ref, args);
-                self.set_global("__js_this", previous);
-                return out;
-            }
-            let previous = self.host_receiver.clone();
-            self.host_receiver = receiver;
-            let out = self.invoke_callback(func_ref, args);
-            self.host_receiver = previous;
-            return out;
-        }
         // Under `Parameter` the receiver IS argument 0. Hand it over directly
         // and let `invoke_callback` add nothing: it only prepends for a callee
         // that declares one, and this callee has just been given it.
@@ -3811,29 +3780,12 @@ impl VM {
             // where the host holds a receiver and the callee declares a
             // parameter for it. An unset slot reads as null, which becomes the
             // `undefined` thisArgument §10.2.1.1 gives an ordinary call.
-            // ⛔ SAME CHANNEL SELECTION AS `set_js_this`, OR THE WRITE AND
-            // THE READ DISAGREE. Under `Parameter` the host writes
-            // `VM::host_receiver`, so consulting the `__js_this` global FIRST
-            // picked up a stale value whenever that global existed for any
-            // other reason — measured as an object-literal
-            // `set v(x){ this._v = x }` assigning into the wrong object while
-            // the getter half of the same accessor worked.
-            let this_arg = if self.module_receiver_abi()
-                == crate::chunk::ReceiverAbi::Parameter
-            {
-                // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
-                // thisArgument through UNCHANGED in strict mode, so
-                // `f.call(null)` must see `this === null`. `host_receiver`
-                // already defaults to `Undefined`, so a `Null` here can only
-                // be one someone set deliberately — collapsing it lost exactly
-                // the distinction the spec draws.
-                self.host_receiver.clone()
-            } else {
-                match self.global("__js_this") {
-                    None => self.host_receiver.clone(),
-                    Some(other) => other.clone(),
-                }
-            };
+            // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
+            // thisArgument through UNCHANGED in strict mode, so `f.call(null)`
+            // must see `this === null`. `host_receiver` already defaults to
+            // `Undefined`, so a `Null` here can only be one someone set
+            // deliberately — collapsing it loses the distinction the spec draws.
+            let this_arg = self.host_receiver.clone();
             self.stack.push(this_arg);
         }
         for arg in args {
@@ -4438,7 +4390,13 @@ impl VM {
             .copied()
             .unwrap_or(0);
         for (seg_idx, items) in elem_items.iter().enumerate() {
+            // ⛔ AN EMPTY SEGMENT IS STILL A SEGMENT. Skipping it left its index
+            // unoccupied, so `table.init $e` on a dropped or empty segment
+            // reported "missing element segment" instead of the out-of-bounds
+            // SOURCE trap the spec asks for (`elem.wast`, implicitly-dropped
+            // active segments).
             if items.is_empty() {
+                self.set_elem_segment(seg_idx, Vec::new());
                 continue;
             }
             let vals: Vec<crate::value::Value> = items
@@ -4509,29 +4467,12 @@ impl VM {
         let receiver_argc = usize::from(self.callee_takes_receiver(callee));
         self.push(callee.clone())?;
         if receiver_argc == 1 {
-            // ⛔ SAME CHANNEL SELECTION AS `set_js_this`, OR THE WRITE AND
-            // THE READ DISAGREE. Under `Parameter` the host writes
-            // `VM::host_receiver`, so consulting the `__js_this` global FIRST
-            // picked up a stale value whenever that global existed for any
-            // other reason — measured as an object-literal
-            // `set v(x){ this._v = x }` assigning into the wrong object while
-            // the getter half of the same accessor worked.
-            let this_arg = if self.module_receiver_abi()
-                == crate::chunk::ReceiverAbi::Parameter
-            {
-                // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
-                // thisArgument through UNCHANGED in strict mode, so
-                // `f.call(null)` must see `this === null`. `host_receiver`
-                // already defaults to `Undefined`, so a `Null` here can only
-                // be one someone set deliberately — collapsing it lost exactly
-                // the distinction the spec draws.
-                self.host_receiver.clone()
-            } else {
-                match self.global("__js_this") {
-                    None => self.host_receiver.clone(),
-                    Some(other) => other.clone(),
-                }
-            };
+            // ⛔ DO NOT COERCE NULL TO UNDEFINED. §10.2.1.1 passes the
+            // thisArgument through UNCHANGED in strict mode, so `f.call(null)`
+            // must see `this === null`. `host_receiver` already defaults to
+            // `Undefined`, so a `Null` here can only be one someone set
+            // deliberately — collapsing it loses the distinction the spec draws.
+            let this_arg = self.host_receiver.clone();
             self.push(this_arg)?;
         }
         for arg in args {
@@ -4615,6 +4556,34 @@ impl VM {
 
     pub(crate) fn read_i16(&mut self) -> i16 {
         self.read_u16() as i16
+    }
+
+    /// Read a fixed-width big-endian `u32` immediate, advancing `ip`.
+    pub(crate) fn read_u32(&mut self) -> u32 {
+        let a = self.read_byte() as u32;
+        let b = self.read_byte() as u32;
+        let c = self.read_byte() as u32;
+        let d = self.read_byte() as u32;
+        (a << 24) | (b << 16) | (c << 8) | d
+    }
+
+    /// Read an unsigned LEB128 `u32` immediate, advancing `ip`.
+    ///
+    /// Every index in WASM is a `u32` (`syntax idx = u32`), so this is the
+    /// reader for an index operand — `read_u16` is for the shapes that carry a
+    /// genuinely 16-bit field, never for an index.
+    pub(crate) fn read_leb_u32(&mut self) -> u32 {
+        let mut result: u32 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.read_byte();
+            result |= ((byte & 0x7f) as u32) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        result
     }
 
     pub(crate) fn read_leb_i32(&mut self) -> i32 {
@@ -4732,7 +4701,7 @@ impl VM {
         out
     }
 
-    pub(crate) fn get_constant(&self, index: u16) -> Value {
+    pub(crate) fn get_constant(&self, index: u32) -> Value {
         let f = self.frame();
         self.chunks[f.chunk_index].constants[index as usize].clone()
     }
@@ -5139,15 +5108,15 @@ impl VM {
     /// rewritten into it. Same shape as `normalize_import_table`, applied at
     /// load time instead of compile time.
     /// This VM's slot for `name`, allocating one if it is new.
-    fn global_slot_for(&mut self, name: &str) -> u16 {
+    fn global_slot_for(&mut self, name: &str) -> u32 {
         match self.global_index.get(name) {
-            Some(&i) => i as u16,
+            Some(&i) => i,
             None => {
                 let i = self.globals.len() as u32;
                 self.global_index.insert(name.to_string(), i);
                 self.globals.push(Value::Null);
                 self.globals_assigned.push(false);
-                i as u16
+                i
             }
         }
     }
@@ -5155,7 +5124,7 @@ impl VM {
     /// `(constant index, global name)` for every global operand in a chunk —
     /// the pre-index encoding, still emitted by paths that skip the compiler's
     /// `normalize_global_table`.
-    fn global_operand_names(chunk: &Chunk) -> Vec<(u16, String)> {
+    fn global_operand_names(chunk: &Chunk) -> Vec<(u32, String)> {
         let code = &chunk.code;
         let mut out = Vec::new();
         let mut ip = 0usize;
@@ -5168,9 +5137,14 @@ impl VM {
             };
             let operand_start = ip + 4;
             if (op == crate::opcode::Op::GLOBAL_GET || op == crate::opcode::Op::GLOBAL_SET)
-                && operand_start + 1 < code.len()
+                && operand_start + 3 < code.len()
             {
-                let idx = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                let idx = u32::from_be_bytes([
+                    code[operand_start],
+                    code[operand_start + 1],
+                    code[operand_start + 2],
+                    code[operand_start + 3],
+                ]);
                 if let Some(Value::String(name)) = chunk.constants.get(idx as usize) {
                     out.push((idx, name.to_string()));
                 }
@@ -5269,17 +5243,17 @@ impl VM {
         // So derive the table from the operands themselves and remap anyway.
         // There is no third case: either a set carries a table or it names its
         // globals in constants, and both are handled.
-        let per_chunk_names: Vec<Vec<(u16, String)>> = incoming
+        let per_chunk_names: Vec<Vec<(u32, String)>> = incoming
             .iter()
             .map(|c| Self::global_operand_names(c))
             .collect();
 
-        let mut remap: Vec<u16> = Vec::with_capacity(table.len());
+        let mut remap: Vec<u32> = Vec::with_capacity(table.len());
         for name in table.iter() {
             remap.push(self.global_slot_for(name));
         }
 
-        let legacy: Vec<std::collections::HashMap<u16, u16>> = if table.is_empty() {
+        let legacy: Vec<std::collections::HashMap<u32, u32>> = if table.is_empty() {
             per_chunk_names
                 .iter()
                 .map(|names| {
@@ -5307,9 +5281,14 @@ impl VM {
                 let operand_len = op.operand_format().size_in(code, operand_start);
                 if (op == crate::opcode::Op::GLOBAL_GET
                     || op == crate::opcode::Op::GLOBAL_SET)
-                    && operand_start + 1 < code.len()
+                    && operand_start + 3 < code.len()
                 {
-                    let old = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                    let old = u32::from_be_bytes([
+                        code[operand_start],
+                        code[operand_start + 1],
+                        code[operand_start + 2],
+                        code[operand_start + 3],
+                    ]);
                     let mapped = if legacy.is_empty() {
                         remap.get(old as usize).copied()
                     } else {
@@ -5317,8 +5296,7 @@ impl VM {
                     };
                     if let Some(new_idx) = mapped {
                         let b = new_idx.to_be_bytes();
-                        code[operand_start] = b[0];
-                        code[operand_start + 1] = b[1];
+                        code[operand_start..operand_start + 4].copy_from_slice(&b);
                     }
                 }
                 ip = operand_start + operand_len;
@@ -5468,7 +5446,7 @@ impl VM {
             .map(Some)
     }
 
-    pub(crate) fn constant_str(&self, index: u16) -> String {
+    pub(crate) fn constant_str(&self, index: u32) -> String {
         match &self.get_constant(index) {
             Value::String(s) => s.to_string(),
             v => format!("{}", v),

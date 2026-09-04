@@ -31,10 +31,7 @@ impl Compiler {
     /// ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`?
     ///
     /// Asked wherever an arity is DECLARED or an argument count is COUNTED, and
-    /// nowhere else. It is deliberately not folded into [`Self::ambient_this`]:
-    /// those two are the before and after of M5 and every site must be on
-    /// exactly one of them, so a region reading `true` from both would be a
-    /// region emitting both protocols.
+    /// nowhere else.
     pub(crate) fn universal_receiver(&self) -> bool {
         self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::UniversalParameter)
     }
@@ -1651,8 +1648,20 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, arm_match_slot);
 
                         if !is_catch_all {
-                            for ty in &types {
-                                let mut expected_names = vec![(*ty).to_string()];
+                            for (ty, raw) in types.iter().zip(c.types.iter()) {
+                                // The declared spelling first: a typed instance
+                                // answers it by `ref.test`. The canonical
+                                // spelling is the string fallback.
+                                let mut expected_names = vec![raw.trim().to_string()];
+                                // `Catch ex As System.X` names the same type as `X`;
+                                // the reserved type is keyed by the leaf.
+                                let leaf = raw.trim().rsplit('.').next().unwrap_or(raw.trim());
+                                if leaf != raw.trim() {
+                                    expected_names.push(leaf.to_string());
+                                }
+                                if raw.trim() != *ty && leaf != *ty {
+                                    expected_names.push((*ty).to_string());
+                                }
                                 if !self.case_sensitive {
                                     let canon_ty = self.canon(ty);
                                     if canon_ty != *ty {
@@ -1736,7 +1745,11 @@ impl Compiler {
 
                         if let Some(ref var) = c.var_name {
                             self.scope_mut().begin_scope();
-                            let slot = self.define_source_local(var);
+                            let catch_type = c
+                                .types
+                                .first()
+                                .map(|ty| vybe_ast::TypeHint::converting(ty.trim()));
+                            let slot = self.define_source_local_typed(var, catch_type);
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, slot);
                         } else {
@@ -4213,21 +4226,33 @@ impl Compiler {
             } => {
                 let data_index = self.chunks[0].data_segments.len() as u32;
                 self.chunks[0].data_segments.push(bytes.clone());
-                // Active segment (has a constant offset) → recorded for the VM's
-                // instantiation-time copy. Passive segments (offset None) stay in
-                // `data_segments` for `memory.init`.
+                // ⛔ AN ACTIVE SEGMENT APPLIES AT INSTANTIATION, NOT AT LOAD.
+                // The spec defines instantiation of `(data (memory x) (offset
+                // e) b*)` as exactly `memory.init x d` followed by `data.drop
+                // d`, so that is what is emitted — here, at the segment's own
+                // position in the statement stream, which is the point its
+                // module is instantiated.
+                //
+                // Collecting them for one load-time pass instead applied EVERY
+                // module's segments before the first script statement ran, so a
+                // later module's segment overwrote memory a earlier assertion
+                // was still expecting: `multi-memory/linking1.wast` reads 12
+                // from `Mm.mem1` and got the byte a module three commands later
+                // writes there. Passive segments (offset None) stay in
+                // `data_segments` for `memory.init` to name.
                 if let Some(off) = offset {
                     let offset_val =
                         const_eval_u64(off, &self.global_const_values).ok_or_else(|| {
                             "data segment offset must be a constant integer expression".to_string()
                         })?;
-                    self.chunks[0].active_data_segments.push(
-                        vybe_runtime::chunk::ActiveDataSegment {
-                            memory_index: *memory_index,
-                            offset: offset_val,
-                            data_index,
-                        },
-                    );
+                    let l = self.line;
+                    let len = bytes.len();
+                    let ch = self.chunk();
+                    ch.emit_i32_const(offset_val as i32, l);
+                    ch.emit_i32_const(0, l);
+                    ch.emit_i32_const(len as i32, l);
+                    ch.emit_op_idx_idx(Op::MEMORY_INIT, data_index as u32, *memory_index as u32, l);
+                    ch.emit_op_idx(Op::DATA_DROP, data_index as u16, l);
                 }
             }
 
@@ -5664,6 +5689,7 @@ impl Compiler {
                 if let Some(type_hint) = receiver_type_hint {
                     let class_name = Self::normalize_type_hint(&type_hint);
                     if self.control_element_for_type(&class_name).is_some()
+                        && !self.user_owns_type_spelling(&class_name)
                         && !self.is_declared_instance_field(&class_name, field)
                     {
                         let line = self.line;
@@ -5683,7 +5709,10 @@ impl Compiler {
                     if let Some(slot) = self.scope().resolve(&self_kw) {
                         self.emit_u16(Op::LOCAL_GET, slot);
                     } else {
-                        self.emit_global_read("__js_this");
+                        // §10.2.1.1: outside a method there is no receiver to
+                        // bind, and `undefined` is what a call with none binds.
+                        let line = self.line;
+                        crate::primitives::expressions::emit_undefined(self.chunk(), line);
                     }
                     self.emit_u16(Op::LOCAL_SET, receiver_tmp);
 
@@ -5720,6 +5749,7 @@ impl Compiler {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::tree_type_key(&type_hint);
                         if self.control_element_for_type(&class_name).is_some()
+                            && !self.user_owns_type_spelling(&class_name)
                             && !self.is_declared_instance_field(&class_name, field)
                         {
                             let line = self.line;
@@ -5777,7 +5807,7 @@ impl Compiler {
                             .flatten()
                         {
                             match target {
-                                vybe_runtime::component_model::InstancePropertyTarget::Host {
+                                crate::component_classes::InstancePropertyTarget::Host {
                                     module,
                                     func,
                                     key,
@@ -5797,7 +5827,7 @@ impl Compiler {
                                     self.emit(Op::DROP);
                                     return Ok(());
                                 }
-                                vybe_runtime::component_model::InstancePropertyTarget::Common {
+                                crate::component_classes::InstancePropertyTarget::Common {
                                     emit,
                                 } => {
                                     let value_tmp = self.define_local("__dotnet_prop_value");
@@ -5841,9 +5871,12 @@ impl Compiler {
                         let field_name = self
                             .field_storage_name_for_receiver(object, field)
                             .unwrap_or_else(|| self.js_member_storage_name(field));
-                        self.class_set(
+                        let slot = self
+                            .indexed_member_slot(object, field, &field_name)
+                            .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                        self.class_set_checked(
                             class_slots::ObjSource::Local(obj_tmp),
-                            &class_slots::ClassSlot::internal(&field_name),
+                            &slot,
                             class_slots::ValueSource::Local(value_tmp),
                         );
 
@@ -6010,12 +6043,24 @@ impl Compiler {
                 // accessor dispatch in one place. Internal `__*` keys
                 // bypass — VM bookkeeping (proxy, prototype, type stamps)
                 // that the gates would block.
-                if self.profile.ecma_object_literals && !field_name.starts_with("__") {
-                    // Bind `__js_this = obj` so a setter installed by
-                    // `Object.defineProperty` (arity-1 `set(val)`) sees
-                    // the receiver via the JS method-call protocol.
-                    // Stack on entry: [obj]. Stash, set __js_this,
-                    // re-push, call, restore.
+                // ⛔ THE GATE IS `instance_fields_are_own_properties`, NOT
+                // `ecma_object_literals`. Whether a member write is a PROPERTY
+                // OPERATION (OrdinarySet's frozen/sealed gates and accessor
+                // dispatch) or plain STORAGE is what that directive states.
+                // Object literals are a different question, and asking it here
+                // routed every Kotlin field write through OrdinarySet because
+                // Kotlin happens to have literals — while reads of the same
+                // field resolved to a field index, so the two halves addressed
+                // different storage and a read answered the slot's default.
+                //
+                // A language whose fields are a fixed record states nothing and
+                // keeps indexed storage, which is the same criterion SEAM 3
+                // uses, so the read and write halves cannot disagree.
+                let indexed_write = self.indexed_member_slot(object, field, &field_name);
+                if self.instance_fields_are_own_properties() && !field_name.starts_with("__") {
+                    // Bind the receiver so a setter installed by
+                    // `Object.defineProperty` (arity-1 `set(val)`) sees it.
+                    // Stack on entry: [obj]. Stash, bind, re-push, call.
                     let line = self.line;
                     let obj_slot = self.define_local("__js_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -6043,9 +6088,25 @@ impl Compiler {
                     self.end_receiver_bind(saved_this);
                 } else {
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.class_set(
+                    // A WRITE resolves through the same seam as the read, or
+                    // the two disagree.
+                    let slot = indexed_write
+                        .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                    // `this.f = v` inside the class's own body needs no test:
+                    // the receiver IS this class. It also runs during
+                    // CONSTRUCTION, before the instance answers `ref.test` for
+                    // its own type, so testing there sends every field
+                    // initializer down the key path while reads take the
+                    // indexed one and the field reads back as its default.
+                    let setter = if self.receiver_is_self(object) {
+                        Self::class_set
+                    } else {
+                        Self::class_set_checked
+                    };
+                    setter(
+                        self,
                         class_slots::ObjSource::Stack,
-                        &class_slots::ClassSlot::internal(&field_name),
+                        &slot,
                         class_slots::ValueSource::Stack,
                     );
                 }

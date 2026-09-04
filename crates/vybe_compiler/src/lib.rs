@@ -18,6 +18,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub use vybe_ast as ast;
 pub mod adapters;
 pub mod bundle;
+pub mod component_classes;
 pub mod dynamic;
 pub mod host_imports;
 pub mod primitives;

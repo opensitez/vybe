@@ -1978,7 +1978,7 @@ impl Compiler {
                 self.tree_property_target(name, prop)
             }?;
             match target {
-                vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => emit
+                crate::component_classes::InstancePropertyTarget::Common { emit } => emit
                     .strip_prefix(if setting {
                         PROP_SET_EMIT
                     } else {

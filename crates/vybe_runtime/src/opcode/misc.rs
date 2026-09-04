@@ -53,14 +53,14 @@ opcode_category! {
     //   table.grow/size/fill : u16 table_idx
     // (The optional 0xEE memidx selector block is RETIRED — an undeclared
     // conditional immediate desynced every format-driven walk.)
-    [0x08] memory_init => U16_U16, "memory.init";
-    [0x09] data_drop   => U16, "data.drop";
-    [0x0A] memory_copy => U16_U16, "memory.copy";
-    [0x0B] memory_fill => U16, "memory.fill";
-    [0x0C] table_init  => U16_U16, "table.init";
-    [0x0D] elem_drop   => U16, "elem.drop";
-    [0x0E] table_copy  => U16_U16, "table.copy";
-    [0x0F] table_grow  => U16, "table.grow";
-    [0x10] table_size  => U16, "table.size";
-    [0x11] table_fill  => U16, "table.fill";
+    [0x08] memory_init => U32Leb_U32Leb, "memory.init";
+    [0x09] data_drop   => U32Leb, "data.drop";
+    [0x0A] memory_copy => U32Leb_U32Leb, "memory.copy";
+    [0x0B] memory_fill => U32Leb, "memory.fill";
+    [0x0C] table_init  => U32Leb_U32Leb, "table.init";
+    [0x0D] elem_drop   => U32Leb, "elem.drop";
+    [0x0E] table_copy  => U32Leb_U32Leb, "table.copy";
+    [0x0F] table_grow  => U32Leb, "table.grow";
+    [0x10] table_size  => U32Leb, "table.size";
+    [0x11] table_fill  => U32Leb, "table.fill";
 }

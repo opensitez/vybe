@@ -295,12 +295,15 @@ opcode_category! {
     [0x20] local_get => U16, "local.get";
     [0x21] local_set => U16, "local.set";
     [0x22] local_tee => U16, "local.tee";
-    [0x23] global_get => U16, "global.get";
-    [0x24] global_set => U16, "global.set";
+    // A `globalidx` is a `u32` in the spec (`syntax idx = u32`), and before
+    // `normalize_global_table` runs the immediate is a constant-pool index —
+    // which spans the whole pool. A 16-bit field wrapped both.
+    [0x23] global_get => U32, "global.get";
+    [0x24] global_set => U32, "global.set";
     // Reference-types table access (core prefix). Operand is a u8 table
     // index — Vybe's single function-table is index 0.
-    [0x25] table_get => U16, "table.get";
-    [0x26] table_set => U16, "table.set";
+    [0x25] table_get => U32Leb, "table.get";
+    [0x26] table_set => U32Leb, "table.set";
     // Memory load
     // Loads/stores carry the OPTIONAL marker-tagged memarg (`SimdMemArg`
     // treatment): present iff the first LEB has 0x80; 0x100 = memory64
@@ -335,8 +338,8 @@ opcode_category! {
     // Fixed u16 memidx immediate (multi-memory). The optional 0xEE selector
     // block is retired for these ops: an undeclared conditional immediate
     // desynced every format-driven walk (the memarg lesson, again).
-    [0x3F] memory_size => U16, "memory.size";
-    [0x40] memory_grow => U16, "memory.grow";
+    [0x3F] memory_size => U32Leb, "memory.size";
+    [0x40] memory_grow => U32Leb, "memory.grow";
     // Numeric constants
     [0x41] i32_const => SlI32, "i32.const";
     [0x42] i64_const => SlI64, "i64.const";

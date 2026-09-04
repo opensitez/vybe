@@ -7,25 +7,21 @@
 //!
 //! # Who needs this
 //!
-//! | language | surface | before |
-//! |---|---|---|
-//! | php | `str_getcsv`, `fputcsv` | 160-line scanner in `string_adapter.rs` |
-//! | fortran | `str_getcsv` | DECLARED with no implementation — see below |
-//! | pascal | `__pascal_file_readcsv`/`writecsv` | file I/O only, no parsing |
-//! | python | `csv` module | declared as a known module |
+//! | language | surface |
+//! |---|---|
+//! | php | `str_getcsv`, `fputcsv` |
+//! | fortran | `str_getcsv` |
+//! | pascal | `__pascal_file_readcsv`/`writecsv` |
+//! | python | `csv` module |
 //!
 //! Go (`encoding/csv`) and Ruby (`CSV`) are the obvious next consumers.
 //!
-//! **fortran's `str_getcsv` could not run** — it resolved through a
-//! `LanguageHooks::str_getcsv` callback only php registered, then `.unwrap()`
-//! on `None`. Binding both languages here removed the hook and the panic.
-//!
 //! # The dialect is RUNTIME, not compile-time
 //!
-//! php's `str_getcsv($s, $delimiter, $enclosure, $escape)` takes them as
-//! arguments, so they are stack values. php's own emitter dropped them —
-//! `for _ in 1..argc { DROP }` — so `str_getcsv($s, ';')` silently split on
-//! commas. A compile-time option could not have served php at all.
+//! php's `str_getcsv($s, $delimiter, $enclosure, $escape)` takes the three
+//! knobs as ARGUMENTS, so they arrive as stack values and a compile-time
+//! option cannot serve php at all. Every emitter here reads the dialect off
+//! the stack.
 //!
 //! **No coercion here.** Callers pass strings.
 

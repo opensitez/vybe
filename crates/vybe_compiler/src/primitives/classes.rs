@@ -23,6 +23,123 @@ pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
 }
 
 impl Compiler {
+    pub(crate) fn static_constructors_run_on_first_type_use(&self) -> bool {
+        self.directives().static_constructor_timing
+            == Some(vybe_ast::StaticConstructorTiming::FirstTypeUse)
+    }
+
+    pub(crate) fn emit_static_constructor_guard_for_class(&mut self, class_name: &str, line: u32) {
+        if !self.static_constructors_run_on_first_type_use() {
+            return;
+        }
+        let class_name = self.canon(class_name);
+        if !self.defined_classes.contains(&class_name) && !self.pending_classes.contains_key(&class_name)
+        {
+            return;
+        }
+        let has_static_init = self
+            .pending_classes
+            .get(class_name.as_str())
+            .is_some_and(|pc| {
+                pc.static_method_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case("__static_init__"))
+            });
+        if !has_static_init {
+            return;
+        }
+
+        let class_slot = self.define_local("__static_ctor_class");
+        let init_slot = self.define_local("__static_ctor_init");
+
+        self.emit_global_read(&class_name);
+        self.emit_u16(Op::LOCAL_SET, class_slot);
+
+        self.emit_u16(Op::LOCAL_GET, class_slot);
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_static_init_done"),
+        );
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if_value(line);
+        self.chunk().emit_else(line);
+
+        self.emit_u16(Op::LOCAL_GET, class_slot);
+        self.emit_const(Value::Bool(true));
+        self.class_set(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_static_init_done"),
+            class_slots::ValueSource::Stack,
+        );
+
+        self.emit_u16(Op::LOCAL_GET, class_slot);
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__static_init__"),
+        );
+        self.emit_u16(Op::LOCAL_SET, init_slot);
+        self.emit_u16(Op::LOCAL_GET, init_slot);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if_value(line);
+        let after_static_init = self.chunk().emit_block(line);
+        self.label_depth += 1;
+        crate::primitives::errors::emit_try_start(self.chunk(), line);
+        self.label_depth += 2;
+        let saved_js_this = self.begin_receiver_bind("__js_prev_static_init_this");
+        if saved_js_this.is_active() {
+            self.emit_u16(Op::LOCAL_GET, class_slot);
+            self.bind_receiver_from_stack(saved_js_this);
+        }
+        self.emit_u16(Op::LOCAL_GET, init_slot);
+        let recv_argc = self.push_receiver_argument(saved_js_this);
+        self.emit_direct_callable_invoke(recv_argc);
+        self.emit(Op::DROP);
+        self.end_receiver_bind(saved_js_this);
+        crate::primitives::errors::emit_try_end(self.chunk(), line);
+        self.label_depth -= 1;
+        self.chunk().emit_br(1, line);
+        crate::primitives::errors::emit_handler_block_end(self.chunk(), line);
+        self.label_depth -= 1;
+        let caught_slot = self.define_local("__static_ctor_caught");
+        self.emit_u16(Op::LOCAL_SET, caught_slot);
+        crate::primitives::errors::emit_exception_new(
+            self.chunk(),
+            "TypeInitializationException",
+            class_slots::ValueSource::ConstStr(
+                "The type initializer for this type threw an exception.".to_string(),
+            ),
+            line,
+        );
+        crate::primitives::errors::emit_throw(self.chunk(), line);
+        self.chunk().emit_end(line);
+        self.label_depth -= 1;
+        self.chunk().patch_block(after_static_init);
+        self.chunk().emit_end(line);
+
+        self.chunk().emit_end(line);
+    }
+
+    pub(crate) fn static_constructor_owner_for_type_use(
+        &self,
+        expr: &Expression,
+    ) -> Option<String> {
+        let ExprKind::Ident(name) = &expr.kind else {
+            return None;
+        };
+        if self.scope().resolve(name).is_some() {
+            return None;
+        }
+        let resolved = self.resolve_source_type_alias(name);
+        let canon_resolved = self.canon(&resolved);
+        if self.defined_classes.contains(&canon_resolved)
+            || self.pending_classes.contains_key(&canon_resolved)
+        {
+            Some(canon_resolved)
+        } else {
+            None
+        }
+    }
+
     /// Declare that an accessor chunk handles the RECEIVER-FIRST convention.
     ///
     /// `__get_x(self)` / `__set_x(self, v)` take the receiver as parameter 0,
@@ -473,7 +590,258 @@ impl Compiler {
     /// compile-time bindings, not vm globals, so a plain GLOBAL_GET yields
     /// null and silently breaks the prototype chain.
     fn emit_parent_ctor_value(&mut self, parent_name: &str) {
-        self.emit_parent_value(parent_name, false);
+        self.emit_parent_value(parent_name, false, None);
+    }
+
+    fn emit_parent_ctor_value_for_arity(&mut self, parent_name: &str, arity: usize) {
+        self.emit_parent_value(parent_name, false, Some(arity));
+    }
+
+    /// Is the parent's constructor a value this module can call: a declared
+    /// class, a local / upvalue / static binding, a defined global, or an
+    /// ECMA intrinsic constructor the profile exposes.
+    pub(crate) fn parent_ctor_is_bound(&mut self, parent_name: &str) -> bool {
+        if self.dotnet_descriptor_parent_has_no_user_ctor(parent_name) {
+            return false;
+        }
+        let pname = self.canon(parent_name);
+        let has_local = self.scope().resolve(parent_name).is_some();
+        let has_upvalue = self.scopes.len() > 1
+            && self
+                .resolve_upvalue(self.scopes.len() - 1, parent_name)
+                .is_some();
+        let has_static_local = self.static_local_binding(parent_name).is_some();
+        has_local
+            || has_upvalue
+            || has_static_local
+            || self.defined_globals.contains(&pname)
+            || self.defined_classes.contains(&pname)
+            || (self.profile.has_ecma_globals
+                && Self::is_ecma_typed_array_ctor_name(parent_name)
+                && !self.shadows_builtin_type(parent_name))
+            || (self.profile.has_ecma_globals
+                && Self::is_ecma_array_buffer_ctor_name(parent_name)
+                && !self.shadows_builtin_type(parent_name))
+            || (self.profile.has_ecma_globals
+                && Self::is_ecma_collection_ctor_name(parent_name)
+                && !self.shadows_builtin_type(parent_name))
+    }
+
+    /// THE parent-constructor call. Every spelling — `: base(args)`,
+    /// `MyBase.New(args)`, `super(args)`, `inherited Create(args)`,
+    /// `parent::__construct(args)` — lands here; nothing else emits the
+    /// sequence.
+    ///
+    /// The parent is resolved by WHAT IT IS, in this order:
+    ///   1. framework control        → the control element becomes the instance
+    ///   2. tree class with a Common ctor
+    ///                                → `<backing>#into(args…, this)`: initialise
+    ///                                  the instance THIS class allocated, in place
+    ///   3. host exception, no adapter → the host builds it; adopted as `this`
+    ///   4. a callable parent          → `parent(args…, this)`: the derived
+    ///                                  instance is the TRAILING argument; the
+    ///                                  base initialises what it is given
+    ///   5. nothing callable           → the derived allocation stands
+    ///
+    /// Allocation: the most-derived constructor allocates, because WASM GC
+    /// fixes an object's type at allocation. Under ECMA `new` dispatch the
+    /// allocation goes into a temporary seeded from `this_slot` and `this` is
+    /// bound only when the call COMPLETES (§10.2.2 step 13, §9.1.1.3.4);
+    /// otherwise `this_slot` already holds the allocation from the constructor
+    /// prologue. `new.target` is a per-construction fact the caller has already
+    /// established; this emits no probe of it.
+    pub(crate) fn emit_parent_ctor_call(
+        &mut self,
+        class_name: &str,
+        parent_name: &str,
+        args: &[&Expression],
+        this_slot: u16,
+        result: CtorResult,
+    ) -> Result<(), String> {
+        let line = self.line;
+        self.emit_static_constructor_guard_for_class(parent_name, line);
+        let tdz = self.ecma_new_dispatch();
+        // This chunk IS a derived constructor under ECMA `new` dispatch: the
+        // once-guard applies and the allocation goes through the temporary.
+        let derived_ctx =
+            matches!(self.js_derived_ctor_ctx, Some((ctx_chunk, _)) if ctx_chunk == self.current);
+
+        // §13.3.7.2 (JS): super() may only run once.
+        if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
+            if ctx_chunk == self.current {
+                emit_super_once_guard(self.chunk(), ctx_slot, line);
+            }
+        }
+
+        // 1. framework control
+        if self.is_framework_control_parent(parent_name) {
+            for a in args {
+                self.compile_expr(a)?;
+            }
+            self.emit_control_element(parent_name, args.len() as u8, line);
+            self.emit_ctor_result(this_slot, result);
+            return Ok(());
+        }
+
+        // 2. tree class with a Common ctor: initialise our instance in place.
+        if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
+            let into = format!("{backing}{}", crate::component_classes::CTOR_INTO_SUFFIX);
+            if tdz {
+                // `this` may still be unbound here: initialise it when it
+                // exists, otherwise the adapter allocates.
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if_value(line);
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_common(&into, args.len() as u8 + 1, line);
+                self.chunk().emit_else(line);
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit_common(&backing, args.len() as u8, line);
+                self.chunk().emit_end(line);
+            } else {
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_common(&into, args.len() as u8 + 1, line);
+            }
+            self.emit_ctor_result(this_slot, result);
+            return Ok(());
+        }
+
+        // 3. host exception with no adapter: the host builds it.
+        if self.ecma_error_object_shape()
+            && common::errors::is_exception_type(parent_name)
+            && !self.shadows_builtin_type(parent_name)
+        {
+            self.emit_js_exception_ctor_value(parent_name, args)?;
+            self.emit_ctor_result(this_slot, result);
+            return Ok(());
+        }
+
+        // 4. a callable parent: `parent(args…, this)`. Under ECMA every
+        // parent is called — an uncallable one must fail loudly at the call.
+        if tdz || self.parent_ctor_is_bound(parent_name) {
+            let receiver = if derived_ctx {
+                // Seeded from `this_slot`: when this class is itself a base
+                // further down a chain, the receiver it was handed is passed
+                // on rather than a second object allocated.
+                let canon_name = self.canon(class_name);
+                let type_slot = reserve_type_slot(&mut self.chunks, &canon_name);
+                let tmp = self.define_local("__derived_ctor_alloc");
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_u16(Op::LOCAL_SET, tmp);
+                emit_new_typed_object(self.chunk(), tmp, &canon_name, type_slot, line);
+                Some(tmp)
+            } else if tdz {
+                // `super()` outside the derived constructor's own chunk: no
+                // allocation to hand down, the parent's result is adopted.
+                None
+            } else {
+                Some(this_slot)
+            };
+            self.emit_parent_ctor_value_for_arity(parent_name, args.len());
+            for a in args {
+                self.compile_expr(a)?;
+            }
+            let mut argc = args.len() as u8;
+            if let Some(receiver) = receiver {
+                self.emit_u16(Op::LOCAL_GET, receiver);
+                argc = argc.saturating_add(1);
+            }
+            self.emit_direct_callable_invoke(argc);
+            self.emit_ctor_result(this_slot, result);
+            return Ok(());
+        }
+
+        // 5. nothing to call: the derived allocation stands.
+        if matches!(result, CtorResult::Keep) {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+        }
+        Ok(())
+    }
+
+    /// Bind the constructed object on the stack to `this`, keeping a copy on
+    /// the stack when the call site is an expression.
+    fn emit_ctor_result(&mut self, this_slot: u16, result: CtorResult) {
+        if matches!(result, CtorResult::Keep) {
+            inst!(self, core_wasm::dup);
+        }
+        self.emit_u16(Op::LOCAL_SET, this_slot);
+    }
+
+    /// The `Common` backing of a tree class's constructor, when it has one.
+    pub(crate) fn tree_common_ctor_backing(&self, class_name: &str) -> Option<String> {
+        // A class the program itself declares owns its constructor, even when a
+        // tree class shares the name.
+        if self.user_owns_type_spelling(class_name) {
+            return None;
+        }
+        match self.tree_ctor_target(class_name) {
+            Some(crate::component_classes::ConstructorTarget::Common(backing)) => Some(backing),
+            _ => None,
+        }
+    }
+
+    /// A parent exception instance from constructor arguments: the tree's
+    /// adapter constructor when the platform declares one, else the shared
+    /// shape. Leaves the instance on the stack.
+    pub(crate) fn emit_exception_parent_instance(
+        &mut self,
+        parent_name: &str,
+        args: &[&Expression],
+    ) -> Result<(), String> {
+        if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+            let line = self.line;
+            self.emit_common(&backing, args.len() as u8, line);
+            return Ok(());
+        }
+        self.emit_js_exception_ctor_value(parent_name, args)
+    }
+
+    /// Initialises the receiver in `this_slot` — the derived class's own typed
+    /// instance — as the parent exception, through the tree adapter. Answers
+    /// false when the parent has no adapter constructor.
+    pub(crate) fn emit_exception_parent_into(
+        &mut self,
+        parent_name: &str,
+        args: &[&Expression],
+        this_slot: u16,
+    ) -> Result<bool, String> {
+        let Some(backing) = self.tree_common_ctor_backing(parent_name) else {
+            return Ok(false);
+        };
+        for arg in args {
+            self.compile_expr(arg)?;
+        }
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        let line = self.line;
+        let into = format!("{backing}{}", crate::component_classes::CTOR_INTO_SUFFIX);
+        self.emit_common(&into, args.len() as u8 + 1, line);
+        self.emit_u16(Op::LOCAL_SET, this_slot);
+        Ok(true)
+    }
+
+    /// Same as [`Self::emit_exception_parent_instance`], from a message
+    /// already on the stack.
+    pub(crate) fn emit_exception_parent_from_message_value(
+        &mut self,
+        parent_name: &str,
+    ) -> Result<(), String> {
+        if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
+            let line = self.line;
+            self.emit_common(&backing, 1, line);
+            return Ok(());
+        }
+        self.emit_js_exception_ctor_from_message_value(parent_name)
     }
 
     fn parent_ctor_needs_ecma_construct_dispatch(&mut self, parent_name: &str) -> bool {
@@ -532,12 +900,18 @@ impl Compiler {
     /// `super.m()` and static inheritance for every parent that has a
     /// zero-argument constructor (i.e. every parent that declares none).
     fn emit_parent_class_value(&mut self, parent_name: &str) {
-        self.emit_parent_value(parent_name, true);
+        self.emit_parent_value(parent_name, true, None);
     }
 
-    fn emit_parent_value(&mut self, parent_name: &str, want_class_object: bool) {
+    fn emit_parent_value(
+        &mut self,
+        parent_name: &str,
+        want_class_object: bool,
+        ctor_arity: Option<usize>,
+    ) {
         let pname = self.canon(parent_name);
         let default_ctor = ctor_global_for(&pname, 0);
+        let arity_ctor = ctor_arity.map(|arity| ctor_global_for(&pname, arity));
         let bound = self.scope().resolve(parent_name).is_some()
             || self.defined_globals.contains(&pname)
             || self.defined_classes.contains(&pname);
@@ -565,6 +939,12 @@ impl Compiler {
             && !self.shadows_builtin_type(parent_name)
         {
             self.emit_global_read(&format!("__ctor_{parent_name}"));
+        } else if !want_class_object
+            && arity_ctor
+                .as_ref()
+                .is_some_and(|ctor| self.defined_globals.contains(ctor))
+        {
+            self.emit_global_read(arity_ctor.as_deref().unwrap_or(&default_ctor));
         } else if !want_class_object && self.defined_globals.contains(&default_ctor) {
             self.emit_global_read(&default_ctor);
         } else {
@@ -738,25 +1118,12 @@ impl Compiler {
             &class_slots::ClassSlot::TypeIdentity,
             class_slots::ValueSource::ConstStr(name.to_string()),
         );
-        // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
-        // constructor allocated and handed the object up, so the derived class
-        // inherited its parent's type and had to overwrite it — something WASM
-        // GC cannot express, which is why it needed a 0xFF custom opcode.
-        //
-        // ✅ TRUE AS OF 2026-08-30. The paragraph below describes what the
-        // compiler now does; the "NOT TRUE YET" correction that stood here is
-        // itself retired.
-        //
-        // It was accurate when written: for `class Sub extends Base` the whole
-        // module held exactly TWO `struct.new_default`, both Base's typeidx,
-        // both inside `__Base_ctor_0`, and `__Sub_ctor_0` had no allocation
-        // instruction at all. What was missing was never machinery —
-        // `emit_new_typed_object` already allocated only when no receiver was
-        // handed in, and the explicit-base-clause and forwarding shapes already
-        // used it — but ROUTING for a `super()` driven by the ctor BODY, which
-        // is the JS shape. That routing now exists in `calls.rs`
-        // (`ExprKind::Call { callee: Super }`), gated on `js_derived_ctor_ctx`.
-        // Measured after: A=1, B=2, C=3 each allocate their OWN typeidx.
+        // ⛔ NO RTT RE-STAMP HERE. The most-derived constructor allocates via
+        // `struct.new_default $T` and passes the receiver DOWN, so the instance
+        // carries its own rtt from the moment it exists and there is nothing to
+        // overwrite — which WASM GC could not express anyway. `__type` above is
+        // still written because host-constructed objects read the STRING
+        // channel; see wasmregistryfix.md steps 3–4.
         //
         // ⛔ ALLOCATION IS NOT INITIALISATION. The allocation goes into a
         // TEMPORARY seeded from `this_slot`, never into `this_slot` directly:
@@ -764,59 +1131,36 @@ impl Compiler {
         // pre-filled slot silently disarms the derived-constructor
         // ReferenceError when the base THROWS.
         //
-        // ⇒ `seam3_indexable` / `rtt_testable` and condition (2) of the
-        // `indexed_field` licence can now drop `!has_parent` — but allocation
-        // -move and widening are still ONE commit, and the move is the half
-        // that has landed. Gate before widening.
-        //
-        // The constructor protocol is inverted now: the most-derived class
-        // allocates via `struct.new_default $T` and passes the receiver DOWN, so
-        // the instance carries the right rtt from the moment it exists and there
-        // is nothing left to re-stamp. `__type` above is still written because
-        // the string channel is what host-constructed objects use (184 stamps
-        // across 59 files); see wasmregistryfix.md steps 3–4.
-        // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
-        // constructor allocated and handed the object up, so the derived class
-        // inherited its parent's type and had to overwrite it — something WASM
-        // GC cannot express, which is why it needed a 0xFF custom opcode.
-        //
-        // ✅ TRUE AS OF 2026-08-30. The paragraph below describes what the
-        // compiler now does; the "NOT TRUE YET" correction that stood here is
-        // itself retired.
-        //
-        // It was accurate when written: for `class Sub extends Base` the whole
-        // module held exactly TWO `struct.new_default`, both Base's typeidx,
-        // both inside `__Base_ctor_0`, and `__Sub_ctor_0` had no allocation
-        // instruction at all. What was missing was never machinery —
-        // `emit_new_typed_object` already allocated only when no receiver was
-        // handed in, and the explicit-base-clause and forwarding shapes already
-        // used it — but ROUTING for a `super()` driven by the ctor BODY, which
-        // is the JS shape. That routing now exists in `calls.rs`
-        // (`ExprKind::Call { callee: Super }`), gated on `js_derived_ctor_ctx`.
-        // Measured after: A=1, B=2, C=3 each allocate their OWN typeidx.
-        //
-        // ⛔ ALLOCATION IS NOT INITIALISATION. The allocation goes into a
-        // TEMPORARY seeded from `this_slot`, never into `this_slot` directly:
-        // §10.2.2 step 13 binds `this` when the SuperCall COMPLETES, so a
-        // pre-filled slot silently disarms the derived-constructor
-        // ReferenceError when the base THROWS.
-        //
-        // ⇒ `seam3_indexable` / `rtt_testable` and condition (2) of the
-        // `indexed_field` licence can now drop `!has_parent` — but allocation
-        // -move and widening are still ONE commit, and the move is the half
-        // that has landed. Gate before widening.
-        //
-        // The constructor protocol is inverted now: the most-derived class
-        // allocates via `struct.new_default $T` and passes the receiver DOWN, so
-        // the instance carries the right rtt from the moment it exists and there
-        // is nothing left to re-stamp. `__type` above is still written because
-        // the string channel is what host-constructed objects use (184 stamps
-        // across 59 files); see wasmregistryfix.md steps 3–4.
+        // ⇒ OPEN: `seam3_indexable` / `rtt_testable` and condition (2) of the
+        // `indexed_field` licence still carry `!has_parent`, which is now
+        // stricter than the allocation warrants. Widening them is one gated
+        // commit.
         if equality_is_structural {
             crate::primitives::classes::emit_value_equality_stamp(self.chunk(), this_slot, line);
         }
         if is_value_type {
             crate::primitives::classes::emit_value_storage_stamp(self.chunk(), this_slot, line);
+        }
+        // Prototype dispatch links the instance to `(new.target ?? Own).prototype`
+        // (§9.1.13 OrdinaryCreateFromConstructor). Under ECMA `new` the parent
+        // chain allocates AND links, so nothing is stamped here; an instance the
+        // compiler allocated itself has no link until this writes it.
+        if self.class_prototype_dispatch() && !self.ecma_new_dispatch() {
+            let proto_local = self.define_local(&format!("__{}_link_proto", name));
+            self.emit_load_instance_proto(name);
+            self.emit_u16(Op::LOCAL_SET, proto_local);
+            self.emit_u16(Op::LOCAL_GET, proto_local);
+            self.emit(Op::REF_IS_NULL);
+            self.emit(Op::I32_EQZ);
+            self.chunks[self.current].emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_u16(Op::LOCAL_GET, proto_local);
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::ProtoLink,
+                class_slots::ValueSource::Stack,
+            );
+            self.chunks[self.current].emit_end(line);
         }
         if let Some(parent_name) = parent {
             let pname = self.canon(parent_name);
@@ -850,6 +1194,16 @@ impl Compiler {
         // parent constructor chain does exactly that. So this belongs after it.
         self.emit_mi_ancestor_methods(name, this_slot, line);
         for (mname, mci, _, _) in instance_methods {
+            // §15.7: a class body's accessors are properties of `C.prototype`,
+            // shared, never own to the instance. The class definition already
+            // writes `__get_`/`__set_` onto the prototype; binding them here
+            // too would make them own properties (`hasOwnProperty`, `keys`,
+            // `for-in` all observe the difference).
+            if self.members_on_prototype()
+                && (mname.starts_with("__get_") || mname.starts_with("__set_"))
+            {
+                continue;
+            }
             if mname.starts_with("__get_") {
                 let prop = mname.strip_prefix("__get_").unwrap_or(mname);
                 crate::primitives::object::emit_bind_getter(
@@ -1748,12 +2102,7 @@ impl Compiler {
         }
 
         // One decision, one place — see `capture_receiver_for_inner_closures`.
-        // This is the THIRD site that made it: functions and function
-        // expressions. It carried both arms but spelled each differently again
-        // (an internal `__js_this` local rather than a source local under the
-        // self keyword, and no guard against an enclosing frame already
-        // holding one), which is exactly the drift that let the lambda copy
-        // lose its universal arm unnoticed.
+        // This is the site for functions and function expressions.
         let closures_use_this = crate::primitives::closures_in_body_reference_this(body);
         let self_kw_for_capture = self.profile.self_keyword.clone();
         let declares_own_receiver = self.scope().resolve(&self_kw_for_capture).is_some();
@@ -2612,12 +2961,8 @@ impl Compiler {
                     return_type.clone(),
                 );
             }
-            // The receiver (`this`) is bound ambiently from the call context
-            // (`__js_this`) rather than passed as an explicit first positional
-            // parameter. Capability-driven — not gated on the language name.
-            let ambient_this = false;
             // ⛔ `arguments` IS NOT A FACT ABOUT HOW `this` ARRIVES. This
-            // used to carry `&& ambient_this`, so flipping the receiver to
+            // used to carry the ambient-receiver condition, so flipping to
             // `ReceiverBinding::UniversalParameter` silently switched the
             // arguments object OFF in every class method: `typeof arguments`
             // answered "undefined" and `arguments[0]` threw, while the
@@ -2668,9 +3013,8 @@ impl Compiler {
                 // (`static::`, `get_called_class()`) — and it still answers for
                 // the languages that pass receivers only to methods.
                 class.late_static_binding || cc.universal_receiver()
-            } else if ambient_this {
-                false
             } else {
+                // Every non-static instance method carries a receiver.
                 true
             };
             let arity = if uses_js_arguments {
@@ -2870,19 +3214,12 @@ impl Compiler {
                 }
             }
             // §15.4.4 brand check. Gated on "is there a receiver to check",
-            // NOT on how it travels — keyed on `ambient_this` alone the check
-            // simply STOPPED being emitted once the receiver became a
-            // parameter, so a private member on a foreign object was accepted
-            // silently. Where the receiver is a parameter it is already in
-            // scope and no global read is needed; where it is ambient, load it
-            // first as before.
+            // NOT on how it travels — keyed on the CHANNEL the check simply
+            // stopped being emitted once the receiver became a parameter, and a
+            // private member on a foreign object was accepted silently. The
+            // receiver is a parameter, so it is already in scope.
             if !is_static && cc.class_declares_private_member(&class.name, mname) {
-                let this_slot = if ambient_this {
-                    let slot = cc.define_local("__js_private_method_this");
-                    cc.emit_global_read("__js_this");
-                    cc.emit_u16(Op::LOCAL_SET, slot);
-                    Some(slot)
-                } else if has_receiver {
+                let this_slot = if has_receiver {
                     cc.scope().resolve(&self_kw)
                 } else {
                     None
@@ -2947,24 +3284,12 @@ impl Compiler {
 
             // An arrow in this body captures the method's `this` lexically
             // (§10.2.11), and the capture works by NAME through the shared env.
-            // Under the ambient receiver the name has to be created first, from
-            // the global; where the receiver is a parameter the local already
-            // exists and only needs marking as captured — dropping the marking
-            // with the global read is what left `[1].map(x => this.v)` inside a
-            // method reading nothing.
+            // The receiver is a parameter, so the local already exists and only
+            // needs marking as captured — dropping that marking is what left
+            // `[1].map(x => this.v)` inside a method reading nothing.
             // One decision, one place — see `capture_receiver_for_inner_closures`.
             let closures_use_this =
                 !is_static && crate::primitives::closures_in_body_reference_this(&m.body);
-            if closures_use_this && ambient_this {
-                // ⛔ THIS SITE'S OWN AMBIENT SPELLING — a SOURCE local under
-                // the self keyword, no parent guard. Differs deliberately from
-                // the function and lambda sites; see
-                // `capture_receiver_for_inner_closures`.
-                cc.emit_global_read("__js_this");
-                let this_local = cc.define_source_local(&self_kw);
-                cc.emit_u16(Op::LOCAL_SET, this_local);
-                cc.current_closure_captured_locals.insert(self_kw.clone());
-            }
             cc.capture_receiver_for_inner_closures(closures_use_this, has_receiver);
 
             // Shared env for closures inside class methods: if the
@@ -3355,10 +3680,18 @@ impl Compiler {
                 );
 
                 if getter.body.is_empty() {
-                    // Auto-property getter: return backing field
+                    // Auto-property getter: return backing field.
+                    //
+                    // ▶ SEAM 3. `publish_class_storage` registers this
+                    // property's slot under the PROPERTY's name, so naming the
+                    // declaring class reaches that storage as a field INDEX.
+                    // The `__`-prefixed key is the fallback for a class owning
+                    // no registered type, and must stay in step with the
+                    // setter or the halves address different storage.
                     if let Some(slot) = self.scope().resolve(&self_kw) {
+                        let backing = self.auto_property_backing_slot(&class.name, &pname_canon);
                         self.emit_u16(Op::LOCAL_GET, slot);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&format!("__{}", pname_canon)));
+                        self.class_get(class_slots::ObjSource::Stack, &backing);
                         self.emit(Op::RETURN);
                     }
                 } else {
@@ -3420,9 +3753,11 @@ impl Compiler {
                         if let Some(val_slot) = self.scope().resolve(&value_param_name) {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                         }
+                        let backing =
+                            self.auto_property_backing_slot(&class.name, &pname_canon);
                         self.class_set(
                             class_slots::ObjSource::Stack,
-                            &class_slots::ClassSlot::internal(&format!("__{}", pname_canon)),
+                            &backing,
                             class_slots::ValueSource::Stack,
                         );
                     }
@@ -3488,10 +3823,16 @@ impl Compiler {
         // the language's own primary-selection rule where it has one), so a
         // class with a `constructor` and an empty `constructors` cannot be
         // produced. The arm that handled that case is gone.
-        let ctor_variants: Vec<Option<&NormalConstructor>> = if class.constructors.is_empty() {
+        // The emitter sees one parent-call shape: a head-of-body `SuperCall`.
+        let lowered_ctors: Vec<NormalConstructor> = class
+            .constructors
+            .iter()
+            .map(NormalConstructor::with_base_call_lowered)
+            .collect();
+        let ctor_variants: Vec<Option<&NormalConstructor>> = if lowered_ctors.is_empty() {
             vec![None]
         } else {
-            class.constructors.iter().map(Some).collect()
+            lowered_ctors.iter().map(Some).collect()
         };
         let ctor_global_prefix = self.canon(name);
         let should_stamp_form_identity = self.class_requires_form_identity_stamp(parent);
@@ -3532,13 +3873,6 @@ impl Compiler {
         let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> = Vec::new();
         for (ctor_index, ctor_variant) in ctor_variants.iter().enumerate() {
             let helper_name = format!("__{}_ctor_{}", name, ctor_index);
-            let ctor_base_args_from_nc: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
-                if let BaseCall::Explicit(args) = &c.base_call {
-                    Some(args.iter().map(|a| a.value.clone()).collect())
-                } else {
-                    None
-                }
-            });
             let ctor_auto_base = ctor_variant
                 .map(|c| matches!(c.base_call, BaseCall::Auto))
                 .unwrap_or(false);
@@ -3549,9 +3883,9 @@ impl Compiler {
                     None
                 }
             });
-            let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> =
-                ctor_variant.map(|c| (&c.body, &c.params, ctor_base_args_from_nc.as_ref()));
-            if let Some((_, params, _)) = ctor_body {
+            let ctor_body: Option<(&Vec<Statement>, &Vec<Param>)> =
+                ctor_variant.map(|c| (&c.body, &c.params));
+            if let Some((_, params)) = ctor_body {
                 let skip = if class.explicit_self_param { 1 } else { 0 };
                 let ctor_params: Vec<Param> = params.iter().skip(skip).cloned().collect();
                 self.constructor_signatures
@@ -3560,7 +3894,7 @@ impl Compiler {
                     .push(CallSignature::from_params(&ctor_params));
             }
             let user_params: Vec<String> = ctor_body
-                .map(|(_, params, _)| {
+                .map(|(_, params)| {
                     if class.explicit_self_param {
                         params.iter().skip(1).map(|p| p.name.clone()).collect()
                     } else {
@@ -3569,7 +3903,7 @@ impl Compiler {
                 })
                 .unwrap_or_default();
             let ctor_min_arity = ctor_body
-                .map(|(_, params, _)| {
+                .map(|(_, params)| {
                     let skip = if class.explicit_self_param { 1 } else { 0 };
                     params
                         .iter()
@@ -3627,7 +3961,7 @@ impl Compiler {
             self.current_class_implicit_self = class.implicit_self_fields;
 
             let ctor_param_defaults: Vec<Option<Expression>> = ctor_body
-                .map(|(_, params, _)| {
+                .map(|(_, params)| {
                     let skip = if class.explicit_self_param { 1 } else { 0 };
                     params
                         .iter()
@@ -3695,7 +4029,7 @@ impl Compiler {
                 }
                 self.emit_direct_callable_invoke(this_args.len() as u8);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
-                if let Some((body, _, _)) = ctor_body {
+                if let Some((body, _)) = ctor_body {
                     for stmt in body {
                         self.compile_stmt(stmt)?;
                     }
@@ -3758,51 +4092,69 @@ impl Compiler {
                 crate::primitives::classes::emit_constructor_return(self.chunk(), this_slot, line);
             } else {
                 let is_child = parent.is_some();
-                let parent_ctor_is_bound = if let Some(parent_name) = parent {
-                    if self.dotnet_descriptor_parent_has_no_user_ctor(parent_name) {
-                        false
-                    } else {
-                        let pname = self.canon(parent_name);
-                        let has_local = self.scope().resolve(parent_name).is_some();
-                        let has_upvalue = self.scopes.len() > 1
-                            && self
-                                .resolve_upvalue(self.scopes.len() - 1, parent_name)
-                                .is_some();
-                        let has_static_local = self.static_local_binding(parent_name).is_some();
-                        has_local
-                            || has_upvalue
-                            || has_static_local
-                            || self.defined_globals.contains(&pname)
-                            || self.defined_classes.contains(&pname)
-                            || (self.profile.has_ecma_globals
-                                && Self::is_ecma_typed_array_ctor_name(parent_name)
-                                && !self.shadows_builtin_type(parent_name))
-                            || (self.profile.has_ecma_globals
-                                && Self::is_ecma_array_buffer_ctor_name(parent_name)
-                                && !self.shadows_builtin_type(parent_name))
-                            || (self.profile.has_ecma_globals
-                                && Self::is_ecma_collection_ctor_name(parent_name)
-                                && !self.shadows_builtin_type(parent_name))
-                    }
-                } else {
-                    false
+                let parent_ctor_is_bound = match parent {
+                    Some(parent_name) => self.parent_ctor_is_bound(parent_name),
+                    None => false,
                 };
                 if is_child {
                     self.emit_null();
                     self.emit_u16(Op::LOCAL_SET, this_slot);
+                    // THE MOST-DERIVED CONSTRUCTOR ALLOCATES. WASM GC fixes the
+                    // type at allocation, so `this` is allocated with this
+                    // class's typeidx before any parent runs, and the parent
+                    // initialises what it is handed. Not under ECMA `new`
+                    // dispatch, where `this` stays unbound until `super()`
+                    // completes (§9.1.1.3.4); not over a framework control,
+                    // which IS the instance.
+                    let control_parent = parent
+                        .as_deref()
+                        .is_some_and(|p| self.is_framework_control_parent(p));
+                    if !self.ecma_new_dispatch() && !control_parent {
+                        let canon_name = self.canon(name);
+                        crate::primitives::classes::emit_new_typed_object(
+                            self.chunk(),
+                            this_slot,
+                            &canon_name,
+                            type_slot,
+                            line,
+                        );
+                        for (mname, mci, _, _) in &instance_methods {
+                            if mname.starts_with("__get_") || mname.starts_with("__set_") {
+                                continue;
+                            }
+                            let capture_names = method_capture_name_map
+                                .get(mci)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]);
+                            if self.class_prototype_dispatch()
+                                && capture_names.is_empty()
+                                && !mname.starts_with("__js_private_")
+                            {
+                                continue;
+                            }
+                            self.emit_bind_instance_method_with_aliases(
+                                this_slot,
+                                mname,
+                                *mci,
+                                capture_names,
+                                method_rest_fixed_count(*mci),
+                                !self.class_prototype_dispatch(),
+                            )?;
+                        }
+                    }
 
-                    let has_explicit_base =
-                        ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
-                    let auto_base_needed = !has_explicit_base
-                        && ctor_body.is_some()
+                    // A written parent call is always a head-of-body
+                    // `SuperCall` (`NormalConstructor::with_base_call_lowered`);
+                    // the prologue only ever injects the implicit one.
+                    let auto_base_needed = ctor_body.is_some()
                         && ctor_auto_base
                         && parent.is_some()
                         && {
                             let stmts = ctor_body
                                 .as_ref()
-                                .map(|(b, _, _)| b.as_slice())
+                                .map(|(b, _)| b.as_slice())
                                 .unwrap_or(&[]);
-                            !body_has_super_call(stmts)
+                            !self.body_has_parent_ctor_call(stmts)
                         };
 
                     // Framework GUI control parent (`class Form1 : Form`):
@@ -3810,96 +4162,33 @@ impl Compiler {
                     // control (identity + Controls collection), replacing the
                     // per-class ctor global we no longer emit for control
                     // types.
-                    // Only intercept on the paths where the block below
-                    // (`has_explicit_base || auto_base_needed ||
-                    // ctor_body.is_none()`) consumes our `this_slot`
-                    // construction; when a ctor body drives `super()` itself,
-                    // leave construction to that statement so we don't build
-                    // the instance twice.
+                    // Only on the paths where the prologue constructs `this`
+                    // itself; a body that carries the parent call constructs
+                    // through that statement, and never twice.
                     let framework_ctrl_parent = parent
                         .as_deref()
                         .filter(|p| self.is_framework_control_parent(p))
-                        .filter(|_| has_explicit_base || auto_base_needed || ctor_body.is_none());
+                        .filter(|_| auto_base_needed || ctor_body.is_none());
                     if let Some(fp) = framework_ctrl_parent {
-                        let base_args: Vec<Expression> = ctor_body
-                            .as_ref()
-                            .and_then(|(_, _, ba)| ba.as_ref())
-                            .map(|a| a.to_vec())
-                            .unwrap_or_default();
-                        self.try_emit_framework_control_base(fp, &base_args, this_slot)?;
-                    } else if let Some((_, _, base_args)) = &ctor_body {
-                        if let Some(bargs) = base_args {
-                            if let Some(parent_name) = parent {
-                                if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
-                                    self.emit_default_js_new_target(name);
-                                    self.emit_ecma_reflect_construct_parent(parent_name, bargs)?;
-                                    self.emit_u16(Op::LOCAL_SET, this_slot);
-                                } else if parent_ctor_is_bound {
-                                    // Allocate with THIS class's type before the
-                                    // base ctor runs, then hand it down as the
-                                    // trailing receiver. WASM GC fixes type at
-                                    // allocation, so the most-derived class must
-                                    // be the one that allocates; the base
-                                    // initialises what it is given.
-                                    let canon_name = self.canon(name);
-                                    crate::primitives::classes::emit_new_typed_object(
-                                        self.chunk(),
-                                        this_slot,
-                                        &canon_name,
-                                        type_slot,
-                                        line,
-                                    );
-                                    self.emit_default_js_new_target(name);
-                                    self.emit_parent_ctor_value(parent_name);
-                                    for a in *bargs {
-                                        self.compile_expr(a)?;
-                                    }
-                                    self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_direct_callable_invoke(bargs.len() as u8 + 1);
-                                    self.emit_u16(Op::LOCAL_SET, this_slot);
-                                } else {
-                                    let canon_name = self.canon(name);
-                                    crate::primitives::classes::emit_new_typed_object(
-                                        self.chunk(),
-                                        this_slot,
-                                        &canon_name,
-                                        type_slot,
-                                        line,
-                                    );
-                                }
-                            }
-                        } else if auto_base_needed {
-                            if let Some(parent_name) = parent {
-                                if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
-                                    self.emit_default_js_new_target(name);
-                                    self.emit_ecma_reflect_construct_parent(parent_name, &[])?;
-                                    self.emit_u16(Op::LOCAL_SET, this_slot);
-                                } else if parent_ctor_is_bound {
-                                    // Same inversion as the explicit-base-args
-                                    // path: derived allocates, base initialises.
-                                    let canon_name = self.canon(name);
-                                    crate::primitives::classes::emit_new_typed_object(
-                                        self.chunk(),
-                                        this_slot,
-                                        &canon_name,
-                                        type_slot,
-                                        line,
-                                    );
-                                    self.emit_default_js_new_target(name);
-                                    self.emit_parent_ctor_value(parent_name);
-                                    self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_direct_callable_invoke(1);
-                                    self.emit_u16(Op::LOCAL_SET, this_slot);
-                                } else {
-                                    let canon_name = self.canon(name);
-                                    crate::primitives::classes::emit_new_typed_object(
-                                        self.chunk(),
-                                        this_slot,
-                                        &canon_name,
-                                        type_slot,
-                                        line,
-                                    );
-                                }
+                        self.try_emit_framework_control_base(fp, &[], this_slot)?;
+                    } else if ctor_body.is_some() {
+                        // The implicit parameterless parent call, through the
+                        // same emitter the body-driven `super(args)` uses.
+                        let prologue_args: Option<Vec<&Expression>> =
+                            if auto_base_needed { Some(Vec::new()) } else { None };
+                        if let (Some(arg_refs), Some(parent_name)) = (prologue_args, parent) {
+                            self.emit_default_js_new_target(name);
+                            if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
+                                self.emit_ecma_reflect_construct_parent(parent_name, &[])?;
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                            } else {
+                                self.emit_parent_ctor_call(
+                                    name,
+                                    parent_name,
+                                    &arg_refs,
+                                    this_slot,
+                                    CtorResult::Discard,
+                                )?;
                             }
                         }
                     } else if let Some(parent_name) = parent {
@@ -3944,17 +4233,8 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
                         } else if parent_ctor_is_bound {
-                            // Derived allocates, base initialises — see the
-                            // explicit-base-args path above. Done once here for
-                            // every forwarding shape below.
-                            let canon_name = self.canon(name);
-                            crate::primitives::classes::emit_new_typed_object(
-                                self.chunk(),
-                                this_slot,
-                                &canon_name,
-                                type_slot,
-                                line,
-                            );
+                            // Derived allocated in the prologue; the base
+                            // initialises it, once for every forwarding shape.
                             self.emit_default_js_new_target(name);
                             self.emit_parent_ctor_value(parent_name);
                             if synthesized_forward_args {
@@ -4016,6 +4296,24 @@ impl Compiler {
                             self.chunks[self.current].emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, 0);
                             self.chunks[self.current].emit_end(line);
+                            let msg_slot = self.define_local("__exc_parent_msg");
+                            self.emit_u16(Op::LOCAL_SET, msg_slot);
+                            if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
+                                self.emit_u16(Op::LOCAL_GET, this_slot);
+                                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                                self.chunks[self.current].emit_if(line);
+                                self.emit_u16(Op::LOCAL_GET, msg_slot);
+                                self.emit_u16(Op::LOCAL_GET, this_slot);
+                                let into = format!("{backing}{}", crate::component_classes::CTOR_INTO_SUFFIX);
+                                self.emit_common(&into, 2, line);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                                self.chunks[self.current].emit_else(line);
+                                self.emit_u16(Op::LOCAL_GET, msg_slot);
+                                self.emit_common(&backing, 1, line);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                                self.chunks[self.current].emit_end(line);
+                            } else {
+                            self.emit_u16(Op::LOCAL_GET, msg_slot);
                             self.emit_js_exception_ctor_from_message_value(parent_name)?;
                             // Honour a receiver passed down from a derived
                             // constructor. This branch builds an intrinsic error
@@ -4048,7 +4346,13 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, this_slot);
                             self.chunks[self.current].emit_end(line);
-                        } else {
+                            }
+                        } else if self.ecma_new_dispatch() {
+                            // An implicit constructor over a parent no step
+                            // above can construct through (a host intrinsic
+                            // such as `RegExp`): the derived allocation stands,
+                            // as it does outside ECMA dispatch, so the
+                            // instance exists for the stamps that follow.
                             let canon_name = self.canon(name);
                             crate::primitives::classes::emit_new_typed_object(
                                 self.chunk(),
@@ -4060,156 +4364,39 @@ impl Compiler {
                         }
                     }
 
-                    let no_base_derived_body =
-                        ctor_body.as_ref().is_some_and(|(body, _, base_args)| {
-                            base_args.is_none() && !body_has_super_call(body)
-                        }) && !has_explicit_base
-                            && !auto_base_needed
-                            && !self.ecma_new_dispatch();
-                    if no_base_derived_body {
-                        let canon_name = self.canon(name);
-                        crate::primitives::classes::emit_new_typed_object(
-                            self.chunk(),
-                            this_slot,
-                            &canon_name,
-                            type_slot,
-                            line,
-                        );
-                    }
+                    let no_base_derived_body = ctor_body
+                        .as_ref()
+                        .is_some_and(|(body, _)| !self.body_has_parent_ctor_call(body))
+                        && !auto_base_needed
+                        && !self.ecma_new_dispatch();
 
-                    if has_explicit_base
-                        || auto_base_needed
-                        || ctor_body.is_none()
-                        || no_base_derived_body
-                    {
-                        self.class_set(
-                            class_slots::ObjSource::Local(this_slot),
-                            &class_slots::ClassSlot::TypeIdentity,
-                            class_slots::ValueSource::ConstStr(name.to_string()),
-                        );
-                        if class.is_value_type {
-                            crate::primitives::classes::emit_value_equality_stamp(
-                                self.chunk(),
-                                this_slot,
-                                line,
-                            );
-                        }
-
-                        if self.class_prototype_dispatch() {
-                            let proto_local =
-                                self.define_local(&format!("__{}_link_proto", helper_name));
-                            self.emit_load_instance_proto(name);
-                            self.emit_u16(Op::LOCAL_SET, proto_local);
-                            self.emit_u16(Op::LOCAL_GET, proto_local);
-                            self.emit(Op::REF_IS_NULL);
-                            self.emit(Op::I32_EQZ);
-                            self.chunks[self.current].emit_if(line);
-                            self.emit_u16(Op::LOCAL_GET, this_slot);
-                            self.emit_u16(Op::LOCAL_GET, proto_local);
-                            self.class_set(
-                                class_slots::ObjSource::Stack,
-                                &class_slots::ClassSlot::ProtoLink,
-                                class_slots::ValueSource::Stack,
-                            );
-                            self.chunks[self.current].emit_end(line);
-                        }
-
-                        for (fname, type_hint, init, array_bounds) in &field_inits {
-                            self.emit_class_field_initializer(
-                                this_slot,
-                                fname,
-                                type_hint.as_deref(),
-                                init.as_ref(),
-                                array_bounds.as_deref(),
-                                class.is_value_type,
-                                line,
-                            )?;
-                        }
-
-                        if let Some(parent_name) = parent {
-                            let pname = self.canon(parent_name);
-                            let owner = self.canon(&class.name);
-                            for method_name in &instance_method_names {
-                                self.emit_base_method_slot(this_slot, &owner, method_name, line);
-                            }
-                            self.emit_store_super_ref(this_slot, &pname);
-                        }
-
-                        // Multiple inheritance (opt-in): attach every MRO
-                        // ancestor's methods in reverse-C3 order before self's
-                        // own, so a nearer base overrides a farther one. No-op
-                        // for single-inheritance classes / non-MI languages.
-                        self.emit_mi_ancestor_methods(name, this_slot, line);
-                        for (mname, mci, _, _) in &instance_methods {
-                            // §15.7 — see the matching skip in the
-                            // `ctor_this_args` branch above.
-                            if self.members_on_prototype()
-                                && (mname.starts_with("__get_") || mname.starts_with("__set_"))
-                            {
-                                continue;
-                            }
-                            if mname.starts_with("__get_") {
-                                let prop = mname.strip_prefix("__get_").unwrap_or(mname);
-                                crate::primitives::object::emit_bind_getter(
-                                    self.chunk(),
-                                    this_slot,
-                                    prop,
-                                    *mci,
-                                    line,
-                                );
-                            } else if mname.starts_with("__set_") {
-                                let prop = mname.strip_prefix("__set_").unwrap_or(mname);
-                                crate::primitives::object::emit_bind_setter(
-                                    self.chunk(),
-                                    this_slot,
-                                    prop,
-                                    *mci,
-                                    line,
-                                );
-                            } else {
-                                let capture_names = method_capture_name_map
-                                    .get(mci)
-                                    .map(Vec::as_slice)
-                                    .unwrap_or(&[]);
-                                if self.class_prototype_dispatch()
-                                    && capture_names.is_empty()
-                                    && !mname.starts_with("__js_private_")
-                                {
-                                    continue;
-                                }
-                                self.emit_bind_instance_method_with_aliases(
-                                    this_slot,
-                                    mname,
-                                    *mci,
-                                    capture_names,
-                                    method_rest_fixed_count(*mci),
-                                    !self.class_prototype_dispatch(),
-                                )?;
-                            }
-                        }
-
+                    if auto_base_needed || ctor_body.is_none() || no_base_derived_body {
+                        // The parent chain (if any) has run; the instance in
+                        // `this_slot` now gets its derived identity. ONE stamp
+                        // block for every construction shape.
                         let ctor_stmts: &[Statement] = ctor_body
                             .as_ref()
-                            .map(|(b, _, _)| b.as_slice())
+                            .map(|(b, _)| b.as_slice())
                             .unwrap_or(&[]);
-                        if should_stamp_form_identity && !body_has_identity_stamp(ctor_stmts) {
-                            self.emit_form_identity_stamp(this_slot, name, line);
-                        }
-                        for aim in &class.auto_init_methods {
-                            let has_method = instance_methods
-                                .iter()
-                                .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
-                            if has_method && !body_calls_method(ctor_stmts, aim) {
-                                crate::primitives::classes::emit_auto_init_call(
-                                    self.chunk(),
-                                    this_slot,
-                                    aim,
-                                    line,
-                                );
-                            }
-                        }
+                        self.emit_derived_ctor_stamps(
+                            name,
+                            this_slot,
+                            parent,
+                            &instance_method_names,
+                            &field_inits,
+                            &instance_methods,
+                            &method_capture_name_map,
+                            &method_rest_fixed_counts,
+                            class.is_value_type,
+                            class.semantics.equality == vybe_ast::ValueEquality::Structural,
+                            should_stamp_form_identity,
+                            ctor_stmts,
+                            ctor_stmts,
+                            &class.auto_init_methods,
+                            line,
+                        )?;
 
-                        if let Some((body, _, _)) = ctor_body {
+                        if let Some((body, _)) = ctor_body {
                             for stmt in body {
                                 self.compile_stmt(stmt)?;
                             }
@@ -4217,17 +4404,11 @@ impl Compiler {
                     } else {
                         let body_stmts: &[Statement] = ctor_body
                             .as_ref()
-                            .map(|(b, _, _)| b.as_slice())
+                            .map(|(b, _)| b.as_slice())
                             .unwrap_or(&[]);
-                        let is_super_call = |stmt: &Statement| {
-                            if let StmtKind::Expr(expr) = &stmt.kind {
-                                matches!(&expr.kind, ExprKind::SuperCall { .. })
-                                    || matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Super))
-                            } else {
-                                false
-                            }
-                        };
-                        let super_idx = body_stmts.iter().position(is_super_call);
+                        let super_idx = body_stmts
+                            .iter()
+                            .position(|stmt| self.is_parent_ctor_call_stmt(stmt));
                         let preamble_end = match super_idx {
                             Some(index) => {
                                 let mut end = index + 1;
@@ -4392,7 +4573,7 @@ impl Compiler {
                     }
                     let ctor_stmts: &[Statement] = ctor_body
                         .as_ref()
-                        .map(|(b, _, _)| b.as_slice())
+                        .map(|(b, _)| b.as_slice())
                         .unwrap_or(&[]);
                     for aim in &class.auto_init_methods {
                         let has_method = instance_methods
@@ -4407,7 +4588,7 @@ impl Compiler {
                             );
                         }
                     }
-                    if let Some((body, _, _)) = ctor_body {
+                    if let Some((body, _)) = ctor_body {
                         for stmt in body {
                             self.compile_stmt(stmt)?;
                         }
@@ -4833,6 +5014,10 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, proto_local);
             let desc_name_idx = self.chunks[self.current]
                 .add_constant(Value::String(Arc::from(name)));
+            // `DESC_SET_PROTO`'s immediate is still 16-bit; narrowing is checked
+            // so it cannot resolve to a different name.
+            let desc_name_idx = u16::try_from(desc_name_idx)
+                .expect("descriptor-name constant exceeds DESC_SET_PROTO's u16 immediate");
             self.emit_u16(Op::DESC_SET_PROTO, desc_name_idx);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -5305,10 +5490,14 @@ impl Compiler {
         }
 
         // Synthetic static constructor hook from language walkers.
-        if let Some((_, static_init_ci, _, _)) = static_methods
-            .iter()
-            .find(|(mname, _, _, _)| mname.eq_ignore_ascii_case("__static_init__"))
-        {
+        let definition_time_static_init = if self.static_constructors_run_on_first_type_use() {
+            None
+        } else {
+            static_methods
+                .iter()
+                .find(|(mname, _, _, _)| mname.eq_ignore_ascii_case("__static_init__"))
+        };
+        if let Some((_, static_init_ci, _, _)) = definition_time_static_init {
             let line = self.line;
             let saved_js_this = self.begin_receiver_bind("__js_prev_static_init_this");
             if saved_js_this.is_active() {
@@ -5736,6 +5925,15 @@ fn stamp_reflection_type_fields(
 /// that nothing reads. Stamping it unconditionally keeps the compiler and
 /// the resolver from having to detect "is this class a form?" — the same
 /// canonical AST and bytecode shape works for both.
+/// Where the constructed object goes when a parent-constructor call completes.
+#[derive(Clone, Copy)]
+pub(crate) enum CtorResult {
+    /// Statement shape: `this` is written, nothing stays on the stack.
+    Discard,
+    /// Expression shape: `this` is written and a copy stays on the stack.
+    Keep,
+}
+
 pub fn emit_new_typed_object(
     chunk: &mut Chunk,
     this_slot: u16,
@@ -5774,9 +5972,8 @@ pub fn emit_new_typed_object(
     // Two very different things arrive in `this_slot`: a derived construction
     // hands down the already-allocated instance (must be initialised, never
     // replaced — it carries the rtt, and WASM GC cannot retype afterwards),
-    // and a dart NAMED CONSTRUCTOR arrives as a MEMBER CALL riding the ambient
-    // `__js_this`, which is a generic untyped object that was never allocated
-    // as this class at all.
+    // and a dart NAMED CONSTRUCTOR arrives as a MEMBER CALL whose receiver is a
+    // generic untyped object that was never allocated as this class at all.
     //
     // Truthiness cannot tell them apart, so the named-ctor case initialised the
     // ambient object: every call returned the SAME object (`identical(a, b)`
@@ -7783,6 +7980,25 @@ impl crate::Compiler {
     /// there, and both licence sets are `HashSet`s. So this may run in the
     /// declaration pre-pass AND again from `compile_class` without the second
     /// call changing anything.
+    /// The storage an AUTO-property's default accessors address: indexed when
+    /// the declaring class owns a registered type carrying the property's
+    /// slot, else the `__`-prefixed key. Both accessors ask this one question
+    /// so they cannot disagree.
+    fn auto_property_backing_slot(
+        &self,
+        class_name: &str,
+        pname_canon: &str,
+    ) -> class_slots::ClassSlot {
+        let slot = class_slots::ClassSlot::instance_of(class_name.to_string(), pname_canon);
+        if matches!(
+            self.resolve_slot(&slot),
+            class_slots::ResolvedSlot::Indexed { .. }
+        ) {
+            return slot;
+        }
+        class_slots::ClassSlot::internal(&format!("__{pname_canon}"))
+    }
+
     pub(crate) fn publish_class_storage(
         &mut self,
         class: &crate::primitives::class_normalize::NormalClass,
@@ -8097,4 +8313,3 @@ impl crate::Compiler {
         }
     }
 }
-

@@ -145,6 +145,27 @@ impl Compiler {
                 .any(|name| self.canon(name) == member_canon)
     }
 
+    /// The type a `New` constructs.
+    ///
+    /// `Foo.Bar()` is ambiguous in shape: a NAMESPACED type, where the type is
+    /// the field, or a NAMED CONSTRUCTOR (`Point.origin()`, lua's
+    /// `Point.new()`), where the type is the OBJECT and the field is the
+    /// constructor's name. Asking whether the object names a declared class is
+    /// what tells them apart — reading the field for a named constructor gives
+    /// the constructor's name as the type, so the receiver comes back untyped
+    /// and every member access on it stays string-keyed.
+    pub(super) fn new_constructed_type_name(&self, class: &Expression) -> Option<String> {
+        if let ExprKind::Member { object, .. } = &class.kind
+            && let Some(owner) = Self::expr_terminal_type_name(object)
+        {
+            let canon = self.canon(&owner);
+            if self.pending_classes.contains_key(&canon) || self.defined_classes.contains(&canon) {
+                return Some(owner);
+            }
+        }
+        Self::expr_terminal_type_name(class)
+    }
+
     pub(super) fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
@@ -319,10 +340,9 @@ impl Compiler {
             // class is known (see `define_local_typed(&self_kw, …)`).
             //
             // Reading the slot rather than asserting `current_class` is what
-            // makes this safe where `this` is dynamically rebound: JS's
-            // ambient-`this` local is loaded from `__js_this`, whose value is
-            // decided at CALL time, so that site declares no type and
-            // inference correctly answers None instead of naming the
+            // makes this safe where `this` is dynamically rebound: the
+            // receiver is decided at CALL time, so that site declares no type
+            // and inference correctly answers None instead of naming the
             // enclosing class.
             //
             // Measured neutral name-for-name over 164 class tests across
@@ -398,8 +418,48 @@ impl Compiler {
                     .trim()
                     .to_string()
             }),
-            ExprKind::New { class, .. } => Self::expr_terminal_type_name(class)
+            ExprKind::New { class, .. } => self
+                .new_constructed_type_name(class)
                 .map(|name| self.resolve_source_type_alias(&name)),
+            // A literal that opens by SPREADING an instance is a
+            // copy-with-overrides of that instance's class — C# `p with { … }`
+            // is spelled exactly so — and the copy IS an instance of that
+            // class. Without this the second link of a chain (`b = a with {…};
+            // c = b with {…}`) had no class, fell to the property-bag copy,
+            // and read its indexed fields as `undefined`.
+            // `new Pair { A = 1 }` — an OBJECT INITIALIZER — is spelled as an
+            // immediately-invoked lambda: `{ var __obj = new Pair; __obj.A = 1;
+            // return __obj; }()`. The class is stated on `__obj`'s declaration
+            // inside that body, so the expression's type is that declaration's
+            // hint. Without this the initializer had no class, and a `with`
+            // over it fell to the property-bag copy.
+            ExprKind::Call { callee, args, .. }
+                if args.is_empty()
+                    && let ExprKind::Lambda { body: LambdaBody::Block(stmts), .. } = &callee.kind
+                    && let Some(Statement { kind: StmtKind::Return(Some(ret)), .. }) = stmts.last()
+                    && let ExprKind::Ident(ret_name) = &ret.kind =>
+            {
+                stmts.iter().find_map(|st| {
+                    let StmtKind::VarDecl { declarations, .. } = &st.kind else {
+                        return None;
+                    };
+                    declarations.iter().find_map(|d| {
+                        matches!(&d.pattern, BindingPattern::Ident(n) if n == ret_name)
+                            .then(|| d.type_hint.as_ref().map(|h| h.spelling().to_string()))
+                            .flatten()
+                    })
+                })
+            }
+            ExprKind::Object(props) => match props.first() {
+                Some(ObjectProperty::Spread(recv))
+                    if props[1..]
+                        .iter()
+                        .all(|p| matches!(p, ObjectProperty::KeyValue { .. })) =>
+                {
+                    self.infer_expr_type_hint(recv)
+                }
+                _ => None,
+            },
             ExprKind::Array(elements) => Some(format!(
                 "{}()",
                 self.infer_array_element_type_hint(elements.iter().map(|item| &item.value))
@@ -1163,6 +1223,31 @@ impl Compiler {
         else {
             return;
         };
+        // ⛔ COPY THE EMITTED LAYOUT, NOT THE DECLARATION. `pending.fields`
+        // lists only the fields THIS class declares; the published
+        // `TypeEntry.fields` is the prefix-rule layout — every inherited
+        // field first, then this class's own, then auto-property backing
+        // slots — and it is what an instance actually carries. Copying from
+        // the declaration alone left a derived record's inherited `Name`
+        // and an `init`-property's backing slot uncopied: `null`/`undefined`.
+        let canon = self.canon(type_name);
+        let emitted: Vec<String> = self.chunks[0]
+            .types
+            .iter()
+            .find(|t| t.name == canon)
+            .map(|t| t.fields.clone())
+            .unwrap_or_default();
+        let fields: Vec<String> = if emitted.is_empty() {
+            fields
+        } else {
+            let mut all = emitted;
+            for f in fields {
+                if !all.contains(&f) {
+                    all.push(f);
+                }
+            }
+            all
+        };
         in_progress.push(type_name.to_string());
 
         let source_slot = self.define_local("__value_type_src");
@@ -1215,7 +1300,22 @@ impl Compiler {
                 .and_then(|field_type| field_type.value_type.clone());
 
             self.emit_u16(Op::LOCAL_GET, source_slot);
-            self.class_get_resolved(class_slots::ObjSource::Stack, &member_key);
+            // ▶ SEAM 3. A licensed class keeps its declared fields in INDEXED
+            // storage; naming the declaring class lets the copy read and write
+            // `struct.get/set <typeidx> <fieldidx>` on both sides. A keyed copy
+            // of an indexed field reads `undefined` from the property bag and
+            // writes it back there — the clone answered NaN.
+            let member_slot =
+                class_slots::ClassSlot::instance_of(type_name.to_string(), member_name);
+            let indexed = matches!(
+                self.resolve_slot(&member_slot),
+                class_slots::ResolvedSlot::Indexed { .. }
+            );
+            if indexed {
+                self.class_get(class_slots::ObjSource::Stack, &member_slot);
+            } else {
+                self.class_get_resolved(class_slots::ObjSource::Stack, &member_key);
+            }
             if let Some(nested_type) = nested {
                 self.emit_user_value_type_clone_inner(&nested_type, in_progress);
             }
@@ -1227,11 +1327,19 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, field_slot);
             self.emit_u16(Op::LOCAL_GET, clone_slot);
             self.emit_u16(Op::LOCAL_GET, field_slot);
-            self.class_set_resolved(
-                class_slots::ObjSource::Stack,
-                &member_key,
-                class_slots::ValueSource::Stack,
-            );
+            if indexed {
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &member_slot,
+                    class_slots::ValueSource::Stack,
+                );
+            } else {
+                self.class_set_resolved(
+                    class_slots::ObjSource::Stack,
+                    &member_key,
+                    class_slots::ValueSource::Stack,
+                );
+            }
         }
 
         self.emit_u16(Op::LOCAL_GET, clone_slot);

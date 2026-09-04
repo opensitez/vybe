@@ -56,8 +56,8 @@ impl Compiler {
     /// declared type is immutable — see the guard in
     /// `expressions.rs`'s `InstanceOf` arm.
     ///
-    /// Dispatch is emitted inline rather than through a host fn because the JS
-    /// method-call protocol has to stay intact (`__js_this` bound to B), which
+    /// Dispatch is emitted inline rather than through a host fn because the
+    /// method-call protocol has to stay intact (B is the receiver), which
     /// `ctx.invoke` cannot do.
     pub(crate) fn emit_has_instance_protocol(&mut self, lhs_slot: u16, rhs_slot: u16) {
         self.class_get(

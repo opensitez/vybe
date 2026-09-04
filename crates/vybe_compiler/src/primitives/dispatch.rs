@@ -294,7 +294,10 @@ pub fn emit_common(
             object::emit_hash_array(&mut chunks[current], line);
         }
         "object.hash_array" => object::emit_hash_array(&mut chunks[current], line),
-        "object.compare" => object::emit_compare(&mut chunks[current], line),
+        "object.compare" => {
+            let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+            object::emit_compare(&mut chunks[current], abi, line)
+        }
         "object.to_string_or" => {
             if argc < 2 {
                 chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -570,6 +573,9 @@ pub fn emit_common(
         "collections.get" => collections::emit_get(chunks, current, line),
         "collections.set" => collections::emit_set(chunks, current, line),
         "collections.contains" => collections::emit_contains(chunks, current, line),
+        "tuple.value_eq" => {
+            crate::primitives::tuples::emit_tuple_value_eq(&mut chunks[current], line)
+        }
         // Floored modulo — the result takes the DIVISOR's sign, so `-7 % 3` is
         // 2 and not -1. Python's `%` and Dart's both work this way; C's and
         // JS's `%` truncate instead. Reached as the `Mod` slot binding.

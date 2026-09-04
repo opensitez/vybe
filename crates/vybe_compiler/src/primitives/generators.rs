@@ -381,9 +381,15 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
 
+    // ⛔ `item_slot` IS DATA, NOT THE RECEIVER. Unlike the protocol-method
+    // sites below, the mapper is a plain callback, so the receiver is its own
+    // argument 0 — `undefined` under §10.2.1.1.
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
     let inner_block = chunks[current].emit_block(line);
@@ -714,7 +720,6 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, iter_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -866,7 +871,6 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
 
     // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
-    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -990,7 +994,6 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     let (loop_p, _) = chunk.emit_loop_s(line);
 
     // receiver = iter; step = next_fn(iter)
-    crate::primitives::class_context::bind_ambient_receiver(chunk, abi, iter_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -1062,11 +1065,11 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
 /// Sync driver — drive one step, return the raw `{value, done}`
 /// IteratorResult (§27.5.1.2).
-pub fn build_generator_next(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
+pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_generator_next");
     // Reached as `gen.next()` — `attach_continuation_protocols` installs it as
     // the continuation's `"next"` property, so the call site pushes a receiver.
-    let frame = StdlibFrame::method(abi, &mut c);
+    let frame = StdlibFrame::method(&mut c);
     let value_local = frame.slot(&mut c);
     let has_more_local = frame.slot(&mut c);
     let value_key = class_slots::resolve_interned(
@@ -1125,10 +1128,10 @@ pub fn build_generator_next(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
 ///     undefined (§27.5.3.5); `done` is a real Boolean;
 ///   - any throw out of the body REJECTS (`ecma:promise.reject`)
 ///     instead of throwing synchronously into the caller.
-pub fn build_async_generator_next(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
+pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_async_generator_next");
     // Reached as `gen.next(v)` — same installed-property path as the sync driver.
-    let frame = StdlibFrame::method(abi, &mut c);
+    let frame = StdlibFrame::method(&mut c);
     // Declaration order IS the ABI: the one user parameter (the optional
     // resume value; a missing arg pads as Undefined) first, then scratch.
     let v_local = frame.slot(&mut c);
@@ -2198,24 +2201,17 @@ impl Compiler {
 // the natural shape (Array → as-is, String → per-codepoint at the host
 // level, etc.).
 //
-// Method-call protocol: under `Ambient`, `__js_this` is bound to the receiver
-// before each method invocation per ECMA-262 §13.3.7 (CallMemberExpression),
-// and this helper saves the caller's `__js_this` on entry and restores it on
-// exit so calling iter_drain doesn't leak our internal `this` rebinds.
-//
-// ⛔ THAT SAVE/RESTORE PAIR IS THE HAND-ROLLED SHADOW STACK M5 DELETES. Under
-// `Parameter` there is nothing to save: each invocation's receiver is that
-// invocation's own argument, so no caller state is clobbered and the entry
-// read, the exit write and the `saved_this` local all vanish — see
-// `frame.save_ambient_this` / `restore_ambient_this` below.
-pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
+// Method-call protocol: each invocation's receiver is that invocation's own
+// argument (ECMA-262 §10.2.1), so this helper's internal method calls cannot
+// rebind anything the caller can observe.
+pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_iter_drain");
     // ⛔ `plain`, NOT `method`. Its one call site is hand-built
     // (`build_pyiter` in `collections.rs`) and pushes no receiver under either
     // ABI, so declaring one would desync exactly that call — even though this
     // chunk DOES have to invoke user methods the new way.
-    let frame = StdlibFrame::plain(abi);
+    let frame = StdlibFrame::plain();
     // Declaration order IS the ABI: the one user parameter first, then scratch.
     let v = frame.slot(&mut c);
     let result = frame.slot(&mut c);
@@ -2271,8 +2267,6 @@ pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     // for-of loops).
     let exit_block = c.emit_block(0);
 
-    let saved_this = frame.save_ambient_this(&mut c, 0);
-
     // Fast path: built-in Array → result = v, exit. Walking the
     // prototype chain for `iterator` would resolve to Array.prototype's
     // iterator and turn a plain `[1,2,3]` into a user-iterator drain.
@@ -2316,9 +2310,9 @@ pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     c.emit_end(0);
     c.patch_block(string_step);
 
-    // method = getMethodForCall(v, "iterator") — walks prototype chain and
-    // binds the receiver for HostFunctions. For bytecode functions, the
-    // caller sets __js_this directly.
+    // method = getMethodForCall(v, "iterator") — walks the prototype chain and
+    // binds the receiver for HostFunctions. A bytecode function takes it as
+    // argument 0 from the call below.
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_string_const("iterator", 0);
     crate::primitives::collections::emit_import_call_into(
@@ -2501,7 +2495,7 @@ pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, counter, 0);
 
     // Drain loop: while (counter < cap) {
-    //   __js_this = it; step = method();
+    //   step = method(it);
     //   if step null/undefined or step.done → break
     //   out.push(step.value); counter++;
     // }
@@ -2570,7 +2564,6 @@ pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
     // `Parameter`) and return result. RETURN is at the function's top level,
     // so structured control flow has fully unwound by the time we hit it —
     // no leaked labels.
-    frame.restore_ambient_this(&mut c, saved_this, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
     frame.finish(&mut c, 1);
@@ -2590,9 +2583,9 @@ pub fn build_iter_drain(imports: &mut Chunk, abi: ReceiverAbi) -> Chunk {
 /// (§27.5.1.5). `attach_continuation_protocols` installs it as an ordinary
 /// `"iterator"` PROPERTY of the generator object, so it is reached as a
 /// METHOD CALL and the call site supplies the receiver under `Parameter`.
-pub fn build_generator_self(abi: ReceiverAbi) -> Chunk {
+pub fn build_generator_self() -> Chunk {
     let mut c = Chunk::new("__stdlib_generator_self");
-    let frame = StdlibFrame::method(abi, &mut c);
+    let frame = StdlibFrame::method(&mut c);
     frame.emit_receiver(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     frame.finish(&mut c, 0);

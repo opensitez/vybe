@@ -1180,7 +1180,7 @@ pub fn build_futex_alloc16(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_OR, line);
     c.emit_if(line);
     c.emit_i32_const(1, line);
-    c.emit_op_u16(Op::MEMORY_GROW, 0, line);
+    c.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
     c.emit_i32_const(65536, line);
     c.emit_op(Op::I32_MUL, line);
     c.emit_op_u16(Op::LOCAL_SET, base, line);
@@ -1389,7 +1389,7 @@ impl crate::primitives::Compiler {
                 self.chunks[self.current].emit_if(line);
                 // First channel: claim a fresh page; base = old_pages * 64KiB.
                 self.chunks[self.current].emit_i32_const(1, line);
-                self.chunks[self.current].emit_op_u16(Op::MEMORY_GROW, 0, line);
+                self.chunks[self.current].emit_op_idx(Op::MEMORY_GROW, 0u32, line);
                 self.chunks[self.current].emit_i32_const(65536, line);
                 self.chunks[self.current].emit_op(Op::I32_MUL, line);
                 self.emit_u16(Op::LOCAL_SET, addr_slot);

@@ -12,14 +12,16 @@
 //!
 //! See `classnormalization.md` for the full shape rationale.
 
-use crate::{Argument, ClassKind, Expression, Modifiers, Param, Span, Statement};
+use crate::{
+    Argument, ClassKind, ExprKind, Expression, Modifiers, Param, Span, Statement, StmtKind,
+};
 
 /// The protocol-slot vocabulary lives in the AST, because the WALKER is what
 /// knows a method's role — Python from a reserved name, Dart from `operator`
 /// syntax, Java from conformance. Recovering it afterwards from the method's
 /// spelling is what made the name the identity. Re-exported under its original
 /// name so existing consumers are unaffected.
-pub use crate::{PROTOCOL_SLOT_TABLE, ProtocolSlot, ProtocolSlot as SpecialMethodKind};
+pub use crate::{ProtocolSlot, ProtocolSlot as SpecialMethodKind, PROTOCOL_SLOT_TABLE};
 
 /// Platform/type-construction metadata attached to a normalized class whose
 /// parent resolves to a registered platform type rather than a user class.
@@ -706,9 +708,49 @@ pub struct NormalConstructor {
     pub named_name: Option<String>,
 }
 
+impl NormalConstructor {
+    /// The constructor as the compiler consumes it: a parent-constructor
+    /// call declared as `BaseCall::Explicit(args)` becomes the FIRST
+    /// statement of the body, `SuperCall { method: None, args }`, and
+    /// `base_call` becomes `Auto` (the body carries the call, so the
+    /// compiler injects nothing). The compiler reads constructors ONLY
+    /// through this view, so a walker may spell the parent call as
+    /// `base_args` or as a body `SuperCall` and the emitter sees exactly one
+    /// shape — a head-of-body `SuperCall { method: None }`. Every other
+    /// `BaseCall` variant is returned unchanged.
+    pub fn with_base_call_lowered(&self) -> NormalConstructor {
+        let BaseCall::Explicit(args) = &self.base_call else {
+            return self.clone();
+        };
+        let super_call = Statement {
+            kind: StmtKind::Expr(Expression {
+                kind: ExprKind::SuperCall {
+                    method: None,
+                    args: args.clone(),
+                },
+                span: self.span,
+            }),
+            span: self.span,
+        };
+        let mut body = Vec::with_capacity(self.body.len() + 1);
+        body.push(super_call);
+        body.extend(self.body.iter().cloned());
+        NormalConstructor {
+            span: self.span,
+            params: self.params.clone(),
+            body,
+            base_call: BaseCall::Auto,
+            named_name: self.named_name.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BaseCall {
     /// User wrote `super(args)` / `MyBase.New(args)` / `: base(args)`.
+    /// Walker-facing data: `NormalConstructor::with_base_call_lowered`
+    /// turns it into a head-of-body `SuperCall` before emission, so no
+    /// emitter reads this variant.
     Explicit(Vec<Argument>),
     /// User wrote `: this(args)` / `this(args)` to chain to a sibling
     /// constructor on the same class.

@@ -357,6 +357,121 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
 
 // ── The two that are capability reads, not string manipulation ────────────
 
+/// Canonicalize an absolute path: drop `.` and empty segments, resolve `..`
+/// against what precedes it, and collapse runs of separators.
+///
+/// ⛔THIS IS PART OF `GetFullPath`, NOT AN EXTRA. .NET's `GetFullPath` is
+/// documented to return a CANONICAL path, and without this step it only made a
+/// path absolute — `Convert-Path .` answered `<cwd>/.` and a doubled separator
+/// survived as `tests//powershell`.
+///
+/// Stack: `[path]` → `[path]`.
+fn emit_canonicalize(chunk: &mut Chunk, line: u32) {
+    let input = chunk.alloc_scratch(5);
+    let parts = input + 1;
+    let out = input + 2;
+    let i = input + 3;
+    let seg = input + 4;
+
+    let split = chunk.add_import("ecma:string", "split");
+    let arr_new = chunk.add_import("ecma:array", "new");
+    let arr_len = chunk.add_import("ecma:array", "length");
+    let arr_get = chunk.add_import("ecma:array", "get");
+    let arr_push = chunk.add_import("ecma:array", "push");
+    let arr_pop = chunk.add_import("ecma:array", "pop");
+    let arr_join = chunk.add_import("ecma:array", "join");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_string_const(SEP, line);
+    chunk.emit_call(split, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, parts, line);
+    chunk.emit_call(arr_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, parts, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, parts, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, seg, line);
+
+    // `..` pops what precedes it; an empty segment or `.` contributes nothing;
+    // anything else is a real component.
+    chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
+    chunk.emit_string_const("..", line);
+    ops::emit_dyn_eq(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_call(arr_pop, 1, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
+    chunk.emit_string_const("", line);
+    ops::emit_dyn_eq(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
+    chunk.emit_string_const(".", line);
+    ops::emit_dyn_eq(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
+    chunk.emit_call(arr_push, 2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    // The leading separator was the empty first segment, which the loop drops,
+    // so it is put back rather than preserved.
+    chunk.emit_string_const(SEP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_string_const(SEP, line);
+    chunk.emit_call(arr_join, 2, line);
+    strings::emit_concat(chunk, 2, line);
+
+    // ⛔A TRAILING SEPARATOR IS SIGNIFICANT and survives canonicalization —
+    // `GetFullPath("tests/")` keeps the slash, marking the path as a directory.
+    // The loop drops it with the empty final segment, so it is restored from
+    // the INPUT rather than inferred from the result.
+    let ends = chunk.add_import("ecma:string", "endsWith");
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_string_const(SEP, line);
+    chunk.emit_call(ends, 2, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const(SEP, line);
+    strings::emit_concat(chunk, 2, line);
+    chunk.emit_end(line);
+}
+
 /// `Path.GetFullPath(p)` — absolute form, resolved against the process's
 /// initial working directory. Stack: `[path]` → `[string]`.
 ///
@@ -392,6 +507,8 @@ pub fn emit_full_path(chunk: &mut Chunk, line: u32) {
         chunk.emit_end(line);
     }
     chunk.emit_end(line);
+
+    emit_canonicalize(chunk, line);
 }
 
 /// `Path.GetTempPath()` — the scratch directory, from the environment.

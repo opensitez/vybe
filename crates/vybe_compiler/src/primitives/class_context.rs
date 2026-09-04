@@ -18,33 +18,6 @@ pub fn module_receiver_abi(chunks: &[Chunk]) -> ReceiverAbi {
         .map_or(ReceiverAbi::Ambient, |m| m.module_receiver_abi)
 }
 
-/// Bind `recv_slot` as the receiver of the invoke that immediately follows.
-///
-/// ⛔ Emits the `local.get` TOO, not just the store — under
-/// [`ReceiverAbi::Parameter`] both have to disappear together, and a caller
-/// that pushed the value itself would leave it stranded on the stack.
-///
-/// Under `Parameter` this emits NOTHING, and that is the whole point: every
-/// site that calls this already pushes the receiver as argument 0 of the
-/// invoke (host builtins have always read their receiver there — `ecma:array.map`
-/// opens `array_of(args, 0)`). The ambient store was the SECOND copy, kept
-/// only for the bytecode path. Deleting it leaves the argument as the single
-/// channel, which is ECMA-262 §10.2.1.
-/// Takes `abi` rather than `&[Chunk]` because every caller has already
-/// destructured `let chunk = &mut chunks[current]` and holds that borrow.
-pub fn bind_ambient_receiver(
-    chunk: &mut Chunk,
-    abi: ReceiverAbi,
-    recv_slot: u16,
-    line: u32,
-) {
-    if abi != ReceiverAbi::Ambient {
-        return;
-    }
-    chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    crate::primitives::globals::emit_write(chunk, "__js_this", line);
-}
-
 /// The local frame of a HAND-BUILT stdlib chunk (`build_generator_next` and
 /// friends), which have no `Compiler` and no scope to allocate against.
 ///
@@ -56,14 +29,11 @@ pub fn bind_ambient_receiver(
 /// `alloc_scratch` aliasing named locals has already cost one dart test that
 /// way. Allocating the slots makes the shift happen ONCE, here.
 pub(crate) struct StdlibFrame {
-    abi: ReceiverAbi,
     /// Does THIS chunk declare a receiver parameter?
     ///
-    /// ⛔ NOT the same question as `abi`. The module's ABI decides how this
-    /// chunk CALLS other functions; how this chunk is REACHED decides whether
-    /// it declares a parameter of its own, and the two can disagree.
+    /// ⛔ HOW THE CHUNK IS REACHED decides this, not how it calls out.
     /// `__stdlib_iter_drain` is the case in point: it invokes user methods, so
-    /// it must pass receivers the new way, but its only caller is a hand-built
+    /// it passes receivers as argument 0, but its only caller is a hand-built
     /// site in this crate that pushes none — give it a receiver parameter and
     /// its one real call site desyncs.
     declares_receiver: bool,
@@ -76,23 +46,18 @@ impl StdlibFrame {
     ///
     /// Allocate the user parameters first, in declaration order, then the
     /// scratch locals — binding is POSITIONAL, so declaration order is the ABI.
-    pub(crate) fn method(abi: ReceiverAbi, chunk: &mut Chunk) -> Self {
-        let declares_receiver = abi == ReceiverAbi::Parameter;
-        if declares_receiver {
-            chunk.alloc_scratch(1); // slot 0, the receiver
-        }
+    pub(crate) fn method(chunk: &mut Chunk) -> Self {
+        chunk.alloc_scratch(1); // slot 0, the receiver
         Self {
-            abi,
-            declares_receiver,
+            declares_receiver: true,
         }
     }
 
     /// For a chunk reached ONLY from hand-built call sites in this crate,
     /// which push no receiver argument under either ABI. It declares none —
     /// but still CALLS other functions with the module's ABI.
-    pub(crate) fn plain(abi: ReceiverAbi) -> Self {
+    pub(crate) fn plain() -> Self {
         Self {
-            abi,
             declares_receiver: false,
         }
     }
@@ -111,30 +76,25 @@ impl StdlibFrame {
         chunk.alloc_scratch(1)
     }
 
-    /// Push this function's own receiver. `local.get 0` under `Parameter`,
-    /// the ambient global otherwise — the one place the difference is spelled.
+    /// Push this function's own receiver — slot 0, its argument 0.
+    ///
+    /// ⛔ ONLY A FRAME THAT DECLARES ONE HAS A RECEIVER TO PUSH. A `plain`
+    /// frame's slot 0 is its first ordinary local.
     pub(crate) fn emit_receiver(&self, chunk: &mut Chunk, line: u32) {
-        if self.declares_receiver {
-            chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-        } else {
-            crate::primitives::globals::emit_read(chunk, "__js_this", line);
-        }
+        debug_assert!(
+            self.declares_receiver,
+            "emit_receiver on a frame that declares none — slot 0 is not the receiver"
+        );
+        chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     }
 
     /// Emit `callee_slot(recv_slot)` — an invoke whose only argument is the
     /// receiver, which is how a zero-parameter method (`it.next()`,
     /// `v[Symbol.iterator]()`) is called.
     ///
-    /// ⛔ The two ABIs need OPPOSITE emission orders, which is why this is a
-    /// method and not a flag on the call site. Under `Ambient` the receiver is
-    /// pushed FIRST because it feeds the global store, and the invoke takes no
-    /// argument at all. Under `Parameter` the callee is pushed first and the
-    /// receiver follows it as argument 0. Sharing a single `local.get` between
-    /// them would strand a value on the stack in one of the two.
-    ///
-    /// ⛔ Unlike [`bind_ambient_receiver`], these sites pass argc 0 today — the
-    /// receiver is NOT already on the argument list, so `Parameter` has to add
-    /// it rather than just drop the ambient store.
+    /// ⛔ THE CALLEE IS PUSHED FIRST and the receiver follows it as argument 0
+    /// — these sites carry no argument list of their own, so the receiver IS
+    /// the argument list.
     pub(crate) fn emit_receiver_invoke(
         &self,
         chunk: &mut Chunk,
@@ -142,44 +102,9 @@ impl StdlibFrame {
         recv_slot: u16,
         line: u32,
     ) {
-        let argc = if self.abi == ReceiverAbi::Parameter {
-            chunk.emit_op_u16(Op::LOCAL_GET, callee_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-            1
-        } else {
-            chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-            crate::primitives::globals::emit_write(chunk, "__js_this", line);
-            chunk.emit_op_u16(Op::LOCAL_GET, callee_slot, line);
-            0
-        };
-        crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
-    }
-
-    /// Save the CALLER's ambient receiver, so this helper's internal rebinds
-    /// don't leak back out. Returns the slot holding it.
-    ///
-    /// ⛔ `None` under `Parameter`, and that is M5's whole point: with the
-    /// receiver travelling as an argument there is no shared cell to clobber,
-    /// so the save, the restore and the local they need all disappear. This is
-    /// the hand-rolled shadow stack, and it is deleted rather than ported.
-    ///
-    /// Call it AFTER the other slots — the first `arity` slots are the
-    /// parameters, and this one is never one of them.
-    pub(crate) fn save_ambient_this(&self, chunk: &mut Chunk, line: u32) -> Option<u16> {
-        if self.abi == ReceiverAbi::Parameter {
-            return None;
-        }
-        let slot = self.slot(chunk);
-        crate::primitives::globals::emit_read(chunk, "__js_this", line);
-        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-        Some(slot)
-    }
-
-    /// Undo [`Self::save_ambient_this`]. A `None` saved slot emits nothing.
-    pub(crate) fn restore_ambient_this(&self, chunk: &mut Chunk, saved: Option<u16>, line: u32) {
-        let Some(slot) = saved else { return };
-        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        crate::primitives::globals::emit_write(chunk, "__js_this", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, callee_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, recv_slot, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     }
 
     /// Declare the finished frame. `arity`/`param_count` include the receiver
@@ -574,8 +499,8 @@ impl Compiler {
     /// Must a method CALL pass the receiver as an explicit leading argument?
     ///
     /// Three models, and this predicate picks the third:
-    /// - prototype dispatch (JS/Dart) rides `__js_this` and a bound-receiver
-    ///   marker on the callable — see `class_prototype_dispatch`;
+    /// - prototype dispatch (JS/Dart) rides a bound-receiver marker on the
+    ///   callable — see `class_prototype_dispatch`;
     /// - bind-on-access (Python) burns the receiver into a fresh bound method
     ///   when the method is READ — see `methods_bind_on_access`;
     /// - otherwise the callable is the raw function off the class struct and
@@ -838,68 +763,17 @@ impl Compiler {
                 .unwrap_or_else(|| self.define_local(local_name));
             return ReceiverBind::Argument { slot };
         }
-        // ⛔ NO AMBIENT ARM. It read `__js_this` into a save slot and returned
-        // `Ambient { saved }`; nothing declares that binding any more, so the
-        // whole save/bind/restore triple it anchored is gone with it.
         ReceiverBind::None
     }
 
-    /// Clear the ambient receiver so a CONSTRUCTION allocates instead of
-    /// adopting whatever `this` happens to be live.
+    /// Bind the receiver from the value on the stack.
     ///
-    /// A constructor reads its receiver from `__js_this` and allocates only
-    /// when that global is absent — `struct.new_default` sits in the `else` of
-    /// a null test at the top of every `__<Class>_ctor_N`. Every other
-    /// `save_js_this` site pairs the save with a `bind_js_this_from_local`; the
-    /// `New` emit was the one that saved and restored without ever writing a
-    /// value in between, so inside an instance method the constructor found the
-    /// enclosing receiver, skipped the allocation, and wrote its fields into
-    /// it. `One bump() => One(this.v + 1)` answered `identical(a, b) == true`;
-    /// a constructor in a class-static field initializer shared one object for
-    /// the same reason.
-    ///
-    /// `new` is unconditional: it always makes a fresh object, whatever the
-    /// caller's context. Clearing states that, rather than relying on the
-    /// caller happening to have no receiver.
-    pub(super) fn clear_js_this(&mut self) {
-        {
-            return;
-        }
-        let line = self.line;
-        self.chunk()
-            .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        self.emit_global_write("__js_this");
-    }
-
-    /// Write the ambient receiver from the value on the stack.
-    ///
-    /// **Emits unconditionally.** The `receiver_binding` directive is answered
-    /// ONCE, by `save_js_this`, whose `Option` says whether this language has an
-    /// ambient receiver at all; a site that got `None` must not compute a
-    /// receiver, must not push one, and must not call this. There is no second
-    /// decision here and no silent no-op to fall into.
-    ///
-    /// This used to decide for itself — `if !false { return; }` —
-    /// while every caller pushed unconditionally:
-    ///
-    /// ```ignore
-    /// let saved = self.save_js_this("__js_prev_this_member");
-    /// self.emit_u16(Op::LOCAL_GET, obj_slot);   // ALWAYS pushed
-    /// self.set_js_this_from_stack();            // popped only if Ambient
-    /// ```
-    ///
-    /// `ReceiverBinding::Ambient` is declared by js and dart ONLY, so the other
-    /// fourteen languages leaked one operand per member read, at ten sites. The
-    /// stray is invisible while nothing live sits under it — a statement
-    /// boundary truncates it — and fatal where something does: `W(self.v)`
-    /// inside a method left the ctor ref buried and `CALL_REF` took the stray as
-    /// the callee (`Not a function`), and `{'k': self.v}` compiled to
-    /// `{<V object>: 5}` — the stray DISPLACED the key, silently.
-    ///
-    /// A guard that emits nothing is dead code for the language it fires on,
-    /// and dead code that is *also* half a pair is how the two halves drifted.
-    /// `restore_js_this(None)` reads the same `Option`, so all three members of
-    /// the save/bind/restore triple now agree by construction.
+    /// **Emits unconditionally.** Whether this site has a receiver at all is
+    /// answered ONCE, by `begin_receiver_bind`, whose `ReceiverBind` says so; a
+    /// site that got `None` must not compute a receiver, must not push one, and
+    /// must not call this. There is no second decision here and no silent
+    /// no-op to fall into — a guard that emits nothing while the caller pushes
+    /// unconditionally leaks one operand per member read.
     pub(super) fn bind_receiver_from_stack(&mut self, bind: ReceiverBind) {
         match bind {
             // The receiver is an ARGUMENT, so it must end up on the stack ABOVE
@@ -907,18 +781,9 @@ impl Compiler {
             // call site pushes it back with `push_receiver_argument` once the
             // callee is in place.
             ReceiverBind::Argument { slot } => self.emit_u16(Op::LOCAL_SET, slot),
-            // ⛔ UNREACHABLE, AND NOW IT EMITS NOTHING RATHER THAN A GLOBAL
-            // WRITE. Every one of the sixteen callers gates this on
-            // `bind.is_active()`, which is `!matches!(self, None)`, so a
-            // `None` bind never arrives — verified by enumerating them, not
-            // assumed. The write was kept only because it was what the
-            // unconditional pre-M5 code did, and it is the last place
-            // `__js_this` could be written by a language that never declared
-            // an ambient receiver.
-            //
-            // Emitting nothing is safe for the same reason it is unreachable:
-            // a caller that does not call this also did not push a receiver,
-            // so there is no operand left stranded on the stack.
+            // ⛔ UNREACHABLE: every caller gates this on `bind.is_active()`.
+            // A caller that does not reach here also pushed no receiver, so
+            // emitting nothing strands no operand on the stack.
             ReceiverBind::None => {}
         }
     }
@@ -977,23 +842,9 @@ impl Compiler {
         if !closures_use_this {
             return;
         }
-        // ⛔ UNIVERSAL ARM ONLY — THE AMBIENT ARMS STAY AT THEIR SITES.
-        //
-        // Unifying the ambient arm as well cost **156 csharp regressions**
-        // (1765 → 1898, measured by Rook): the three sites genuinely differed —
-        // one created a SOURCE local under the self keyword, two created an
-        // internal `__js_this`, and only one carried a parent-frame guard — and
-        // collapsing them onto one spelling changed what `this` resolved to
-        // inside accessors in every ambient language. An expression-bodied
-        // property reading a field answered `0` instead of `12.57`.
-        //
-        // The genuinely MISSING piece was never the ambient half: it was that
-        // the lambda site — which compiles OBJECT-LITERAL methods — had no
-        // `UniversalParameter` arm at all. That is what this owns, and it is
-        // js-only, so it is gated by a corpus I can actually run. Unifying the
-        // ambient half needs csharp/vb/java/kotlin/php/python evidence that
-        // nobody has yet; until someone does, three spellings that WORK beat
-        // one spelling that is prettier and wrong.
+        // A chunk that declares its own receiver and captures `this` closes
+        // over the self keyword, so an object-literal method reaches the same
+        // binding a class method does.
         let self_kw = self.profile.self_keyword.clone();
         if declares_own_receiver && self.universal_receiver() {
             self.current_closure_captured_locals.insert(self_kw);
@@ -1029,24 +880,11 @@ impl Compiler {
     /// The union is the first column throughout; the second contributed
     /// nothing the union needs.
     ///
-    /// ⚠ This resolves the receiver as it is bound TODAY, which still includes
-    /// the ambient `__js_this` global. That global is not a WASM concept —
-    /// core wasm has no `this`, and a mutable module global standing in for a
-    /// parameter needs the `save`/`restore` pair around every call, i.e. a
-    /// hand-rolled shadow stack for something the substrate models natively.
-    /// Collapsing the two resolvers is the PREREQUISITE for removing it: while
-    /// two sites disagreed about what `this` is, nothing could safely change
-    /// what it resolves TO.
     pub(super) fn emit_receiver_value(&mut self) {
-        // ⛔ A CHUNK THAT TOOK THE RECEIVER AS A PARAMETER ALREADY HAS ONE —
-        // the ambient global is not it.
+        // ⛔ A CHUNK THAT TOOK THE RECEIVER AS A PARAMETER ALREADY HAS ONE.
         //
         // A property accessor is compiled as a chunk whose FIRST PARAMETER is
-        // the receiver (`classes.rs`, `declare_receiver_first_accessor`). The
-        // ambient branch fires first and reads `__js_this`, a global that
-        // accessor chunk never set — so `this` inside an accessor answered null
-        // while the same `this` in a method on the SAME object in the SAME run
-        // was correct.
+        // the receiver (`classes.rs`, `declare_receiver_first_accessor`).
         //
         // Invisible from parsed source: every walker emits `Ident("this")` for
         // an accessor, which resolves the local and works. It bites only a
@@ -1066,21 +904,7 @@ impl Compiler {
         // The tag mechanism is left in place but is no longer read here.
         let receiver_is_a_parameter = self.chunks[self.current].takes_receiver;
 
-        // ▶▶ M5 STEP 1 — A BOUND RECEIVER OUTRANKS THE AMBIENT GLOBAL.
-        //
-        // This test used to sit BELOW the ambient branch, so `this` answered
-        // from `__js_this` even in a chunk that had the receiver as a real
-        // local. `receiver_is_a_parameter` patched the one case anyone had
-        // caught (the accessor tag) by SUPPRESSING the ambient branch; every
-        // other bound-receiver shape still lost to the global.
-        //
-        // Ordering it this way is the whole of "there must be a `this`
-        // REFERENCE": where the language has bound one, that binding IS the
-        // answer, and the module global is what remains only for the shapes
-        // that have not been converted yet. M0 unified the two READERS; this is
-        // the first step that changes what the reader RESOLVES TO.
-        //
-        // ⛔ Deliberately BEFORE the ambient branch and deliberately not
+        // ⛔ A BOUND RECEIVER IS THE ANSWER, and this test is deliberately not
         // guarded by `receiver_is_a_parameter`: a local named by the self
         // keyword is a receiver whether or not a call tag advertised it. The
         // tag guard stays below only for chunks that have no such local.
@@ -1103,9 +927,6 @@ impl Compiler {
             return;
         }
 
-        // ⛔ THE AMBIENT FALLBACK IS GONE. It read `__js_this` when no bound
-        // receiver was in scope; no language declares
-        // `ReceiverBinding::Ambient` any more, so it had no reachable caller.
         if self.scopes.len() > 1 {
             // Arrow function: capture `this` from the enclosing scope.
             if self.resolve_upvalue(self.scopes.len() - 1, &self_kw).is_some() {
@@ -1115,16 +936,14 @@ impl Compiler {
                 crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
                 return;
             }
-            // ⛔ The `__js_this` upvalue arm is gone with the ambient binding:
-            // an arrow captures the receiver under the SELF KEYWORD above.
+            // An arrow captures the receiver under the SELF KEYWORD above.
         }
 
-        // ⛔ EVERY PATH OUT OF HERE MUST LEAVE EXACTLY ONE VALUE. This used to
-        // be the `else` of an `ambient_this()` test whose other arm read the
-        // global; the read is gone, the PUSH is not. Dropping it left the
-        // receiver operand missing and the stack one short — measured as
-        // `super.fetch()` inside an arrow returning the function object
-        // instead of calling it, across 37 class/super/inheritance tests.
+        // ⛔ EVERY PATH OUT OF HERE MUST LEAVE EXACTLY ONE VALUE. A region with
+        // no receiver in scope still pushes one — dropping this leaves the
+        // receiver operand missing and the stack one short, which shows up as
+        // `super.fetch()` inside an arrow returning the function object instead
+        // of calling it.
         self.emit_null();
     }
 

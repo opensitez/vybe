@@ -13,8 +13,8 @@ pub use types::{
     Access, Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationContributes,
     AugmentationMode, AugmentationPolicy, AugmentationPosition, AugmentationSuper, BaseCall,
     NormalClass, NormalConstructor, NormalField, NormalMembers, NormalMethod, NormalProperty,
-    PROTOCOL_SLOT_TABLE, PlatformBaseSpec, PlatformFieldGui, ProtocolSlot, SpecialMethod,
-    SpecialMethodKind,
+    PlatformBaseSpec, PlatformFieldGui, ProtocolSlot, SpecialMethod, SpecialMethodKind,
+    PROTOCOL_SLOT_TABLE,
 };
 
 use crate::{

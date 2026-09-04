@@ -164,6 +164,7 @@ pub fn emit_resolver_list(chunk: &mut Chunk, stack: ResolverStack<'_>, line: u32
 /// then runs.
 pub fn emit_resolver_stack_invoke(
     chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     stack: ResolverStack<'_>,
     resolved_global: Option<&str>,
     line: u32,
@@ -221,13 +222,19 @@ pub fn emit_resolver_stack_invoke(
             crate::primitives::ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_if(line);
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+            // §10.2.1: a resolver is an ordinary callable, so where the region
+            // declares a receiver it takes one at argument 0 and the symbol
+            // name is argument 1.
+            let recv =
+                crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-            crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+            crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
             chunk.emit_op(Op::DROP, line);
             chunk.emit_else(line);
             // Through `emit_invoke_method`, not a raw `ecma:value.invokeMethod`
-            // import: it also binds (and restores) `__js_this`, which the
-            // resolver body needs to see its own receiver.
+            // import, so the callable's own protocol member resolves first.
+            // The slice holds one chunk and is not a module, so the receiver
+            // convention travels as an argument.
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
             crate::primitives::invoke::emit_invoke_method(
@@ -265,6 +272,7 @@ pub fn emit_resolver_stack_invoke(
 /// `[symbol_ref]`.
 pub fn emit_registered_global_ref(
     chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     global: &str,
     source_spelling: &str,
     resolver: ResolverStack<'_>,
@@ -279,7 +287,7 @@ pub fn emit_registered_global_ref(
     chunk.emit_if(line);
 
     push_str(chunk, source_spelling, line);
-    emit_resolver_stack_invoke(chunk, resolver, Some(global), line);
+    emit_resolver_stack_invoke(chunk, abi, resolver, Some(global), line);
 
     crate::primitives::globals::emit_read(chunk, global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
@@ -291,6 +299,7 @@ pub fn emit_registered_global_ref(
 /// before and after consulting the resolver stack.
 pub fn emit_registered_dynamic_global_ref(
     chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     primary_global: &str,
     fallback_global: Option<&str>,
     source_spelling: &str,
@@ -310,7 +319,7 @@ pub fn emit_registered_dynamic_global_ref(
     chunk.emit_if(line);
 
     push_str(chunk, source_spelling, line);
-    emit_resolver_stack_invoke(chunk, resolver, Some(primary_global), line);
+    emit_resolver_stack_invoke(chunk, abi, resolver, Some(primary_global), line);
 
     crate::primitives::globals::emit_read(chunk, primary_global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
@@ -455,6 +464,7 @@ pub fn emit_receiver_missing_symbol_get(
     include_receiver_arg: bool,
     line: u32,
 ) {
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let resolver_slot = chunks[current].alloc_scratch(1);
     let reflect_get = chunks[current].add_import("ecma:reflect", "get");
     chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
@@ -467,11 +477,24 @@ pub fn emit_receiver_missing_symbol_get(
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, resolver_slot, line);
+    // ⛔ THE RESOLVER IS A METHOD, SO ITS RECEIVER IS THE OBJECT IT WAS READ
+    // FROM — `target_slot`, not `undefined`. Omit it and the NAME lands in the
+    // receiver position, so `const_missing(n)` sees `n` undefined.
+    //
+    // `include_receiver_arg` is a separate question: some hooks take the target
+    // as a declared parameter as well (`__get($obj, $name)`), which is an
+    // ordinary argument and rides above the receiver.
+    let recv = if abi == vybe_runtime::chunk::ReceiverAbi::Parameter {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
+        1
+    } else {
+        0
+    };
     if include_receiver_arg {
         chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
-    let argc = if include_receiver_arg { 2 } else { 1 };
+    let argc = recv + if include_receiver_arg { 2 } else { 1 };
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -720,9 +743,16 @@ impl Compiler {
     pub(crate) fn emit_constructor_global_ref(&mut self, ctor_global: &str, source_name: &str) {
         if self.profile.supports_autoload {
             let line = self.line;
+            // The receiver convention is read from THIS REGION'S directive and
+            // handed over: the hook holds one chunk and cannot look it up.
+            let abi = if self.universal_receiver() {
+                vybe_runtime::chunk::ReceiverAbi::Parameter
+            } else {
+                vybe_runtime::chunk::ReceiverAbi::Ambient
+            };
             vybe_runtime::registry::hooks(&self.profile.name)
                 .constructor_ref_autoload
-                .unwrap()(self.chunk(), ctor_global, source_name, line);
+                .unwrap()(self.chunk(), abi, ctor_global, source_name, line);
         } else {
             self.emit_global_read(ctor_global);
         }
@@ -739,10 +769,16 @@ impl Compiler {
     ) {
         if self.profile.supports_autoload {
             let line = self.line;
+            let abi = if self.universal_receiver() {
+                vybe_runtime::chunk::ReceiverAbi::Parameter
+            } else {
+                vybe_runtime::chunk::ReceiverAbi::Ambient
+            };
             vybe_runtime::registry::hooks(&self.profile.name)
                 .dynamic_constructor_ref_autoload
                 .unwrap()(
                 self.chunk(),
+                abi,
                 primary_ctor_global,
                 fallback_ctor_global,
                 source_name,

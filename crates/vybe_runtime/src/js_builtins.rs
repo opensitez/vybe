@@ -7,8 +7,7 @@
 //!   (`wasm:js-{number,boolean,undefined,symbol,bigint}`).
 //!
 //! These live alongside the other WASM proposal implementations in
-//! `vybe_runtime` (`simd`, `jspi`, `component_model`, …). Moved out of
-//! `vybe_host` as part of folding host primitives into the VM crate.
+//! `vybe_runtime` (`simd`, `jspi`, `component`, …).
 
 use crate::VM;
 

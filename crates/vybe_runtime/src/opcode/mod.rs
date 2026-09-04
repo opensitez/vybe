@@ -379,6 +379,12 @@ pub enum OperandFormat {
     U16_U16_U8,
     /// 4 bytes: u16 + i16 (br_on_cast: type index + branch offset).
     U16_I16,
+    /// 4 bytes: a big-endian u32.
+    ///
+    /// Fixed width, not LEB, because `globals::normalize_global_table` and the
+    /// VM's global remap rewrite this operand IN PLACE — a variable-length
+    /// encoding cannot be patched without moving every byte after it.
+    U32,
     /// Unsigned LEB128 u32.
     U32Leb,
     /// Two unsigned LEB128 u32 immediates.
@@ -431,7 +437,7 @@ impl OperandFormat {
             Self::U8 => 1,
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U8_U8_U8 | Self::U16_U8 => 3,
-            Self::U16_U16 | Self::U16_I16 => 4,
+            Self::U16_U16 | Self::U16_I16 | Self::U32 => 4,
             Self::U16_U16_U8 => 5,
             Self::RawF32 => 4,
             Self::RawF64 => 8,

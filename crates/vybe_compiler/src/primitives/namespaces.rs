@@ -244,11 +244,13 @@ pub enum ResolutionTarget {
     HostCall {
         module: String,
         func: String,
-        /// Arity when the registrar knew it. Every consumer currently ignores
-        /// this (`HostCall { module, func, .. }`); it exists so descriptor-
-        /// registered methods can be dispatched by arity without the compiler
-        /// asking a platform crate.
-        arity: Option<u8>,
+        /// The leaf's declared Component Model signature, when the registrar
+        /// stated one. The RESOLVED TARGET carries it, so a named-argument
+        /// call reorders against the leaf it just resolved to — never against
+        /// a bare-name table that cannot tell two `Round`s apart. `None` is
+        /// undeclared: the call binds positionally, as every call did before
+        /// leaves carried signatures.
+        sig: Option<vybe_runtime::component::FuncSig>,
     },
     /// `common:<cat>.<op>` dispatch.
     CommonEmit(String),
@@ -286,12 +288,12 @@ fn terminal(
         NamespaceNode::Fn {
             module,
             func,
-            arity,
+            sig,
             ..
         } => Some(ResolutionTarget::HostCall {
             module: module.clone(),
             func: func.clone(),
-            arity: *arity,
+            sig: sig.clone(),
         }),
         NamespaceNode::CommonEmit(name) => Some(ResolutionTarget::CommonEmit(name.clone())),
         // A path walk carries no argument count, so it cannot discriminate
@@ -557,15 +559,17 @@ pub enum NamespaceNode {
     Fn {
         module: String,
         func: String,
-        /// User-visible arity when the registrar knows it (a descriptor's
-        /// `MethodDef.arity`), else `None`.
+        /// The Component Model signature the registrar declared — ONE list of
+        /// `(param "name" type)` plus results — or `None` when it declared
+        /// nothing, which is what host-export discovery produces.
         ///
-        /// This replaced a `sig: FuncSig`, which every consumer discarded
-        /// (`HostCall { module, func, .. }`) and which could not express what
-        /// registrars actually know: descriptors carry an ARITY, not param
-        /// types. Encoding a count as placeholder `ValType`s would be inventing
-        /// type information — the same mistake as a defaulted `CtorSpec`.
-        arity: Option<u8>,
+        /// Arity is DERIVED from it (`sig.arity()`), never stored beside it.
+        /// A registrar that knows only a count declares that count of
+        /// unnamed `any` parameters (`host_fn_with_arity`): `any` is the
+        /// type's honest spelling of "not stated", not a placeholder. Names
+        /// are what let a caller bind an argument by name against this leaf;
+        /// a signature with any unnamed parameter binds positionally only.
+        sig: Option<vybe_runtime::component::FuncSig>,
         /// A constant argument the registrar bound to this call — a generic
         /// property accessor takes the property NAME as an argument
         /// (`getProperty(this, "Text")`), so the target is the pair
@@ -1136,7 +1140,7 @@ pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8, fold
             NamespaceNode::Type { methods, .. } => fold_get(methods, member, fold)
                 .and_then(|declared| select_overload(declared, arity))
                 .is_some_and(
-                    |n| matches!(n, NamespaceNode::Fn { arity: Some(a), .. } if *a == arity),
+                    |n| matches!(n, NamespaceNode::Fn { sig: Some(s), .. } if s.arity() == arity),
                 ),
             _ => false,
         }
@@ -1171,7 +1175,7 @@ pub fn lookup_type_instance_target(
     member: &str,
     argc: u8,
     fold: Fold,
-) -> Option<vybe_runtime::component_model::InstanceMethodTarget> {
+) -> Option<crate::component_classes::InstanceMethodTarget> {
     let declared = lookup_type_instance_member(scope, class_name, member, fold)?;
     // A zero-arg call on a property IS its getter — `sw.Elapsed` reaches here
     // as a member read with no arguments, and the property node holds the
@@ -1184,15 +1188,15 @@ pub fn lookup_type_instance_target(
         NamespaceNode::Fn {
             module,
             func,
-            arity,
+            sig,
             ..
-        } => Some(vybe_runtime::component_model::InstanceMethodTarget::Host {
+        } => Some(crate::component_classes::InstanceMethodTarget::Host {
             module,
             func,
-            arity: arity.unwrap_or(argc),
+            arity: sig.as_ref().map(|s| s.arity()).unwrap_or(argc),
         }),
         NamespaceNode::CommonEmit(emit) => {
-            Some(vybe_runtime::component_model::InstanceMethodTarget::Common { emit, arity: argc })
+            Some(crate::component_classes::InstanceMethodTarget::Common { emit, arity: argc })
         }
         _ => None,
     }
@@ -1386,8 +1390,8 @@ pub fn lookup_type_ctor_target(
     scope: &[String],
     class_name: &str,
     fold: Fold,
-) -> Option<vybe_runtime::component_model::ConstructorTarget> {
-    use vybe_runtime::component_model::{ConstructorTarget, HostTarget};
+) -> Option<crate::component_classes::ConstructorTarget> {
+    use crate::component_classes::{ConstructorTarget, HostTarget};
     // `Dictionary<K, V>` / `List(Of T)` name the same registered type as the
     // bare name — strip the generic argument list before matching.
     let bare = class_name
@@ -1410,7 +1414,7 @@ pub fn lookup_type_property_target(
     class_name: &str,
     member: &str,
     fold: Fold,
-) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+) -> Option<crate::component_classes::InstancePropertyTarget> {
     property_target(
         lookup_type_instance_member(scope, class_name, member, fold)?,
         false,
@@ -1424,7 +1428,7 @@ pub fn lookup_type_property_setter_target(
     class_name: &str,
     member: &str,
     fold: Fold,
-) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+) -> Option<crate::component_classes::InstancePropertyTarget> {
     property_target(
         lookup_type_instance_member(scope, class_name, member, fold)?,
         true,
@@ -1434,8 +1438,8 @@ pub fn lookup_type_property_setter_target(
 fn property_target(
     declared: NamespaceNode,
     want_setter: bool,
-) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
-    use vybe_runtime::component_model::InstancePropertyTarget;
+) -> Option<crate::component_classes::InstancePropertyTarget> {
+    use crate::component_classes::InstancePropertyTarget;
     let node = match declared {
         NamespaceNode::Property { get, set } => *(if want_setter { set } else { get })?,
         // A plain leaf answers reads only: a method-shaped member has no
@@ -1532,7 +1536,7 @@ pub fn host_fn(module: &str, func: &str) -> NamespaceNode {
     NamespaceNode::Fn {
         module: module.to_string(),
         func: func.to_string(),
-        arity: None,
+        sig: None,
         bound_arg: None,
     }
 }
@@ -1544,7 +1548,7 @@ pub fn host_fn_keyed(module: &str, func: &str, key: &str) -> NamespaceNode {
     NamespaceNode::Fn {
         module: module.to_string(),
         func: func.to_string(),
-        arity: None,
+        sig: None,
         bound_arg: Some(key.to_string()),
     }
 }
@@ -1557,12 +1561,37 @@ pub fn property(get: Option<NamespaceNode>, set: Option<NamespaceNode>) -> Names
     }
 }
 
-/// A host-backed leaf whose arity the registrar knows.
+/// A host-backed leaf whose arity the registrar knows: `arity` unnamed
+/// `any` parameters and an `any` result — the count is stated, nothing else.
 pub fn host_fn_with_arity(module: &str, func: &str, arity: u8) -> NamespaceNode {
+    use vybe_runtime::component::{FuncSig, Param, ValType};
+    host_fn_with_sig(
+        module,
+        FuncSig {
+            name: func.to_string(),
+            params: Param::unnamed_list(vec![ValType::Any; arity as usize]),
+            results: vec![ValType::Any],
+        },
+    )
+}
+
+/// A host-backed leaf with its declared Component Model signature. The
+/// leaf's function name is `sig.name`. Parameter names describe the declared
+/// parameters only — a leaf naming its receiver (`this`/`self`) would be
+/// read as taking one more argument than every caller passes, so it is
+/// refused here, at registration, where the registrar can see it.
+pub fn host_fn_with_sig(module: &str, sig: vybe_runtime::component::FuncSig) -> NamespaceNode {
+    assert!(
+        !sig.params
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case("this") || p.name.eq_ignore_ascii_case("self")),
+        "{module}/{} names its receiver as a parameter; names describe declared parameters only",
+        sig.name
+    );
     NamespaceNode::Fn {
         module: module.to_string(),
-        func: func.to_string(),
-        arity: Some(arity),
+        func: sig.name.clone(),
+        sig: Some(sig),
         bound_arg: None,
     }
 }
@@ -1618,7 +1647,7 @@ where
         let mut node = NamespaceNode::Fn {
             module: module.clone(),
             func: func.clone(),
-            arity: None,
+            sig: None,
             bound_arg: None,
         };
         while segments.len() > 1 {

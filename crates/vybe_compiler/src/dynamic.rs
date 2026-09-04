@@ -1095,16 +1095,25 @@ impl JsDynamicRuntime {
         self.active_imports = saved_active_imports;
         self.active_resolved_imports = saved_active_resolved_imports;
 
-        let run_value = match result {
-            Ok(value) => value,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
-        };
-
-        // An uncaught throw inside eval'd code propagates to the caller.
+        // An uncaught throw inside eval'd code propagates to the caller —
+        // checked BEFORE `result`. `raise_exception_inner` (calls.rs) defers
+        // an exception whose matching handler lives outside this nested
+        // execution: it stashes the REAL exception value in
+        // `vm.last_exception` and returns `Err(VMError)` carrying only a
+        // stringified stack trace. Matching on `result` first (as this used
+        // to) took that `Err` for a genuine compile failure and wrapped the
+        // stringified trace as a fake `SyntaxError`, losing the exception's
+        // real type — `except ZeroDivisionError` around `eval('1/0')` could
+        // never match, only a blanket `except Exception`.
         if let Some(exc) = vm.last_exception.take() {
             ctx.throw_value(exc);
             return Value::Undefined;
         }
+
+        let run_value = match result {
+            Ok(value) => value,
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
+        };
 
         // Python's `eval` binds its expression value to a temp; read it back
         // and drop it so it does not linger as a caller global.
@@ -1399,11 +1408,9 @@ impl JsDynamicRuntime {
 
         // Per-language eval quirks:
         //  - PHP: the string is evaluated in `<?php` context (bare text is
-        //    literal output, not code); its top-level `return` is the result.
-        //  - Python: `eval` (attrs.completion_value == true) yields the value of
-        //    the expression; `exec` yields None. Capture the expression value by
-        //    binding it to a temp we read back after the run.
-        let mut completion_capture: Option<&'static str> = None;
+        //    literal output, not code); its top-level `return` is the result
+        //    — PHP never requests `completion_value` because it never needs
+        //    to (see below).
         let eval_source = match language_name.as_str() {
             "php" => {
                 if source.trim_start().starts_with("<?") {
@@ -1412,25 +1419,46 @@ impl JsDynamicRuntime {
                     format!("<?php {source}")
                 }
             }
-            "python" => {
-                let wants_value = args
-                    .get(2)
-                    .map(|a| object_bool_prop(a, "completion_value"))
-                    .unwrap_or(false);
-                if wants_value {
-                    completion_capture = Some("__vybe_eval_result__");
-                    format!("__vybe_eval_result__ = ({})", source.trim())
-                } else {
-                    source.clone()
-                }
-            }
             _ => source.clone(),
         };
 
-        let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
+        // `completion_value` (attrs) — the run's value is its LAST TOP-LEVEL
+        // EXPRESSION, not `null`. Language-agnostic: `EntryPoint::EvalCompletion`
+        // is a common-AST rewrite (`bundle.rs`) turning the module's final
+        // `StmtKind::Expr` into a `Return`, so the module's own return value —
+        // `run_value` below, or `compile_and_run_bundle`'s result in the
+        // namespace branch — already IS the completion value. No per-language
+        // string rewrite, no separate readback.
+        //
+        // ⛔⛔ THIS USED TO BE A STRING REWRITE + A SECOND, ISOLATED VM.
+        // `completion_value == true` rewrote the source to
+        // `__vybe_eval_result__ = (source)`, ran it in a fresh `VM::new()`
+        // — bypassing the live VM even when no namespace was requested — and
+        // read the magic global back out of THAT VM. The isolated VM's value
+        // came back as a wasm typed-null of the wrong kind (function-typed),
+        // so every consumer of the result (`print`, `callable`, `==`) trapped
+        // trying to `call_ref` it. PHP never hit this because PHP never sets
+        // `completion_value` — its `eval()` is explicit-return
+        // (`eval("1+2;")` is `NULL` in real PHP too), so the plain live-VM
+        // `run_value` was already correct for PHP with zero extra machinery.
+        // Python's `eval("1+2")` is implicit-last-expression (no `return`
+        // possible at module scope), which is exactly the case
+        // `EntryPoint::EvalCompletion` was built for and never wired to.
+        let wants_value = args
+            .get(2)
+            .map(|a| object_bool_prop(a, "completion_value"))
+            .unwrap_or(false);
+
+        let mut bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
+        if wants_value {
+            bundle.entry_point = EntryPoint::EvalCompletion;
+        }
 
         // No explicit namespace dict → compile into the LIVE VM, exactly as
-        // `handle_dynamic_include` does.
+        // `handle_dynamic_include` does. `completion_value` alone (no
+        // namespace) stays on this route too now: the AST rewrite above
+        // already makes `run_value` the right answer, so there is nothing
+        // left that needs the isolated VM.
         //
         // The mini-VM path below can only carry SCALARS back to the caller: it
         // deliberately skips every `ObjectKind::Function`, because a function's
@@ -1442,18 +1470,15 @@ impl JsDynamicRuntime {
         //
         // Python's `eval(code, ns)` / `exec(code, ns)` keep the mini-VM route:
         // that form binds names FROM the dict and writes back INTO it, which is
-        // isolation by definition rather than caller-global mutation.
-        // Python's expression `eval()` also stays on the mini-VM: it wants a
-        // VALUE, and its result may be an object whose repr helper resolves
-        // against the chunk table it was built in. Definitions arrive through
-        // `exec()`, which sets no completion capture — so the live-VM route
-        // covers exactly the cases that need to define something.
+        // isolation by definition rather than caller-global mutation — and
+        // `eval(code, ns)` (unlike `exec`) may ALSO want a completion value,
+        // which `bundle.entry_point` already carries into that branch too.
         let has_namespace_dict = args
             .get(2)
             .and_then(|a| object_get_prop(a, "namespace"))
             .is_some_and(|v| matches!(v, Value::Object(_)));
-        if !has_namespace_dict && completion_capture.is_none() {
-            return self.eval_in_live_vm(ctx, &bundle, completion_capture);
+        if !has_namespace_dict {
+            return self.eval_in_live_vm(ctx, &bundle, None);
         }
 
         let mut eval_vm = VM::new();
@@ -1513,41 +1538,43 @@ impl JsDynamicRuntime {
         // the run is a binding the eval'd code created.
         let base_keys: HashSet<String> = eval_vm.global_index.keys().cloned().collect();
 
-        let run_result = {
+        let compile_result = {
             let mut service =
                 RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
-            match service.compile_and_run_bundle(&bundle) {
-                Ok(value) => value,
-                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
-            }
+            service.compile_and_run_bundle(&bundle)
         };
 
-        // Propagate an uncaught throw from eval'd code to the caller.
+        // Propagate an uncaught throw from eval'd code to the caller —
+        // checked BEFORE `compile_result`, same reasoning as
+        // `eval_in_live_vm` above: a deferred exception stashes its REAL
+        // value in `last_exception` and returns `Err` with only a
+        // stringified trace, which a naive `Err` match would misreport as a
+        // `SyntaxError`.
         if let Some(exc) = eval_vm.last_exception.take() {
             ctx.throw_value(exc);
             return Value::Undefined;
         }
 
-        // Completion value: Python `eval` reads the captured temp; PHP (and any
-        // language whose eval'd code uses an explicit top-level `return`) uses
-        // the script's return value; `exec`/others return that value too.
-        let result = match completion_capture {
-            Some(name) => eval_vm.global(name).cloned().unwrap_or(Value::Undefined),
-            None => run_result,
+        let run_result = match compile_result {
+            Ok(value) => value,
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
         };
 
+        // Completion value: `bundle.entry_point` already turned the module's
+        // last top-level expression into its `return` when `completion_value`
+        // was requested (see above) — `run_result` IS the answer, no separate
+        // captured-temp readback needed for any language.
+        let result = run_result;
+
         // Definitions/assignments escape: into the explicit namespace dict if
-        // one was given, otherwise the caller's globals. (Skip the completion
-        // temp; skip function values.) For the namespace, only write updates to
-        // its own keys plus brand-new bindings — never the host builtins that
-        // seeding left in `base_keys`.
+        // one was given, otherwise the caller's globals. Skip function values.
+        // For the namespace, only write updates to its own keys plus
+        // brand-new bindings — never the host builtins that seeding left in
+        // `base_keys`.
         match &namespace {
             Some(ns) => {
                 let mut guard = ns.lock().unwrap();
                 for (k, v) in eval_vm.globals_by_name() {
-                    if Some(k.as_str()) == completion_capture {
-                        continue;
-                    }
                     let is_function = matches!(&v, Value::Object(obj)
                         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                     if is_function {
@@ -1561,9 +1588,6 @@ impl JsDynamicRuntime {
             None => {
                 let outer_vm = unsafe { &mut *self.vm };
                 for (k, v) in eval_vm.globals_by_name() {
-                    if Some(k.as_str()) == completion_capture {
-                        continue;
-                    }
                     let is_function = matches!(&v, Value::Object(obj)
                         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                     if !is_function {
@@ -1661,8 +1685,12 @@ impl JsDynamicRuntime {
                         }
                     });
 
-                    let saved_this = state.vm.global("__js_this").cloned();
-                    state.vm.set_global("__js_this", ctx.current_js_this());
+                    // §10.2.1: the body's `this` is argument 0 of the invoke
+                    // below, and the nested VM's prepend reads it from the host
+                    // receiver channel — `new Function("v","this.v = v")` used
+                    // as a constructor has no other way to reach its instance.
+                    let previous_receiver =
+                        state.vm.set_host_receiver(ctx.current_js_this());
                     ensure_js_runtime_registered(&mut state.vm);
                     let mut nested_runtime = JsDynamicRuntime::new(state.caps.clone());
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
@@ -1698,11 +1726,7 @@ impl JsDynamicRuntime {
                         Err(err) => throw_dynamic_compile_error(ctx, err.to_string()),
                     };
 
-                    if let Some(saved_this) = saved_this {
-                        state.vm.set_global("__js_this", saved_this);
-                    } else {
-                        state.vm.remove_global("__js_this");
-                    }
+                    state.vm.set_host_receiver(previous_receiver);
 
                     result
                 })

@@ -369,6 +369,8 @@ pub fn run() {
                 return;
             }
             "--list-languages" => {
+                let mut vm = VM::new();
+                register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
                 print_languages();
                 return;
             }

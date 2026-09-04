@@ -87,7 +87,7 @@ impl Compiler {
     /// nothing and takes the generic path — which is what kept this pair behind
     /// a language check before there was a question to ask.
     pub(super) fn declared_indexer_emits(&self, object: &Expression) -> Option<(String, String)> {
-        use vybe_runtime::component_model::InstancePropertyTarget as Target;
+        use crate::component_classes::InstancePropertyTarget as Target;
         let hint = self
             .infer_expr_type_hint(object)
             .as_deref()

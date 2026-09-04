@@ -1492,10 +1492,7 @@ impl Compiler {
     /// plain call pass as `this`".
     ///
     /// With no receiver of its own it materialises `globalThis` (sloppy-mode
-    /// §10.2.1.1 OrdinaryCallBindThis), which is the answer the ambient global
-    /// was previously reaching by accident: a call that bound nothing inherited
-    /// whatever the last call left in `__js_this`, and some behaviour rides on
-    /// that staleness. Stating it here is what lets the global go.
+    /// §10.2.1.1 OrdinaryCallBindThis).
     fn bind_js_this_for_call(
         &mut self,
         receiver_slot: Option<u16>,
@@ -1536,16 +1533,6 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.bind_receiver_from_stack(saved_js_this);
         saved_js_this
-    }
-
-    fn restore_js_this_after_call(&mut self, saved_js_this: super::class_context::ReceiverBind, result_local_name: &str) {
-        if !saved_js_this.is_active() {
-            return;
-        }
-        let result_slot = self.define_local(result_local_name);
-        self.emit_u16(Op::LOCAL_SET, result_slot);
-        self.end_receiver_bind(saved_js_this);
-        self.emit_u16(Op::LOCAL_GET, result_slot);
     }
 
     fn emit_normal_call_from_arg_slots(
@@ -1598,7 +1585,6 @@ impl Compiler {
                     + recv_argc,
             );
         }
-        self.restore_js_this_after_call(saved_js_this, "__js_arg_call_result");
     }
 
     fn emit_rest_call_from_arg_slots(
@@ -1651,7 +1637,6 @@ impl Compiler {
         self.stamp_multi_value_row_slot(rest_slot);
         self.emit_u16(Op::LOCAL_GET, rest_slot);
         self.emit_direct_callable_invoke(argc as u8);
-        self.restore_js_this_after_call(saved_js_this, "__js_rest_arg_call_result");
     }
 
     pub(super) fn emit_array_value_or_undefined(
@@ -1727,17 +1712,28 @@ impl Compiler {
     ) -> Result<(), String> {
         // `source_function` is already canonical — the key modes are
         // registered under.
-        let param_modes = self
-            .function_param_modes
-            .get(source_function)
-            .cloned()
-            .map(|modes| {
-                // A chunk may carry its receiver as parameter 0; the declared
-                // modes then lead with it and every user argument sits one
-                // position later.
-                let offset = usize::from(modes.len() == args.len() + 1);
-                modes[offset.min(modes.len())..].to_vec()
-            });
+        let raw_modes = self.function_param_modes.get(source_function).cloned();
+        // ⛔ ASK THE CALLEE'S CHUNK, NOT THE ARGUMENT COUNT. `takes_receiver` is
+        // the fact the function recorded when it was built; an argument count
+        // cannot distinguish "declares a receiver" from "takes one more
+        // argument", and guessing either way shifts the whole argument list.
+        //
+        // ⚠ A callee compiled AFTER this call site has no chunk yet and answers
+        // false, so a forward-referenced module member places no receiver.
+        let callee_declares_receiver = self
+            .chunks
+            .iter()
+            .any(|chunk| chunk.name == *source_function && chunk.takes_receiver)
+            || raw_modes
+                .as_ref()
+                .is_some_and(|modes| modes.len() == args.len() + 1);
+        let param_modes = raw_modes.map(|modes| {
+            // A chunk may carry its receiver as parameter 0; the declared
+            // modes then lead with it and every user argument sits one
+            // position later.
+            let offset = usize::from(modes.len() == args.len() + 1);
+            modes[offset.min(modes.len())..].to_vec()
+        });
         let needs_packed_result = param_modes.as_ref().is_some_and(|modes| {
             modes
                 .iter()
@@ -1745,6 +1741,17 @@ impl Compiler {
         });
 
         self.emit_global_read(source_function);
+        // §10.2.1 puts the receiver at argument 0. A call with no receiver of
+        // its own still PLACES `undefined` there (§10.2.1.1) — omitting it for
+        // a callee that DECLARES one shifts every user argument down, so a vb
+        // `Private Function F(n)` read `n` from the receiver slot.
+        let __recv = if callee_declares_receiver {
+            let abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
+            let line = self.line;
+            crate::primitives::callable::emit_callback_receiver(self.chunk(), abi, line)
+        } else {
+            0
+        };
         for (index, arg) in args.iter().enumerate() {
             match param_modes
                 .as_ref()
@@ -1756,7 +1763,7 @@ impl Compiler {
                 _ => self.compile_expr(&arg.value)?,
             }
         }
-        self.emit_direct_callable_invoke(args.len() as u8);
+        self.emit_direct_callable_invoke(args.len() as u8 + __recv);
 
         // An `Alias` argument was handed a reference and the callee returned a
         // plain value — there is no pack to read, and reading one would store
@@ -1820,7 +1827,6 @@ impl Compiler {
         }
         self.emit_u16(Op::LOCAL_GET, args_slot);
         fn_call!(self, "ecma:function", "apply", 3);
-        self.restore_js_this_after_call(saved_js_this, "__js_array_call_result");
     }
 
     fn emit_rest_call_from_args_array(
@@ -2856,6 +2862,13 @@ impl Compiler {
         &mut self,
         type_name: &str,
     ) -> Result<(), String> {
+        // A platform that declares the class on the tree builds it there —
+        // as a typed instance — whoever raises it.
+        if let Some(backing) = self.tree_common_ctor_backing(type_name) {
+            let line = self.line;
+            self.emit_common(&backing, 1, line);
+            return Ok(());
+        }
         let msg_val = self.define_local("__exc_msg_val");
         self.emit_u16(Op::LOCAL_SET, msg_val);
 
@@ -3372,6 +3385,17 @@ impl Compiler {
             return args.to_vec();
         }
 
+        // The tree leaf the callee resolves to answers first: the RESOLVED
+        // TARGET carries its signature, so `Math.Round(digits: 1, value: x)`
+        // binds against `Round`'s own list and not against whichever user
+        // method happens to share the bare name. A by-ref argument binds a
+        // slot and is never moved, so such a call stays in source order.
+        if !args.iter().any(|arg| arg.by_ref) {
+            if let Some(leaf) = self.leaf_call_signature(callee) {
+                return self.reorder_named_args_with_signatures(args, &[leaf]);
+            }
+        }
+
         let signatures = match &callee.kind {
             ExprKind::Ident(name) => self.function_signatures.get(&self.canon(name)),
             ExprKind::Member { field, .. } => self.function_signatures.get(&self.canon(field)),
@@ -3381,6 +3405,24 @@ impl Compiler {
         signatures
             .map(|signatures| self.reorder_named_args_with_signatures(args, signatures))
             .unwrap_or_else(|| args.to_vec())
+    }
+
+    /// The declared signature of the tree leaf `callee` names, when that leaf
+    /// declares parameter NAMES. A dotted chain resolves as a namespace path
+    /// and a bare identifier as a namespace name — locals shadow both, so a
+    /// user function or variable of the same name never reaches the tree.
+    fn leaf_call_signature(&self, callee: &Expression) -> Option<CallSignature> {
+        if !matches!(callee.kind, ExprKind::Ident(_) | ExprKind::Member { .. }) {
+            return None;
+        }
+        let parts = self.flatten_member_chain(callee);
+        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+        match self.resolve_namespace_path(&refs)? {
+            super::resolver::Resolution::Tree(
+                crate::primitives::namespaces::ResolutionTarget::HostCall { sig: Some(sig), .. },
+            ) => CallSignature::from_leaf(&sig),
+            _ => None,
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -3481,6 +3523,7 @@ impl Compiler {
             BuiltinEmit::Invoke(method_name) => {
                 let line = self.line;
                 let name = method_name.clone();
+                let __abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
                 common::invoke::emit_invoke_method(
                     &mut self.chunks,
                     self.current,
@@ -3700,6 +3743,10 @@ impl Compiler {
             null_safe,
         } = &callee.kind
         {
+            if let Some(owner) = self.static_constructor_owner_for_type_use(object) {
+                let line = self.line;
+                self.emit_static_constructor_guard_for_class(&owner, line);
+            }
             // No language gate: the decision below is entirely the TREE's —
             // "does the receiver's declared type own a 0-arg `ToString`?" — and
             // `namespace_tree_instance_method_owner` is scoped by `type_scopes`,
@@ -3935,7 +3982,7 @@ impl Compiler {
             }
         }
 
-        // ── super(args) → call parent constructor, store result as this ──
+        // ── super(args): the parent constructor, through the one emitter ──
         if let ExprKind::Super = &callee.kind {
             if let Some(ref class_name) = self.current_class.clone() {
                 if let Some(parent_name) = self
@@ -3943,127 +3990,19 @@ impl Compiler {
                     .get(class_name.as_str())
                     .and_then(|pc| pc.parent.clone())
                 {
-                    // §13.3.7.2 (JS): super() may only run once — a second
-                    // call sees this_slot already initialized and throws a
-                    // ReferenceError.
-                    if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
-                        if ctx_chunk == self.current {
-                            let l = self.line;
-                            crate::primitives::classes::emit_super_once_guard(
-                                self.chunk(),
-                                ctx_slot,
-                                l,
-                            );
-                        }
-                    }
-                    if !self.shadows_builtin_type(&parent_name)
-                        && common::errors::is_exception_type(&parent_name)
-                    {
-                        self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
-                        let self_kw = self.profile.self_keyword.clone();
-                        if let Some(slot) = self.scope().resolve(&self_kw) {
-                            inst!(self, core_wasm::dup);
-                            self.emit_u16(Op::LOCAL_SET, slot);
-                        }
-                        return Ok(());
-                    }
-                    // ▶▶ M5, ALLOCATION HALF: THE MOST-DERIVED CONSTRUCTOR
-                    // ALLOCATES. WASM GC fixes an object's type AT allocation
-                    // and offers no way to retype it afterwards, so whoever
-                    // allocates decides the type. This site used to let the
-                    // BASE allocate and hand the object up ("store result as
-                    // this"), which left every derived instance carrying its
-                    // PARENT's rtt: for `class Sub extends Base`, the module
-                    // held exactly two `struct.new_default`, both Base's
-                    // typeidx, both inside `__Base_ctor_0`, and `__Sub_ctor_0`
-                    // had no allocation instruction at all. `instanceof` still
-                    // answered correctly only because identity also travels in
-                    // a `__type` string, so the wrong rtt was invisible.
-                    //
-                    // Inverted: allocate with THIS class's type first, then
-                    // pass the instance DOWN as the trailing receiver so the
-                    // base INITIALISES what it is given. That is the same
-                    // protocol the explicit-base-clause and forwarding shapes
-                    // already use (`classes.rs`, `emit_new_typed_object` —
-                    // which allocates only when no receiver was handed in, so
-                    // a `Sub` used as a base in turn correctly does NOT
-                    // allocate). What was missing was only the ROUTING for a
-                    // `super()` that the ctor BODY drives, which is the JS
-                    // shape; there is no new machinery here.
-                    //
-                    // Gated on `js_derived_ctor_ctx` matching the current
-                    // chunk — the same marker the §13.3.7.2 once-guard above
-                    // uses, set only for `ecma_new_dispatch() && parent &&
-                    // ctor_body`. Its slot IS the trailing receiver slot
-                    // (`this_slot = user_arity`), so no separate lookup can
-                    // disagree with it.
-                    let derived_alloc = match self.js_derived_ctor_ctx {
-                        Some((ctx_chunk, ctx_slot)) if ctx_chunk == self.current => Some(ctx_slot),
-                        _ => None,
-                    };
-                    // ⛔ ALLOCATE INTO A TEMPORARY, NOT INTO `this`. §10.2.2
-                    // step 13 / §9.1.1.3.4: `this` is bound by the SuperCall
-                    // COMPLETING, and a derived constructor that returns
-                    // without binding it must throw a ReferenceError. Writing
-                    // the allocation straight into `this_slot` made the slot
-                    // non-null before the base ran, so when the base THREW the
-                    // constructor-return TDZ guard no longer fired and the
-                    // ReferenceError was lost. Measured:
-                    // `class D extends B { constructor(){ try { super(); }
-                    // catch(e){…} } }` with a throwing `B` — `new D()` stopped
-                    // reporting `e instanceof ReferenceError`.
-                    //
-                    // The temp is SEEDED from `this_slot` first, so the
-                    // allocate-only-if-null guard inside `emit_new_typed_object`
-                    // still sees a receiver that was handed to US: when this
-                    // class is itself a base in a longer chain, it must pass
-                    // that receiver down rather than allocate a second object.
-                    let alloc_tmp = if let Some(slot) = derived_alloc {
-                        // The SAME spelling `reserve_type_slot` was called with
-                        // when the class was compiled (`canon(class.name)`, and
-                        // `current_class` already holds that canon form). A
-                        // different spelling would silently push a SECOND type
-                        // entry rather than find the existing one.
-                        let canon_name = self.canon(class_name);
-                        let type_slot = crate::primitives::classes::reserve_type_slot(
-                            &mut self.chunks,
-                            &canon_name,
-                        );
-                        let tmp = self.define_local("__derived_ctor_alloc");
-                        self.emit_u16(Op::LOCAL_GET, slot);
-                        self.emit_u16(Op::LOCAL_SET, tmp);
-                        let l = self.line;
-                        crate::primitives::classes::emit_new_typed_object(
-                            self.chunk(),
-                            tmp,
-                            &canon_name,
-                            type_slot,
-                            l,
-                        );
-                        Some(tmp)
-                    } else {
-                        None
-                    };
-                    self.emit_var_get(&parent_name);
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    let mut super_argc = arg_exprs.len() as u8;
-                    if let Some(tmp) = alloc_tmp {
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        super_argc = super_argc.saturating_add(1);
-                    }
-                    self.emit_direct_callable_invoke(super_argc);
-                    // Store result as this. Unchanged, and still correct under
-                    // derived allocation: the base returns the very object it
-                    // was handed, so the store is a no-op there — while the
-                    // paths that do NOT pre-allocate (no `js_derived_ctor_ctx`)
-                    // keep depending on it.
                     let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self.scope().resolve(&self_kw) {
-                        inst!(self, core_wasm::dup);
-                        self.emit_u16(Op::LOCAL_SET, slot);
-                    }
+                    let Some(this_slot) = self.scope().resolve(&self_kw) else {
+                        return Err(format!(
+                            "parent constructor call outside a constructor: `{self_kw}` is not bound"
+                        ));
+                    };
+                    self.emit_parent_ctor_call(
+                        class_name,
+                        &parent_name,
+                        &arg_exprs,
+                        this_slot,
+                        crate::primitives::classes::CtorResult::Keep,
+                    )?;
                     return Ok(());
                 }
             }
@@ -4131,15 +4070,14 @@ impl Compiler {
                         self.emit_direct_callable_invoke(3);
                     } else if self.universal_receiver() {
                         // ⛔ GATED ON "IS THIS ECMA-STYLE SUPER", NOT ON HOW THE
-                        // RECEIVER TRAVELS. Keyed on `ambient_this` alone this
-                        // path simply STOPPED being selected once the receiver
-                        // became a parameter, and js fell through to the
-                        // typed-language branch below — which reads
-                        // `__base_<Class>$<m>` off the receiver and, finding
-                        // nothing, falls back to the member on the receiver
-                        // ITSELF. For `static s(){ return super.s() }` that is
-                        // `B.s` again: infinite recursion. Same defect the
-                        // §15.4.4 brand check already carries a warning for.
+                        // RECEIVER TRAVELS. A gate keyed on the receiver's
+                        // channel drops js into the typed-language branch
+                        // below, which reads `__base_<Class>$<m>` off the
+                        // receiver and, finding nothing, falls back to the
+                        // member on the receiver ITSELF. For
+                        // `static s(){ return super.s() }` that is `B.s`
+                        // again: infinite recursion. Same defect the §15.4.4
+                        // brand check already carries a warning for.
                         //
                         // ECMA `super` resolves from the method's
                         // [[HomeObject]].[[Prototype]] at call time. For
@@ -4295,7 +4233,10 @@ impl Compiler {
                             .defined_globals
                             .iter()
                             .any(|g| g.eq_ignore_ascii_case(name))));
-            if !shadows_builtin_exception && common::errors::is_exception_type(name) {
+            if !shadows_builtin_exception
+                && common::errors::is_exception_type(name)
+                && self.tree_ctor_target(name).is_none()
+            {
                 self.emit_js_exception_ctor_value(name, &arg_exprs)?;
                 return Ok(());
             }
@@ -4415,7 +4356,7 @@ impl Compiler {
                                 }
                                 let total_argc = (arg_exprs.len() + 1) as u8;
                                 match &target {
-                                    vybe_runtime::component_model::InstanceMethodTarget::Host {
+                                    crate::component_classes::InstanceMethodTarget::Host {
                                         module,
                                         func,
                                         ..
@@ -4423,7 +4364,7 @@ impl Compiler {
                                         let idx = self.import(module, func);
                                         self.emit_host_call(idx, total_argc);
                                     }
-                                    vybe_runtime::component_model::InstanceMethodTarget::Common {
+                                    crate::component_classes::InstanceMethodTarget::Common {
                                         emit, ..
                                     } => {
                                         let line = self.line;
@@ -4446,7 +4387,7 @@ impl Compiler {
                             }
                         }
 
-                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        if matches!(&target, crate::component_classes::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -4506,7 +4447,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, crate::component_classes::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -4530,7 +4471,7 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            vybe_runtime::component_model::InstanceMethodTarget::Host {
+                            crate::component_classes::InstanceMethodTarget::Host {
                                 module,
                                 func,
                                 ..
@@ -4538,7 +4479,7 @@ impl Compiler {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            vybe_runtime::component_model::InstanceMethodTarget::Common {
+                            crate::component_classes::InstanceMethodTarget::Common {
                                 emit,
                                 ..
                             } => {
@@ -6407,7 +6348,7 @@ impl Compiler {
                         }
                     });
                     if let Some(target) = target {
-                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        if matches!(&target, crate::component_classes::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -6467,7 +6408,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, crate::component_classes::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -6492,7 +6433,7 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            vybe_runtime::component_model::InstanceMethodTarget::Host {
+                            crate::component_classes::InstanceMethodTarget::Host {
                                 module,
                                 func,
                                 ..
@@ -6500,7 +6441,7 @@ impl Compiler {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            vybe_runtime::component_model::InstanceMethodTarget::Common {
+                            crate::component_classes::InstanceMethodTarget::Common {
                                 emit,
                                 ..
                             } => {
@@ -6994,6 +6935,7 @@ impl Compiler {
                     BuiltinEmit::Invoke(method_name) => {
                         let line = self.line;
                         let name = method_name.clone();
+                        let __abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
                         common::invoke::emit_invoke_method(
                             &mut self.chunks,
                             self.current,
@@ -7096,9 +7038,16 @@ impl Compiler {
                     }
                     "filter" => {
                         let elem_slot = self.define_local("__hof_elem");
+                        // ⛔ THE SAME SOURCE `emit_map` READS, ONE LINE ABOVE.
+                        // The module stamp is written from the directives at
+                        // module setup; asking the directive stack instead made
+                        // this the one HOF arm that disagreed with its siblings.
+                        let abi =
+                            crate::primitives::class_context::module_receiver_abi(&self.chunks);
                         common::loops::emit_filter(
                             &mut self.chunks,
                             self.current,
+                            abi,
                             fn_slot,
                             arr_slot,
                             result_slot,
@@ -7135,18 +7084,20 @@ impl Compiler {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                             self.chunk().emit_br_if(1, line);
-                            // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26 passes (acc, elem, index, array)
-                            self.emit_u16(Op::LOCAL_GET, fn_slot);
-                            self.emit_u16(Op::LOCAL_GET, result_slot);
-                            self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            self.emit_u16(Op::LOCAL_GET, idx_slot);
+                            // acc = fn(acc, arr[i], i) — one spelling, shared
+                            // with the unseeded fold.
                             {
                                 let l = self.line;
-                                common::collections::emit_get(&mut self.chunks, self.current, l);
+                                common::loops::emit_reduce_step(
+                                    &mut self.chunks,
+                                    self.current,
+                                    fn_slot,
+                                    arr_slot,
+                                    result_slot,
+                                    idx_slot,
+                                    l,
+                                );
                             }
-                            self.emit_u16(Op::LOCAL_GET, idx_slot);
-                            self.emit_direct_callable_invoke(3);
-                            self.emit_u16(Op::LOCAL_SET, result_slot);
                             // i++
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
                             self.emit_const(Value::I32(1));
@@ -7189,6 +7140,7 @@ impl Compiler {
                             if let Some(this_arg) = arg_exprs.get(1) {
                                 self.compile_expr(this_arg)?;
                             }
+                            let __abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
                             common::invoke::emit_invoke_method(
                                 &mut self.chunks,
                                 self.current,
@@ -7215,6 +7167,7 @@ impl Compiler {
                             fn_slot,
                             arr_slot,
                             idx_slot,
+                            result_slot,
                             true,
                             line,
                         );
@@ -7226,6 +7179,7 @@ impl Compiler {
                             fn_slot,
                             arr_slot,
                             idx_slot,
+                            result_slot,
                             false,
                             line,
                         );
@@ -7251,8 +7205,23 @@ impl Compiler {
                         let elem_slot = self.define_local("__find_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        // §10.2.1: the predicate is a plain callback, so its
+                        // receiver is argument 0 — `undefined` (§10.2.1.1).
+                        let __recv = {
+                            let abi = if self.universal_receiver() {
+                                vybe_runtime::chunk::ReceiverAbi::Parameter
+                            } else {
+                                vybe_runtime::chunk::ReceiverAbi::Ambient
+                            };
+                            let line = self.line;
+                            crate::primitives::callable::emit_callback_receiver(
+                                self.chunk(),
+                                abi,
+                                line,
+                            )
+                        };
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit_direct_callable_invoke(1);
+                        self.emit_direct_callable_invoke(1 + __recv);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7286,9 +7255,24 @@ impl Compiler {
                         let elem_slot = self.define_local("__findi_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        // §10.2.1: the predicate is a plain callback, so its
+                        // receiver is argument 0 — `undefined` (§10.2.1.1).
+                        let __recv = {
+                            let abi = if self.universal_receiver() {
+                                vybe_runtime::chunk::ReceiverAbi::Parameter
+                            } else {
+                                vybe_runtime::chunk::ReceiverAbi::Ambient
+                            };
+                            let line = self.line;
+                            crate::primitives::callable::emit_callback_receiver(
+                                self.chunk(),
+                                abi,
+                                line,
+                            )
+                        };
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_direct_callable_invoke(2);
+                        self.emit_direct_callable_invoke(2 + __recv);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7322,6 +7306,7 @@ impl Compiler {
                         for extra in arg_exprs.iter().skip(1) {
                             self.compile_expr(extra)?;
                         }
+                        let __abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
                         common::invoke::emit_invoke_method(
                             &mut self.chunks,
                             self.current,
@@ -10212,32 +10197,21 @@ impl Compiler {
             }
 
             if !is_known_func {
-                // ⛔ THE MULTICAST LADDER PASSES NO RECEIVER, so it cannot be
-                // the lowering where a receiver is mandatory.
-                // `delegates::emit_invoke` distributes only the handler
-                // arguments to each handler — correct for a .NET multicast
-                // delegate, which has no `this` of its own — but under
-                // `ReceiverAbi::Parameter` argument 0 IS the receiver, so every
-                // declared parameter arrived one place early.
+                // ⛔ ONE LOWERING FOR A MULTICAST INVOKE, UNDER EVERY ABI.
+                // `delegates::emit_invoke` walks the handler array and calls
+                // each handler through the shared receiver placement, so it is
+                // the multicast lowering whether or not the module passes
+                // receivers as parameters. Selecting it on the ABI leaves the
+                // languages that HAVE multicast delegates (C#, VB) with a plain
+                // call of the handler array instead of a ladder.
                 //
-                // It was reached in js because `type_hint_is_delegate_like` is
-                // a broad NEGATIVE filter (not a defined class, not a
-                // registered type, not a primitive name), which a `Function`
-                // hint passes. `const f = new Function("x","return x")` gives
-                // the variable that hint, so `f(7)` took this path while the
-                // identical function built by `Function(...)` — no hint, no
-                // delegate branch — took the ordinary receiver-carrying call
-                // and was correct. Same function, same call, opposite answers,
-                // switched by how it was CONSTRUCTED.
-                //
-                // Gated on the receiver ABI rather than on a language name or
-                // a new profile flag: the statement being made is exactly
-                // "this lowering does not implement the parameter receiver
-                // ABI", which is what `universal_receiver()` asks. The ambient
-                // languages that actually have multicast delegates (C#, VB)
-                // are unaffected.
-                let is_delegate_typed = !self.universal_receiver()
-                    && self.lookup_var_type_hint(name).is_some_and(|type_hint| {
+                // `type_hint_is_delegate_like` is a broad NEGATIVE filter (not
+                // a defined class, not a registered type, not a primitive
+                // name), which a `Function` hint passes — so a js variable
+                // holding `new Function(...)` reaches this ladder too, and the
+                // ladder's receiver placement is what keeps that correct.
+                let is_delegate_typed =
+                    self.lookup_var_type_hint(name).is_some_and(|type_hint| {
                         Self::is_callable_type_hint(type_hint)
                             || self.type_hint_is_delegate_like(type_hint)
                     });
@@ -10372,7 +10346,7 @@ impl Compiler {
                                         }
                                         let total_argc = (arg_exprs.len() + 1) as u8;
                                         match target {
-                                            vybe_runtime::component_model::InstanceMethodTarget::Host {
+                                            crate::component_classes::InstanceMethodTarget::Host {
                                                 module,
                                                 func,
                                                 ..
@@ -10380,7 +10354,7 @@ impl Compiler {
                                                 let idx = self.import(&module, &func);
                                                 self.emit_host_call(idx, total_argc);
                                             }
-                                            vybe_runtime::component_model::InstanceMethodTarget::Common {
+                                            crate::component_classes::InstanceMethodTarget::Common {
                                                 emit,
                                                 ..
                                             } => {
@@ -10534,6 +10508,14 @@ impl Compiler {
                         self.chunk().emit_else(line);
 
                         self.emit_var_get(name);
+                        // ⛔ THE RECEIVER COMES FIRST. `param_names` are the
+                        // declared user parameters, so binding by name fills
+                        // arguments 1..n (§10.2.1). The positional arm above
+                        // passes its thisArgument through `apply`.
+                        let receiver = usize::from(self.universal_receiver());
+                        if receiver == 1 {
+                            inst!(self, core_wasm::undefined);
+                        }
                         for param_name in &signature.param_names {
                             self.emit_u16(Op::LOCAL_GET, spread_slot);
                             self.emit_const(Value::String(Arc::from(param_name.as_str())));
@@ -10543,7 +10525,9 @@ impl Compiler {
                                 self.line,
                             );
                         }
-                        self.emit_direct_callable_invoke(signature.param_names.len() as u8);
+                        self.emit_direct_callable_invoke(
+                            (signature.param_names.len() + receiver) as u8,
+                        );
                         self.chunk().emit_end(line);
                         return Ok(());
                     }
@@ -10936,10 +10920,8 @@ impl Compiler {
         }
 
         // ── Computed-member call: `obj[key](args)` ───────────────────
-        // For JS profile, treat this like a method call so `__js_this`
-        // is bound to `obj` before invocation. Without this binding the
-        // callee body sees a stale __js_this and `this.x` traps. Same
-        // semantics as ECMA-262 §13.3.7 (CallMemberExpression).
+        // For the JS profile, treat this like a method call so `obj` is the
+        // receiver — ECMA-262 §13.3.7 (CallMemberExpression).
         if self.class_prototype_dispatch() {
             if let ExprKind::Index { object, index, .. } = &callee.kind {
                 if arg_exprs.is_empty()

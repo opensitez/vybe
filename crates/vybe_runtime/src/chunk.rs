@@ -6,18 +6,16 @@ use std::sync::Arc;
 /// How a callable receives its receiver — the ABI, not the source spelling.
 ///
 /// This is the lowered form of [`vybe_ast::ReceiverBinding`], reduced to the
-/// only distinction the emitters make: is the receiver a WASM parameter, or is
-/// it read out of the ambient `__js_this` module global? `ExplicitParameter`
-/// and `UniversalParameter` differ in WHICH callables take one — a question
-/// already settled by the time a chunk is being built — so both lower to
-/// [`ReceiverAbi::Parameter`] here.
+/// only distinction the emitters make: does a call site place the receiver at
+/// argument 0? `ExplicitParameter` and `UniversalParameter` differ in WHICH
+/// callables take one — a question already settled by the time a chunk is being
+/// built — so both lower to [`ReceiverAbi::Parameter`] here.
 ///
-/// [`ReceiverAbi::Ambient`] is the default: a module that never sets this
-/// behaves exactly as it did before the receiver moved.
+/// [`ReceiverAbi::Ambient`] is the default, and wast is the only language that
+/// keeps it: wast maps to INSTRUCTIONS and has no receiver to place.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ReceiverAbi {
-    /// Receiver travels in the `__js_this` module global, with a hand-rolled
-    /// save/restore around every call that binds one.
+    /// The region places no receiver: a call site passes its arguments alone.
     #[default]
     Ambient,
     /// Receiver is a real parameter in slot 0 — ECMA-262 §10.2.1
@@ -391,7 +389,7 @@ pub struct Chunk {
     /// whole pool on every call, and since every global access and every
     /// string constant now routes through it, that was quadratic in the
     /// number of constants.
-    string_constants: std::collections::HashMap<String, u16, FxBuildHasher>,
+    string_constants: std::collections::HashMap<String, u32, FxBuildHasher>,
     pub lines: Vec<u32>,
     pub name: String,
     pub arity: u8,
@@ -974,7 +972,7 @@ impl Chunk {
     /// time, so sharing one entry between sites is always safe; string
     /// constants reference theirs once per emit site and there are ~1,455 of
     /// them in a large module.
-    pub fn intern_string_constant(&mut self, s: &str) -> u16 {
+    pub fn intern_string_constant(&mut self, s: &str) -> u32 {
         if let Some(&i) = self.string_constants.get(s) {
             return i;
         }
@@ -1182,6 +1180,39 @@ impl Chunk {
         self.emit((operand & 0xff) as u8, line);
     }
 
+    /// Emit an op with a fixed-width big-endian `u32` immediate.
+    ///
+    /// Fixed width so the operand can be rewritten in place — see
+    /// [`OperandFormat::U32`].
+    pub fn emit_op_u32(&mut self, op: Op, operand: u32, line: u32) {
+        self.emit_op(op, line);
+        for b in operand.to_be_bytes() {
+            self.emit(b, line);
+        }
+    }
+
+    /// Emit an op whose immediate is a spec INDEX — a LEB128 `u32`.
+    ///
+    /// `impl Into<u32>` so the existing `u16` slot/index variables pass
+    /// unchanged; what widens is the ENCODING, which is what the spec fixes.
+    pub fn emit_op_idx(&mut self, op: Op, operand: impl Into<u32>, line: u32) {
+        self.emit_op(op, line);
+        self.emit_leb_u32(operand.into(), line);
+    }
+
+    /// Two spec indices, both LEB128 `u32` (`table.init`, `memory.copy`, …).
+    pub fn emit_op_idx_idx(
+        &mut self,
+        op: Op,
+        first: impl Into<u32>,
+        second: impl Into<u32>,
+        line: u32,
+    ) {
+        self.emit_op(op, line);
+        self.emit_leb_u32(first.into(), line);
+        self.emit_leb_u32(second.into(), line);
+    }
+
     pub fn emit_op_u8(&mut self, op: Op, operand: u8, line: u32) {
         self.emit_op(op, line);
         self.emit(operand, line);
@@ -1197,12 +1228,14 @@ impl Chunk {
     /// `struct.get` / `get_s` / `get_u` / `set` — `(typeidx, idx)`.
     /// typeidx 0 makes `idx` a constant-pool index for a field NAME; a real
     /// typeidx makes it a spec `fieldidx` into indexed storage.
-    pub fn emit_struct_field_op(&mut self, op: Op, typeidx: u16, idx: u16, line: u32) {
+    ///
+    /// Both immediates are LEB128 `u32`. A 16-bit `idx` capped the constant
+    /// pool at 65536 entries and WRAPPED past it, so a field name resolved to
+    /// whatever constant sat at `idx & 0xffff`.
+    pub fn emit_struct_field_op(&mut self, op: Op, typeidx: u32, idx: u32, line: u32) {
         self.emit_op(op, line);
-        self.emit((typeidx >> 8) as u8, line);
-        self.emit((typeidx & 0xff) as u8, line);
-        self.emit((idx >> 8) as u8, line);
-        self.emit((idx & 0xff) as u8, line);
+        self.emit_leb_u32(typeidx, line);
+        self.emit_leb_u32(idx, line);
     }
 
     /// `struct.new $t N` — typeidx 0 means the dynamic object-literal form,
@@ -1307,9 +1340,19 @@ impl Chunk {
         }
     }
 
-    pub fn add_constant(&mut self, value: Value) -> u16 {
+    /// Append a constant and return its pool index.
+    ///
+    /// The index is a `u32`. It used to be `(len - 1) as u16`, which wrapped
+    /// silently: past 65536 constants an instruction kept decoding, it just
+    /// read a DIFFERENT constant. A pool larger than `u32::MAX` is not
+    /// representable, so it is a hard error rather than another wrap.
+    pub fn add_constant(&mut self, value: Value) -> u32 {
+        assert!(
+            self.constants.len() < u32::MAX as usize,
+            "constant pool overflow: an index must fit a u32"
+        );
         self.constants.push(value);
-        (self.constants.len() - 1) as u16
+        (self.constants.len() - 1) as u32
     }
 
     pub fn emit_jump(&mut self, op: Op, line: u32) -> usize {
@@ -1477,6 +1520,15 @@ impl Chunk {
         self.emit_leb_u32(default_depth, line);
     }
 
+    /// Read a fixed-width big-endian `u32` operand at `offset`.
+    pub fn read_u32(&self, offset: usize) -> u32 {
+        let b: [u8; 4] = match self.code.get(offset..offset + 4) {
+            Some(s) => s.try_into().unwrap_or([0; 4]),
+            None => [0; 4],
+        };
+        u32::from_be_bytes(b)
+    }
+
     pub fn read_u16(&self, offset: usize) -> u16 {
         ((self.code[offset] as u16) << 8) | (self.code[offset + 1] as u16)
     }
@@ -1615,7 +1667,7 @@ impl Chunk {
         self.add_global_import(STRING_CONSTANTS_MODULE, s);
         let key = imported_global_key(STRING_CONSTANTS_MODULE, s);
         let ci = self.intern_string_constant(&key);
-        self.emit_op_u16(Op::GLOBAL_GET, ci, line);
+        self.emit_op_u32(Op::GLOBAL_GET, ci, line);
     }
 
     /// Emit a boolean constant: i32.const N + call wasm:js-boolean.fromI32.

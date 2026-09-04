@@ -53,7 +53,6 @@ pub use value::Properties;
 pub use value::Value;
 pub use vm::{HostContext, HostFn, ImportTarget, VM, VmSnapshot};
 pub mod component;
-pub mod component_model;
 pub mod project;
 
 // Plugin SDK + registry (folded in from the former `vybe_plugin` crate).
@@ -66,6 +65,7 @@ pub mod profile;
 pub mod registry;
 pub use component::{
     BinaryLoader, Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult,
+    Param,
     Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader,
 };
 pub use framework::{
@@ -189,11 +189,11 @@ mod host_signature_tests {
             "appendChild",
             FuncSig {
                 name: "append-child".into(),
-                params: vec![
+                params: Param::unnamed_list(vec![
                     ValType::Borrow("document".into()),
                     ValType::Borrow("node".into()),
                     ValType::Borrow("node".into()),
-                ],
+                ]),
                 results: vec![],
             },
             None,
@@ -215,11 +215,11 @@ mod host_signature_tests {
             "appendChild",
             FuncSig {
                 name: "append-child".into(),
-                params: vec![
+                params: Param::unnamed_list(vec![
                     ValType::Borrow("document".into()),
                     ValType::Borrow("node".into()),
                     ValType::Borrow("node".into()),
-                ],
+                ]),
                 results: vec![],
             },
             Some(crate::vm::ResourceBinding {
@@ -244,7 +244,7 @@ mod host_signature_tests {
             "setTextContent",
             FuncSig {
                 name: "set-text-content".into(),
-                params: vec![ValType::Borrow("node".into()), ValType::String],
+                params: Param::unnamed_list(vec![ValType::Borrow("node".into()), ValType::String]),
                 results: vec![],
             },
             Some(crate::vm::ResourceBinding {

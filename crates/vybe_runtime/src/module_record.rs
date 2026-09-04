@@ -96,8 +96,8 @@ pub enum ExportEntry {
     /// the `TypeRegistry`; `new SomeResource(...)` dispatches via
     /// the type id.
     ResourceType { type_id: usize },
-    /// Component Model class type (`ClassType`). Registered in the
-    /// `TypeRegistry` by the defining module; consumer modules bind
+    /// A class exported by the defining module. Registered in the
+    /// `TypeRegistry` by that module; consumer modules bind
     /// `import { Foo } from "./a"` to this entry and resolve
     /// constructor / method calls through the shared registry.
     /// Cross-module inheritance and `instanceof` work because the

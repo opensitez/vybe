@@ -160,6 +160,14 @@ fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_sorted(chunks, current, line);
     call_host(chunks, current, "ecma:json", "stringify", 1, line);
     chunks[current].emit_else(line);
+    // A tuple IS its contents — every language that has tuples gives them
+    // value equality, so the key is structural without an `Eq` slot.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    crate::primitives::tuples::emit_is_tuple(chunks, current, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     chunks[current].emit_string_const(
         vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq).as_str(),
@@ -170,6 +178,7 @@ fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     // for typed instances, where a plain property read cannot see them.
     call_host(chunks, current, "ecma:value", "getMethodForCall", 2, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     call_host(chunks, current, "ecma:json", "stringify", 1, line);
@@ -305,6 +314,60 @@ pub fn emit_clear_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Stack: `[values-array] -> [set]` — a snapshot-keyed set of the array's
 /// elements, deduplicated by their insertion-time render.
+/// Rebuild a snapshot-keyed set's key map from the set's own contents.
+///
+/// The host set operations (`UnionWith`, `IntersectWith`, …) replace the
+/// elements without going through [`emit_add_snapshot`], so the key map has to
+/// be resynced afterwards or membership answers from a stale key.
+/// Stack: [set] → [set].
+pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32) {
+    let set_slot = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let values = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+    emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    call_host(chunks, current, "ecma:map", "clear", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    emit_values_array(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, values, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    crate::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    crate::primitives::collections::emit_get(chunks, current, line);
+    emit_snapshot_render(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    crate::primitives::collections::emit_get(chunks, current, line);
+    call_host(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+}
+
 pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
     let values = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);

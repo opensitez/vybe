@@ -69,14 +69,6 @@ impl Compiler {
     }
 
     fn type_uses_winforms_event_host(&self, candidate_type: &str) -> bool {
-        // A concrete GUI control (`Button`, `Form`, `TextBox`, …) is a WinForms
-        // Control even though it no longer registers a pending class (control
-        // ctor globals are retired). Recognize it via the shared control-name
-        // table so `btn.Click += handler` binds to the widget (`onEvent`)
-        // rather than only combining an in-memory delegate.
-        if !common::gui::canonical_control_name(candidate_type).is_empty() {
-            return true;
-        }
         if let Some(mut current) = self.resolve_pending_class_name_for_type_hint(candidate_type) {
             let mut visited = std::collections::HashSet::new();
             loop {
@@ -106,6 +98,15 @@ impl Compiler {
                 }
                 current = parent;
             }
+        }
+
+        // A concrete GUI control (`Button`, `Form`, `TextBox`, …) is a WinForms
+        // Control even though it no longer registers a pending class (control
+        // ctor globals are retired). Ask this only AFTER pending user classes:
+        // a source `Class Button` shadows the framework name unless its own
+        // ancestry reaches `Control`.
+        if !common::gui::canonical_control_name(candidate_type).is_empty() {
+            return true;
         }
 
         self.reflection_is_assignable_from("System.Windows.Forms.Control", candidate_type)

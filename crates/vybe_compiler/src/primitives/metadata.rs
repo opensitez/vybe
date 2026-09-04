@@ -172,48 +172,43 @@ impl Compiler {
         }
     }
 
-    /// A declared parameter list, or `arg{i}: System.Object` when the
-    /// descriptor states only an arity.
+    /// The declared parameter list as reflection reports it: a declared NAME
+    /// is the parameter's name, an unnamed one is `arg{i}`; an `any` type is
+    /// `System.Object`. Reflection reads the declaring leaf — the same list a
+    /// named argument binds against.
     fn seeded_params(
         &self,
-        arity: u8,
-        declared: Option<&[vybe_runtime::component::ValType]>,
+        declared: &[vybe_runtime::component::Param],
     ) -> Vec<ReflectionParamMetadata> {
-        (0..arity as usize)
-            .map(|index| ReflectionParamMetadata {
-                name: format!("arg{index}"),
+        declared
+            .iter()
+            .enumerate()
+            .map(|(index, param)| ReflectionParamMetadata {
+                name: if param.name.is_empty() {
+                    format!("arg{index}")
+                } else {
+                    param.name.clone()
+                },
                 decorators: Vec::new(),
-                type_name: Some(
-                    declared
-                        .and_then(|types| types.get(index))
-                        .and_then(Self::valtype_source_name)
-                        .map(|source| self.reflection_runtime_type_name(&source, None))
-                        .unwrap_or_else(|| "System.Object".to_string()),
-                ),
+                type_name: Some(self.seeded_param_type(param)),
             })
             .collect()
     }
 
     /// The same list as bare type names — what overload selection matches on.
-    fn seeded_param_types(
-        &self,
-        arity: u8,
-        declared: Option<&[vybe_runtime::component::ValType]>,
-    ) -> Vec<String> {
-        (0..arity as usize)
-            .map(|index| {
-                declared
-                    .and_then(|types| types.get(index))
-                    .and_then(Self::valtype_source_name)
-                    .map(|source| self.reflection_runtime_type_name(&source, None))
-                    .unwrap_or_else(|| "System.Object".to_string())
-            })
-            .collect()
+    fn seeded_param_types(&self, declared: &[vybe_runtime::component::Param]) -> Vec<String> {
+        declared.iter().map(|param| self.seeded_param_type(param)).collect()
+    }
+
+    fn seeded_param_type(&self, param: &vybe_runtime::component::Param) -> String {
+        Self::valtype_source_name(&param.ty)
+            .map(|source| self.reflection_runtime_type_name(&source, None))
+            .unwrap_or_else(|| "System.Object".to_string())
     }
 
     fn seed_dotnet_reflection_metadata(&mut self) {
         use crate::profile::ReflectionTypeNaming;
-        use vybe_runtime::component_model::ComponentItemKind;
+        use crate::component_classes::ComponentItemKind;
 
         if self.profile.reflection_type_naming != ReflectionTypeNaming::FrameworkQualified {
             return;
@@ -221,6 +216,7 @@ impl Compiler {
 
         for export in vybe_runtime::registry::platform_component_descriptors()
             .into_iter()
+            .filter_map(|d| d.downcast::<crate::component_classes::ComponentDescriptor>().ok())
             .flat_map(|d| d.exports)
         {
             let ComponentItemKind::Class(class) = export.kind else {
@@ -248,9 +244,8 @@ impl Compiler {
             };
             for constructor in class.constructors {
                 metadata.constructors.push(ReflectionConstructorMetadata {
-                    param_types: self
-                        .seeded_param_types(constructor.arity, constructor.params.as_deref()),
-                    params: self.seeded_params(constructor.arity, constructor.params.as_deref()),
+                    param_types: self.seeded_param_types(&constructor.params),
+                    params: self.seeded_params(&constructor.params),
                     decorators: Vec::new(),
                     visibility: Visibility::Public,
                     is_static: false,
@@ -274,7 +269,7 @@ impl Compiler {
                     method.name,
                     ReflectionMethodMetadata {
                         decorators: Vec::new(),
-                        params: self.seeded_params(method.arity, method.params.as_deref()),
+                        params: self.seeded_params(&method.params),
                         is_static: method.is_static,
                         return_type: None,
                         visibility: Visibility::Public,
@@ -308,6 +303,7 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
                     &runtime_name,
+                    name,
                     parents,
                     interfaces,
                     decorators,
@@ -327,6 +323,7 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
                     &runtime_name,
+                    name,
                     &[],
                     interfaces,
                     decorators,
@@ -336,6 +333,10 @@ impl Compiler {
                 );
                 self.record_reflection_generic_params(&runtime_name, name);
             }
+            StmtKind::ModuleDecl { name, members, .. } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                self.record_reflection_type(&runtime_name, name, &[], &[], &[], members, false, true);
+            }
             StmtKind::InterfaceDecl {
                 name,
                 parents,
@@ -344,6 +345,7 @@ impl Compiler {
             } => {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 let metadata = ReflectionTypeMetadata {
+                    display_name: common::generics::erased_type_name(name).trim().to_string(),
                     parents: parents
                         .iter()
                         .map(|parent| self.reflection_runtime_type_name(parent, None))
@@ -369,6 +371,7 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
                     &runtime_name,
+                    name,
                     &[],
                     interfaces,
                     decorators,
@@ -420,6 +423,7 @@ impl Compiler {
     pub(super) fn record_reflection_type(
         &mut self,
         runtime_name: &str,
+        declared_name: &str,
         parents: &[String],
         interfaces: &[String],
         decorators: &[Expression],
@@ -428,6 +432,7 @@ impl Compiler {
         is_sealed: bool,
     ) {
         let mut metadata = ReflectionTypeMetadata {
+            display_name: common::generics::erased_type_name(declared_name).trim().to_string(),
             parents: parents
                 .iter()
                 .map(|parent| self.reflection_runtime_type_name(parent, None))
@@ -558,7 +563,9 @@ impl Compiler {
                     );
                 }
                 ClassMember::Constructor {
-                    params, visibility, ..
+                    params,
+                    visibility,
+                    ..
                 } => {
                     metadata.constructors.push(ReflectionConstructorMetadata {
                         param_types: params
@@ -925,6 +932,9 @@ impl Compiler {
             .unwrap_or(trimmed)
             .trim()
             .to_string();
+        if let Some(display) = self.reflection_display_leaf(trimmed) {
+            return display;
+        }
         if !trimmed.starts_with("System.")
             && short.chars().all(|ch| !ch.is_ascii_uppercase())
             && short.chars().any(|ch| ch.is_ascii_alphabetic())
@@ -938,7 +948,30 @@ impl Compiler {
     }
 
     pub(crate) fn reflection_type_full_name(&self, type_name: &str) -> String {
-        self.reflection_runtime_type_name(type_name, None)
+        let runtime = self.reflection_runtime_type_name(type_name, None);
+        let Some(display) = self.reflection_display_leaf(&runtime) else {
+            return runtime;
+        };
+        match runtime.rsplit_once('.') {
+            Some((head, _)) => format!("{head}.{display}"),
+            None => display,
+        }
+    }
+
+    /// The declared spelling of a user type's leaf, when the type is known.
+    fn reflection_display_leaf(&self, type_name: &str) -> Option<String> {
+        let erased = common::generics::erased_type_name(type_name);
+        let trimmed = erased.trim().trim_end_matches('?').trim();
+        let display = &self.reflection_types.get(trimmed).or_else(|| {
+            self.reflection_types
+                .iter()
+                .find(|(known, _)| known.eq_ignore_ascii_case(trimmed))
+                .map(|(_, meta)| meta)
+        })?.display_name;
+        if display.is_empty() {
+            return None;
+        }
+        Some(display.rsplit('.').next().unwrap_or(display).trim().to_string())
     }
 
     pub(crate) fn reflection_is_enum_type(&self, type_name: &str) -> bool {
@@ -1099,6 +1132,13 @@ impl Compiler {
             .map(|param| self.reflection_type_lookup_name(param))
             .collect();
         let meta = self.reflection_types.get(&lookup)?;
+        // A class that declares no constructor has the implicit parameterless one.
+        if meta.constructors.is_empty() && normalized_params.is_empty() {
+            return Some(ReflectionBinding::Constructor {
+                type_name: type_name.to_string(),
+                param_types: Vec::new(),
+            });
+        }
         let ctor = meta.constructors.iter().find(|ctor| {
             ctor.param_types.len() == normalized_params.len()
                 && ctor
@@ -1108,7 +1148,7 @@ impl Compiler {
                     .all(|(left, right)| left.eq_ignore_ascii_case(right))
         })?;
         Some(ReflectionBinding::Constructor {
-            type_name: lookup,
+            type_name: type_name.to_string(),
             param_types: ctor.param_types.clone(),
         })
     }
@@ -1361,8 +1401,28 @@ impl Compiler {
         if self.receiver_is_class_name(receiver) {
             return None;
         }
-        let hint = self.infer_expr_type_hint(receiver)?;
-        let class = self.resolve_pending_class_name_for_type_hint(&hint)?;
+        // `this` names the class being compiled. `infer_expr_type_hint` does
+        // not answer for it, so a write inside a constructor — which is where
+        // a field initializer lands — resolved to no class and stayed keyed
+        // while reads of the same field indexed, leaving the halves pointing
+        // at different storage.
+        let class = match &receiver.kind {
+            // `this` names the class being compiled. Languages spell it two
+            // ways after walking — a dedicated node, or an identifier holding
+            // the profile's self keyword — and BOTH reach here, so both must
+            // answer or a constructor's own writes stay keyed while reads of
+            // the same field index.
+            ExprKind::This => self.current_class.clone()?,
+            ExprKind::Ident(name)
+                if self.canon(name) == self.canon(&self.profile.self_keyword) =>
+            {
+                self.current_class.clone()?
+            }
+            _ => {
+                let hint = self.infer_expr_type_hint(receiver)?;
+                self.resolve_pending_class_name_for_type_hint(&hint)?
+            }
+        };
         // ⛔ A PROPERTY IS REACHED THROUGH ITS ACCESSOR, NOT AS STORAGE.
         // `compile_class` pushes a property's name into `TypeEntry.fields`
         // even when it has no backing field, so a name being in that list is
@@ -1401,15 +1461,100 @@ impl Compiler {
     /// index and answered null. Failing open costs a silent wrong value;
     /// failing closed costs only the string-keyed path every read used before.
     fn field_is_plain_storage(&self, class: &str, field: &str) -> bool {
-        let class_key = self.canon(class);
-        let Some(normal) = self.normalized_classes.get(&class_key) else {
-            return false;
+        let Some(normal) = self.normal_class_for_indexing(class) else {
+            return self.pending_field_is_plain_storage(class, field);
         };
         let field_canon = self.canon(field);
+        // An AUTO-property IS storage: `auto_field` names the slot behind
+        // `{ get; set; }`, and `publish_class_storage` registers that slot
+        // under the PROPERTY's name, so reading it reads a field. A property
+        // that COMPUTES its answer carries no `auto_field` and must reach its
+        // accessor — indexing one reads a slot the getter never wrote.
+        //
+        // ⛔ Sound only while the member WRITE resolves through this same
+        // predicate. An indexed read of a name written by key answers the
+        // slot's default, which is a wrong value rather than a trap.
         !normal
             .properties
             .iter()
-            .any(|p| self.canon(&p.source_name) == field_canon)
+            .any(|p| self.canon(&p.source_name) == field_canon && p.auto_field.is_none())
+    }
+
+    /// The property check for a class the normalize pass never registered.
+    ///
+    /// A NESTED type builds its pending entry through
+    /// `predeclare_nested_type_surfaces` and never enters
+    /// `normalized_classes`, so the check above cannot see it. Java and Kotlin
+    /// wrap every test class inside an enclosing one, which makes this the
+    /// common case rather than a corner.
+    ///
+    /// ⛔ STILL FAILS CLOSED, and answers from the two facts the pending entry
+    /// does carry: the name must have a DECLARED TYPE, and no instance member
+    /// may share it. A language that annotates nothing declares no types here
+    /// and so indexes nothing through this path, which is the conservative
+    /// answer rather than a gap to close by loosening it.
+    fn pending_field_is_plain_storage(&self, class: &str, field: &str) -> bool {
+        let Some(pending) = self.pending_classes.get(&self.canon(class)) else {
+            return false;
+        };
+        let field_canon = self.canon(field);
+        // ⛔ `instance_field_types`, NOT `fields`. A PROPERTY is pushed into
+        // `fields` (and into `TypeEntry.fields`) with no backing storage, so
+        // asking that Vec answers yes for an accessor and indexes it —
+        // `public string Name => "property"` then reads as an empty slot.
+        // Only a name carrying a DECLARED TYPE is storage.
+        let is_storage = pending
+            .instance_field_types
+            .keys()
+            .any(|f| self.canon(f) == field_canon);
+        let shadowed_by_member = pending
+            .instance_member_names
+            .iter()
+            .any(|m| self.canon(m) == field_canon);
+        is_storage && !shadowed_by_member
+    }
+
+    /// The `NormalClass` behind a slot's class name, for the property check
+    /// above.
+    ///
+    /// A nested class arrives here under the QUALIFIED name its pending entry
+    /// carries (`Outer.Inner`), which is not always the key the normalize pass
+    /// stored it under. A simple-name match is accepted only when it is
+    /// UNIQUE: two classes sharing a simple name carry no evidence about which
+    /// one this slot means, and guessing reintroduces the wrong-value failure
+    /// the caller's fail-closed rule exists to prevent.
+    fn normal_class_for_indexing(
+        &self,
+        class: &str,
+    ) -> Option<&crate::primitives::class_normalize::NormalClass> {
+        let class_key = self.canon(class);
+        if let Some(normal) = self.normalized_classes.get(&class_key) {
+            return Some(normal);
+        }
+        if let Some(normal) = self.normalized_classes.get(class) {
+            return Some(normal);
+        }
+        let simple_canon = self.canon(class.rsplit('.').next()?);
+        let suffix = format!(".{simple_canon}");
+        let mut matches = self
+            .normalized_classes
+            .iter()
+            .filter(|(key, _)| **key == simple_canon || key.ends_with(&suffix));
+        match (matches.next(), matches.next()) {
+            (Some((_, normal)), None) => Some(normal),
+            _ => None,
+        }
+    }
+
+    /// Whether `receiver` is the class's own `this` — the two spellings a
+    /// walker leaves behind, a dedicated node or the profile's self keyword as
+    /// an identifier.
+    pub(super) fn receiver_is_self(&self, receiver: &Expression) -> bool {
+        match &receiver.kind {
+            ExprKind::This => true,
+            ExprKind::Ident(name) => self.canon(name) == self.canon(&self.profile.self_keyword),
+            _ => false,
+        }
     }
 
     /// Whether `receiver` spells a class rather than an instance — the

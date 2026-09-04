@@ -495,13 +495,13 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // The receiver ABI is a MODULE property and rides on the module chunk —
     // which `imports` IS. Read it before the `&mut` borrows below.
     let abi = imports.module_receiver_abi;
-    chunks.push(build_generator_next(imports, abi));
+    chunks.push(build_generator_next(imports));
     exports.push("__stdlib_generator_next");
-    chunks.push(build_async_generator_next(imports, abi));
+    chunks.push(build_async_generator_next(imports));
     exports.push("__stdlib_async_generator_next");
-    chunks.push(crate::primitives::generators::build_generator_self(abi));
+    chunks.push(crate::primitives::generators::build_generator_self());
     exports.push("__stdlib_generator_self");
-    chunks.push(crate::primitives::generators::build_iter_drain(imports, abi));
+    chunks.push(crate::primitives::generators::build_iter_drain(imports));
     exports.push("__stdlib_iter_drain");
     // PHP runtime helpers — all centralized under `emitter/php/`.
     // Inline opcode emitters in `php/<category>_adapter.rs` reached
@@ -642,18 +642,18 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_array_reverse_range" => crate::primitives::arrays::build_array_reverse_range(imports),
         "__stdlib_generator_next" => {
             let abi = imports.module_receiver_abi;
-            build_generator_next(imports, abi)
+            build_generator_next(imports)
         }
         "__stdlib_async_generator_next" => {
             let abi = imports.module_receiver_abi;
-            build_async_generator_next(imports, abi)
+            build_async_generator_next(imports)
         }
         "__stdlib_generator_self" => {
-            crate::primitives::generators::build_generator_self(imports.module_receiver_abi)
+            crate::primitives::generators::build_generator_self()
         }
         "__stdlib_iter_drain" => {
             let abi = imports.module_receiver_abi;
-            crate::primitives::generators::build_iter_drain(imports, abi)
+            crate::primitives::generators::build_iter_drain(imports)
         }
         "__stdlib_regex_replace_pat_first" => {
             crate::primitives::regex::build_regex_replace_pat_first(imports)

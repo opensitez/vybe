@@ -1562,6 +1562,10 @@ impl Compiler {
                     // the wasm writer's `resolve_heaptype_from_name` expects.
                     let name_idx = self.chunks[self.current]
                         .add_constant(vybe_runtime::Value::String(type_name.as_str().into()));
+                    // This op's immediate is still 16-bit; narrowing is checked
+                    // so it cannot resolve to a different type's name.
+                    let name_idx = u16::try_from(name_idx)
+                        .expect("type-name constant exceeds this op's u16 immediate");
                     self.chunks[self.current].emit_op_u16(op, name_idx, l);
                     return Ok(true);
                 }
@@ -1617,6 +1621,12 @@ impl Compiler {
                         Op::BR_ON_CAST_DESC_EQ
                     };
                     // `U16_U16_U8`: ht_2 (target), ht_1 (source), label depth.
+                    // Both immediates are still 16-bit; narrowing is checked so
+                    // neither can resolve to a different heaptype's name.
+                    let to_idx = u16::try_from(to_idx)
+                        .expect("heaptype-name constant exceeds a u16 immediate");
+                    let from_idx = u16::try_from(from_idx)
+                        .expect("heaptype-name constant exceeds a u16 immediate");
                     let chunk = &mut self.chunks[self.current];
                     chunk.emit_op_u16(op, to_idx, l);
                     chunk.emit((from_idx >> 8) as u8, l);
@@ -2855,10 +2865,13 @@ impl Compiler {
                     for a in stack_args {
                         self.compile_expr(a)?;
                     }
-                    self.chunk().emit_op_u16(op, imms[0], l);
+                    // These immediates are spec indices: LEB `u32`, and the
+                    // SECOND one goes through the emitter too. Hand-writing it
+                    // as two raw bytes desynchronised every module using a
+                    // memory op once the format widened.
+                    self.chunk().emit_op_idx(op, imms[0] as u32, l);
                     for imm in &imms[1..] {
-                        self.chunk().emit((imm >> 8) as u8, l);
-                        self.chunk().emit((imm & 0xff) as u8, l);
+                        self.chunk().emit_leb_u32(*imm as u32, l);
                     }
                     return Ok(());
                 }
@@ -2884,6 +2897,15 @@ impl Compiler {
                         }
                         let imm = expr_const_u16(args.first().copied());
                         self.chunk().emit_op_u16(op, imm, l);
+                    }
+                    // A single spec index, LEB `u32` (`table.get`, `table.grow`,
+                    // `data.drop`, …).
+                    OperandFormat::U32Leb => {
+                        for a in args.get(1..).unwrap_or(&[]) {
+                            self.compile_expr(a)?;
+                        }
+                        let imm = expr_const_u16(args.first().copied());
+                        self.chunk().emit_op_idx(op, imm, l);
                     }
                     // Two index immediates then stack operands: the GC
                     // array-from-segment ops (`array.new_data $T $d`,
@@ -2916,6 +2938,17 @@ impl Compiler {
                         self.chunk().emit_op_u16(op, imm1, l);
                         self.chunk().emit((imm2 >> 8) as u8, l);
                         self.chunk().emit((imm2 & 0xff) as u8, l);
+                    }
+                    // Two spec indices, both LEB `u32` (`table.init`,
+                    // `table.copy`). BOTH go through the emitter — writing the
+                    // second by hand is what desynchronises the stream.
+                    OperandFormat::U32Leb_U32Leb => {
+                        for a in args.iter().skip(2) {
+                            self.compile_expr(a)?;
+                        }
+                        let imm1 = expr_const_u16(args.first().copied());
+                        let imm2 = expr_const_u16(args.get(1).copied());
+                        self.chunk().emit_op_idx_idx(op, imm1, imm2, l);
                     }
                     // Lane ops (extract_lane / replace_lane): the fold puts the
                     // lane immediate first, then the stack operands.

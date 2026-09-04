@@ -134,7 +134,7 @@ impl Compiler {
         class_name: &str,
         member: &str,
         argc: u8,
-    ) -> Option<vybe_runtime::component_model::InstanceMethodTarget> {
+    ) -> Option<crate::component_classes::InstanceMethodTarget> {
         namespaces::lookup_type_instance_target(
             self.tree_type_scope(),
             class_name,
@@ -147,7 +147,7 @@ impl Compiler {
     pub(crate) fn tree_ctor_target(
         &self,
         class_name: &str,
-    ) -> Option<vybe_runtime::component_model::ConstructorTarget> {
+    ) -> Option<crate::component_classes::ConstructorTarget> {
         namespaces::lookup_type_ctor_target(self.tree_type_scope(), class_name, self.tree_fold())
     }
 
@@ -159,7 +159,7 @@ impl Compiler {
         &self,
         class_name: &str,
         member: &str,
-    ) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+    ) -> Option<crate::component_classes::InstancePropertyTarget> {
         namespaces::lookup_type_property_target(
             self.tree_type_scope(),
             class_name,
@@ -172,7 +172,7 @@ impl Compiler {
         &self,
         class_name: &str,
         member: &str,
-    ) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+    ) -> Option<crate::component_classes::InstancePropertyTarget> {
         namespaces::lookup_type_property_setter_target(
             self.tree_type_scope(),
             class_name,
@@ -245,13 +245,14 @@ impl Compiler {
         //     analogue of the dotted-chain rule in `resolve_namespace_path`).
         //     PURE FALLBACK: only reached when the name resolves to nothing at
         //     top level, so it can only add resolutions, never change an
-        //     existing one. Narrowed further to a `Ctor` carrying a
-        //     construction `spec` — a config-object type constructed through
-        //     the common-resolver path (`flutter.scaffold`). This deliberately
-        //     excludes spec-less `Ctor`s (the dotnet BCL registers its tree
-        //     Types with `ctor: None`, reaching construction via
-        //     `lookup_constructor` + dotted chains instead), so mounting a
-        //     `.NET` ambient root here never re-routes a bare `Console`.
+        //     existing one. Accept only terminal callables/values plus a
+        //     `Ctor` carrying a construction `spec` — a config-object type
+        //     constructed through the common-resolver path (`flutter.scaffold`).
+        //     This deliberately excludes namespace objects and spec-less
+        //     `Ctor`s (the dotnet BCL registers its tree Types with
+        //     `ctor: None`, reaching construction via `lookup_constructor` +
+        //     dotted chains instead), so mounting a `.NET` ambient root here
+        //     never re-routes a bare `Console`.
         // Same rule as the rebase above: the tree folds at LOOKUP now, so a
         // key handed to it keeps the spelling the source wrote.
         let ambient_key = key.to_string();
@@ -259,10 +260,16 @@ impl Compiler {
             let mut expanded: Vec<String> = root.split('.').map(str::to_string).collect();
             expanded.push(ambient_key.clone());
             let refs: Vec<&str> = expanded.iter().map(String::as_str).collect();
-            if let Some(target @ namespaces::ResolutionTarget::Ctor { spec: Some(_), .. }) =
-                namespaces::resolve_path(&refs, self.tree_fold())
-            {
-                return Some(Resolution::Tree(target));
+            if let Some(target) = namespaces::resolve_path(&refs, self.tree_fold()) {
+                match target {
+                    namespaces::ResolutionTarget::HostCall { .. }
+                    | namespaces::ResolutionTarget::CommonEmit(_)
+                    | namespaces::ResolutionTarget::Const(_)
+                    | namespaces::ResolutionTarget::Ctor { spec: Some(_), .. } => {
+                        return Some(Resolution::Tree(target));
+                    }
+                    _ => {}
+                }
             }
         }
 

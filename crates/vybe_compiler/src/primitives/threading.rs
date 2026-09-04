@@ -249,7 +249,7 @@ fn emit_wasi_spawn(chunks: &mut [Chunk], current: usize, line: u32, has_user_arg
     let chunk = &mut chunks[current];
     // [.., func_ref] → table.grow(t0, func_ref, 1) → old size = fn index
     chunk.emit_i32_const(1, line);
-    chunk.emit_op_u16(Op::TABLE_GROW, 0, line); // table 0 (u16 index)
+    chunk.emit_op_idx(Op::TABLE_GROW, 0u32, line); // table 0
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     if has_user_arg {
         // [user_arg] → the record's third word (the atomic store's i32

@@ -225,7 +225,7 @@ pub enum ResolvedSlot {
     ///
     /// Resolve with [`resolve_interned`] wherever the original code hoisted its
     /// key, and the emitted pool is identical rather than merely equivalent.
-    Interned(u16),
+    Interned(u32),
     /// ▶▶ **SEAM 3 — an INDEXED field on a registered type.**
     ///
     /// `struct.get/set <typeidx> <fieldidx>` against the instance's real field
@@ -238,7 +238,7 @@ pub enum ResolvedSlot {
     /// `@dataclass` emits `0:__class__ 1:x 2:y 3:label 4:__dataclass_fields__`,
     /// so `x` is at index **1**, and indexing by declaration position would
     /// write it into `__class__`.
-    Indexed { typeidx: u16, field: u16 },
+    Indexed { typeidx: u32, field: u32 },
     /// A runtime key, already described by its source.
     Dynamic(ValueSource),
 }
@@ -389,7 +389,7 @@ fn declare_key_string(chunk: &mut Chunk, name: &str) {
     chunk.add_global_import(vybe_runtime::chunk::STRING_CONSTANTS_MODULE, name);
 }
 
-fn push_key(chunk: &mut Chunk, slot: &ResolvedSlot, line: u32) -> Option<u16> {
+fn push_key(chunk: &mut Chunk, slot: &ResolvedSlot, line: u32) -> Option<u32> {
     match slot {
         ResolvedSlot::Key(name) => {
             declare_key_string(chunk, name);
@@ -573,7 +573,7 @@ pub fn emit_class_set(
 /// `emit_class_construct` owns its own stack discipline — it `dup`s the object
 /// and pushes exactly [obj, (key,) val] per field — so it needs the raw write
 /// rather than `emit_class_set`'s arrangement logic.
-fn emit_set_op(chunk: &mut Chunk, key: Option<u16>, line: u32) {
+fn emit_set_op(chunk: &mut Chunk, key: Option<u32>, line: u32) {
     match key {
         Some(key) => chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line),
         None => host::emit(chunk, "ecma:object", "set", 3, line),
@@ -790,9 +790,94 @@ impl crate::Compiler {
         true
     }
 
+    /// The guarded indexed WRITE, mirroring [`Self::emit_guarded_indexed_get`].
+    ///
+    /// ⛔ A DECLARED TYPE IS NOT A GUARANTEE ABOUT THE RUNTIME OBJECT, and that
+    /// is as true for a write as for a read. `struct.set <typeidx> <fieldidx>`
+    /// on an instance that is not that type traps on a short field vector —
+    /// a php clone or an unserialized object carries dynamic storage while the
+    /// site's declared type says indexed. Reads have always tested first; a
+    /// write that skips the test is the same unsoundness with the halves
+    /// swapped, and it corrupts rather than answering wrong.
+    fn emit_guarded_indexed_set(
+        &mut self,
+        obj: ObjSource,
+        slot: &ClassSlot,
+        val: &ValueSource,
+        line: u32,
+    ) -> bool {
+        let ClassSlot::InstanceField { class: Some(class), field } = slot else {
+            return false;
+        };
+        let ResolvedSlot::Indexed { typeidx, field: fieldidx } = self.resolve_slot(slot) else {
+            return false;
+        };
+        let class = class.clone();
+        let fallback = self.resolve_slot_interned(&ClassSlot::internal(
+            self.js_member_storage_name_for_class(&class, field),
+        ));
+        let recv = self.define_local("__seam3_set_recv");
+        let value = self.define_local("__seam3_set_val");
+        // ⛔ VALUE FIRST. Where both operands are already stacked the value is
+        // on TOP, so taking the receiver first stores the value in `recv` and
+        // `ref.test` then tests an integer — it fails, every write takes the
+        // key path, and reads of the same field index a slot nothing wrote.
+        push_value(&mut self.chunks[self.current], val, line);
+        self.emit_u16(Op::LOCAL_SET, value);
+        push_obj(&mut self.chunks[self.current], obj, line);
+        self.emit_u16(Op::LOCAL_SET, recv);
+
+        self.emit_u16(Op::LOCAL_GET, recv);
+        self.emit_ref_type_test(Op::REF_TEST, &class, line);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, recv);
+        self.emit_u16(Op::LOCAL_GET, value);
+        self.chunk()
+            .emit_struct_field_op(Op::STRUCT_SET, typeidx, fieldidx, line);
+        self.chunk().emit_else(line);
+        emit_class_set(
+            &mut self.chunks[self.current],
+            ObjSource::Local(recv),
+            &fallback,
+            ValueSource::Local(value),
+            line,
+        );
+        self.chunk().emit_end(line);
+        true
+    }
+
     /// Write a slot.
+    ///
+    /// ⛔ UNGUARDED, and it must stay that way. A CONSTRUCTION-time write —
+    /// a field initializer — targets an object this code just allocated, whose
+    /// type is known by construction, and it runs BEFORE the instance answers
+    /// `ref.test` for its own class. Guarding here sends every initializer down
+    /// the key path while later reads take the indexed one, and the field reads
+    /// back as its default. Use [`Self::class_set_checked`] where the receiver
+    /// is arbitrary.
     pub(crate) fn class_set(&mut self, obj: ObjSource, slot: &ClassSlot, val: ValueSource) {
         let line = self.line;
+        let slot = self.resolve_slot(slot);
+        emit_class_set(&mut self.chunks[self.current], obj, &slot, val, line);
+    }
+
+    /// Write a slot on a receiver whose runtime type is NOT known here.
+    ///
+    /// A member assignment (`o.f = v`) names a declared type at the site, which
+    /// is not a guarantee about the object: a php clone, an unserialized
+    /// instance or a platform value reaches the same site with dynamic
+    /// storage. Tests first, exactly as the read does, and falls back to the
+    /// string key on a miss.
+    pub(crate) fn class_set_checked(
+        &mut self,
+        obj: ObjSource,
+        slot: &ClassSlot,
+        val: ValueSource,
+    ) {
+        let line = self.line;
+        if self.emit_guarded_indexed_set(obj, slot, &val, line) {
+            return;
+        }
         let slot = self.resolve_slot(slot);
         emit_class_set(&mut self.chunks[self.current], obj, &slot, val, line);
     }
@@ -995,8 +1080,8 @@ impl crate::Compiler {
         Some(ResolvedSlot::Indexed {
             // `reserve_type_slot` hands out 1-based indices; typeidx 0 is the
             // dynamic form, so the +1 is the same convention, not an offset.
-            typeidx: pos as u16 + 1,
-            field: idx as u16,
+            typeidx: pos as u32 + 1,
+            field: idx as u32,
         })
     }
 }

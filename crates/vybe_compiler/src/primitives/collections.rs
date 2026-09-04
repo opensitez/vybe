@@ -869,6 +869,10 @@ pub fn emit_sort_with_comparator_in_chunk(chunk: &mut Chunk, line: u32) {
 /// language helper, so Python `heapq`, JS/PHP comparators, and future language
 /// adapters can share one bytecode shape for key-based ordering.
 pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32) {
+    // ⛔ RESOLVED BEFORE THE BORROW. `key_fn` is the caller's block, so it takes
+    // a receiver wherever the region declares one, and the ask needs the whole
+    // vector while the body below holds a single chunk.
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let key_fn = alloc_local(chunk);
     let arr = alloc_local(chunk);
@@ -916,15 +920,17 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
 
     lget(chunk, key_fn, line);
+    let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, arr, line);
     lget(chunk, j, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
     lget(chunk, key_fn, line);
+    let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, arr, line);
     lget(chunk, best, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, j, line);
@@ -1220,11 +1226,13 @@ pub fn emit_index_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(-1, line);
     chunks[current].emit_op(Op::I32_EQ, line);
     chunks[current].emit_if(line);
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], pred_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     emit_get(chunks, current, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], idx_slot, line);
@@ -1283,7 +1291,9 @@ pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], cmp_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], j_slot, line);
     emit_get(chunks, current, line);
@@ -1292,7 +1302,7 @@ pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     emit_get(chunks, current, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1372,7 +1382,9 @@ pub fn emit_is_sorted_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], cmp_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     emit_get(chunks, current, line);
@@ -1381,7 +1393,7 @@ pub fn emit_is_sorted_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     emit_get(chunks, current, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1457,12 +1469,15 @@ fn emit_binary_search_pair_impl(chunks: &mut [Chunk], current: usize, line: u32,
     lset(&mut chunks[current], mid_slot, line);
 
     if has_cmp {
+        let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
         lget(&mut chunks[current], cmp_slot, line);
+        let __recv =
+            crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
         lget(&mut chunks[current], arr_slot, line);
         lget(&mut chunks[current], mid_slot, line);
         emit_get(chunks, current, line);
         lget(&mut chunks[current], target_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
         chunks[current].emit_i32_const(0, line);
         crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     } else {
@@ -1496,12 +1511,15 @@ fn emit_binary_search_pair_impl(chunks: &mut [Chunk], current: usize, line: u32,
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
     if has_cmp {
+        let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
         lget(&mut chunks[current], cmp_slot, line);
+        let __recv =
+            crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
         lget(&mut chunks[current], arr_slot, line);
         lget(&mut chunks[current], lo_slot, line);
         emit_get(chunks, current, line);
         lget(&mut chunks[current], target_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
         chunks[current].emit_i32_const(0, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     } else {
@@ -1888,10 +1906,12 @@ pub fn emit_map_delete_func(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_get(chunks, current, line);
     lset(&mut chunks[current], value_slot, line);
 
+    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], pred_slot, line);
+    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], key_slot, line);
     lget(&mut chunks[current], value_slot, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], map_slot, line);
@@ -3543,12 +3563,19 @@ pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(1, 0); // exit inner loop
 
     // call cmp(arr[j], key) → result
+    // `cmp` is the CALLER'S comparator, so it takes a receiver wherever the
+    // module declares one — read off `imports`, which carries the module ABI.
     c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
+    let __recv = crate::primitives::callable::emit_callback_receiver(
+        &mut c,
+        imports.module_receiver_abi,
+        0,
+    );
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 2 + __recv, 0);
     // result > 0 → swap needed
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);

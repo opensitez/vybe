@@ -35,12 +35,82 @@ fn binary_loader(ext: &str) -> Option<BinaryLoader> {
     BINARY_LOADERS.get()?.lock().unwrap().get(ext).copied()
 }
 
+/// One parameter of an interface function — the Component Model's
+/// `(param "name" type)`: a NAME and a TYPE, one list element for both.
+///
+/// The name is what lets a caller bind an argument by name
+/// (`round(ndigits: 1, number: 2.567)`) against a tree leaf instead of
+/// positionally. An empty name means the registrar declared the type (or
+/// only a count) and not the name; a leaf with any unnamed parameter is
+/// UNDECLARED for named-argument binding — see [`FuncSig::declares_names`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: ValType,
+}
+
+impl Param {
+    pub fn new(name: impl Into<String>, ty: ValType) -> Self {
+        Self {
+            name: name.into(),
+            ty,
+        }
+    }
+
+    /// A parameter whose type is declared and whose name is not.
+    pub fn unnamed(ty: ValType) -> Self {
+        Self {
+            name: String::new(),
+            ty,
+        }
+    }
+
+    /// A positional type list as an unnamed parameter list — the staging
+    /// shape for every registrar that states types without names.
+    pub fn unnamed_list(types: Vec<ValType>) -> Vec<Self> {
+        types.into_iter().map(Self::unnamed).collect()
+    }
+}
+
+impl From<ValType> for Param {
+    fn from(ty: ValType) -> Self {
+        Self::unnamed(ty)
+    }
+}
+
 /// A typed function signature in an interface.
 #[derive(Debug, Clone)]
 pub struct FuncSig {
     pub name: String,
-    pub params: Vec<ValType>,
+    pub params: Vec<Param>,
     pub results: Vec<ValType>,
+}
+
+impl FuncSig {
+    /// The declared parameter count. A signature that exists always states
+    /// its count; "unknown" is the ABSENCE of a signature, never a value here.
+    pub fn arity(&self) -> u8 {
+        u8::try_from(self.params.len()).unwrap_or(u8::MAX)
+    }
+
+    /// Every parameter carries a non-empty name, so an argument given by
+    /// name can be bound to a position. Any unnamed parameter makes the
+    /// whole signature undeclared for that purpose: a staging registrar
+    /// that names some parameters and not others must not have a named
+    /// call rejected that bound positionally before.
+    pub fn declares_names(&self) -> bool {
+        !self.params.is_empty() && self.params.iter().all(|p| !p.name.is_empty())
+    }
+
+    /// The count of leading parameters that are not `option<t>` — the
+    /// fewest a call may pass. An optional parameter is spelled as the
+    /// Component Model's `option<t>`, so there is no separate default table.
+    pub fn min_arity(&self) -> usize {
+        self.params
+            .iter()
+            .take_while(|p| !matches!(p.ty, ValType::Option(_)))
+            .count()
+    }
 }
 
 /// Value types for interface signatures.

@@ -115,12 +115,8 @@ mod case_insensitive_collections;
 pub mod channels;
 mod class_augmentation;
 // ⛔ PUBLIC SO A LANGUAGE EMITTER CAN BIND A RECEIVER THE NORMALIZED WAY.
-// While this was private the only reachable spelling was
-// `globals::emit_write(chunk, "__js_this", …)`, so dart hand-rolled an
-// UNCONDITIONAL ambient store in its own iterator lowering and kept emitting
-// `__js_this` after its directive was flipped to `UniversalParameter`. The
-// ABI-guarded bind has to be reachable from where receivers are actually
-// bound, or every frontend re-invents the ambient channel.
+// The shared bind has to be reachable from where receivers are actually
+// bound, or a frontend re-invents a channel of its own.
 pub mod class_context;
 pub mod class_slots;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
@@ -335,6 +331,26 @@ impl CallSignature {
             rest_index: params.iter().position(|param| param.is_rest),
         }
     }
+
+    /// The signature a TREE LEAF declares, when it declares parameter names.
+    /// `None` for a leaf with any unnamed parameter: such a leaf binds
+    /// positionally, exactly as it did before leaves carried signatures, so
+    /// a staging registration never rejects a call that worked. An optional
+    /// parameter is the Component Model's `option<t>`; there is no default
+    /// expression to fill, so an omitted one lands as `null` — its `none`.
+    pub(crate) fn from_leaf(sig: &vybe_runtime::component::FuncSig) -> Option<Self> {
+        if !sig.declares_names() {
+            return None;
+        }
+        Some(Self {
+            param_names: sig.params.iter().map(|param| param.name.clone()).collect(),
+            param_defaults: vec![None; sig.params.len()],
+            min_arity: sig.min_arity(),
+            has_rest: false,
+            has_kwargs: false,
+            rest_index: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -393,6 +409,9 @@ pub(crate) struct ReflectionConstructorMetadata {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionTypeMetadata {
+    /// The declared spelling; the runtime key is canonicalised, which a
+    /// case-insensitive language lowercases.
+    pub display_name: String,
     pub parents: Vec<String>,
     pub decorators: Vec<Expression>,
     pub interfaces: Vec<String>,
@@ -3194,6 +3213,29 @@ impl Compiler {
             let mut nested = pc.nested_types.clone();
             nested.sort();
             println!("  nested:  {}", join_or_none(&nested));
+            // The two facts that decide whether a member READ of this class
+            // becomes `struct.get <typeidx> <fieldidx>` or stays a string key.
+            // A class can be fully published, with `TypeEntry.fields` above
+            // showing real slots, and still be read by name because one of
+            // these is missing — which neither the fields line nor `--dump`
+            // can show.
+            let canon = self.canon(name);
+            println!(
+                "  normal:  {}",
+                if self.normalized_classes.contains_key(&canon) {
+                    "in normalized_classes"
+                } else {
+                    "ABSENT — the property check fails closed, so reads stay keyed"
+                }
+            );
+            println!(
+                "  seam3:   {}",
+                if self.seam3_indexable.contains(&canon) {
+                    "licensed — reads may index"
+                } else {
+                    "NO LICENCE — reads stay keyed"
+                }
+            );
         }
     }
 
@@ -3239,10 +3281,11 @@ impl Compiler {
         // ⛔ THIS IS PER-BUNDLE, NOT PER-UNIT — unlike `variable_fold` above,
         // which is genuinely per-module. `chunks[0]` is one slot for the whole
         // bundle, so in a multi-language bundle the LAST unit compiled wins.
-        // Inert today (no language is on `UniversalParameter`) and correct for
-        // a single-language program, but mixing an ambient language with a
-        // universal one in one bundle needs this moved onto each unit's own
-        // chunks before it is trustworthy.
+        // Correct for a single-language program. Languages differ in this
+        // directive, so a bundle that mixes a unit which declares
+        // `UniversalParameter` with one that does not takes whichever compiled
+        // last; such a bundle needs this moved onto each unit's own chunks
+        // before it is trustworthy.
         if !self.chunks.is_empty() {
             self.chunks[0].module_receiver_abi = if self.universal_receiver() {
                 vybe_runtime::chunk::ReceiverAbi::Parameter
@@ -3875,20 +3918,51 @@ fn body_calls_method(body: &[Statement], method_name: &str) -> bool {
     })
 }
 
-/// Check whether a constructor body contains a super/base call.
-/// Matches `SuperCall { .. }` (VB/Pascal) and `Call { callee: Super }` (JS).
-fn body_has_super_call(body: &[Statement]) -> bool {
-    body.iter().any(|s| {
-        if let StmtKind::Expr(e) = &s.kind {
-            match &e.kind {
-                ExprKind::SuperCall { .. } => true,
-                ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Super),
-                _ => false,
+impl Compiler {
+    /// The arguments of a PARENT-CONSTRUCTOR call, when `expr` is one:
+    /// `SuperCall { method: None, args }`, `SuperCall { method: Some(ctor) }`
+    /// where `ctor` is the profile's constructor name / `new` / `__init__`
+    /// (case per `case_sensitive`), or `Call { callee: Super, args }`.
+    /// A `super.method(..)` call is NOT one and answers `None`. This is the
+    /// single predicate: the constructor prologue and the `SuperCall`
+    /// emitter agree on what a parent-constructor call is by construction.
+    pub(crate) fn parent_ctor_call_args<'a>(&self, expr: &'a Expression) -> Option<&'a [Argument]> {
+        match &expr.kind {
+            ExprKind::SuperCall { method, args } => {
+                let is_ctor = match method {
+                    None => true,
+                    Some(m) => {
+                        let ctor_name = &self.profile.constructor_name;
+                        if self.case_sensitive {
+                            m == ctor_name || m == "new" || m == "__init__"
+                        } else {
+                            m.eq_ignore_ascii_case(ctor_name)
+                                || m.eq_ignore_ascii_case("new")
+                                || m.eq_ignore_ascii_case("__init__")
+                        }
+                    }
+                };
+                is_ctor.then_some(args.as_slice())
             }
-        } else {
-            false
+            ExprKind::Call { callee, args, .. } if matches!(callee.kind, ExprKind::Super) => {
+                Some(args.as_slice())
+            }
+            _ => None,
         }
-    })
+    }
+
+    /// `stmt` is an expression statement that is a parent-constructor call.
+    pub(crate) fn is_parent_ctor_call_stmt(&self, stmt: &Statement) -> bool {
+        match &stmt.kind {
+            StmtKind::Expr(expr) => self.parent_ctor_call_args(expr).is_some(),
+            _ => false,
+        }
+    }
+
+    /// A constructor body contains a parent-constructor call statement.
+    pub(crate) fn body_has_parent_ctor_call(&self, body: &[Statement]) -> bool {
+        body.iter().any(|stmt| self.is_parent_ctor_call_stmt(stmt))
+    }
 }
 
 fn body_has_identity_stamp(body: &[Statement]) -> bool {

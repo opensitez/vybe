@@ -9,6 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use crate::chunk::ReceiverAbi;
 use crate::Chunk;
 use vybe_ast::class_normalize::NormalClass;
 use vybe_ast::{ClassMember, ClassModifiers, Module, Span};
@@ -125,15 +126,16 @@ pub struct PlatformDef {
 
     // ── Data the compiler used to reach by naming the crate ──────────────
     //
-    // These were direct `crate::platforms::dotnet::…` calls, which is why
-    // `vybe_compiler` had a Cargo dependency on the platform crates at all —
-    // registration was never the reason. Every signature already uses shared
-    // types (`bool`, `Chunk`, `ComponentDescriptor` from `component_model`), so
-    // they are plain function pointers and cross a dylib boundary cleanly.
+    // Plain function pointers, so they cross a dylib boundary cleanly and the
+    // compiler reaches a platform's data without a Cargo dependency on it.
     /// Namespace constants this platform contributes (`Math.PI` → 3.14159…).
     pub namespace_constants: Option<fn() -> &'static [(&'static str, f64)]>,
     /// This platform's component descriptor (classes/methods it exports).
-    pub component_descriptor: Option<fn() -> crate::component_model::ComponentDescriptor>,
+    ///
+    /// ⛔ OPAQUE HERE. The descriptor describes CLASSES, which are a compile-time
+    /// concept; the runtime registers the provider without naming the type.
+    /// The compiler downcasts to `vybe_compiler::component_classes::ComponentDescriptor`.
+    pub component_descriptor: Option<fn() -> Box<dyn std::any::Any + Send + Sync>>,
     /// True when `name` is a class the platform's descriptor owns.
     pub is_descriptor_class: Option<fn(&str) -> bool>,
     /// Build the platform's numeric-format runtime helper chunk.
@@ -200,8 +202,8 @@ pub fn platform_owns_descriptor_class(name: &str) -> bool {
         .any(|f| f(name))
 }
 
-/// Every registered platform's component descriptor.
-pub fn platform_component_descriptors() -> Vec<crate::component_model::ComponentDescriptor> {
+/// Every registered platform's component descriptor, boxed opaque.
+pub fn platform_component_descriptors() -> Vec<Box<dyn std::any::Any + Send + Sync>> {
     all_platforms()
         .iter()
         .filter_map(|p| p.component_descriptor)
@@ -295,8 +297,16 @@ pub struct VariableNamespace {
 pub struct LanguageHooks {
     /// See [`VariableNamespace`]. `None` (the default) = one namespace.
     pub variable_namespace: Option<&'static VariableNamespace>,
-    pub constructor_ref_autoload: Option<fn(&mut Chunk, &str, &str, u32)>,
-    pub dynamic_constructor_ref_autoload: Option<fn(&mut Chunk, &str, Option<&str>, &str, u32)>,
+    /// ⛔ TAKES THE RECEIVER ABI. These emit CALLS — to a registered resolver
+    /// and, through it, to a user callable — and a call site cannot be written
+    /// without knowing whether argument 0 is the receiver. The ABI is stamped
+    /// on the MODULE chunk, which a hook holding one `&mut Chunk` cannot read,
+    /// so it is handed over rather than looked up: reading it from a fabricated
+    /// one-element slice answers `Ambient` for every module and silently drops
+    /// the receiver.
+    pub constructor_ref_autoload: Option<fn(&mut Chunk, ReceiverAbi, &str, &str, u32)>,
+    pub dynamic_constructor_ref_autoload:
+        Option<fn(&mut Chunk, ReceiverAbi, &str, Option<&str>, &str, u32)>,
     pub proxy_get: Option<fn(&mut [Chunk], usize, u32)>,
     pub proxy_set: Option<fn(&mut [Chunk], usize, u32)>,
     pub proxy_set_bool: Option<fn(&mut [Chunk], usize, u32)>,
@@ -313,7 +323,6 @@ pub struct LanguageHooks {
     pub proxy_prevent_extensions: Option<fn(&mut [Chunk], usize, u32)>,
     pub proxy_construct: Option<fn(&mut [Chunk], usize, u32)>,
     pub normalize_source: Option<fn(&str) -> String>,
-    pub str_getcsv: Option<fn(&mut [Chunk], usize, u8, u32)>,
     /// Parse an eval/`Function`-body string in *its own* source coordinates
     /// (no language prelude prepended), so completion-value and span logic in
     /// the dynamic runtime stays correct. JS registers this; the runtime looks

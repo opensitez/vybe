@@ -11,7 +11,7 @@ impl Compiler {
     pub(super) fn current_offset(&self) -> usize {
         self.chunks[self.current].current_offset()
     }
-    pub(crate) fn str_const(&mut self, s: &str) -> u16 {
+    pub(crate) fn str_const(&mut self, s: &str) -> u32 {
         self.chunks[self.current].add_constant(Value::String(Arc::from(s)))
     }
 
