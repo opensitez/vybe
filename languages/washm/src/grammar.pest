@@ -1,0 +1,2782 @@
+// Bash grammar for Vybe (operative section).
+//
+// Bash has no expression mode: everything is a command or a compound command,
+// and every word is a concatenation of PARTS (bare text, quotes, expansions).
+// The parse tree therefore keeps each part as its own token so the walker can
+// build the common AST without re-tokenizing source text. Rules marked `@`/`$`
+// are atomic (no implicit whitespace) because bash words end at blanks; rules
+// marked `!` restore whitespace skipping inside an atomic context (command
+// substitutions and arithmetic nested inside a word).
+//
+// Reference: bash(1) §SHELL GRAMMAR, §EXPANSION, §REDIRECTION; POSIX.1-2017 XCU §2.
+
+WHITESPACE = _{ " " | "\t" | ("\\" ~ "\n") }
+NEWLINE = _{ "\r\n" | "\n" | "\r" }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+
+// ── Terminators ──────────────────────────────────────────────────────────────
+// `;;`, `;&` and `;;&` belong to case items; `&&` and `&>` are not terminators.
+background_op = @{ "&" ~ !("&" | ">") }
+terminator = _{ (";" ~ !(";" | "&")) | background_op | NEWLINE }
+eat_terminators = _{ terminator* }
+eat_ws_nl = _{ (WHITESPACE | NEWLINE | COMMENT)* }
+ws = _{ " " | "\t" }
+
+program = { SOI ~ eat_terminators ~ (list ~ eat_terminators)* ~ EOI }
+
+// ── Lists ────────────────────────────────────────────────────────────────────
+// A list is and_or groups separated by `;`, `&` or newlines. `&&` and `||`
+// have equal precedence and associate left to right.
+list = { and_or ~ (terminator+ ~ !list_stop_word ~ and_or)* ~ terminator* }
+list_stop_word = _{ kw_then | kw_elif | kw_else | kw_fi | kw_do | kw_done | kw_esac }
+and_or = { pipeline ~ ((and_op | or_op) ~ eat_ws_nl ~ pipeline)* }
+and_op = @{ "&&" }
+or_op = @{ "||" }
+
+// ── Pipelines ────────────────────────────────────────────────────────────────
+// `|&` is `2>&1 |`. `time` and `!` prefix a whole pipeline.
+pipeline = { (pipeline_prefix ~ eat_ws_nl)* ~ command ~ (pipe_op ~ eat_ws_nl ~ command)* }
+pipeline_prefix = _{ time_prefix | bang }
+time_prefix = { kw_time ~ time_options? }
+time_options = @{ "-p" }
+bang = @{ "!" ~ !("=" | "(") }
+pipe_op = @{ "|&" | ("|" ~ !"|") }
+
+// ── Commands ─────────────────────────────────────────────────────────────────
+command = _{
+    coproc_command
+  | function_def
+  | compound_command ~ redirection*
+  | simple_command
+}
+
+// Order matters: `((` before `(`, `[[` before `[`, `for ((` before `for name`.
+compound_command = _{
+    brace_group
+  | arithmetic_cmd
+  | arithmetic_cmd_error
+  | subshell
+  | if_clause
+  | while_clause
+  | until_clause
+  | for_arithmetic
+  | for_clause
+  | case_clause
+  | select_clause
+  | test_double_bracket_unary_error
+  | test_bracket
+}
+
+brace_group = { "{" ~ eat_ws_nl ~ list? ~ eat_ws_nl ~ "}" }
+subshell = { "(" ~ eat_ws_nl ~ list ~ eat_ws_nl ~ ")" }
+
+coproc_command = { kw_coproc ~ (name ~ &(ws* ~ ("{" | "(")))? ~ (compound_command | simple_command) }
+
+// ── if / while / until ───────────────────────────────────────────────────────
+if_clause = {
+    kw_if ~ list ~ kw_then ~ eat_ws_nl ~ list ~
+    elif_clause* ~
+    else_clause? ~
+    kw_fi
+}
+elif_clause = { kw_elif ~ list ~ kw_then ~ eat_ws_nl ~ list }
+else_clause = { kw_else ~ eat_ws_nl ~ list }
+
+while_clause = { kw_while ~ list ~ do_group }
+until_clause = { kw_until ~ list ~ do_group }
+do_group = _{ kw_do ~ eat_ws_nl ~ list? ~ eat_ws_nl ~ kw_done }
+
+// ── for ──────────────────────────────────────────────────────────────────────
+// for name [in words] ; do list ; done    — no `in`: iterate "$@"
+for_clause = {
+    kw_for ~ name ~ for_in_clause? ~ terminator ~ eat_ws_nl ~
+    (do_group | brace_group)
+}
+for_in_clause = { kw_in ~ word_list? }
+word_list = { word+ }
+
+// for (( init ; cond ; step )) ; do list ; done
+for_arithmetic = {
+    kw_for ~ "((" ~ eat_ws_nl ~ for_arith_init? ~ ";" ~ eat_ws_nl ~ for_arith_cond? ~ ";" ~ eat_ws_nl ~ for_arith_update? ~ "))" ~
+    eat_terminators ~ (do_group | brace_group)
+}
+for_arith_init = { arithmetic_expr }
+for_arith_cond = { arithmetic_expr }
+for_arith_update = { arithmetic_expr }
+
+// ── case ─────────────────────────────────────────────────────────────────────
+case_clause = {
+    kw_case ~ word ~ eat_ws_nl ~ kw_in ~ eat_ws_nl ~
+    (case_item ~ eat_ws_nl)* ~
+    kw_esac
+}
+// A bare `esac` in pattern position CLOSES the case; only a leading `(` makes
+// it a pattern. Without the guard, `$(case x in (x) echo m;; esac)` read the
+// substitution's own `)` as the end of an `esac` pattern and ran off the end of
+// the file looking for `kw_esac`.
+case_item = {
+    ( "(" ~ eat_ws_nl ~ pattern_list
+    | !kw_esac ~ pattern_list
+    ) ~ eat_ws_nl ~ ")" ~ eat_ws_nl ~ list? ~ eat_ws_nl ~ case_terminator?
+}
+pattern_list = { pattern ~ (eat_ws_nl ~ "|" ~ eat_ws_nl ~ pattern)* }
+pattern = { word }
+// ;; stop · ;& fall into next body · ;;& keep testing patterns
+case_terminator = @{ ";;&" | ";;" | ";&" }
+
+// ── select ───────────────────────────────────────────────────────────────────
+select_clause = {
+    kw_select ~ name ~ select_in_clause? ~ terminator ~ eat_ws_nl ~
+    (do_group | brace_group)
+}
+select_in_clause = { kw_in ~ word_list? }
+
+// ── (( expr )) ───────────────────────────────────────────────────────────────
+arithmetic_cmd = { "((" ~ eat_ws_nl ~ arithmetic_expr? ~ eat_ws_nl ~ "))" }
+arithmetic_cmd_error = { "((" ~ arithmetic_cmd_error_raw ~ "))" }
+arithmetic_cmd_error_raw = @{ (!"))" ~ ANY)* }
+
+// ── [[ expr ]] and [ expr ] ──────────────────────────────────────────────────
+test_bracket = _{ test_double_bracket | test_single_bracket }
+test_double_bracket_unary_error = { "[[" ~ eat_ws_nl ~ test_bang? ~ eat_ws_nl ~ test_unary_any_op ~ eat_ws_nl ~ "]]" }
+test_double_bracket = { "[[" ~ eat_ws_nl ~ test_expr ~ eat_ws_nl ~ "]]" }
+test_single_bracket = { "[" ~ eat_ws_nl ~ test_expr ~ eat_ws_nl ~ "]" }
+
+test_expr = { test_and_or }
+test_and_or = { test_not ~ (eat_ws_nl ~ (test_and_op | test_or_op) ~ eat_ws_nl ~ test_not)* }
+test_and_op = @{ "&&" | ("-a" ~ !(ASCII_ALPHANUMERIC | "_")) }
+test_or_op = @{ "||" | ("-o" ~ !(ASCII_ALPHANUMERIC | "_")) }
+test_not = { (test_bang ~ eat_ws_nl)* ~ test_primary }
+test_bang = @{ "!" ~ !"=" }
+test_primary = _{
+    test_paren
+  | test_binary_file
+  | test_binary_arith
+  | test_regex_match
+  | test_binary_string
+  | test_unary_file
+  | test_unary_string
+  | word
+}
+test_paren = { "(" ~ eat_ws_nl ~ test_expr ~ eat_ws_nl ~ ")" }
+
+test_unary_file = { test_unary_file_op ~ eat_ws_nl ~ word }
+test_unary_file_op = @{ "-" ~ ("a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "k" | "L" | "N" | "O" | "G" | "p" | "r" | "s" | "S" | "t" | "u" | "w" | "x") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+test_unary_string = { test_unary_string_op ~ eat_ws_nl ~ word }
+test_unary_string_op = @{ "-" ~ ("n" | "z" | "v" | "R" | "o") ~ !(ASCII_ALPHANUMERIC | "_") }
+test_unary_any_op = @{ "-" ~ ("a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "k" | "L" | "N" | "O" | "G" | "p" | "r" | "s" | "S" | "t" | "u" | "w" | "x" | "n" | "z" | "v" | "R" | "o") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+test_binary_file = { word ~ eat_ws_nl ~ test_binary_file_op ~ eat_ws_nl ~ word }
+test_binary_file_op = @{ "-" ~ ("nt" | "ot" | "ef") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+test_binary_arith = { word ~ eat_ws_nl ~ test_binary_arith_op ~ eat_ws_nl ~ word }
+test_binary_arith_op = @{ "-" ~ ("eq" | "ne" | "lt" | "le" | "gt" | "ge") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// `==`/`=`/`!=` take a PATTERN on the right inside [[ ]]; the walker decides.
+test_binary_string = { word ~ eat_ws_nl ~ test_binary_string_op ~ eat_ws_nl ~ word }
+test_binary_string_op = @{ "==" | "!=" | "=" | "<" | ">" }
+
+test_regex_match = { word ~ eat_ws_nl ~ "=~" ~ eat_ws_nl ~ regex_word }
+regex_word = ${ (quoted_string | single_quoted_string | simple_param | braced_param | regex_text)+ }
+regex_text = @{ ( (!(WHITESPACE | NEWLINE | "$" | "\"" | "'" | "]]") ~ ANY) | ("$" ~ !(ASCII_ALPHA | ASCII_DIGIT | "_" | "{" | "(" | "?" | "!" | "@" | "*" | "#" | "-")) )+ }
+
+// ── Functions ────────────────────────────────────────────────────────────────
+function_def = {
+    kw_function ~ function_name ~ (ws* ~ "(" ~ ws* ~ ")")? ~ eat_ws_nl ~ function_body
+  | function_name ~ ws* ~ "(" ~ ws* ~ ")" ~ eat_ws_nl ~ function_body
+}
+// bash accepts `-`, `.` and `:` in function names (`my-func`, `ns::helper`).
+function_name = @{ !reserved_word ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "." | ":")* }
+function_body = { compound_command ~ redirection* }
+
+// ── Simple commands ──────────────────────────────────────────────────────────
+// [assignments] [modifiers] name [args | redirections]
+simple_command = {
+    (cmd_prefix | redirection)+ ~ (cmd_modifier* ~ cmd_word ~ cmd_suffix?)? ~ redirection*
+  | cmd_modifier* ~ cmd_word ~ cmd_suffix? 
+  | redirection+
+}
+cmd_modifier = { kw_builtin | kw_command ~ cmd_command_opts? | kw_exec }
+cmd_command_opts = @{ ("-" ~ ("p" | "v" | "V"))+ }
+
+cmd_prefix = { assignment_word }
+// name=value · name+=value · name[sub]=value · name=( ... )
+assignment_word = ${ assign_target ~ assign_op ~ (array_literal | assignment_value_word | word)? }
+assign_target = ${ name ~ ("[" ~ subscript ~ "]")? }
+assign_op = @{ "+=" | "=" }
+
+// Reserved words are not command names.
+cmd_word = { !reserved_word ~ word }
+reserved_word = @{
+    ("if" | "then" | "elif" | "else" | "fi" | "case" | "esac" | "for" | "select" | "while" | "until" | "done" | "do" | "function" | "time" | "coproc") ~ !(ASCII_ALPHANUMERIC | "_" | "=" | "+=" | "/" | "-" | ".")
+  | "[[" | "}" | "]]" | "!"
+}
+cmd_suffix = { (redirection | assignment_word | word | close_brace_arg)+ }
+close_brace_arg = @{ "}" }
+
+// ── Words ────────────────────────────────────────────────────────────────────
+word = ${ word_part+ ~ close_brace_tail? }
+close_brace_tail = @{ "}" }
+word_part = _{
+    quoted_string
+  | single_quoted_string
+  | ansi_c_quoting
+  | locale_quoting
+  | arithmetic_expansion
+  | dollar_paren_subst
+  | simple_param
+  | braced_param
+  | backtick_subst
+  | brace_expansion
+  | tilde_expansion
+  | process_substitution
+  | extglob_word
+  | bare_word
+}
+assignment_value_word = ${ assignment_value_part+ ~ close_brace_tail? }
+assignment_value_part = _{
+    quoted_string
+  | single_quoted_string
+  | ansi_c_quoting
+  | locale_quoting
+  | arithmetic_expansion
+  | dollar_paren_subst
+  | simple_param
+  | braced_param
+  | backtick_subst
+  | brace_expansion
+  | tilde_expansion
+  | process_substitution
+  | extglob_word
+  | assignment_bare_word
+}
+
+// Unquoted text. A word starts at a non-metacharacter; `#`, `!` and `~` are
+// special only at the start of a word. Backslash escapes the next character.
+bare_word = @{
+    ( "\\" ~ ANY | literal_dollar | !brace_expansion ~ !extglob_start ~ !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">" | "#" | "`" | "$" | "\"" | "'" | "}" | "!" | "~" | "=" ~ "(") ~ ANY )
+  ~ ( "\\" ~ ANY | literal_dollar | !brace_expansion ~ !extglob_start ~ !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">" | "`" | "$" | "\"" | "'") ~ ANY )*
+}
+assignment_bare_word = @{
+    ( "\\" ~ ANY | literal_dollar | !brace_expansion ~ !extglob_start ~ !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">" | "`" | "$" | "\"" | "'" | "}" | "!" | "~" | "=" ~ "(") ~ ANY )
+  ~ ( "\\" ~ ANY | literal_dollar | !brace_expansion ~ !extglob_start ~ !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">" | "`" | "$" | "\"" | "'") ~ ANY )*
+}
+
+// A `$` that starts no expansion is an ordinary character: `a$`, `$ `, `"$"`.
+// Folded into the TEXT tokens rather than given a rule of its own so every
+// walker site that already reads `bare_word` / `dq_text` keeps the character
+// without a new arm. `dq_literal_dollar` omits `"` because a quote ends the
+// string it sits in, which is what makes `"$"` a literal dollar.
+literal_dollar = _{ "$" ~ !param_start }
+dq_literal_dollar = _{ "$" ~ !dq_param_start }
+param_start = _{ dq_param_start | "'" | "\"" }
+dq_param_start = _{ ASCII_ALPHANUMERIC | "_" | "{" | "(" | "?" | "!" | "$" | "-" | "#" | "*" | "@" }
+
+// extglob: ?(…) *(…) +(…) @(…) !(…) — kept as one token, decoded by the walker.
+extglob_start = _{ ("?" | "*" | "+" | "@" | "!") ~ "(" }
+extglob_word = @{ ("?" | "*" | "+" | "@" | "!") ~ "(" ~ (!")" ~ ANY)* ~ ")" }
+
+// ── Quoting ──────────────────────────────────────────────────────────────────
+quoted_string = ${ "\"" ~ dq_part* ~ "\"" }
+dq_part = _{ dq_escape | arithmetic_expansion | dollar_paren_subst | simple_param | braced_param | backtick_subst | dq_text }
+dq_escape = @{ "\\" ~ ANY }
+dq_text = @{ (dq_literal_dollar | !("\"" | "$" | "`" | "\\") ~ ANY)+ }
+
+single_quoted_string = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+ansi_c_quoting = @{ "$'" ~ ("\\" ~ ANY | !("'" | "\\") ~ ANY)* ~ "'" }
+locale_quoting = ${ "$" ~ quoted_string }
+
+// ── Parameter expansion ──────────────────────────────────────────────────────
+// $name $1 $? $! $$ $- $_ $# $* $@ — `$10` is `$1` followed by `0`.
+simple_param = ${ "$" ~ (positional_digit | special_param | name) }
+positional_digit = @{ ASCII_DIGIT }
+positional_param = @{ ASCII_DIGIT+ }
+special_param = @{ "?" | "!" | "$" | "-" | ("_" ~ !(ASCII_ALPHANUMERIC | "_")) | "#" | "*" | "@" }
+
+braced_param = ${
+    "${" ~
+    ( brace_command_subst_inner
+    | length_expansion
+    | indirect_subscript_keys
+    | nameref_prefix_expansion
+    | assign_default
+    | default_value
+    | alternative_value
+    | error_value
+    | indirect_expansion
+    | substring_expansion
+    | search_replace
+    | prefix_suffix_removal
+    | case_modification
+    | transform_expansion
+    | param_base
+    ) ~ "}"
+}
+brace_command_subst_inner = !{ (("|" ~ eat_ws_nl) | (WHITESPACE | NEWLINE)+) ~ list? ~ eat_ws_nl }
+// name · name[sub] · name[@] · name[*] · 12 · special
+param_base = ${ positional_param | special_param | name ~ ("[" ~ subscript ~ "]")? }
+subscript = ${ subscript_all | subscript_text }
+subscript_all = @{ "@" | "*" }
+subscript_text = @{ ("\\" ~ ANY | quoted_string | single_quoted_string | simple_param | braced_param | !("]") ~ ANY)+ }
+
+length_expansion = ${ "#" ~ param_base }
+indirect_subscript_keys = ${ "!" ~ name ~ "[" ~ subscript_all ~ "]" }
+nameref_prefix_expansion = ${ "!" ~ name ~ prefix_glob }
+prefix_glob = @{ "*" | "@" }
+indirect_expansion = ${ "!" ~ param_base }
+
+assign_default = ${ param_base ~ assign_default_op ~ brace_word? }
+assign_default_op = @{ ":=" | "=" }
+default_value = ${ indirect_mark? ~ param_base ~ default_op ~ brace_word? }
+default_op = @{ ":-" | "-" }
+alternative_value = ${ indirect_mark? ~ param_base ~ alternative_op ~ brace_word? }
+alternative_op = @{ ":+" | "+" }
+error_value = ${ indirect_mark? ~ param_base ~ error_op ~ brace_word? }
+error_op = @{ ":?" | "?" }
+// `${!ptr:-w}` reads the variable NAMED BY $ptr, then applies the operator.
+indirect_mark = @{ "!" }
+
+// ${var:off} ${var:off:len} — `:-` etc. are tried first, so `:` here is a
+// substring; a space before a negative offset is `${var: -1}`.
+substring_expansion = ${ param_base ~ ":" ~ ws* ~ arithmetic_expr ~ (":" ~ ws* ~ arithmetic_expr?)? }
+
+// ${var/pat/rep} ${var//pat/rep} ${var/#pat/rep} ${var/%pat/rep}
+search_replace = ${ param_base ~ search_replace_op ~ glob_pattern? ~ ("/" ~ replacement_word?)? }
+search_replace_op = @{ "//" | "/#" | "/%" | "/" }
+glob_pattern = ${ (quoted_string | single_quoted_string | ansi_c_quoting | simple_param | braced_param | dollar_paren_subst | pattern_text)+ }
+pattern_text = @{ ("\\" ~ ANY | !("/" | "}" | "$" | "\"" | "'" | "`") ~ ANY)+ }
+replacement_word = ${ (quoted_string | single_quoted_string | simple_param | braced_param | dollar_paren_subst | arithmetic_expansion | brace_text)+ }
+
+// ${var#pat} ${var##pat} ${var%pat} ${var%%pat}
+prefix_suffix_removal = ${ param_base ~ removal_op ~ removal_pattern? }
+removal_op = @{ "##" | "#" | "%%" | "%" }
+removal_pattern = ${ (quoted_string | single_quoted_string | simple_param | braced_param | dollar_paren_subst | brace_text)+ }
+
+// ${var^} ${var^^} ${var,} ${var,,} ${var~} ${var~~} [pattern]
+case_modification = ${ param_base ~ case_mod_op ~ removal_pattern? }
+case_mod_op = @{ "^^" | ",," | "~~" | "^" | "," | "~" }
+
+// ${var@Q} ${var@E} ${var@P} ${var@A} ${var@a} ${var@K} ${var@k} ${var@u} ${var@U} ${var@L}
+transform_expansion = ${ param_base ~ "@" ~ transform_op }
+transform_op = @{ ASCII_ALPHA }
+
+// The word after an operator inside ${ }: may contain blanks; ends at `}`.
+brace_word = ${ (quoted_string | single_quoted_string | ansi_c_quoting | arithmetic_expansion | dollar_paren_subst | simple_param | braced_param | backtick_subst | tilde_expansion | brace_text)+ }
+brace_text = @{ ("\\" ~ ANY | !("}" | "$" | "\"" | "'" | "`") ~ ANY)+ }
+
+// ── Here-document bodies ─────────────────────────────────────────────────────
+// The walker cuts each body out of the source before parsing and, for an
+// unquoted delimiter, parses it with this rule: only `$`, `` ` `` and `\\`
+// escapes are recognized and `"` is literal.
+heredoc_body = ${ (arithmetic_expansion | dollar_paren_subst | simple_param | braced_param | backtick_subst | hd_escape | hd_text)* }
+hd_escape = @{ "\\" ~ ("$" | "`" | "\\") }
+hd_text = @{ ( ("\\" ~ !("$" | "`" | "\\") ~ ANY) | (!("$" | "`" | "\\") ~ ANY) )+ }
+
+// ── Command substitution ─────────────────────────────────────────────────────
+dollar_paren_open = @{ "$(" ~ !"(" }
+dollar_paren_subst = !{ dollar_paren_open ~ eat_ws_nl ~ list? ~ eat_ws_nl ~ ")" }
+brace_command_subst = !{ "${" ~ (("|" ~ eat_ws_nl) | (WHITESPACE | NEWLINE | COMMENT)+) ~ list? ~ eat_ws_nl ~ "}" }
+backtick_subst = @{ "`" ~ ("\\" ~ ANY | !"`" ~ ANY)* ~ "`" }
+
+// ── Arithmetic ───────────────────────────────────────────────────────────────
+// $(( expr )) — C precedence; 64-bit signed integers.
+arithmetic_expansion = !{
+    "$((" ~ arithmetic_raw_paren ~ "))"
+  | "$[" ~ arithmetic_raw_bracket ~ "]"
+}
+arithmetic_raw_paren = @{ (arithmetic_raw_group | ("$(" ~ "(" ~ arithmetic_raw_paren ~ "))") | (!"))" ~ ANY))* }
+arithmetic_raw_group = @{ "(" ~ arithmetic_raw_group_body ~ ")" }
+arithmetic_raw_group_body = @{ (arithmetic_raw_group | ("$(" ~ "(" ~ arithmetic_raw_paren ~ "))") | (!")" ~ ANY))* }
+arithmetic_raw_bracket = @{ (!"]" ~ ANY)* }
+
+arithmetic_expr = !{ arithmetic_comma }
+arithmetic_comma = { arithmetic_assign ~ (arith_comma_op ~ arithmetic_assign)* }
+arith_comma_op = @{ "," }
+arithmetic_assign = {
+    arithmetic_lvalue ~ arithmetic_assign_op ~ arithmetic_assign
+  | arithmetic_ternary
+}
+arithmetic_assign_op = @{ "<<=" | ">>=" | "*=" | "/=" | "%=" | "+=" | "-=" | "&=" | "^=" | "|=" | ("=" ~ !"=") }
+arithmetic_ternary = { arithmetic_or ~ (arith_question ~ arithmetic_assign ~ arith_colon ~ arithmetic_assign)? }
+arith_question = @{ "?" }
+arith_colon = @{ ":" }
+arithmetic_or = { arithmetic_and ~ (arith_or_op ~ arithmetic_and)* }
+arith_or_op = @{ "||" }
+arithmetic_and = { arithmetic_bitor ~ (arith_and_op ~ arithmetic_bitor)* }
+arith_and_op = @{ "&&" }
+arithmetic_bitor = { arithmetic_bitxor ~ (arith_bitor_op ~ arithmetic_bitxor)* }
+arith_bitor_op = @{ "|" ~ !"|" }
+arithmetic_bitxor = { arithmetic_bitand ~ (arith_bitxor_op ~ arithmetic_bitand)* }
+arith_bitxor_op = @{ "^" }
+arithmetic_bitand = { arithmetic_eq ~ (arith_bitand_op ~ arithmetic_eq)* }
+arith_bitand_op = @{ "&" ~ !"&" }
+arithmetic_eq = { arithmetic_cmp ~ (arith_eq_op ~ arithmetic_cmp)* }
+arith_eq_op = @{ "==" | "!=" }
+arithmetic_cmp = { arithmetic_shift ~ (arith_cmp_op ~ arithmetic_shift)* }
+arith_cmp_op = @{ "<=" | ">=" | ("<" ~ !"<") | (">" ~ !">") }
+arithmetic_shift = { arithmetic_add ~ (arith_shift_op ~ arithmetic_add)* }
+arith_shift_op = @{ "<<" | ">>" }
+arithmetic_add = { arithmetic_mul ~ (arith_add_op ~ arithmetic_mul)* }
+arith_add_op = @{ ("+" ~ !("+" | "=")) | ("-" ~ !("-" | "=")) }
+arithmetic_mul = { arithmetic_pow ~ (arith_mul_op ~ arithmetic_pow)* }
+arith_mul_op = @{ ("*" ~ !("*" | "=")) | ("/" ~ !"=") | ("%" ~ !"=") }
+// `**` is right-associative and binds looser than unary minus: -2**2 == 4.
+arithmetic_pow = { arithmetic_unary ~ (arith_pow_op ~ arithmetic_unary)* }
+arith_pow_op = @{ "**" ~ !"=" }
+arithmetic_unary = {
+    arith_prefix_op ~ arithmetic_unary
+  | arithmetic_postfix
+}
+arith_prefix_op = @{ "++" | "--" | "+" | "-" | "!" | "~" }
+arithmetic_postfix = { arithmetic_primary ~ arith_postfix_op? }
+arith_postfix_op = @{ "++" | "--" }
+arithmetic_primary = _{
+    arith_paren
+  | arithmetic_expansion
+  | dollar_paren_subst
+  | arith_number
+  | simple_param
+  | braced_param
+  | quoted_string
+  | single_quoted_string
+  | arith_variable
+}
+arith_paren = { "(" ~ arithmetic_expr ~ ")" }
+// 16#ff · 0xff · 017 · 42 — decimal digits followed by `#` select a base.
+arith_number = @{
+    ASCII_DIGIT+ ~ "#" ~ (ASCII_ALPHANUMERIC | "@" | "_" | simple_param | braced_param)+
+  | "0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT+
+  | ASCII_DIGIT+ ~ !(ASCII_ALPHA | "_")
+}
+arith_variable = ${ name ~ ("[" ~ arith_subscript ~ "]")? }
+arith_subscript = !{ arithmetic_expr | subscript_all }
+arithmetic_lvalue = ${ name ~ ("[" ~ arith_subscript ~ "]")? }
+
+// ── Brace expansion ──────────────────────────────────────────────────────────
+// {a,b} {1..5} {1..10..2} {a..e} — happens before every other expansion.
+brace_expansion = ${ "{" ~ (brace_range | brace_sequence) ~ "}" }
+brace_sequence = ${ brace_element? ~ ("," ~ brace_element?)+ }
+brace_element = ${ (brace_expansion | quoted_string | single_quoted_string | simple_param | braced_param | dollar_paren_subst | brace_seq_text)+ }
+brace_seq_text = @{ ("\\" ~ ANY | !("," | "{" | "}" | "$" | "\"" | "'" | "`" | WHITESPACE | NEWLINE) ~ ANY)+ }
+brace_range = ${ brace_range_end ~ ".." ~ brace_range_end ~ (".." ~ brace_range_step)? }
+brace_range_end = @{ "-"? ~ ASCII_DIGIT+ | ASCII_ALPHA }
+brace_range_step = @{ "-"? ~ ASCII_DIGIT+ }
+
+// ── Tilde expansion ──────────────────────────────────────────────────────────
+tilde_expansion = ${ "~" ~ (tilde_special | tilde_user)? ~ tilde_path? }
+tilde_user = @{ name }
+tilde_special = @{ "+" | "-" }
+tilde_path = @{ "/" ~ ( "\\" ~ ANY | !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">" | "`" | "$" | "\"" | "'" | "{" | "}") ~ ANY )* }
+
+// ── Process substitution ─────────────────────────────────────────────────────
+process_substitution = ${ procsub_dir ~ "(" ~ procsub_list ~ ")" }
+procsub_dir = @{ "<" | ">" }
+procsub_list = !{ eat_ws_nl ~ list ~ eat_ws_nl }
+
+// ── Array literals ───────────────────────────────────────────────────────────
+array_literal = !{ "(" ~ eat_ws_nl ~ (array_element ~ eat_ws_nl)* ~ ")" }
+array_element = _{ associative_element | word }
+associative_element = ${ "[" ~ subscript ~ "]" ~ assign_op ~ word? }
+
+// ── Redirections ─────────────────────────────────────────────────────────────
+// [n]>file [n]>>file [n]>|file [n]<file [n]<>file [n]>&m [n]<&m [n]>&- &>file
+// &>>file <<<word <<[-]DELIM. A digit is a descriptor only when glued to the
+// operator: `echo 2>f` redirects fd 2, `echo 2 >f` prints 2.
+redirection = {
+    here_string
+  | here_document
+  | fd_redirection
+}
+here_string = ${ redir_fd? ~ "<<<" ~ ws* ~ word }
+here_document = ${ redir_fd? ~ "<<" ~ here_strip? ~ ws* ~ here_delimiter }
+here_strip = @{ "-" }
+here_delimiter = ${ quoted_string | single_quoted_string | here_word }
+here_word = @{ ("\\" ~ ANY | !(WHITESPACE | NEWLINE | "|" | "&" | ";" | "(" | ")" | "<" | ">") ~ ANY)+ }
+
+fd_redirection = ${ redir_fd? ~ redir_op ~ ws* ~ redir_target }
+redir_fd = @{ ASCII_DIGIT+ | "{" ~ name ~ "}" }
+redir_op = @{ "&>>" | "&>" | ">>" | ">|" | ">&" | "<&" | "<>" | (">" ~ !"(") | ("<" ~ !"(") }
+redir_target = ${ redir_close | word }
+redir_close = @{ "-" ~ !(!(WHITESPACE | NEWLINE | ";" | "|" | "&" | ")" ) ~ ANY) }
+file_descriptor = @{ ASCII_DIGIT+ }
+
+// ── Names and numbers ────────────────────────────────────────────────────────
+name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+number = @{ ASCII_DIGIT+ }
+
+// ── Keywords (atomic, word-bounded) ──────────────────────────────────────────
+kw_if      = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_then    = @{ "then" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_else    = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_elif    = @{ "elif" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_fi      = @{ "fi" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_case    = @{ "case" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_esac    = @{ "esac" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_for     = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_select  = @{ "select" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_while   = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_until   = @{ "until" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_do      = @{ "do" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_done    = @{ "done" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_in      = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_function = @{ "function" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_time    = @{ "time" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_coproc  = @{ "coproc" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+kw_builtin   = @{ "builtin" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_command   = @{ "command" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_exec      = @{ "exec" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_enable    = @{ "enable" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_hash      = @{ "hash" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_eval      = @{ "eval" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_export    = @{ "export" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_readonly  = @{ "readonly" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_declare   = @{ "declare" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_typeset   = @{ "typeset" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_local     = @{ "local" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_return    = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_exit      = @{ "exit" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_break     = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_continue  = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_shift     = @{ "shift" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_set       = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_unset     = @{ "unset" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_trap      = @{ "trap" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_wait      = @{ "wait" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_source    = @{ "source" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_read      = @{ "read" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_echo      = @{ "echo" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_printf    = @{ "printf" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_mapfile   = @{ "mapfile" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_readarray = @{ "readarray" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_let       = @{ "let" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_test      = @{ "test" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_true      = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_false     = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_history   = @{ "history" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The rules below this line are the original reference catalogue (builtins,
+// options, signal names, notes). They are not reached from `program`.
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Declaration commands ──────────────────────────────────────────────────────
+// declare, typeset, local, readonly, export with options
+declare_command = { 
+    (kw_declare | kw_typeset | kw_local | kw_readonly | kw_export) ~ 
+    declare_option* ~ 
+    (declare_assignment | word)* 
+}
+declare_option = @{ 
+    "-" ~ ("a" | "A" | "f" | "F" | "i" | "l" | "n" | "r" | "t" | "u" | "x" | "p") 
+}
+declare_assignment = { name ~ "=" ~ (word | array_literal)? }
+
+// ── Set builtin ───────────────────────────────────────────────────────────────
+set_command = { kw_set ~ set_options? }
+set_options = _{
+    set_short_option+
+  | set_long_option
+  | "+" ~ ASCII_ALPHA+  // +o to display options
+}
+set_short_option = _{ 
+    "-" ~ ("a" | "b" | "e" | "f" | "h" | "k" | "m" | "n" | "p" | "t" | "u" | "v" | "x" | "B" | "C" | "E" | "H" | "P" | "T") 
+}
+set_long_option = { "-o" ~ name | "+o" ~ name }
+
+// ── Shopt builtin ─────────────────────────────────────────────────────────────
+shopt_command = { kw_shopt ~ shopt_options? ~ name* }
+shopt_options = @{ 
+    "-" ~ ("s" | "u" | "q" | "o" | "p") 
+}
+
+// ── Trap builtin ───────────────────────────────────────────────────────────────
+trap_command = { 
+    kw_trap ~ (word | "-") ~ trap_signal* 
+  | kw_trap ~ trap_signal* 
+}
+trap_signal = @{ 
+    "EXIT" | "ERR" | "DEBUG" | "RETURN" |
+    "SIGHUP" | "SIGINT" | "SIGQUIT" | "SIGILL" | "SIGTRAP" | "SIGABRT" |
+    "SIGBUS" | "SIGFPE" | "SIGKILL" | "SIGUSR1" | "SIGSEGV" | "SIGUSR2" |
+    "SIGPIPE" | "SIGALRM" | "SIGTERM" | "SIGCHLD" | "SIGCONT" | "SIGSTOP" |
+    "SIGTSTP" | "SIGTTIN" | "SIGTTOU" | "SIGURG" | "SIGXCPU" | "SIGXFSZ" |
+    "SIGVTALRM" | "SIGPROF" | "SIGWINCH" | "SIGIO" | "SIGPWR" | "SIGSYS" |
+    number
+}
+
+// ── Wait builtin ───────────────────────────────────────────────────────────────
+wait_command = { kw_wait ~ (number | job_spec)* }
+
+// ── Shift builtin ──────────────────────────────────────────────────────────────
+shift_command = { kw_shift ~ number? }
+
+// ── Break/Continue with levels ─────────────────────────────────────────────────
+break_command = { kw_break ~ number? }
+continue_command = { kw_continue ~ number? }
+
+// ── Return from function or sourced file ───────────────────────────────────────
+return_command = { kw_return ~ number? }
+
+// ── Exit shell ─────────────────────────────────────────────────────────────────
+exit_command = { kw_exit ~ number? }
+
+// ── Source and dot commands ────────────────────────────────────────────────────
+source_command = { (kw_source | ".") ~ word ~ word* }
+
+// ── Additional Keywords (continued) ────────────────────────────────────────────
+kw_shopt    = @{ "shopt" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_alias    = @{ "alias" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_unalias  = @{ "unalias" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_ulimit   = @{ "ulimit" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_umask    = @{ "umask" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_type     = @{ "type" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_getopts  = @{ "getopts" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Alias commands ─────────────────────────────────────────────────────────────
+alias_command = { kw_alias ~ alias_definition* }
+alias_definition = { name ~ "=" ~ word }
+unalias_command = { kw_unalias ~ ("-" ~ "a" | name)* }
+
+// ── Ulimit builtin ─────────────────────────────────────────────────────────────
+ulimit_command = { kw_ulimit ~ ulimit_options? ~ number? }
+ulimit_options = @{ "-" ~ ASCII_ALPHA+ }
+
+// ── Umask builtin ──────────────────────────────────────────────────────────────
+umask_command = { kw_umask ~ ("-" ~ "S")? ~ (number | word)? }
+
+// ── Type builtin ───────────────────────────────────────────────────────────────
+type_command = { kw_type ~ type_options? ~ word* }
+type_options = @{ "-" ~ ("a" | "f" | "p" | "P" | "t") }
+
+// ── Getopts builtin ────────────────────────────────────────────────────────────
+getopts_command = { kw_getopts ~ word ~ name }
+
+// ── Let builtin (arithmetic evaluation) ────────────────────────────────────────
+let_command = { kw_let ~ arithmetic_expr+ }
+
+// ── Test builtin ───────────────────────────────────────────────────────────────
+test_command = { kw_test ~ test_expr }
+
+// ── Mapfile/Readarray builtins ─────────────────────────────────────────────────
+mapfile_command = { 
+    (kw_mapfile | kw_readarray) ~ 
+    mapfile_options* ~ 
+    name? 
+}
+mapfile_options = _{
+    "-" ~ ("d" | "n" | "O" | "s" | "t" | "u" | "C" | "c") ~ word?
+}
+
+// ── Read builtin ───────────────────────────────────────────────────────────────
+read_command = { 
+    kw_read ~ read_options* ~ name* 
+}
+read_options = _{ 
+    "-" ~ ("a" | "d" | "e" | "i" | "n" | "N" | "p" | "r" | "s" | "t" | "u") ~ word? 
+}
+
+// ── Echo builtin ───────────────────────────────────────────────────────────────
+echo_command = { kw_echo ~ echo_options? ~ word* }
+echo_options = _{ "-" ~ ("n" | "e" | "E")+ }
+
+// ── Printf builtin ─────────────────────────────────────────────────────────────
+printf_command = { kw_printf ~ word ~ word* }
+
+// ── CD and directory navigation ────────────────────────────────────────────────
+cd_command = { kw_cd ~ cd_options? ~ word? }
+cd_options = @{ "-" ~ ("L" | "P") }
+pwd_command = { kw_pwd ~ pwd_options? }
+pwd_options = @{ "-" ~ ("L" | "P") }
+
+// ── Pushd/Popd/Dirs (directory stack) ──────────────────────────────────────────
+pushd_command = { kw_pushd ~ pushd_options? ~ word? }
+pushd_options = @{ "-" ~ ("n" | "L" | "P") }
+popd_command = { kw_popd ~ popd_options? }
+popd_options = @{ "-" ~ "n" }
+dirs_command = { kw_dirs ~ dirs_options? }
+dirs_options = @{ "-" ~ ("c" | "l" | "p" | "v") }
+
+// ── Additional directory keywords ──────────────────────────────────────────────
+kw_pushd = @{ "pushd" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_popd  = @{ "popd" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_dirs  = @{ "dirs" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_cd    = @{ "cd" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_pwd   = @{ "pwd" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDITIONAL BASH FEATURES
+// Covering more edge cases and less common constructs
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Arithmetic expressions in more detail ─────────────────────────────────────
+// The let builtin and (( )) use the same expression grammar
+// Variables in arithmetic context don't need $
+// Array elements: arr[i] where i is an arithmetic expression
+// Base conversion: 16#FF, 2#1010, 64#az
+arith_base = @{ ASCII_DIGIT+ ~ "#" }
+arith_hex = @{ "0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT+ }
+arith_octal = @{ "0" ~ ASCII_OCT_DIGIT+ }
+arith_binary = @{ "0" ~ ("b" | "B") ~ ASCII_BIN_DIGIT+ }
+
+// ── Conditional expressions in detail ─────────────────────────────────────────
+// Used by test, [ ], and [[ ]]
+// -a and -o are binary AND/OR in [ ] (deprecated)
+// && and || are binary AND/OR in [[ ]]
+cond_expr = { cond_or }
+cond_or = { cond_and ~ (("-o" | "||") ~ cond_and)* }
+cond_and = { cond_not ~ (("-a" | "&&") ~ cond_not)* }
+cond_not = { "!" ~ cond_not | cond_primary }
+cond_primary = _{
+    cond_file_test
+  | cond_string_test
+  | cond_numeric_test
+  | cond_variable_test
+  | "(" ~ cond_expr ~ ")"
+  | word  // Bare string (non-empty test)
+}
+
+// File tests
+cond_file_test = { "-" ~ file_test_op ~ word }
+file_test_op = @{ 
+    "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "k" | "L" | "N" | 
+    "o" | "p" | "r" | "s" | "S" | "t" | "u" | "w" | "x" | "G" | "O" |
+    "b" | "c" | "d" | "e" | "f" | "g" | "h" | "k" | "L" | "p" | "r" |
+    "s" | "S" | "u" | "w" | "x"
+}
+
+// String tests
+cond_string_test = _{
+    word ~ cond_string_op ~ word
+  | cond_unary_string_op ~ word
+}
+cond_string_op = @{ "=" | "==" | "!=" | "<" | ">" | "=~" }
+cond_unary_string_op = @{ "-" ~ ("n" | "z") }
+
+// Numeric tests (integers only)
+cond_numeric_test = { word ~ cond_numeric_op ~ word }
+cond_numeric_op = @{ "-" ~ ("eq" | "ne" | "lt" | "le" | "gt" | "ge") }
+
+// Variable existence test
+cond_variable_test = { "-" ~ "v" ~ word }
+
+// ── Extended glob patterns in detail ───────────────────────────────────────────
+// Enabled with shopt -s extglob
+// ?(pattern-list)  - Matches zero or one occurrence
+// *(pattern-list)  - Matches zero or more occurrences  
+// +(pattern-list)  - Matches one or more occurrences
+// @(pattern-list)  - Matches exactly one occurrence
+// !(pattern-list)  - Matches anything except
+extglob_pattern = { 
+    extglob_op ~ "(" ~ extglob_body ~ ")" 
+}
+extglob_op = @{ "?" | "*" | "+" | "@" | "!" }
+extglob_body = { glob_word ~ ("|" ~ glob_word)* }
+glob_word = { glob_part+ }
+glob_part = _{
+    extglob_pattern
+  | glob_char_class
+  | glob_range
+  | glob_char
+}
+// Character class: [abc], [!abc], [^abc], [a-z]
+glob_char_class = { 
+    "[" ~ "^"? ~ glob_class_content+ ~ "]" 
+}
+glob_class_content = _{
+    glob_range
+  | glob_class_char
+}
+glob_range = { glob_class_char ~ "-" ~ glob_class_char }
+glob_class_char = @{ (!("]" | "\\") ~ ANY) | "\\" ~ ANY }
+glob_char = @{ (!(" "| "\t" | "\n" | "|" | "(" | ")" | "[" | "]" | "*" | "?" | EOI) ~ ANY) }
+
+// ── Pattern matching for case ─────────────────────────────────────────────────
+// Patterns in case statements are glob-like
+// | separates multiple patterns
+// Pattern operators: *(any), ?(single char), [...](class), [!...](negated class)
+case_pattern = { case_pattern_part+ }
+case_pattern_part = _{
+    glob_char_class
+  | "*"  // Match any string
+  | "?"  // Match single char
+  | "[" ~ "!" ~ glob_class_content+ ~ "]"  // Negated class
+  | word_part
+}
+
+// ── Bash-specific arrays ──────────────────────────────────────────────────────
+// Array assignment forms
+indexed_array_assign = { 
+    name ~ "=" ~ "(" ~ indexed_array_body? ~ ")" 
+}
+indexed_array_body = { (word | assignment_word ~ eat_ws_nl)+ }
+
+associative_array_assign = {
+    name ~ "=" ~ "(" ~ associative_array_body? ~ ")"
+}
+associative_array_body = { (associative_element ~ eat_ws_nl)+ }
+
+// Array element access in more detail
+array_access = { 
+    name ~ "[" ~ word ~ "]" 
+}
+array_all_elements = { 
+    name ~ "[" ~ ("@" | "*") ~ "]" 
+}
+array_indices = { 
+    "!" ~ name ~ "[" ~ ("@" | "*") ~ "]" 
+}
+
+// ── Substring operations on arrays ─────────────────────────────────────────────
+// ${array[@]:offset:length}
+array_substring = {
+    name ~ "[" ~ ("@" | "*") ~ "]" ~ ":" ~ arithmetic_expr ~ (":" ~ arithmetic_expr)?
+}
+
+// ── Special variables in detail ────────────────────────────────────────────────
+// $BASH_SOURCE, $BASH_LINENO, $BASH_CMDLINE, $FUNCNAME, etc.
+// These are accessed as regular parameters but have special semantics
+washm_special_var = @{ 
+    "BASH_SOURCE" | "BASH_LINENO" | "BASH_CMDLINE" | "FUNCNAME" |
+    "BASH_ARGV" | "BASH_ARGC" | "BASH_SUBSHELL" | "BASH_VERSINFO" |
+    "BASH" | "BASHOPTS" | "BASHPID" | "BASH_ALIASES" | "BASH_ARGBV" |
+    "BASH_CMDS" | "BASH_EXECUTION_STRING" | "BASH_LOADABLES_PATH" |
+    "BASH_REMATCH" | "BASH_SCRIPT" | "BASH_XTRACEFD" | "CHILD_MAX" |
+    "COMP_CWORD" | "COMP_KEY" | "COMP_LINE" | "COMP_POINT" |
+    "COMP_TYPE" | "COMP_WORDBREAKS" | "COMP_WORDS" | "COPROC" |
+    "DIRSTACK" | "EPOCHREALTIME" | "EPOCHSECONDS" | "EUID" | "GROUPS" |
+    "HISTCMD" | "HISTFILE" | "HISTFILESIZE" | "HISTIGNORE" | "HISTSIZE" |
+    "HOSTFILE" | "HOSTNAME" | "HOSTTYPE" | "IFS" | "IGNOREEOF" |
+    "LANG" | "LC_ALL" | "LC_COLLATE" | "LC_CTYPE" | "LC_MESSAGES" |
+    "LC_NUMERIC" | "LINENO" | "LINES" | "MACHTYPE" | "MAILCHECK" |
+    "MAPFILE" | "OLDPWD" | "OPTERR" | "OPTIND" | "OPTARG" | "OSTYPE" |
+    "PATH" | "PIPESTATUS" | "POSIXLY_CORRECT" | "PPID" | "PROMPT_COMMAND" |
+    "PROMPT_DIRTRIM" | "PS0" | "PS1" | "PS2" | "PS3" | "PS4" | "PWD" |
+    "RANDOM" | "READLINE_LINE" | "READLINE_MARK" | "READLINE_POINT" |
+    "REPLY" | "SECONDS" | "SHELL" | "SHELLOPTS" | "SHLVL" | "SRANDOM" |
+    "TERM" | "TIMEFORMAT" | "TMOUT" | "TMPDIR" | "UID"
+}
+
+// ── History expansion (interactive mode) ───────────────────────────────────────
+// History expansion is typically handled by readline, but can appear in scripts
+// that use `fc` or `history` builtins with -s option
+history_event = @{ "!" ~ (number | "-" ~ number | name | "?" ~ word ~ "?") }
+history_modifiers = @{ ":" ~ ("h" | "t" | "r" | "e" | "p" | "q" | "x" | "s" ~ word ~ word) }
+
+// ── Process substitution in more detail ────────────────────────────────────────
+// <(list) creates a named pipe or /dev/fd entry
+// >(list) creates a named pipe or /dev/fd entry for output
+process_input = { "<" ~ "(" ~ list ~ ")" }
+process_output = { ">" ~ "(" ~ list ~ ")" }
+
+// ── Process ID expansion ───────────────────────────────────────────────────────
+// $! is the PID of the last background command
+// Can be used with wait: wait $!
+pid_expansion = @{ "!" }
+
+// ── Last exit status expansion ─────────────────────────────────────────────────
+// $? is the exit status of the last command
+status_expansion = @{ "?" }
+
+// ── Shell option expansion ─────────────────────────────────────────────────────
+// $- shows current shell options
+options_expansion = @{ "-" }
+
+// ── Last argument expansion ────────────────────────────────────────────────────
+// $_ is the last argument of the last command
+last_arg_expansion = @{ "_" }
+
+// ── Process substitution and FD operations ─────────────────────────────────────
+// exec can redirect for the entire shell without running a command
+exec_redirect = { kw_exec ~ redirection+ }
+exec_fd_open = { kw_exec ~ file_descriptor ~ redirection }
+
+// ── Redirecting for builtins ───────────────────────────────────────────────────
+// Builtin commands can have redirections: echo foo > file
+builtin_with_redirect = { 
+    (kw_echo | kw_printf | kw_read | kw_declare | kw_local | kw_export | kw_readonly) ~ 
+    word* ~ 
+    redirection* 
+}
+
+// ── Array declaration with attributes ──────────────────────────────────────────
+// declare -a arr=(...) indexed array
+// declare -A arr=() associative array  
+// declare -i var=5 integer variable
+// declare -r var readonly
+// declare -x var exported
+// declare -l var lowercase
+// declare -u var uppercase
+// declare -n var nameref
+declare_with_attr = {
+    (kw_declare | kw_typeset) ~ 
+    declare_attr* ~ 
+    (declare_assignment | name)*
+}
+declare_attr = @{ 
+    "-" ~ ("a" | "A" | "i" | "l" | "n" | "r" | "t" | "u" | "x") 
+}
+
+// ── Nameref variables ──────────────────────────────────────────────────────────
+// declare -n ref=var  makes ref a reference to var
+// ${!ref} gives the name of the variable ref points to
+nameref_dereference = { "!" ~ name }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPOUND COMMAND VARIATIONS AND EDGE CASES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── If statement variations ────────────────────────────────────────────────────
+// The condition is a LIST, not just a command
+// if cmd1; cmd2; then ... fi  - condition is the exit status of the list
+// if [[ condition ]]; then ... fi
+// if test condition; then ... fi
+// if (( arithmetic )); then ... fi
+if_condition = { list }
+
+// ── While/until with multiple conditions ───────────────────────────────────────
+// while cmd1 && cmd2; do ... done
+// while (( x > 0 )); do ... done
+// until false; do ... done
+while_condition = { list }
+until_condition = { list }
+
+// ── For loop variations ────────────────────────────────────────────────────────
+// Standard: for name in word...; do ... done
+// C-style: for ((i=0; i<10; i++)); do ... done
+// Empty in: for name; do ... done  (iterates over $@)
+// Brace expansion: for i in {1..10}; do ... done
+// Command substitution: for f in $(ls); do ... done
+// Pathname expansion: for f in *.txt; do ... done
+
+// ── Case statement with multiple patterns ──────────────────────────────────────
+// case word in
+//   pattern1|pattern2) commands ;;
+//   *) default ;;
+// esac
+// Fallthrough: ;;& continues to next pattern test
+// Fallthrough execute: ;& executes next clause without testing
+case_pattern_alternative = { case_pattern ~ ("|" ~ case_pattern)* }
+
+// ── Select loop (interactive menu) ─────────────────────────────────────────────
+// select name in word...; do
+//   case $name in
+//     pattern) commands ;;
+//   esac
+// done
+// PS3 prompt is used
+// REPLY contains user input
+select_prompt_var = @{ "PS3" }
+
+// ── Coprocess with name ────────────────────────────────────────────────────────
+// coproc NAME { command; }
+// Creates: NAME_PID, NAME_READ, NAME_WRITE
+coproc_fd_var = @{ name ~ "_" ~ ("PID" | "READ" | "WRITE") }
+
+// ── Process substitution in commands ───────────────────────────────────────────
+// diff <(sort file1) <(sort file2)
+// tee >(process1) >(process2) output
+process_subst_word = { process_substitution }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUOTING AND ESCAPE VARIATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Backslash escaping ─────────────────────────────────────────────────────────
+// Outside quotes, \ escapes the next character
+// In double quotes, \ only escapes: $ ` " \ newline
+// In single quotes, \ is literal
+// In $'...', \ is a C-style escape
+backslash_escape = _{ "\\" ~ ANY }
+
+// ── Double quote content variations ────────────────────────────────────────────
+// "string" - regular
+// "$var" - variable expansion
+// "${var}" - braced expansion
+// "$(cmd)" - command substitution
+// "$((expr))" - arithmetic expansion
+// "`cmd`" - old-style command substitution
+// "\"\\\$\\`" - escaped characters
+// "line1
+// line2" - embedded newlines
+
+// ── Single quote variations ─────────────────────────────────────────────────────
+// 'string' - literal
+// 'can'\''t' - embedded single quote (end, escaped quote, new quote)
+// Note: This is actually three concatenated strings
+
+// ── Dollar-quote variations ($'...') ───────────────────────────────────────────
+// $'hello\nworld' - newline
+// $'\x41' - hex escape
+// $'\101' - octal escape
+// $'\u0041' - unicode escape
+// $'\E' - escape character
+// $'\cC' - control-C
+dollar_quote_escape = _{
+    "\\a" |   // bell
+    "\\b" |   // backspace
+    "\\e" |   // escape
+    "\\E" |   // escape
+    "\\f" |   // form feed
+    "\\n" |   // newline
+    "\\r" |   // carriage return
+    "\\t" |   // horizontal tab
+    "\\v" |   // vertical tab
+    "\\\\" |  // backslash
+    "\\'"  |  // single quote
+    "\\\"" |  // double quote
+    "\\?" |   // question mark
+    "\\x" ~ ASCII_HEX_DIGIT{1,2} |      // hex byte
+    "\\u" ~ ASCII_HEX_DIGIT{4} |        // unicode 4-digit
+    "\\U" ~ ASCII_HEX_DIGIT{8} |        // unicode 8-digit
+    "\\" ~ ASCII_DIGIT{1,3} |           // octal
+    "\\c" ~ ANY                          // control char
+}
+
+// ── Locale quote ($"...") ──────────────────────────────────────────────────────
+// Translates string according to locale
+// Like double quote but with translation
+// Used for internationalization
+locale_string = { "$" ~ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WORD SPLITTING AND IFS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── IFS (Internal Field Separator) ─────────────────────────────────────────────
+// Default IFS is space, tab, newline
+// Word splitting occurs on unquoted expansions
+// "$@" is special: splits into separate words but each is quoted
+// "$*" joins with first character of IFS
+
+// ── Quoting to prevent splitting ────────────────────────────────────────────────
+// "$var" - no splitting
+// $var - splits on IFS
+// "$@" - splits into separate quoted args
+// "$*" - joins into single string
+// "${array[@]}" - splits into separate elements
+// "${array[*]}" - joins with IFS first char
+
+// ── Pathname expansion (globbing) ──────────────────────────────────────────────
+// After word splitting, pathname expansion occurs
+// Patterns: *, ?, [...], ** (globstar)
+// Unless: set -f (noglob), quoted, or in assignment
+
+// ── Globstar (**) ──────────────────────────────────────────────────────────────
+// Enabled with: shopt -s globstar
+// ** matches any directories recursively
+// **/*.txt matches all .txt files in all subdirectories
+globstar_pattern = @{ "**" }
+
+// ── Nullglob ───────────────────────────────────────────────────────────────────
+// Enabled with: shopt -s nullglob
+// Non-matching patterns expand to nothing (not the literal pattern)
+nullglob_behavior = @{ "nullglob" }
+
+// ── Failglob ───────────────────────────────────────────────────────────────────
+// Enabled with: shopt -s failglob
+// Non-matching patterns cause an error
+failglob_behavior = @{ "failglob" }
+
+// ── Dotglob ────────────────────────────────────────────────────────────────────
+// Enabled with: shopt -s dotglob
+// Patterns match files starting with .
+dotglob_behavior = @{ "dotglob" }
+
+// ── Extglob ────────────────────────────────────────────────────────────────────
+// Enabled with: shopt -s extglob
+// Enables extended pattern matching: ?(...), *(...), +(...), @(...), !(...)
+extglob_behavior = @{ "extglob" }
+
+// ── Nocaseglob ─────────────────────────────────────────────────────────────────
+// Enabled with: shopt -s nocaseglob
+// Case-insensitive pathname expansion
+nocaseglob_behavior = @{ "nocaseglob" }
+
+// ── Globasciiranges ────────────────────────────────────────────────────────────
+// Enabled with: shopt -s globasciiranges
+// Character ranges in [] are ASCII-only
+globasciiranges_behavior = @{ "globasciiranges" }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNAL NAMES AND TRAPS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Signal names for trap ──────────────────────────────────────────────────────
+signal_name = @{ 
+    "SIGHUP" | "SIGINT" | "SIGQUIT" | "SIGILL" | "SIGTRAP" |
+    "SIGABRT" | "SIGIOT" | "SIGBUS" | "SIGFPE" | "SIGKILL" |
+    "SIGUSR1" | "SIGSEGV" | "SIGUSR2" | "SIGPIPE" | "SIGALRM" |
+    "SIGTERM" | "SIGSTKFLT" | "SIGCLD" | "SIGCHLD" | "SIGCONT" |
+    "SIGSTOP" | "SIGTSTP" | "SIGTTIN" | "SIGTTOU" | "SIGURG" |
+    "SIGXCPU" | "SIGXFSZ" | "SIGVTALRM" | "SIGPROF" | "SIGWINCH" |
+    "SIGPOLL" | "SIGIO" | "SIGPWR" | "SIGSYS" | "SIGUNUSED" |
+    // Without SIG prefix
+    "HUP" | "INT" | "QUIT" | "ILL" | "TRAP" |
+    "ABRT" | "IOT" | "BUS" | "FPE" | "KILL" |
+    "USR1" | "SEGV" | "USR2" | "PIPE" | "ALRM" |
+    "TERM" | "STKFLT" | "CLD" | "CHLD" | "CONT" |
+    "STOP" | "TSTP" | "TTIN" | "TTOU" | "URG" |
+    "XCPU" | "XFSZ" | "VTALRM" | "PROF" | "WINCH" |
+    "POLL" | "IO" | "PWR" | "SYS" | "UNUSED"
+}
+
+// ── Pseudo-signals for trap ────────────────────────────────────────────────────
+pseudo_signal = @{ 
+    "EXIT" |    // Exit from shell
+    "ERR" |     // Command failure (with set -e)
+    "DEBUG" |   // Before every command
+    "RETURN" |  // Return from function/source
+    "SIGDEBUG" | "DEBUG"
+}
+
+// ── Signal numbers ─────────────────────────────────────────────────────────────
+signal_number = @{ 
+    "0" |   // EXIT
+    "1" |   // HUP
+    "2" |   // INT
+    "3" |   // QUIT
+    "4" |   // ILL
+    "5" |   // TRAP
+    "6" |   // ABRT/IOT
+    "7" |   // BUS
+    "8" |   // FPE
+    "9" |   // KILL
+    "10" |  // USR1
+    "11" |  // SEGV
+    "12" |  // USR2
+    "13" |  // PIPE
+    "14" |  // ALRM
+    "15"   // TERM
+    // ... more signals exist
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMAND LINE OPTIONS AND INVOCATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Bash invocation options ────────────────────────────────────────────────────
+// washm -c 'command' [name [args...]]
+// washm -s [args...]  (read commands from stdin)
+// washm script.sh [args...]
+washm_option = @{ 
+    "-" ~ (
+        "a" |   // allexport
+        "b" |   // notify of job termination
+        "c" |   // read commands from string
+        "C" |   // noclobber
+        "e" |   // errexit
+        "f" |   // noglob
+        "h" |   // hashall
+        "i" |   // interactive
+        "I" |   // no_rc
+        "k" |   // keyword
+        "l" |   // login
+        "m" |   // monitor
+        "n" |   // noexec
+        "o" |   // option follows
+        "p" |   // privileged
+        "P" |   // physical
+        "r" |   // restricted
+        "s" |   // read from stdin
+        "t" |   // exit after one command
+        "u" |   // nounset
+        "v" |   // verbose
+        "x" |   // xtrace
+        "B" |   // brace expansion
+        "D" |   // dump strings for translation
+        "E" |   // errtrace
+        "F" |   // no fork
+        "H" |   // histexpand
+        "O" |   // shopt option follows
+        "P" |   // physical pwd
+        "T" |   // functrace
+        "X"     // xtrace fd
+    )
+}
+
+// ── Long options for set -o ────────────────────────────────────────────────────
+set_long_option_name = @{ 
+    "allexport" | "braceexpand" | "emacs" | "errexit" | "errtrace" |
+    "functrace" | "hashall" | "histexpand" | "history" | "ignoreeof" |
+    "keyword" | "monitor" | "noclobber" | "noexec" | "noglob" |
+    "nolog" | "notify" | "nounset" | "onecmd" | "physical" |
+    "pipefail" | "posix" | "privileged" | "promptvars" | "verbose" |
+    "vi" | "xtrace"
+}
+
+// ── Shopt options ──────────────────────────────────────────────────────────────
+shopt_option_name = @{
+    "assoc_expand_once" | "autocd" | "cdable_vars" | "cdspell" |
+    "checkhash" | "checkjobs" | "checkwinsize" | "cmdhist" |
+    "compat31" | "compat32" | "compat40" | "compat41" | "compat42" |
+    "compat43" | "compat44" | "complete_fullquote" | "direxpand" |
+    "dirspell" | "dotglob" | "execfail" | "expand_aliases" |
+    "extdebug" | "extglob" | "extquote" | "failglob" | "force_fignore" |
+    "globasciiranges" | "globstar" | "gnu_errfmt" | "histappend" |
+    "histreedit" | "histverify" | "hostcomplete" | "huponexit" |
+    "inherit_errexit" | "interactive_comments" | "lastpipe" |
+    "lithist" | "localvar_inherit" | "localvar_unset" | "login_shell" |
+    "mailwarn" | "no_empty_cmd_completion" | "nocaseglob" | "nocasematch" |
+    "nullglob" | "progcomp" | "progcomp_alias" | "promptvars" |
+    "restricted_shell" | "shift_verbose" | "sourcepath" | "xpg_echo"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPLETION AND READLINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Complete builtin ───────────────────────────────────────────────────────────
+complete_command = { 
+    kw_complete ~ complete_options* ~ complete_action? ~ word? 
+}
+complete_options = _{
+    "-" ~ ("a" | "b" | "c" | "d" | "e" | "f" | "g" | "j" | "k" | "o" | "p" | "r" | "s" | "u" | "v" | "w" | "A" | "C" | "D" | "F" | "G" | "P" | "S" | "W" | "X") ~ word?
+}
+complete_action = { word }
+kw_complete = @{ "complete" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Compgen builtin ────────────────────────────────────────────────────────────
+compgen_command = { kw_compgen ~ complete_options* ~ word? }
+kw_compgen = @{ "compgen" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Compopt builtin ────────────────────────────────────────────────────────────
+compopt_command = { kw_compopt ~ compopt_options* ~ word* }
+compopt_options = _{ "-" ~ ("o" | "D" | "E" | "F" | "I" | "N" | "R") ~ word? }
+kw_compopt = @{ "compopt" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Bind builtin (readline) ────────────────────────────────────────────────────
+bind_command = { kw_bind ~ bind_options* ~ word? }
+bind_options = _{
+    "-" ~ ("m" | "q" | "r" | "s" | "u" | "v" | "V" | "x" | "p" | "P" | "S" | "f" | "l" | "X") ~ word?
+}
+kw_bind = @{ "bind" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEBUGGING AND TRACING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Set -x / set -v output ─────────────────────────────────────────────────────
+// These are runtime behaviors, not syntax
+// xtrace prefix is stored in PS4
+// PS4 can contain $0, $$, $SECONDS, etc.
+
+// ── Debugging with BASH_XTRACEFD ───────────────────────────────────────────────
+// Redirect xtrace output to a different FD
+// BASH_XTRACEFD=3
+
+// ── Functrace and errtrace ─────────────────────────────────────────────────────
+// set -E (errtrace): ERR trap inherited by functions
+// set -T (functrace): DEBUG and RETURN traps inherited by functions
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPECIAL BUILTIN COMMANDS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── : (colon) - null command ───────────────────────────────────────────────────
+colon_command = { ":" ~ word* }
+// Always returns 0
+// Used for: : ${var:=default}  (side effect without command)
+
+// ── . (dot) - source ───────────────────────────────────────────────────────────
+dot_command = { "." ~ word ~ word* }
+// Same as source
+
+// ── [ (test) ───────────────────────────────────────────────────────────────────
+bracket_command = { "[" ~ test_expr ~ "]" }
+// Same as test
+
+// ── True and false ─────────────────────────────────────────────────────────────
+true_command = { kw_true }
+false_command = { kw_false }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REDIRECTION EDGE CASES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Redirecting both stdout and stderr ─────────────────────────────────────────
+// command >file 2>&1   (stderr to stdout, both to file)
+// command 2>&1 >file   (stderr to old stdout, stdout to file - DIFFERENT!)
+// command &>file       (both to file, washm shorthand)
+// command >&file       (both to file, csh shorthand)
+both_redirect = _{ 
+    "&>" ~ word 
+  | ">&" ~ word 
+}
+
+// ── Appending both stdout and stderr ────────────────────────────────────────────
+both_append_redirect = { "&>>" ~ word }
+
+// ── Here-document with leading tab stripping ────────────────────────────────────
+// <<-DELIM strips leading tabs from body lines
+// Useful for indentation in scripts
+here_doc_strip_tabs = { "<<-" ~ here_delimiter }
+
+// ── Here-document with expansion prevention ─────────────────────────────────────
+// <<'DELIM' or <<"DELIM" prevents parameter/command substitution
+// The delimiter is quoted to prevent expansion in body
+here_doc_no_expand = { "<<" ~ (quoted_string | single_quoted_string) }
+
+// ── Process substitution with file descriptor ───────────────────────────────────
+// /dev/fd/63 is typically what <(...) becomes
+// The shell provides a path that other commands can open
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JOB CONTROL
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Background execution ───────────────────────────────────────────────────────
+// command &   runs in background
+// command &> file &   redirects and backgrounds
+background_list = { list ~ "&" }
+
+// ── Jobs builtin ───────────────────────────────────────────────────────────────
+jobs_command = { kw_jobs ~ jobs_options? ~ job_spec? }
+jobs_options = @{ "-" ~ ("l" | "n" | "p" | "r" | "s" | "x") }
+kw_jobs = @{ "jobs" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Fg builtin ─────────────────────────────────────────────────────────────────
+fg_command = { kw_fg ~ job_spec? }
+kw_fg = @{ "fg" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Bg builtin ─────────────────────────────────────────────────────────────────
+bg_command = { kw_bg ~ job_spec? }
+kw_bg = @{ "bg" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Disown builtin ─────────────────────────────────────────────────────────────
+disown_command = { kw_disown ~ disown_options? ~ job_spec* }
+disown_options = @{ "-" ~ ("a" | "h" | "r") }
+kw_disown = @{ "disown" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Suspend builtin ────────────────────────────────────────────────────────────
+suspend_command = { kw_suspend ~ suspend_option? }
+suspend_option = @{ "-" ~ "f" }
+kw_suspend = @{ "suspend" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Job specifications ─────────────────────────────────────────────────────────
+// %n - job number n
+// %string - job whose command starts with string
+// %?string - job containing string
+// %% - current job
+// %+ - current job
+// %- - previous job
+job_spec = @{ "%" ~ (number | "+" | "-" | name | "?" ~ word?) }
+
+// ── Wait with job specs ────────────────────────────────────────────────────────
+wait_job = { kw_wait ~ (job_spec | number)* }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCHEDULING AND TIMING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Times builtin ──────────────────────────────────────────────────────────────
+times_command = { kw_times }
+kw_times = @{ "times" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HISTORY AND FC
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── History builtin ────────────────────────────────────────────────────────────
+history_command = { kw_history ~ history_options? ~ number? }
+history_options = @{ "-" ~ ("a" | "c" | "d" | "n" | "r" | "w" | "p" | "s") ~ word? }
+
+// ── Fc (fix command) builtin ───────────────────────────────────────────────────
+fc_command = { kw_fc ~ fc_options? ~ (number | word)? }
+fc_options = @{ "-" ~ ("e" | "l" | "n" | "r" | "s") ~ word? }
+kw_fc = @{ "fc" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDITIONAL EXPANSION FORMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Prefix/suffix removal in detail ────────────────────────────────────────────
+// ${var#pattern}   - remove shortest prefix matching pattern
+// ${var##pattern}  - remove longest prefix matching pattern
+// ${var%pattern}   - remove shortest suffix matching pattern
+// ${var%%pattern}  - remove longest suffix matching pattern
+prefix_removal = { 
+    name ~ ("##" | "#") ~ glob_pattern 
+}
+suffix_removal = { 
+    name ~ ("%%" | "%") ~ glob_pattern 
+}
+
+// ── Pattern replacement in detail ──────────────────────────────────────────────
+// ${var/pattern/replacement}  - replace first match
+// ${var//pattern/replacement} - replace all matches
+// ${var/#pattern/replacement} - match at beginning only
+// ${var/%pattern/replacement} - match at end only
+// Empty replacement deletes: ${var/pattern/}
+pattern_replacement = {
+    (name | positional_param) ~
+    ("/" | "//" | "/#" | "/%") ~
+    glob_pattern ~
+    ("/" ~ glob_pattern)?
+}
+
+// ── Case modification with pattern ─────────────────────────────────────────────
+// ${var^pattern}  - capitalize first char if it matches pattern
+// ${var^^pattern} - capitalize all chars matching pattern
+// ${var,pattern}  - lowercase first char if it matches pattern
+// ${var,,pattern} - lowercase all chars matching pattern
+case_mod_pattern = {
+    name ~ ("^" | "^^" | "," | ",,") ~ glob_pattern?
+}
+
+// ── Substring expansion with negative indices ───────────────────────────────────
+// ${var: -3}      - last 3 chars (space required before negative)
+// ${var: -5:3}    - 3 chars starting 5 from end
+// ${array[@]: -3} - last 3 array elements
+negative_substring = {
+    name ~ ":" ~ eat_ws_nl ~ "-" ~ arithmetic_expr ~ (":" ~ arithmetic_expr)?
+}
+
+// ── Indirect expansion ──────────────────────────────────────────────────────────
+// ${!var}         - value of variable whose name is in var
+// ${!var[@]}      - keys of associative array
+// ${!var[*]}      - keys of associative array
+// ${!prefix*}     - names starting with prefix
+// ${!prefix@}     - names starting with prefix
+indirect_var = { "!" ~ name }
+indirect_keys = { "!" ~ name ~ "[" ~ ("@" | "*") ~ "]" }
+indirect_prefix = { "!" ~ name ~ ("@" | "*") }
+
+// ── Parameter length for arrays ────────────────────────────────────────────────
+// ${#var}        - length of string
+// ${#var[@]}     - number of array elements
+// ${#var[*]}     - number of array elements
+array_length = { "#" ~ name ~ "[" ~ ("@" | "*") ~ "]" }
+
+// ── Default value with assignment ───────────────────────────────────────────────
+// ${var:=default}  - assign default if unset or empty, then return value
+// ${var=default}   - assign default if unset, then return value
+default_assign = {
+    name ~ (":=" | "=") ~ word
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGULAR EXPRESSION MATCHING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Regex match in [[ ]] ───────────────────────────────────────────────────────
+// [[ string =~ regex ]]
+// Returns 0 if match, 1 if no match, 2 if error
+// BASH_REMATCH array contains capture groups
+// BASH_REMATCH[0] = entire match
+// BASH_REMATCH[1] = first group, etc.
+regex_match = { word ~ "=~" ~ regex_pattern }
+regex_pattern = { word }  // ERE (Extended Regular Expression)
+
+// ── Regex special characters ───────────────────────────────────────────────────
+// These are meaningful in regex context:
+// . * [ ] ^ $ \ ? + { } | ( )
+// They should NOT be escaped in the regex word
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRING MANIPULATION BUILTINS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Printf format specifiers ───────────────────────────────────────────────────
+// %s - string
+// %d - integer
+// %f - float
+// %x - hex
+// %o - octal
+// %c - character
+// %% - literal %
+// %b - interpret backslash escapes
+// %q - quote for safe reuse
+printf_format = @{ 
+    "%" ~ ("-" | "+" | " " | "0")? ~ number? ~ ("." ~ number)? ~ 
+    ("s" | "d" | "i" | "u" | "o" | "x" | "X" | "f" | "e" | "E" | "g" | "G" | "c" | "b" | "q" | "%")
+}
+
+// ── Echo escape sequences (with -e) ─────────────────────────────────────────────
+echo_escape = _{
+    "\\a" |   // alert
+    "\\b" |   // backspace
+    "\\c" |   // suppress further output
+    "\\e" |   // escape
+    "\\E" |   // escape
+    "\\f" |   // form feed
+    "\\n" |   // newline
+    "\\r" |   // carriage return
+    "\\t" |   // horizontal tab
+    "\\v" |   // vertical tab
+    "\\\\" |  // backslash
+    "\\0" ~ ASCII_OCT_DIGIT{0,3} |  // octal value
+    "\\x" ~ ASCII_HEX_DIGIT{0,2}    // hex value
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUT/OUTPUT BUILTINS IN DETAIL
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Read options ───────────────────────────────────────────────────────────────
+// -a array  - read into array
+// -d delim  - delimiter (default newline)
+// -e        - use readline
+// -i text   - initial text for readline
+// -n nchars - read n chars
+// -N nchars - read exactly n chars, ignore delimiter
+// -p prompt - show prompt
+// -r        - don't interpret backslashes
+// -s        - silent mode (passwords)
+// -t timeout - timeout in seconds
+// -u fd     - read from fd
+read_option_a = { "-" ~ "a" ~ name }
+read_option_d = { "-" ~ "d" ~ word }
+read_option_i = { "-" ~ "i" ~ word }
+read_option_n = { "-" ~ "n" ~ number }
+read_option_N = { "-" ~ "N" ~ number }
+read_option_p = { "-" ~ "p" ~ word }
+read_option_t = { "-" ~ "t" ~ number }
+read_option_u = { "-" ~ "u" ~ number }
+
+// ── Mapfile/Readarray options ──────────────────────────────────────────────────
+// -C callback - call callback after each quantum lines
+// -c quantum  - lines between callbacks (default 5000)
+// -d delim    - use delim instead of newline
+// -n count    - copy at most count lines
+// -O origin   - start at index origin instead of 0
+// -s count    - discard first count lines
+// -t          - remove trailing newlines
+// -u fd       - read from fd instead of stdin
+mapfile_option = _{
+    "-" ~ ("C" | "c" | "d" | "n" | "O" | "s" | "t" | "u") ~ word?
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATTRIBUTES AND DECLARATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Declare attributes ─────────────────────────────────────────────────────────
+// -a  indexed array
+// -A  associative array
+// -f  function names
+// -F  function names without definitions
+// -i  integer
+// -l  lowercase on assignment
+// -n  nameref
+// -r  readonly
+// -t  trace (for functions)
+// -u  uppercase on assignment
+// -x  export
+// -p  display attributes
+declare_attr_a = { "-" ~ "a" }  // indexed array
+declare_attr_A = { "-" ~ "A" }  // associative array
+declare_attr_i = { "-" ~ "i" }  // integer
+declare_attr_l = { "-" ~ "l" }  // lowercase
+declare_attr_n = { "-" ~ "n" }  // nameref
+declare_attr_r = { "-" ~ "r" }  // readonly
+declare_attr_t = { "-" ~ "t" }  // trace
+declare_attr_u = { "-" ~ "u" }  // uppercase
+declare_attr_x = { "-" ~ "x" }  // export
+declare_attr_p = { "-" ~ "p" }  // print
+
+// ── Typeset (deprecated synonym for declare) ───────────────────────────────────
+// typeset is provided for ksh compatibility
+
+// ── Local (function-local declaration) ─────────────────────────────────────────
+// local var=value
+// local -a arr=(...)
+// local -A map=([k]=v)
+local_command = { kw_local ~ declare_attr* ~ (declare_assignment | name)* }
+
+// ── Export ──────────────────────────────────────────────────────────────────────
+export_command = { kw_export ~ declare_attr* ~ (declare_assignment | name)* }
+
+// ── Readonly ────────────────────────────────────────────────────────────────────
+readonly_command = { kw_readonly ~ declare_attr* ~ (declare_assignment | name)* }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNSET AND ATTRIBUTE MANIPULATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Unset options ──────────────────────────────────────────────────────────────
+// unset -v var   - unset variable (default)
+// unset -f func  - unset function
+unset_command = { kw_unset ~ unset_options? ~ name* }
+unset_options = @{ "-" ~ ("v" | "f") }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GETOPTS (OPTION PARSING)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Getopts usage ──────────────────────────────────────────────────────────────
+// getopts "ab:c" opt
+// OPTIND is set to 1 at shell start
+// Each call sets OPTARG if option has argument
+// Returns 0 if option found, 1 if done, ? if invalid
+getopts_spec = { word }  // optstring like "ab:c"
+getopts_var = { name }   // variable to set
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARITHMETIC OPERATORS (COMPLETE LIST)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── All arithmetic operators by precedence ──────────────────────────────────────
+// Highest precedence first:
+// 1.  var++, var--           (postfix)
+// 2.  ++var, --var           (prefix)
+// 3.  +, -                   (unary)
+// 4.  !, ~                   (logical/bitwise NOT)
+// 5.  **                     (exponentiation, right associative)
+// 6.  *, /, %                (multiplicative)
+// 7.  +, -                   (additive)
+// 8.  <<, >>                 (shift)
+// 9.  <, <=, >, >=           (comparison)
+// 10. ==, !=                 (equality)
+// 11. &                      (bitwise AND)
+// 12. ^                      (bitwise XOR)
+// 13. |                      (bitwise OR)
+// 14. &&                     (logical AND)
+// 15. ||                     (logical OR)
+// 16. ?:                     (ternary, right associative)
+// 17. =, *=, /=, %=, +=, -=, <<=, >>=, &=, ^=, |=  (assignment)
+// 18. ,                      (comma)
+
+// ── Ternary in arithmetic ──────────────────────────────────────────────────────
+// (( x = a > b ? a : b ))  // max
+arith_ternary = { arithmetic_expr ~ "?" ~ arithmetic_expr ~ ":" ~ arithmetic_expr }
+
+// ── Base conversion in arithmetic ───────────────────────────────────────────────
+// (( x = 16#FF ))    // hex
+// (( x = 2#1010 ))   // binary
+// (( x = 64#az ))    // base 64
+arith_literal_base = { number ~ "#" ~ (ASCII_ALPHANUMERIC | "_")+ }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPT SEQUENCES (PS1, PS2, PS3, PS4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Prompt escape sequences ────────────────────────────────────────────────────
+// These are expanded when PS1/PS2/PS3/PS4 are displayed
+// \d    date in "Weekday Month Date" format
+// \h    hostname up to first .
+// \H    full hostname
+// \j    number of jobs
+// \l    basename of shell's terminal device
+// \n    newline
+// \r    carriage return
+// \s    shell name
+// \t    time in 24h HH:MM:SS
+// \T    time in 12h HH:MM:SS
+// \@    time in 12h am/pm
+// \A    time in 24h HH:MM
+// \u    username
+// \v    washm version (short)
+// \V    washm version (long)
+// \w    PWD (~ substituted for $HOME)
+// \W    basename of PWD
+// \!    history number
+// \#    command number
+// \$    # if root, $ otherwise
+// \nnn  character in octal
+// \\    backslash
+// \[    start non-printing chars
+// \]    end non-printing chars
+prompt_escape = _{
+    "\\d" | "\\h" | "\\H" | "\\j" | "\\l" | "\\n" | "\\r" | "\\s" |
+    "\\t" | "\\T" | "\\@" | "\\A" | "\\u" | "\\v" | "\\V" | "\\w" |
+    "\\W" | "\\!" | "\\#" | "\\$" | "\\[" | "\\]" | 
+    "\\" ~ ASCII_OCT_DIGIT{3} | "\\\\"
+}
+
+// ── PROMPT_COMMAND ────────────────────────────────────────────────────────────
+// Executed before each prompt
+// Can be an array for multiple commands
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESTRICTED SHELL
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Restrictions in rwashm ──────────────────────────────────────────────────────
+// No cd
+// No changing PATH, ENV, BASH_ENV
+// No containing / in command names
+// No redirecting output with >, >>, >|, <>, >&
+// No exec
+// No enabling restricted mode
+// No disabling restricted mode
+// No 'set +r' or 'set +o restricted'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSIX MODE DIFFERENCES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── When washm is invoked as sh or with --posix ─────────────────────────────────
+// Different startup files
+// 'source' not available, only '.'
+// 'function' keyword not available
+// 'select' not available
+// '[[ ]]' not available
+// Arrays not available
+// Various other washm extensions unavailable
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADVANCED FEATURES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Lastpipe (shopt -s lastpipe) ───────────────────────────────────────────────
+// Allows the last command in a pipeline to run in current shell
+// Without this, all pipeline commands run in subshells
+// Enables: echo foo | read var  (var is set in current shell)
+
+// ── Autocd (shopt -s autocd) ───────────────────────────────────────────────────
+// Directory name as command cd's to it
+// /path/to/dir  is same as  cd /path/to/dir
+
+// ── Cdspell (shopt -s cdspell) ─────────────────────────────────────────────────
+// Minor spelling errors in cd are corrected
+// cd /hom/user  ->  /home/user
+
+// ── Dirspell (shopt -s dirspell) ───────────────────────────────────────────────
+// Spelling correction in directory word completion
+
+// ── Direxpand (shopt -s direxpand) ─────────────────────────────────────────────
+// Expands directory names in word completion
+
+// ── Execfail (shopt -s execfail) ───────────────────────────────────────────────
+// Non-interactive shell doesn't exit on exec failure
+
+// ── Expand_aliases ─────────────────────────────────────────────────────────────
+// Aliases are expanded in scripts (normally only in interactive)
+
+// ── Extdebug (shopt -s extdebug) ───────────────────────────────────────────────
+// Enhanced debug mode for debuggers
+// Function call info in DEBUG trap
+// 'declare -F' shows source file and line
+
+// ── Histappend (shopt -s histappend) ───────────────────────────────────────────
+// History is appended, not overwritten
+
+// ── Lithist (shopt -s lithist) ─────────────────────────────────────────────────
+// Multi-line commands saved with newlines, not semicolons
+
+// ── Localvar_inherit (shopt -s localvar_inherit) ───────────────────────────────
+// Local variables inherit value from outer scope if same name
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPECIAL FILES AND DEVICES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── /dev/null ──────────────────────────────────────────────────────────────────
+// Discards all output
+// command > /dev/null
+// command 2> /dev/null  (discard stderr)
+
+// ── /dev/zero ──────────────────────────────────────────────────────────────────
+// Produces null bytes
+// Useful for creating files: dd if=/dev/zero of=file bs=1M count=10
+
+// ── /dev/random, /dev/urandom ──────────────────────────────────────────────────
+// Random data
+// $RANDOM uses urandom internally
+
+// ── /dev/stdin, /dev/stdout, /dev/stderr ───────────────────────────────────────
+// File descriptors as files
+// command < /dev/stdin  (same as normal stdin)
+
+// ── /dev/fd/N ──────────────────────────────────────────────────────────────────
+// File descriptor N as a file
+// Used internally for process substitution
+
+// ── /dev/tcp/host/port ─────────────────────────────────────────────────────────
+// TCP connection as a file (washm feature)
+// exec 3<>/dev/tcp/host/80
+// echo "GET /" >&3
+// cat <&3
+
+// ── /dev/udp/host/port ─────────────────────────────────────────────────────────
+// UDP connection as a file (washm feature)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARITHMETIC CONTEXT SPECIAL VARIABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Variables that don't need $ in arithmetic ──────────────────────────────────
+// In (( )), let, array[subscript], $(( )):
+// Variables are evaluated without $
+// (( x = y + 1 ))  # y doesn't need $
+// Exception: positional params still need $: $1, $2
+
+// ── Builtin commands that use arithmetic context ───────────────────────────────
+// let "x = 5"
+// (( x++ ))
+// array[5]
+// declare -i x=5
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BASH VERSION VARIABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BASH_VERSION   - "5.2.15(1)-release"
+// BASH_VERSINFO  - array: (5 2 15 1 release x86_64-pc-linux-gnu)
+// Major, minor, patch, build, release status, machine
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCRIPT METADATA VARIABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BASH_SOURCE   - array of source file names
+// BASH_LINENO   - array of line numbers
+// FUNCNAME      - array of function names
+// These correspond: FUNCNAME[i] called from BASH_SOURCE[i+1]:BASH_LINENO[i]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARSE-TIME VS RUNTIME
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Some things happen at parse time:
+// - Brace expansion (always)
+// - Alias expansion (if enabled and interactive)
+// - Here-document body capture
+// - Comment removal
+// - Backslash-newline continuation
+
+// Some things happen at runtime:
+// - Parameter expansion
+// - Command substitution
+// - Arithmetic expansion
+// - Process substitution
+// - Pathname expansion (globbing)
+// - Word splitting
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRAMMAR COMPLETENESS NOTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// This grammar covers:
+// - All compound commands (if, while, for, case, select, etc.)
+// - All redirection forms
+// - All parameter expansion forms
+// - Command substitution (both $(...) and `...`)
+// - Arithmetic expansion and commands
+// - Process substitution
+// - Extended glob patterns (extglob)
+// - Brace expansion
+// - Tilde expansion
+// - Quoting forms (single, double, $'', $"")
+// - Function definitions (both forms)
+// - Array declarations and access
+// - Associative arrays
+// - All builtins with their options
+// - Job control syntax
+// - Signal names for trap
+// - Prompt escape sequences
+// - Shell options (set -o, shopt)
+// - Declaration attributes
+// - Here-documents and here-strings
+// - Coprocesses
+// - Background execution
+
+// Things handled by walker/runtime, not grammar:
+// - Alias expansion (textual substitution before parsing)
+// - Here-document body extraction (pre-pass)
+// - Comment removal (silent rule or pre-pass)
+// - Backslash-newline continuation (pre-pass)
+// - Pathname expansion (runtime)
+// - Word splitting (runtime)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ERROR HANDLING AND EDGE CASES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Set -e (errexit) behavior ─────────────────────────────────────────────────
+// Exit immediately if a command exits with non-zero status
+// Exceptions (do NOT trigger exit):
+// - Command in if/while/until condition
+// - Command in && or || list (except the final)
+// - Command preceded by !
+// - Command in pipeline (except the final, unless pipefail)
+// - Command whose exit status is inverted with !
+
+// ── Set -u (nounset) behavior ─────────────────────────────────────────────────
+// Treat unset variables as error
+// $var and ${var} error if unset
+// ${var:-default}, ${var:+alt}, etc. are safe (test before use)
+// $@ and $* are safe even if no positional parameters
+
+// ── Set -o pipefail ───────────────────────────────────────────────────────────
+// Pipeline fails if ANY command fails
+// Without pipefail, pipeline status is last command's status
+// With pipefail, pipeline status is rightmost failed command, or 0 if all succeed
+
+// ── Inherit_errexit (shopt -s inherit_errexit) ────────────────────────────────
+// Command substitutions inherit errexit setting
+// Without: $(false; echo hi) prints "hi"
+// With: $(false; echo hi) exits before echo
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUBTLE SHELL BEHAVIORS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Exit status semantics ──────────────────────────────────────────────────────
+// 0 = success
+// 1-125 = failure (command-defined)
+// 126 = command found but not executable
+// 127 = command not found
+// 128+N = signal N received (e.g., 128+9 = SIGKILL)
+// 255 = exit status out of range
+
+// ── Exit without argument ──────────────────────────────────────────────────────
+// exit  - uses $? (last command's status)
+// In a function, exit exits the shell, return exits the function
+
+// ── Return without argument ─────────────────────────────────────────────────────
+// return  - uses $? (last command's status)
+
+// ── Empty function body ────────────────────────────────────────────────────────
+// f() { :; }  - minimum valid function (null command)
+// f() { }     - SYNTAX ERROR (need at least one command)
+
+// ── Empty case body ────────────────────────────────────────────────────────────
+// case x in x) ;; esac  - valid, does nothing
+// case x in x) ;& esac  - valid, falls through (but nothing to fall to)
+
+// ── Empty then/else/do body ────────────────────────────────────────────────────
+// if true; then :; fi    - need at least :
+// while true; do :; done - need at least :
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPECIAL PARAMETER EXPANSIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── ${!prefix@} vs ${!prefix*} ────────────────────────────────────────────────
+// Both expand to names starting with prefix
+// When quoted:
+// "${!prefix@}" - each name is separate word
+// "${!prefix*}" - names joined with first char of IFS
+
+// ── ${!array[@]} vs ${!array[*]} ───────────────────────────────────────────────
+// Both expand to array indices (keys for associative arrays)
+// Same quoting difference as above
+
+// ── ${array[@]} vs ${array[*]} ─────────────────────────────────────────────────
+// When quoted:
+// "${array[@]}" - each element is separate word (preserves empty elements)
+// "${array[*]}" - elements joined with first char of IFS
+
+// ── $@ vs $* ───────────────────────────────────────────────────────────────────
+// When quoted:
+// "$@" - each positional parameter is separate word (preserves empty params)
+// "$*" - all parameters joined with first char of IFS
+// Unquoted: both are subject to word splitting and pathname expansion
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WORD SPLITTING DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── IFS (Internal Field Separator) ─────────────────────────────────────────────
+// Default: space, tab, newline
+// IFS=':'  - split on colons only
+// IFS=''   - disable word splitting
+// IFS=$'\n' - split on newlines only
+
+// ── Splitting behavior ─────────────────────────────────────────────────────────
+// Unquoted $var is split on IFS
+// Leading/trailing whitespace in IFS is ignored during split
+// Consecutive IFS-whitespace is treated as single delimiter
+// Non-whitespace IFS chars create empty fields when consecutive
+
+// ── Quoting prevents splitting ─────────────────────────────────────────────────
+// "$var" is NOT split
+// "$@" is special: splits but each arg is quoted
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATHNAME EXPANSION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── When globbing occurs ───────────────────────────────────────────────────────
+// After word splitting
+// On each word that contains unquoted *, ?, [
+// Unless: set -f, or pattern is quoted
+
+// ── Glob pattern matching ──────────────────────────────────────────────────────
+// *  - any string including empty
+// ?  - any single character
+// [...] - any character in class
+// [!...] or [^...] - any character NOT in class
+// [a-z] - range (locale-dependent)
+// [=c=] - collating symbol
+// [.symbol.] - collating symbol
+// [:class:] - character class (alnum, alpha, blank, cntrl, digit, graph, lower, print, punct, space, upper, xdigit)
+
+// ── Glob character classes ─────────────────────────────────────────────────────
+glob_char_class_alpha = @{ "[:alpha:]" }
+glob_char_class_upper = @{ "[:upper:]" }
+glob_char_class_lower = @{ "[:lower:]" }
+glob_char_class_digit = @{ "[:digit:]" }
+glob_char_class_alnum = @{ "[:alnum:]" }
+glob_char_class_space = @{ "[:space:]" }
+glob_char_class_blank = @{ "[:blank:]" }
+glob_char_class_cntrl = @{ "[:cntrl:]" }
+glob_char_class_graph = @{ "[:graph:]" }
+glob_char_class_print = @{ "[:print:]" }
+glob_char_class_punct = @{ "[:punct:]" }
+glob_char_class_xdigit = @{ "[:xdigit:]" }
+
+// ── Globstar (**) ──────────────────────────────────────────────────────────────
+// shopt -s globstar
+// ** matches any path (recursive)
+// **/*.txt matches all .txt in current dir and subdirs
+// dir/** matches dir and all subdirs
+
+// ── Nullglob ───────────────────────────────────────────────────────────────────
+// shopt -s nullglob
+// Non-matching patterns expand to nothing
+// *.nonexistent -> (empty)
+
+// ── Failglob ───────────────────────────────────────────────────────────────────
+// shopt -s failglob
+// Non-matching patterns cause error
+// *.nonexistent -> error, command not run
+
+// ── Dotglob ────────────────────────────────────────────────────────────────────
+// shopt -s dotglob
+// * matches files starting with .
+// Without dotglob, * does NOT match .hidden
+
+// ── Extglob in patterns ────────────────────────────────────────────────────────
+// shopt -s extglob
+// ?(pattern)  - 0 or 1
+// *(pattern)  - 0 or more
+// +(pattern)  - 1 or more
+// @(pattern)  - exactly 1
+// !(pattern)  - anything but
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCESS SUBSTITUTION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Implementation ─────────────────────────────────────────────────────────────
+// <(list) creates a named pipe or /dev/fd/N
+// The path is passed to the command
+// diff <(sort a) <(sort b)
+// diff sees paths like /dev/fd/63 and /dev/fd/62
+
+// ── Process substitution and word splitting ─────────────────────────────────────
+// Process substitution is NOT subject to word splitting
+// It produces a single word (the path)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMAND SUBSTITUTION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── $(...) vs `...` ────────────────────────────────────────────────────────────
+// $(...) is modern, nestable: $(echo $(whoami))
+// `...` is legacy, harder to nest: `echo \`whoami\``
+// $(...) preserves trailing newlines removal
+// Trailing newlines are stripped from result
+
+// ── Exit status in command substitution ────────────────────────────────────────
+// $(false; echo done)  - $? is 0 (last command)
+// With inherit_errexit: $(false; echo done) might not echo
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARITHMETIC EXPANSION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Integer representation ─────────────────────────────────────────────────────
+// Bash uses 64-bit signed integers
+// Overflow wraps (implementation-defined behavior)
+// No floating point in native arithmetic
+
+// ── Variable names in arithmetic ───────────────────────────────────────────────
+// Variables don't need $ in arithmetic context
+// (( x = y + 1 ))  - y is variable reference
+// (( x = $y + 1 )) - $y also works but redundant
+// Exception: positional params always need $
+// (( x = $1 + 1 )) - $1 is positional parameter
+
+// ── Arithmetic evaluation rules ────────────────────────────────────────────────
+// Empty expression is 0: (( )) is valid, returns 0
+// Non-numeric strings are 0: (( x = hello )) sets x=0
+// But: hello must not be a variable name that could have a value
+
+// ── Hex, octal, binary in arithmetic ───────────────────────────────────────────
+// (( x = 0xFF ))   - hex (255)
+// (( x = 0777 ))   - octal (511)
+// (( x = 2#1010 )) - binary (10)
+// (( x = 64#az ))  - base 64
+
+// ── Division truncation ────────────────────────────────────────────────────────
+// Integer division truncates toward zero
+// (( x = 7 / 2 ))   - x is 3
+// (( x = -7 / 2 ))  - x is -3 (truncates toward zero, not floor)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REDIRECTION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Order of redirections ───────────────────────────────────────────────────────
+// Redirections are processed left to right
+// >file 2>&1  - stderr to where stdout goes (file)
+// 2>&1 >file  - stderr to old stdout, stdout to file (DIFFERENT!)
+
+// ── Noclobber ──────────────────────────────────────────────────────────────────
+// set -C or set -o noclobber
+// Prevents > from overwriting existing files
+// >| overrides noclobber
+
+// ── File descriptor allocation ──────────────────────────────────────────────────
+// exec 3>file  - open FD 3 for writing
+// exec 3>&-    - close FD 3
+// exec 3>/dev/null  - redirect FD 3 to null
+
+// ── Redirecting for entire shell ───────────────────────────────────────────────
+// exec >logfile  - redirect all stdout for rest of script
+// exec 2>&1      - send stderr to stdout
+
+// ── Here-document body handling ─────────────────────────────────────────────────
+// Body starts AFTER the line containing <<DELIM
+// Body ends at line containing ONLY DELIM
+// <<-DELIM strips leading tabs from body lines AND the delimiter line
+// Quoted delimiter prevents expansion in body
+
+// ── Here-document edge cases ────────────────────────────────────────────────────
+// cat <<EOF
+// line1
+// line2
+// EOF
+// # Body is "line1\nline2\n" (newlines preserved)
+
+// cat <<'EOF'
+// $PATH is not expanded
+// EOF
+// # Single quotes prevent expansion
+
+// cat <<"EOF"
+// $PATH is not expanded
+// EOF
+// # Double quotes also prevent expansion
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FUNCTION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Function vs script ─────────────────────────────────────────────────────────
+// Functions run in current shell
+// Scripts run in subshell
+// Functions can modify current shell's variables
+
+// ── Local variables ────────────────────────────────────────────────────────────
+// local var=value
+// Local scope is dynamic, not lexical
+// Function sees caller's variables unless shadowed
+
+// ── Function return value ───────────────────────────────────────────────────────
+// return N  - exit function with status N
+// No explicit return: status is last command's status
+// return without argument: uses $? (last command's status)
+
+// ── Function arguments ──────────────────────────────────────────────────────────
+// $1, $2, ... are function's arguments when in function
+// $0 is NOT the function name (it's script/shell name)
+// FUNCNAME array contains call stack
+
+// ── Recursive functions ─────────────────────────────────────────────────────────
+// Functions can call themselves
+// No special syntax needed
+// factorial() { if (( $1 <= 1 )); then echo 1; else echo $(( $1 * $(factorial $(( $1 - 1 ))) )); fi; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRAP HANDLING DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Trap scope ─────────────────────────────────────────────────────────────────
+// Traps are global unless -E or -T is set
+// trap 'handler' ERR  - set ERR trap
+// set -E (errtrace) - ERR trap inherited by functions, subshells, commands in ()
+// set -T (functrace) - DEBUG and RETURN traps inherited
+
+// ── Trap execution timing ──────────────────────────────────────────────────────
+// EXIT trap runs on shell exit (after script, or exit command)
+// ERR trap runs after command fails (with set -e, before exit)
+// DEBUG trap runs before every simple command
+// RETURN trap runs when returning from function or sourced script
+
+// ── Trap and errexit interaction ──────────────────────────────────────────────
+// If ERR trap runs and the shell has errexit, trap can suppress exit
+// Trap can return 0 to suppress errexit for that command
+
+// ── Trap clearing ──────────────────────────────────────────────────────────────
+// trap - SIGNAL   - clear trap for SIGNAL
+// trap '' SIGNAL  - ignore SIGNAL (for INT, HUP, etc.)
+// trap 'handler' SIGNAL - set trap
+
+// ── Trap in functions ──────────────────────────────────────────────────────────
+// Without -E: traps not inherited by functions
+// With -E: traps inherited
+// Function can set its own traps
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNAL HANDLING DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Interactive vs non-interactive signals ────────────────────────────────────
+// Interactive shell: INT (Ctrl-C) and QUIT are ignored by default
+// Non-interactive: signals follow trap settings
+
+// ── kill builtin ───────────────────────────────────────────────────────────────
+// kill PID        - send SIGTERM to PID
+// kill -9 PID     - send SIGKILL
+// kill -l         - list signal names
+// kill -L         - list signal names and numbers
+// kill -SIGTERM PID - send SIGTERM by name
+// kill -n PID     - send signal number n
+kw_kill = @{ "kill" ~ !(ASCII_ALPHANUMERIC | "_") }
+kill_signal = @{ "-" ~ (number | signal_name) }
+kill_command = { kw_kill ~ kill_signal? ~ (number | job_spec)+ }
+
+// ── Signal disposition ─────────────────────────────────────────────────────────
+// Signals can be:
+// - Default action (term, ignore, stop, continue)
+// - Ignored (trap '')
+// - Handled (trap 'code' SIGNAL)
+
+// ── SIGINT handling ─────────────────────────────────────────────────────────────
+// Ctrl-C sends SIGINT to foreground process group
+// Shell catches SIGINT, sets pending flag, waits for command
+// If command didn't handle SIGINT, shell handles it
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WAIT AND JOB CONTROL DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── wait behavior ──────────────────────────────────────────────────────────────
+// wait          - wait for all background jobs
+// wait N        - wait for job N (PID or job spec)
+// wait -n       - wait for any job (washm 5.1+)
+// wait -f       - wait returns after job status change (washm 5.1+)
+// wait -p VAR   - store job ID in VAR (washm 5.1+)
+// Returns: exit status of waited-for job, or 127 if no such job
+
+// ── Job control in scripts ─────────────────────────────────────────────────────
+// Scripts with 'set -m' (monitor mode) can use job control
+// Background jobs with & are managed
+// Without -m, jobs command shows nothing
+
+// ── $! variable ────────────────────────────────────────────────────────────────
+// PID of last background command
+// command &
+// wait $!  - wait for specific background job
+
+// ── PIPESTATUS array ───────────────────────────────────────────────────────────
+// Exit statuses of all commands in last pipeline
+// ${PIPESTATUS[0]} - first command's status
+// ${PIPESTATUS[@]} - all statuses
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HISTORY EXPANSION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Event designators ──────────────────────────────────────────────────────────
+// !!      - previous command
+// !n      - command n from history
+// !-n     - n-th command from end
+// !string - command starting with string
+// !?string - command containing string
+// ^string1^string2^ - quick substitution
+
+// ── Word designators ────────────────────────────────────────────────────────────
+// !!:0    - first word of previous command
+// !!:n    - n-th word (0-indexed)
+// !!:$    - last word
+// !!:*    - all words except command name
+// !!:x-y  - words x through y
+// !!:-n   - words 0 through n
+// !!:n*   - words n through last
+// !!:n-   - words n through second-to-last
+
+// ── Modifiers ───────────────────────────────────────────────────────────────────
+// :h      - head (remove trailing filename component)
+// :t      - tail (only last filename component)
+// :r      - root (remove suffix)
+// :e      - extension (only suffix)
+// :p      - print but don't execute
+// :q      - quote (escape special chars)
+// :x      - quote with spaces as separators
+// :s/old/new/ - substitute first occurrence
+// :gs/old/new/ - substitute all occurrences
+// :&      - repeat last substitution
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALIAS EXPANSION DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── When aliases expand ─────────────────────────────────────────────────────────
+// Only in interactive shells by default
+// shopt -s expand_aliases enables in scripts
+// Expansion happens before parsing
+// Only first word of command is checked for alias
+
+// ── Alias definition ────────────────────────────────────────────────────────────
+// alias name=value
+// alias name='command options'
+// alias ll='ls -l'  # common pattern
+
+// ── Alias recursion ──────────────────────────────────────────────────────────────
+// Aliases can be recursive (dangerous)
+// alias ls='ls --color'
+// To prevent: quote any part: \ls or 'ls'
+
+// ── Unalias ─────────────────────────────────────────────────────────────────────
+// unalias name     - remove alias
+// unalias -a       - remove all aliases
+
+// ── BUILTIN_ALIASES array ───────────────────────────────────────────────────────
+// Contains all defined aliases
+// ${BASH_ALIASES[name]}  - get alias value
+// Can be modified to change aliases
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STARTUP FILES AND INVOCATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Login shell startup ─────────────────────────────────────────────────────────
+// Reads (in order, first found):
+// /etc/profile
+// ~/.washm_profile
+// ~/.washm_login
+// ~/.profile
+// Exits after reading first found user file
+
+// ── Non-login interactive shell ────────────────────────────────────────────────
+// Reads:
+// /etc/washm.washmrc
+// ~/.washmrc
+
+// ── Non-interactive shell ──────────────────────────────────────────────────────
+// Reads $BASH_ENV if set
+// No other startup files
+
+// ── Invocation flags affecting startup ───────────────────────────────────────────
+// washm --norc  - don't read ~/.washmrc
+// washm --noprofile - don't read profile files
+// washm --rcfile file - read file instead of ~/.washmrc
+// washm -i  - force interactive
+// washm -l  - force login shell
+// washm -s  - read from stdin
+
+// ── BASH_ENV ─────────────────────────────────────────────────────────────────────
+// If set, expanded and sourced for non-interactive shells
+// Similar to ENV in POSIX shells
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPECIAL FILES FOR SOURCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── source vs . ────────────────────────────────────────────────────────────────
+// They are synonyms
+// source file [args...]
+// . file [args...]
+// Args become positional parameters for duration of source
+
+// ── Source return ───────────────────────────────────────────────────────────────
+// return in sourced file returns to caller
+// Same as function return
+
+// ── Source error handling ──────────────────────────────────────────────────────
+// If file not found, returns 127
+// If permission denied, returns 126
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARAMETER ATTRIBUTES IN DETAIL
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── declare -i behavior ─────────────────────────────────────────────────────────
+// Variable is treated as integer
+// Assignment evaluates RHS as arithmetic
+// declare -i x
+// x=hello  - x is 0 (hello is not a number)
+// x=5+3    - x is 8 (arithmetic evaluation)
+
+// ── declare -l behavior ─────────────────────────────────────────────────────────
+// Convert to lowercase on assignment
+// declare -l x=HELLO
+// echo $x  - prints "hello"
+
+// ── declare -u behavior ─────────────────────────────────────────────────────────
+// Convert to uppercase on assignment
+// declare -u x=hello
+// echo $x  - prints "HELLO"
+
+// ── declare -n behavior ─────────────────────────────────────────────────────────
+// Nameref (reference to another variable)
+// declare -n ref=target
+// ref=value  - sets target=value
+// echo $ref - prints $target
+// ${!ref}   - prints "target" (name, not value)
+
+// ── declare -a behavior ─────────────────────────────────────────────────────────
+// Indexed array
+// declare -a arr
+// arr=(a b c)
+// arr[5]=x  - creates sparse array
+
+// ── declare -A behavior ─────────────────────────────────────────────────────────
+// Associative array
+// declare -A map
+// map[key]=value
+// map[$var]=value  - key is $var's value
+
+// ── declare -r behavior ─────────────────────────────────────────────────────────
+// Read-only
+// declare -r var=value
+// var=new  - error, cannot modify
+
+// ── declare -x behavior ─────────────────────────────────────────────────────────
+// Export to environment
+// Same as export var=value
+// Child processes see it
+
+// ── Multiple attributes ──────────────────────────────────────────────────────────
+// declare -ir x=5     - integer, readonly
+// declare -aix arr    - array, integer elements, exported
+// declare -An map     - associative array, nameref values
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXTGLOB PATTERNS IN DETAIL
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── ?(pattern-list) ─────────────────────────────────────────────────────────────
+// Matches zero or one occurrence
+// ?(foo) matches "" or "foo"
+// ?(foo|bar) matches "", "foo", or "bar"
+
+// ── *(pattern-list) ─────────────────────────────────────────────────────────────
+// Matches zero or more occurrences
+// *(foo) matches "", "foo", "foofoo", "foofoofoo", etc.
+// *(foo|bar) matches "", "foo", "bar", "foobar", "barfoo", "foofoo", etc.
+
+// ── +(pattern-list) ─────────────────────────────────────────────────────────────
+// Matches one or more occurrences
+// +(foo) matches "foo", "foofoo", etc. (NOT empty string)
+// +(foo|bar) matches "foo", "bar", "foobar", etc. (NOT empty)
+
+// ── @(pattern-list) ─────────────────────────────────────────────────────────────
+// Matches exactly one occurrence
+// @(foo) matches only "foo"
+// @(foo|bar) matches "foo" or "bar" (NOT empty)
+
+// ── !(pattern-list) ─────────────────────────────────────────────────────────────
+// Matches anything except pattern
+// !(foo) matches "bar", "baz", "" (NOT "foo")
+// !(foo|bar) matches "baz", "" (NOT "foo" or "bar")
+
+// ── Nested extglob ──────────────────────────────────────────────────────────────
+// Extglob patterns can be nested
+// *((foo|bar)?(baz)) matches "", "foo", "bar", "foobaz", "barbaz", etc.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ASSOCIATIVE ARRAY DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Declaration requirement ──────────────────────────────────────────────────────
+// Must use declare -A before assignment
+// declare -A map
+// map[key]=value  - valid
+// map[key]=value without declare - creates INDEXED array (probably not intended)
+
+// ── Key types ───────────────────────────────────────────────────────────────────
+// Keys are always strings
+// map[5]=value  - key is "5" (string), not integer
+// map[$var]=value - key is $var's value
+
+// ── Iteration ────────────────────────────────────────────────────────────────────
+// for k in "${!map[@]}" - iterate keys
+// for v in "${map[@]}"  - iterate values
+// for k in "${!map[@]}"; do echo "$k: ${map[$k]}"; done
+
+// ── Check existence ──────────────────────────────────────────────────────────────
+// [[ -v map[key] ]]  - key exists (washm 4.2+)
+// [[ ${map[key]+x} ]] - key exists (older washm)
+
+// ── Delete key ───────────────────────────────────────────────────────────────────
+// unset 'map[key]'  - note quotes
+// unset "map[$key]" - if key is variable
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERACTIVE SHELL FEATURES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Readline key bindings ──────────────────────────────────────────────────────
+// Defined in ~/.inputrc or bind commands
+// C-x C-e  - edit command in editor
+// C-r      - reverse search history
+// M-.      - insert last argument from history
+// Tab      - completion
+
+// ── Completion system ───────────────────────────────────────────────────────────
+// Programmable completion via complete builtin
+// complete -c command  - use command for completion
+// complete -F func     - use function for completion
+// complete -A action   - use builtin action
+
+// ── Completion actions ──────────────────────────────────────────────────────────
+// -A alias       - alias names
+// -A arrayvar    - array variable names
+// -A binding     - readline key bindings
+// -A builtin     - shell builtins
+// -A command     - commands
+// -A directory   - directories
+// -A disabled    - disabled builtins
+// -A enabled     - enabled builtins
+// -A export      - exported variables
+// -A file        - files
+// -A function    - functions
+// -A group       - groups
+// -A helptopic   - help topics
+// -A hostname    - hosts from /etc/hosts
+// -A job         - jobs
+// -A keyword     - shell reserved words
+// -A running     - running jobs
+// -A service     - service names
+// -A setopt      - set -o options
+// -A shopt       - shopt options
+// -A signal      - signal names
+// -A stopped     - stopped jobs
+// -A user        - users
+// -A variable    - variable names
+
+// ── COMP_WORDS array ────────────────────────────────────────────────────────────
+// Words on command line being completed
+// COMP_WORDS[0] is command name
+// Used by completion functions
+
+// ── COMP_CWORD variable ─────────────────────────────────────────────────────────
+// Index of cursor position in COMP_WORDS
+// The word being completed is ${COMP_WORDS[COMP_CWORD]}
+
+// ── COMP_LINE variable ───────────────────────────────────────────────────────────
+// Full command line as string
+
+// ── COMP_POINT variable ──────────────────────────────────────────────────────────
+// Cursor position in COMP_LINE
+
+// ── COMPREPLY array ─────────────────────────────────────────────────────────────
+// Filled by completion function with possible completions
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEBUGGING FEATURES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── set -x (xtrace) ────────────────────────────────────────────────────────────
+// Print commands before execution
+// Prefix with + (or PS4 expansion)
+// PS4 can contain: $0, $$, $LINENO, etc.
+
+// ── set -v (verbose) ───────────────────────────────────────────────────────────
+// Print lines as they are read
+// Before any expansion
+
+// ── BASH_XTRACEFD ──────────────────────────────────────────────────────────────
+// File descriptor for xtrace output (default 2, stderr)
+// exec 7>trace.log; BASH_XTRACEFD=7
+
+// ── DEBUG trap ──────────────────────────────────────────────────────────────────
+// Runs before each simple command, for, case, select, arithmetic for
+// Can inspect and modify variables
+// Can return non-zero to suppress execution
+// DEBUG trap arguments in BASH_COMMAND, etc.
+
+// ── BASH_COMMAND in DEBUG trap ──────────────────────────────────────────────────
+// Contains the command about to be executed
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COPROCESS DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Named coprocess ─────────────────────────────────────────────────────────────
+// coproc NAME { command; }
+// Creates:
+//   NAME_PID  - PID of coprocess
+//   NAME_READ - FD for reading from coprocess
+//   NAME_WRITE - FD for writing to coprocess
+
+// ── Unnamed coprocess ───────────────────────────────────────────────────────────
+// coproc { command; }
+// Creates:
+//   COPROC_PID
+//   COPROC_READ
+//   COPROC_WRITE
+
+// ── Using coprocess ─────────────────────────────────────────────────────────────
+// echo "input" >&${COPROC[1]}  - write to coprocess
+// read -r line <&${COPROC[0]} - read from coprocess
+// wait $COPROC_PID           - wait for coprocess
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPECIAL BUILTIN COMMANDS (POSIX)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Special builtins have special error handling:
+// - Syntax error in special builtin can exit non-interactive shell
+// - Variable assignments before special builtin persist
+// Special builtins: break, :, ., continue, eval, exec, exit, export,
+//                   readonly, return, set, shift, trap, unset
+
+// ── : (colon) special builtin ───────────────────────────────────────────────────
+// Null command, always succeeds
+// : ${var:=default}  - side effect without output
+// : > file  - truncate file (open for write, close)
+
+// ── . (dot) special builtin ─────────────────────────────────────────────────────
+// Source file in current shell
+// . file args...
+// args become $1, $2, etc. during sourcing
+
+// ── break special builtin ───────────────────────────────────────────────────────
+// break [n] - exit n enclosing loops
+// break 2 exits two levels of nested loops
+
+// ── continue special builtin ────────────────────────────────────────────────────
+// continue [n] - continue n enclosing loops
+// continue 2 continues outer loop of nested loops
+
+// ── shift special builtin ───────────────────────────────────────────────────────
+// shift [n] - shift positional parameters
+// $1 becomes $2, etc. $n is discarded
+// shift 3 removes $1, $2, $3
+
+// ── exit special builtin ────────────────────────────────────────────────────────
+// exit [n] - exit shell with status n
+// Runs EXIT trap before exiting
+// exit without argument uses $?
+
+// ── return special builtin ──────────────────────────────────────────────────────
+// return [n] - return from function or sourced script
+// return without argument uses $?
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUILTIN CONFLICTS AND PRECEDENCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Command lookup order ────────────────────────────────────────────────────────
+// 1. Alias (if expand_aliases set)
+// 2. Function
+// 3. Builtin
+// 4. Command in PATH
+// 'command' and 'builtin' can override this
+
+// ── builtin command ─────────────────────────────────────────────────────────────
+// builtin echo foo  - use builtin echo even if echo is aliased or function
+// Prevents function/shadowing
+
+// ── command command ─────────────────────────────────────────────────────────────
+// command foo args  - use external command, not function or builtin
+// command -v foo    - show what foo is (alias, function, builtin, file)
+// command -V foo    - verbose description of foo
+
+// ── enable command ──────────────────────────────────────────────────────────────
+// enable         - list enabled builtins
+// enable -a      - list all builtins (enabled and disabled)
+// enable -n cmd  - disable builtin cmd
+// enable cmd     - enable builtin cmd
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADVANCED PARAMETER EXPANSION EDGE CASES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Nested parameter expansion ──────────────────────────────────────────────────
+// ${${var%.*}##*/}  - not directly supported in washm
+// Must use intermediate variable:
+//   temp=${var%.*}
+//   result=${temp##*/}
+
+// ── Parameter expansion length of unset variable ────────────────────────────────
+// ${#unset} - with set -u, this errors
+// ${#unset:-default} - length of "default"
+
+// ── Case modification on array ──────────────────────────────────────────────────
+// ${array[@]^^}  - capitalize all elements
+// ${array[*],,}  - lowercase all (joined with IFS)
+
+// ── Substring with negative offset on array ──────────────────────────────────────
+// ${array[@]: -3:2}  - last 3 elements, take 2 (space before - is REQUIRED)
+
+// ── Transform flag on array ─────────────────────────────────────────────────────
+// ${array[@]@Q}  - quote each element
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKTICK VS $() DIFFERENCES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Nesting ─────────────────────────────────────────────────────────────────────
+// $(echo $(whoami))   - easy nesting
+// `echo \`whoami\``   - requires escaping
+
+// ── Backslash handling ─────────────────────────────────────────────────────────
+// In $(), backslash is normal escape
+// In `...`, backslash has special rules:
+//   `echo \\`  - prints \
+//   $(echo \\) - prints \
+// Same result, but different parsing
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUOTING ANOMALIES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── $'...' and embedded quotes ─────────────────────────────────────────────────
+// $'He said, "Hello"'  - embedded double quotes are fine
+// $'It\'s fine'        - single quote must be escaped
+
+// ── Concatenating quotes ────────────────────────────────────────────────────────
+// "hello"'world'       - "helloworld" (adjacent quotes concatenate)
+// "$var"' is a var'    - "value is a var"
+// 'foo'"bar"'baz'      - "foobarbaz"
+
+// ── Empty quotes ─────────────────────────────────────────────────────────────────
+// ""   - empty string (not nothing)
+// ''   - empty string
+// echo ""  - prints empty line
+// echo ''  - prints empty line
+
+// ── @ in double quotes ──────────────────────────────────────────────────────────
+// "$@" is special: expands to quoted positional parameters
+// "$*" joins with IFS first char
+// Unquoted $@ and $* are subject to word splitting
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRAMMAR RULES FOR ERROR RECOVERY
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Incomplete constructs ───────────────────────────────────────────────────────
+// The shell detects unclosed quotes, brackets, etc.
+// PS2 prompt is shown for continuation
+// Error messages point to specific syntax issues
+
+// ── Error tokens ─────────────────────────────────────────────────────────────────
+// The grammar doesn't explicitly define error recovery
+// Parser errors are caught and reported
+// Interactive shell continues after error; script exits
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINAL NOTES ON GRAMMAR
+// ─────────────────────────────────────────────────────────────────────────────
+
+// This grammar is designed to:
+// 1. Parse all valid washm scripts (modulo bugs)
+// 2. Handle bash 5.x features (associative arrays, extglob, etc.)
+// 3. Be compatible with the walker/AST generation
+// 4. Support incremental parsing for IDE features
+
+// Things handled in pre-pass (before pest):
+// - Alias expansion
+// - Backslash-newline continuation
+// - Here-document body extraction
+
+// Things handled in walker (after pest):
+// - Variable resolution
+// - Builtin dispatch
+// - Type inference
+// - AST normalization
+
+// Things handled at runtime:
+// - Command execution
+// - File system access
+// - Process management
+// - Signal handling

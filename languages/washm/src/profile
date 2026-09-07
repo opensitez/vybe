@@ -1,0 +1,141 @@
+# Bash (washm) compiler profile.
+#
+# Bash values are strings and every command yields an exit status; the walker
+# lowers both onto the JS-shaped common AST (see walker.rs). The runtime
+# surface it needs is the ECMA string/array/RegExp model plus a handful of
+# shared operations bound below under the `__bash_*` names the walker emits.
+
+[info]
+name       = "washm"
+extensions = ["sh", "bash", "washm"]
+
+[compiler]
+case_sensitive   = true
+function_return  = "explicit"
+self_keyword     = "this"
+constructor_name = "constructor"
+string_indexing  = "zero_based"
+# String/array/RegExp methods resolve through the common resolver onto the
+# ECMA surface (`s.replace`, `a.join`, `new RegExp(p).test(s)` …).
+uses_common_resolver = true
+has_ecma_globals = true
+has_undefined_value = true
+abstract_equality = true
+dynamic_add = true
+dynamic_numeric_dispatch = true
+dynamic_member_access = true
+relaxed_call_arity = true
+missing_arg_is_undefined = true
+lexical_block_scope = true
+ecma_boolean_operators = true
+ecma_array_method_dispatch = false
+supports_spread_arguments = true
+# `${arr[-1]}` is the last element.
+negative_index_wraps = true
+
+[builtins]
+echo   = { emit = "common:washm.echo",   min_args = 0, max_args = 255 }
+printf = { emit = "common:washm.printf", min_args = 1, max_args = 255 }
+
+# `$( … )` and `> file`: capture the program's own output.
+__bash_ob_start     = { emit = "common:output_buffer.start",     min_args = 0, max_args = 0 }
+__bash_ob_get_clean = { emit = "common:output_buffer.get_clean", min_args = 0, max_args = 0 }
+__bash_ob_end_clean = { emit = "common:output_buffer.end_clean", min_args = 0, max_args = 0 }
+__bash_ob_end_flush = { emit = "common:output_buffer.end_flush", min_args = 0, max_args = 0 }
+
+# `printf -v var fmt …`
+__bash_sprintf = { emit = "common:washm.sprintf", min_args = 1, max_args = 255 }
+__bash_sprintf_array = { emit = "common:washm.sprintf_array", min_args = 2, max_args = 2 }
+
+# External commands: argv is expanded by the walker, then run directly.
+__bash_spawn = { emit = "host:node:child_process:spawnSync", min_args = 2, max_args = 3 }
+
+# `eval` fallback for dynamically produced source; statically known eval
+# strings are parsed directly by the walker.
+__vybe_eval = { emit = "host:vybe:eval:eval", min_args = 2, max_args = 3 }
+
+# Shell cwd state, redirections to files, `$(< file)`, and the -e/-f/-d/-s file tests.
+__bash_getcwd     = { emit = "host:wasi:cli/environment:get-initial-cwd", min_args = 0, max_args = 0 }
+__bash_getenv     = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
+__bash_write_file  = { emit = "common:filesystem.write_file",  min_args = 2, max_args = 2 }
+__bash_append_file = { emit = "common:filesystem.append_file", min_args = 2, max_args = 2 }
+__bash_read_file   = { emit = "common:filesystem.read_file",   min_args = 1, max_args = 1 }
+__bash_list_dir    = { emit = "common:filesystem.list_dir",    min_args = 1, max_args = 1 }
+__bash_file_exists = { emit = "common:filesystem.exists",      min_args = 1, max_args = 1 }
+__bash_is_file     = { emit = "common:filesystem.is_file",     min_args = 1, max_args = 1 }
+__bash_is_dir      = { emit = "common:filesystem.is_dir",      min_args = 1, max_args = 1 }
+__bash_file_size   = { emit = "common:filesystem.file_size",   min_args = 1, max_args = 1 }
+__bash_mkdir       = { emit = "common:filesystem.mkdir",       min_args = 1, max_args = 1 }
+__bash_mkdir_all   = { emit = "common:filesystem.mkdir_all",   min_args = 1, max_args = 1 }
+
+__bash_string = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+__bash_strlen = { emit = "common:strings.length",   min_args = 1, max_args = 1 }
+__bash_len    = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+__bash_is_array = { emit = "common:ref_is_array",      min_args = 1, max_args = 1 }
+__bash_keys   = { emit = "common:reflection.keys",     min_args = 1, max_args = 1 }
+__bash_dict_keys = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
+__bash_map_size = { emit = "host:ecma:map:size",       min_args = 1, max_args = 1 }
+__bash_join   = { emit = "common:collections.join",    min_args = 2, max_args = 2 }
+__bash_slice  = { emit = "common:collections.slice",   min_args = 3, max_args = 3 }
+__bash_sort   = { emit = "common:collections.sorted",  min_args = 1, max_args = 1 }
+__bash_split  = { emit = "host:ecma:string:split",     min_args = 2, max_args = 2 }
+__bash_re_split = { emit = "host:ecma:regexp:split",   min_args = 2, max_args = 2 }
+__bash_regex_test = { emit = "host:ecma:regexp:test",  min_args = 2, max_args = 2 }
+__bash_regex_exec = { emit = "host:ecma:regexp:exec",  min_args = 2, max_args = 2 }
+__bash_regex_replace = { emit = "host:ecma:regexp:replace", min_args = 3, max_args = 3 }
+__bash_regex_quote = { emit = "host:ecma:regexp:escape", min_args = 1, max_args = 1 }
+__bash_bigint = { emit = "host:ecma:bigint:BigInt", min_args = 1, max_args = 1 }
+__bash_i64_wrap = { emit = "host:ecma:bigint:asIntN", min_args = 2, max_args = 2 }
+__bash_i64_string = { emit = "host:ecma:bigint:toString", min_args = 1, max_args = 2 }
+__bash_i64_add = { emit = "host:ecma:bigint:add", min_args = 2, max_args = 2 }
+__bash_i64_sub = { emit = "host:ecma:bigint:sub", min_args = 2, max_args = 2 }
+__bash_i64_mul = { emit = "host:ecma:bigint:mul", min_args = 2, max_args = 2 }
+__bash_i64_div = { emit = "host:ecma:bigint:div", min_args = 2, max_args = 2 }
+__bash_i64_rem = { emit = "host:ecma:bigint:rem", min_args = 2, max_args = 2 }
+__bash_i64_pow = { emit = "host:ecma:bigint:pow", min_args = 2, max_args = 2 }
+__bash_i64_shl = { emit = "host:ecma:bigint:shl", min_args = 2, max_args = 2 }
+__bash_i64_shr = { emit = "host:ecma:bigint:shr", min_args = 2, max_args = 2 }
+__bash_i64_and = { emit = "host:ecma:bigint:and", min_args = 2, max_args = 2 }
+__bash_i64_or = { emit = "host:ecma:bigint:or", min_args = 2, max_args = 2 }
+__bash_i64_xor = { emit = "host:ecma:bigint:xor", min_args = 2, max_args = 2 }
+__bash_i64_neg = { emit = "host:ecma:bigint:neg", min_args = 1, max_args = 1 }
+__bash_i64_not = { emit = "host:ecma:bigint:not", min_args = 1, max_args = 1 }
+__bash_i64_eq = { emit = "host:ecma:bigint:eq", min_args = 2, max_args = 2 }
+__bash_i64_ne = { emit = "host:ecma:bigint:ne", min_args = 2, max_args = 2 }
+__bash_i64_lt = { emit = "host:ecma:bigint:lt", min_args = 2, max_args = 2 }
+__bash_i64_le = { emit = "host:ecma:bigint:le", min_args = 2, max_args = 2 }
+__bash_i64_gt = { emit = "host:ecma:bigint:gt", min_args = 2, max_args = 2 }
+__bash_i64_ge = { emit = "host:ecma:bigint:ge", min_args = 2, max_args = 2 }
+
+[value_methods]
+# The washm walker normalizes Bash words and shell state manipulation to the
+# same JS-shaped string/array calls used by the shared compiler.
+concat        = { emit = "invoke:concat",        min_args = 1, max_args = 255 }
+indexOf       = { emit = "invoke:indexOf",       min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "invoke:lastIndexOf",   min_args = 1, max_args = 2 }
+slice         = { emit = "invoke:slice",         min_args = 0, max_args = 2 }
+substr        = { emit = "invoke:substr",        min_args = 1, max_args = 2 }
+substring     = { emit = "invoke:substring",     min_args = 1, max_args = 2 }
+split         = { emit = "invoke:split",         min_args = 1, max_args = 2 }
+replace       = { emit = "invoke:replace",       min_args = 2, max_args = 2 }
+replaceAll    = { emit = "invoke:replaceAll",    min_args = 2, max_args = 2 }
+trim          = { emit = "invoke:trim",          min_args = 0, max_args = 0 }
+trimStart     = { emit = "invoke:trimStart",     min_args = 0, max_args = 0 }
+trimEnd       = { emit = "invoke:trimEnd",       min_args = 0, max_args = 0 }
+toUpperCase   = { emit = "invoke:toUpperCase",   min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "invoke:toLowerCase",   min_args = 0, max_args = 0 }
+charAt        = { emit = "invoke:charAt",        min_args = 1, max_args = 1 }
+join          = { emit = "invoke:join",          min_args = 0, max_args = 1 }
+push          = { emit = "invoke:push",          min_args = 1, max_args = 255 }
+pop           = { emit = "invoke:pop",           min_args = 0, max_args = 0 }
+unshift       = { emit = "invoke:unshift",       min_args = 1, max_args = 255 }
+shift         = { emit = "invoke:shift",         min_args = 0, max_args = 0 }
+splice        = { emit = "invoke:splice",        min_args = 2, max_args = 255 }
+startsWith    = { emit = "invoke:startsWith",    min_args = 1, max_args = 1 }
+endsWith      = { emit = "invoke:endsWith",      min_args = 1, max_args = 1 }
+
+[array_methods]
+filter = "__array_filter"
+map    = "__array_map"
+sort   = "__array_sort"
+flatMap = "__array_flat_map"
