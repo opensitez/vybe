@@ -142,6 +142,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.io_process_stdin_add_error" => {
             crate::emitter::io_adapter::emit_process_stdin_add_error(chunks, current, argc, line)
         }
+        "dart.developer.inspect" => {
+            crate::emitter::reflection_adapter::emit_dart_developer_inspect(chunks, current, argc, line)
+        }
+        "dart.developer.log" | "dart.developer.post_event" | "dart.developer.register_extension" => {
+            crate::emitter::reflection_adapter::emit_dart_developer_noop(chunks, current, argc, line)
+        }
+        "dart.developer.debugger" => {
+            crate::emitter::reflection_adapter::emit_dart_developer_debugger(chunks, current, argc, line)
+        }
+        "dart.developer.extension_stream_has_listener" => {
+            crate::emitter::reflection_adapter::emit_dart_developer_extension_stream_has_listener(chunks, current, line)
+        }
+        "dart.developer.service_extension_response_result" => {
+            crate::emitter::reflection_adapter::emit_dart_service_extension_response_result(chunks, current, line)
+        }
+        "dart.developer.service_extension_response_error" => {
+            crate::emitter::reflection_adapter::emit_dart_service_extension_response_error(chunks, current, line)
+        }
         "dart.utf8_encode" => {
             crate::emitter::io_adapter::emit_utf8_encode(chunks, current, argc, line)
         }
@@ -300,6 +318,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.type_to_string" => {
             crate::emitter::reflection_adapter::emit_dart_type_to_string(chunks, current, line)
         }
+        "dart.is_list" => {
+            crate::emitter::reflection_adapter::emit_dart_is_list(chunks, current, line)
+        }
         "dart.is_list_of_int" => {
             crate::emitter::reflection_adapter::emit_dart_is_list_of_int(chunks, current, line)
         }
@@ -445,8 +466,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.string_code_units" => {
             crate::emitter::string_adapter::emit_dart_string_code_units(chunks, current, line)
         }
+        "dart.string_code_unit_at" => {
+            crate::emitter::string_adapter::emit_dart_string_code_unit_at(chunks, current, line)
+        }
         "dart.string_runes" => {
             crate::emitter::string_adapter::emit_dart_string_runes(chunks, current, line)
+        }
+        "dart.unsupported_mutation" => {
+            crate::emitter::string_adapter::emit_dart_unsupported_mutation_throw(chunks, current, line)
+        }
+        "dart.throw_range_error" => {
+            crate::emitter::string_adapter::emit_dart_throw_range_error(chunks, current, line)
+        }
+        "dart.throw_argument_error" => {
+            crate::emitter::string_adapter::emit_dart_throw_argument_error(chunks, current, line)
+        }
+        "dart.byte_data_view" => {
+            crate::emitter::string_adapter::emit_dart_byte_data_view(chunks, current, argc, line)
         }
         "dart.replace_first" => {
             crate::emitter::string_adapter::emit_dart_replace_first(chunks, current, line)
@@ -542,6 +578,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.map_update" => {
             crate::emitter::string_adapter::emit_dart_map_update(chunks, current, argc, line)
+        }
+        "dart.map_update_with_absent" => {
+            crate::emitter::string_adapter::emit_dart_map_update_with_absent(chunks, current, line)
         }
         "dart.map_put_if_absent" => {
             crate::emitter::string_adapter::emit_dart_map_put_if_absent(chunks, current, line)
@@ -672,6 +711,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.list_last_where" => {
             crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 3, line)
+        }
+        "dart.list_single_where" => {
+            crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 2, line)
         }
         "dart.map_general" => {
             crate::emitter::string_adapter::emit_dart_map_general(chunks, current, line)

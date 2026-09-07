@@ -32,6 +32,92 @@ fn set_string_field(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
     set_field(chunk, &ClassSlot::internal(name), line);
 }
 
+fn set_field_from_local(chunk: &mut Chunk, obj_slot: u16, name: &str, value_slot: u16, line: u32) {
+    let slot = class_slots::resolve(&ClassSlot::internal(name), &PlainNames);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(obj_slot),
+        &slot,
+        ValueSource::Local(value_slot),
+        line,
+    );
+}
+
+fn stamp_service_extension_response(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let type_slot = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(obj_slot),
+        &type_slot,
+        ValueSource::ConstStr("ServiceExtensionResponse".to_string()),
+        line,
+    );
+    chunk.emit_string_const("ServiceExtensionResponse", line);
+    chunk.emit_array_new_fixed(0, 1, line);
+    let types_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, types_slot, line);
+    set_field_from_local(chunk, obj_slot, "__types", types_slot, line);
+}
+
+pub fn emit_dart_developer_inspect(_chunks: &mut [Chunk], _current: usize, _argc: u8, _line: u32) {}
+
+pub fn emit_dart_developer_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_dart_developer_debugger(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_bool_const(false, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+pub fn emit_dart_developer_extension_stream_has_listener(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    chunks[current].emit_bool_const(false, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+pub fn emit_dart_service_extension_response_result(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let result_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let obj_slot = reserve_slot(&mut chunks[current]);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    stamp_service_extension_response(&mut chunks[current], obj_slot, line);
+    set_field_from_local(&mut chunks[current], obj_slot, "result", result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_dart_service_extension_response_error(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let detail_slot = reserve_slot(&mut chunks[current]);
+    let code_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, detail_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, code_slot, line);
+    let obj_slot = reserve_slot(&mut chunks[current]);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    stamp_service_extension_response(&mut chunks[current], obj_slot, line);
+    set_field_from_local(&mut chunks[current], obj_slot, "errorCode", code_slot, line);
+    set_field_from_local(&mut chunks[current], obj_slot, "errorDetail", detail_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
 fn emit_type_descriptor(chunk: &mut Chunk, name: &str, kind: reflection::ReflectKind, line: u32) {
     class_slots::emit_class_alloc(chunk, line);
     set_string_field(chunk, reflection::FIELD_TYPE, name, line);
@@ -192,6 +278,15 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_dart_type_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     get_field(chunk, &ClassSlot::repr("__typename"), line);
+}
+
+/// Dart `value is List`.
+///
+/// Stack: `[value] -> [bool]`.
+pub fn emit_dart_is_list(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// Dart `value is List<int>`.

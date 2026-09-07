@@ -9,7 +9,7 @@ use vybe_compiler::primitives::{collections, invoke, reflection, url};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
+fn key(chunk: &mut Chunk, name: &str) -> u32 {
     chunk.add_constant(Value::String(Arc::from(name)))
 }
 
@@ -425,6 +425,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     invoke::emit_invoke_method(chunks, current, "compareTo", 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

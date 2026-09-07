@@ -554,6 +554,36 @@ fn emit_filesystem_throw(
     errors::emit_throw(&mut chunks[current], line);
 }
 
+fn throw_if_empty_path(
+    chunks: &mut [Chunk],
+    current: usize,
+    path_slot: u16,
+    message: &str,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_filesystem_throw(chunks, current, path_slot, message, line);
+    chunks[current].emit_end(line);
+}
+
+fn throw_if_dir(
+    chunks: &mut [Chunk],
+    current: usize,
+    path_slot: u16,
+    message: &str,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    call_fs(chunks, current, "isDir", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_filesystem_throw(chunks, current, path_slot, message, line);
+    chunks[current].emit_end(line);
+}
+
 /// `file.readAsStringSync()`
 pub fn emit_read_as_string_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
@@ -654,6 +684,20 @@ pub fn emit_read_as_lines_sync(chunks: &mut [Chunk], current: usize, argc: u8, l
 /// `File('/').writeAsStringSync(…)` silently succeeded-as-false.
 fn emit_write_via(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, line: u32) {
     let (path_slot, args) = take_receiver_path(chunks, current, argc, line);
+    throw_if_empty_path(
+        chunks,
+        current,
+        path_slot,
+        "Cannot open file, path = ",
+        line,
+    );
+    throw_if_dir(
+        chunks,
+        current,
+        path_slot,
+        "Cannot open file, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     match args.first() {
         Some(data) => chunks[current].emit_op_u16(Op::LOCAL_GET, *data, line),
@@ -1114,6 +1158,13 @@ pub fn emit_copy_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// asking the filesystem what the entry actually is.
 pub fn emit_list_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, args) = take_receiver_path(chunks, current, argc, line);
+    throw_if_empty_path(
+        chunks,
+        current,
+        path_slot,
+        "Directory listing failed, path = ",
+        line,
+    );
     throw_if_not(
         chunks,
         current,
@@ -1687,11 +1738,18 @@ pub fn emit_set_current_dir(chunks: &mut [Chunk], current: usize, argc: u8, line
 /// protocol. The common mutable-map machinery already respects
 /// `ecma:object.freeze`, which is what unmodifiable collection tests use.
 pub fn emit_platform_environment(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let env_slot = new_object_slot(&mut chunks[current], line);
-    set_field_string(&mut chunks[current], env_slot, "PATH", "/usr/bin:/bin", line);
-    set_field_string(&mut chunks[current], env_slot, "Path", "/usr/bin:/bin", line);
+    crate::emitter::string_adapter::emit_dart_map_new(chunks.as_mut_slice(), current, line);
+    let env_slot = slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, env_slot, line);
+    for key in ["PATH", "Path"] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, env_slot, line);
+        chunks[current].emit_string_const(key, line);
+        chunks[current].emit_string_const("/usr/bin:/bin", line);
+        crate::emitter::string_adapter::emit_dart_index_set(chunks.as_mut_slice(), current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_GET, env_slot, line);
-    host::emit(&mut chunks[current], "ecma:object", "freeze", 1, line);
+    crate::emitter::string_adapter::emit_freeze_top(chunks.as_mut_slice(), current, line);
 }
 
 pub fn emit_utf8_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {

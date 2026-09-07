@@ -88,6 +88,11 @@ const ADAPTER_TYPES: &[AdapterType] = &[
         name: "Random",
         ctor: AdapterCtor::Host("wasi:random/insecure", "get-insecure-random-u64"),
     },
+    AdapterType {
+        library: "developer",
+        name: "ServiceExtensionResponse",
+        ctor: AdapterCtor::Common("dart.developer.service_extension_response_result"),
+    },
 ];
 
 pub(crate) fn is_adapter_type(name: &str) -> bool {
@@ -270,6 +275,7 @@ fn library_of(owner: &str) -> &'static str {
         "Future" | "Stream" | "Promise" => "async",
         "Queue" | "LinkedHashMap" | "LinkedHashSet" => "collection",
         "Platform" => "io",
+        "ServiceExtensionResponse" => "developer",
         _ => "core",
     }
 }

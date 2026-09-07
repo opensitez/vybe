@@ -152,6 +152,7 @@ __dart_length       = { emit = "common:dart.length",             min_args = 1, m
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
 __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
+__dart_is_list = { emit = "common:dart.is_list",                 min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
 # `{...a, ...b}` is a SET or a MAP depending on what is spread, and a
 # spread-ONLY literal carries nothing syntactic to decide it. The walker emits
@@ -159,6 +160,9 @@ __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, m
 __dart_is_set_like  = { emit = "common:dart.is_set_like",        min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
 __dart_nullable_double_to_string = { emit = "common:dart.nullable_double_to_string", min_args = 1, max_args = 1 }
+__dart_throw_range_error = { emit = "common:dart.throw_range_error", min_args = 0, max_args = 0 }
+__dart_throw_argument_error = { emit = "common:dart.throw_argument_error", min_args = 0, max_args = 0 }
+__dart_byte_data_view = { emit = "common:dart.byte_data_view", min_args = 1, max_args = 3 }
 # `Duration` is not here: it is a `dart.core` CLASS (`core_classes/duration.rs`), so
 # `Duration(...)` is an ordinary construction and its members dispatch on the
 # receiver. The wrapper this replaces was an anonymous struct with a `__type`
@@ -268,6 +272,8 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 "String.fromCharCodes" = { emit = "common:dart.string_from_char_codes", min_args = 1, max_args = 1 }
 "__dart_string_code_units" = { emit = "common:dart.string_code_units", min_args = 1, max_args = 1 }
 "__dart_string_runes" = { emit = "common:dart.string_runes", min_args = 1, max_args = 1 }
+"__dart_iter_where" = { emit = "common:dart.iter_where", min_args = 2, max_args = 2 }
+"__dart_throw_unsupported_mutation" = { emit = "common:dart.unsupported_mutation", min_args = 0, max_args = 0 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -292,6 +298,7 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 "math.atan2"        = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
 "math.exp"          = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 "math.log"          = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
+"math.fround"       = { emit = "host:ecma:math:fround",          min_args = 1, max_args = 1 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
@@ -371,6 +378,22 @@ __dart_io_identical_sync = { emit = "common:dart.io_identical_sync", min_args = 
 __dart_io_stat_path = { emit = "common:dart.io_stat_path", min_args = 1, max_args = 1 }
 __dart_io_set_current_dir = { emit = "common:dart.io_set_current_dir", min_args = 1, max_args = 1 }
 
+# ── Developer service / inspection (dart:developer) ─────────────────────────
+
+inspect = { emit = "common:dart.developer.inspect", min_args = 1, max_args = 1 }
+log = { emit = "common:dart.developer.log", min_args = 1, max_args = 8 }
+debugger = { emit = "common:dart.developer.debugger", min_args = 0, max_args = 2 }
+postEvent = { emit = "common:dart.developer.post_event", min_args = 2, max_args = 2 }
+registerExtension = { emit = "common:dart.developer.register_extension", min_args = 2, max_args = 2 }
+__dart_developer_inspect = { emit = "common:dart.developer.inspect", min_args = 1, max_args = 1 }
+__dart_developer_log = { emit = "common:dart.developer.log", min_args = 1, max_args = 8 }
+__dart_developer_debugger = { emit = "common:dart.developer.debugger", min_args = 0, max_args = 2 }
+__dart_developer_post_event = { emit = "common:dart.developer.post_event", min_args = 2, max_args = 2 }
+__dart_developer_register_extension = { emit = "common:dart.developer.register_extension", min_args = 2, max_args = 2 }
+__dart_extension_stream_has_listener = { emit = "common:dart.developer.extension_stream_has_listener", min_args = 0, max_args = 0 }
+"ServiceExtensionResponse.result" = { emit = "common:dart.developer.service_extension_response_result", min_args = 1, max_args = 1 }
+"ServiceExtensionResponse.error" = { emit = "common:dart.developer.service_extension_response_error", min_args = 2, max_args = 2 }
+
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on values
 # ────────────────────────────────────────────────────────────────────────────
@@ -447,7 +470,7 @@ toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 
 # UTF-16 code unit, not a UTF-8 byte: `common:str_char_code_at` is
 # `wasm:js-string.charCodeAt` and returned 195 (the first byte of `é`)
 # where Dart specifies 233.
-codeUnitAt    = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
+codeUnitAt    = { emit = "common:dart.string_code_unit_at", min_args = 1, max_args = 1 }
 codeUnits     = { emit = "common:dart.string_code_units", min_args = 0, max_args = 0 }
 # NOTE — `length` deliberately has NO row here, and that is a COMPROMISE, not a
 # design. `.length` should be a ROLE read off `ProtocolSlot::Len`; what actually
@@ -566,6 +589,7 @@ intersection  = { emit = "common:dart.set_intersection", min_args = 1, max_args 
 containsAll   = { emit = "common:dart.set_contains_all", min_args = 1, max_args = 1 }
 cast          = { emit = "common:dart.identity",       min_args = 0, max_args = 0 }
 update        = { emit = "common:dart.map_update",     min_args = 2, max_args = 3 }
+updateWithAbsent = { emit = "common:dart.map_update_with_absent", min_args = 3, max_args = 3 }
 updateAll     = { emit = "common:dart.map_update_all", min_args = 1, max_args = 1 }
 insert        = { emit = "common:dart.list_insert",    min_args = 2, max_args = 2 }
 removeAt      = { emit = "common:dart.list_remove_at", min_args = 1, max_args = 1 }
@@ -606,6 +630,7 @@ indexWhere    = { emit = "common:dart.list_index_where", min_args = 1, max_args 
 lastIndexWhere = { emit = "common:dart.list_last_index_where", min_args = 1, max_args = 1 }
 firstWhere    = { emit = "common:dart.list_first_where", min_args = 1, max_args = 1 }
 lastWhere     = { emit = "common:dart.list_last_where", min_args = 1, max_args = 1 }
+singleWhere   = { emit = "common:dart.list_single_where", min_args = 1, max_args = 1 }
 
 # Map methods
 putIfAbsent   = { emit = "common:dart.map_put_if_absent", min_args = 2, max_args = 2 }
@@ -709,6 +734,10 @@ path = "dart.async"
 [[esm_default]]
 kind = "tree_ambient"
 path = "dart.io"
+
+[[esm_default]]
+kind = "tree_ambient"
+path = "dart.developer"
 
 [[esm_default]]
 kind = "namespace"

@@ -74,6 +74,7 @@ const EXCEPTION_CLASSES: &[(&str, &[&str], &str)] = &[
     // Dart: `class RangeError extends ArgumentError`. Declaring the real
     // parent is what lets `on ArgumentError` catch a `RangeError`.
     ("RangeError", &["ArgumentError"], "RangeError"),
+    ("UnsupportedError", &["Error"], "Unsupported operation"),
     ("UnimplementedError", &["Error"], "UnimplementedError"),
 ];
 
@@ -97,6 +98,9 @@ pub(super) fn argument_error() -> Statement {
 }
 pub(super) fn range_error() -> Statement {
     build("RangeError")
+}
+pub(super) fn unsupported_error() -> Statement {
+    build("UnsupportedError")
 }
 pub(super) fn unimplemented_error() -> Statement {
     build("UnimplementedError")

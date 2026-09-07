@@ -392,9 +392,8 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // `toJson()` first — dart's encoder hook, and what ECMA stringify's own
     // `toJSON` step (§25.5.2.3) did before this clean pass ran ahead of it.
     // The method lives on the prototype; the host `get` proto-walks. Invoked
-    // with the ambient receiver, exactly as compiled method dispatch does.
+    // with the value as argument 0, exactly as compiled method dispatch does.
     let tojson_slot = slot(&mut chunks[hidx]);
-    let saved_this_slot = slot(&mut chunks[hidx]);
     chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[hidx].emit_string_const("toJson", line);
     add_call(&mut chunks[hidx], "ecma:object", "get", 2, line);
@@ -408,21 +407,21 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks[hidx].emit_op(Op::I32_EQZ, line);
     chunks[hidx].emit_if(line);
     {
-        vybe_compiler::primitives::globals::emit_read(&mut chunks[hidx], "__js_this", line);
-        chunks[hidx].emit_op_u16(Op::LOCAL_SET, saved_this_slot, line);
-        chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        vybe_compiler::primitives::globals::emit_write(&mut chunks[hidx], "__js_this", line);
         // clean(value.toJson(), seen)
+        //
+        // ⛔ THE RECEIVER IS ARGUMENT 0 OF `toJson`, not a cell bound around
+        // the call. `value` is pushed after the callee, so the argument list
+        // is `[value]` and argc is 1. With one channel there is nothing shared
+        // to clobber, so this call needs no save and no restore.
         ref_func(&mut chunks[hidx], hidx, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, tojson_slot, line);
-        call_ref(&mut chunks[hidx], 0, line);
+        chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        call_ref(&mut chunks[hidx], 1, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, seen_slot, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, hook_slot, line);
         call_ref(&mut chunks[hidx], 3, line);
         let cleaned_slot = slot(&mut chunks[hidx]);
         chunks[hidx].emit_op_u16(Op::LOCAL_SET, cleaned_slot, line);
-        chunks[hidx].emit_op_u16(Op::LOCAL_GET, saved_this_slot, line);
-        vybe_compiler::primitives::globals::emit_write(&mut chunks[hidx], "__js_this", line);
         // pop the cycle entry for this value before returning.
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, seen_slot, line);
         collections::emit_pop(chunks, hidx, line);

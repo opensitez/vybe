@@ -907,7 +907,11 @@ function_type = {
     ~ nullable_marker?
 }
 
-function_type_params = { simple_type ~ ("," ~ simple_type)* }
+function_type_params = { function_type_param ~ ("," ~ function_type_param)* }
+function_type_param = {
+    simple_type
+    | "{" ~ required_kw? ~ simple_type ~ ident_name ~ ("," ~ required_kw? ~ simple_type ~ ident_name)* ~ ","? ~ "}"
+}
 
 type_args = { "<" ~ type_annotation ~ ("," ~ type_annotation)* ~ ">" }
 type_params = { "<" ~ type_param ~ ("," ~ type_param)* ~ ">" }

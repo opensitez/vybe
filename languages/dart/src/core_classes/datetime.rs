@@ -84,11 +84,8 @@ fn other_epoch() -> Expression {
 
 /// `DateTime(<ms>, <utc>)` — a plain construction.
 ///
-/// This went through a top-level trampoline for one day, because a constructor
-/// called inside an instance method of its own class adopted the ambient
-/// receiver instead of allocating. That was `expressions.rs` saving and
-/// restoring `__js_this` around the `New` call without ever clearing it; the
-/// clear landed, so `new` allocates unconditionally and the workaround is gone.
+/// `new` allocates unconditionally, so a constructor called inside an instance
+/// method of its own class allocates rather than adopting the caller's receiver.
 fn new_datetime(ms: Expression, utc: Expression) -> Expression {
     Expression::with_span(
         ExprKind::New {

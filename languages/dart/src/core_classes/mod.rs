@@ -67,6 +67,7 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("StateError", exceptions::state_error),
     ("ArgumentError", exceptions::argument_error),
     ("RangeError", exceptions::range_error),
+    ("UnsupportedError", exceptions::unsupported_error),
     ("UnimplementedError", exceptions::unimplemented_error),
     ("Uri", uri::uri),
     // `dart:isolate` — order matters: `SendPort` before the ports that
