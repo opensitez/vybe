@@ -24,7 +24,66 @@ struct StandardSections {
     tag_section: Vec<u8>,
 }
 
+/// Which spec PHASE rejected a module.
+///
+/// The two are not interchangeable and the suite asserts them separately:
+/// `assert_malformed` says the bytes do not DECODE (spec §5, binary format),
+/// `assert_invalid` says they decode but fail VALIDATION (spec §3, typing).
+///
+/// ⛔ THESE USED TO BE ONE ANSWER. Both assertions asked only "did `read_wasm`
+/// return `Err`", so a well-formed module with an out-of-range start index —
+/// an INVALID module — satisfied `assert_malformed`. An assertion that cannot
+/// tell the two phases apart passes for the wrong reason in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Malformed,
+    Invalid,
+}
+
+#[derive(Debug, Clone)]
+pub struct WasmError {
+    pub phase: Phase,
+    pub message: String,
+}
+
+impl WasmError {
+    /// A VALIDATION failure: the bytes decoded, the module is ill-typed.
+    pub fn invalid(message: impl Into<String>) -> Self {
+        WasmError { phase: Phase::Invalid, message: message.into() }
+    }
+}
+
+// Decode failures are the common case, so a bare string IS a malformity —
+// every existing `Err("…".into())` in this module keeps its meaning, and only
+// the validity sites have to say so explicitly.
+impl From<String> for WasmError {
+    fn from(message: String) -> Self {
+        WasmError { phase: Phase::Malformed, message }
+    }
+}
+
+impl From<&str> for WasmError {
+    fn from(message: &str) -> Self {
+        WasmError { phase: Phase::Malformed, message: message.to_string() }
+    }
+}
+
+impl std::fmt::Display for WasmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Decode a module, reporting WHICH phase rejected it.
+pub fn read_wasm_classified(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
+    read_wasm_inner(data)
+}
+
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
+    read_wasm_inner(data).map_err(|e| e.message)
+}
+
+fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     if data.len() < 8 || &data[0..4] != &WASM_MAGIC {
         return Err("Invalid WASM: bad magic".into());
     }
@@ -50,11 +109,11 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     while pos < data.len() {
         let section_id = data[pos];
         pos += 1;
-        let (size, read) = read_leb128_u32(&data[pos..]);
-        if read == 0 {
-            return Err("Invalid WASM: malformed section size".into());
-        }
-        pos += read;
+        // A section's SIZE is a `u32` whose encoding must be in range —
+        // `\x83\x80\x80\x80\x10` decodes to 3 with unused bits set.
+        let size_start = pos;
+        leb_u32_fits(data, &mut pos)?;
+        let (size, _) = read_leb128_u32(&data[size_start..]);
         let section_end = pos
             .checked_add(size as usize)
             .ok_or_else(|| "Invalid WASM: section size overflow".to_string())?;
@@ -63,13 +122,20 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
         }
         let section_data = data[pos..section_end].to_vec();
 
+        // `section ::= id:byte size:u32 …`, and the ids are a CLOSED set:
+        // 0 custom, 1..=12 the core sections, 13 tag. Anything else is
+        // malformed — the catch-all arm below silently ignored it, so a module
+        // with section id 0x0e or 0x7f decoded as if the section were absent.
+        if section_id > SECTION_TAG {
+            return Err("malformed section id".into());
+        }
         if section_id != SECTION_CUSTOM {
             if !seen_sections.insert(section_id) {
-                return Err(format!("Invalid WASM: duplicate section {section_id}"));
+                return Err(format!("Invalid WASM: duplicate section {section_id}").into());
             }
             let rank = section_order_rank(section_id);
             if rank < section_order_rank(last_known_section) {
-                return Err(format!("Invalid WASM: section {section_id} out of order"));
+                return Err(format!("Invalid WASM: section {section_id} out of order").into());
             }
             last_known_section = section_id;
         }
@@ -172,7 +238,7 @@ fn section_order_rank(section_id: u8) -> u8 {
     }
 }
 
-fn validate_standard_sections(sections: &StandardSections) -> Result<(), String> {
+fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmError> {
     // Strict pass FIRST: the lenient decoder below cannot report a malformed
     // type section, so anything it would silently accept has to be rejected
     // here.
@@ -182,13 +248,13 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
     let imports = parse_import_details(&sections.import_section)?;
     for import in &imports {
         if import.kind == 0 && import.type_index as usize >= types.len() {
-            return Err("Invalid WASM: import function type index out of range".into());
+            return Err(WasmError::invalid("import function type index out of range"));
         }
     }
 
     for &type_idx in &func_type_indices {
         if type_idx as usize >= types.len() {
-            return Err("Invalid WASM: function type index out of range".into());
+            return Err(WasmError::invalid("function type index out of range"));
         }
     }
 
@@ -204,6 +270,7 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
     }
 
     validate_memory_section(&sections.memory_section)?;
+    validate_table_section(&sections.table_section)?;
 
     let import_func_count = imports.iter().filter(|import| import.kind == 0).count();
     let import_table_count = imports.iter().filter(|import| import.kind == 1).count();
@@ -224,7 +291,15 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
         &imports,
         &func_type_indices,
     )?;
-    validate_element_section(&sections.elem_section, table_count)?;
+    validate_index_vector_encoding(&sections.func_section)?;
+    validate_limits_encoding(&sections.memory_section)?;
+    validate_limits_encoding(&sections.table_section)?;
+    validate_element_section(
+        &sections.elem_section,
+        table_count,
+        &sections.table_section,
+        import_table_count,
+    )?;
     validate_data_sections(
         &sections.data_count_section,
         &sections.data_section,
@@ -293,6 +368,13 @@ fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
             skip_leb128(data, pos); // valtype
             *pos = (*pos).saturating_add(1).min(data.len()); // mutability
         }
+        // A tag is an attribute byte followed by its `typeidx`. Consuming
+        // neither left `pos` standing on the descriptor, so an import section
+        // holding a tag read its own bytes as the next import.
+        4 => {
+            *pos = (*pos).saturating_add(1).min(data.len()); // attribute
+            skip_leb128(data, pos); // type index
+        }
         _ => {}
     }
 }
@@ -310,12 +392,21 @@ fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
 /// of that was ever looked at. `str::from_utf8` enforces exactly the spec's
 /// rules — it rejects overlong forms and surrogates — so the check is the
 /// conversion itself.
-fn read_name(data: &[u8], pos: &mut usize) -> Result<String, String> {
-    let (len, read) = read_leb128_u32(&data[*pos..]);
-    if read == 0 {
-        return Err("Invalid WASM: malformed name length".into());
-    }
-    *pos += read;
+fn read_name(data: &[u8], pos: &mut usize) -> Result<String, WasmError> {
+    // A name's byte count is a `u32` vector length, and its ENCODING must be in
+    // range: `\x83\x80\x80\x80\x80\x00` decodes to 3 but is written with a
+    // byte too many. This is the shared decoder for import names, export names
+    // and custom-section ids, so the rule lands on all of them at once.
+    let len = {
+        let mut probe = *pos;
+        leb_u32_fits(data, &mut probe)?;
+        let (len, read) = read_leb128_u32(&data[*pos..]);
+        if read == 0 {
+            return Err("Invalid WASM: malformed name length".into());
+        }
+        *pos += read;
+        len
+    };
     let end = pos
         .checked_add(len as usize)
         .ok_or_else(|| "Invalid WASM: name length overflow".to_string())?;
@@ -330,13 +421,12 @@ fn read_name(data: &[u8], pos: &mut usize) -> Result<String, String> {
     }
 }
 
-fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
+fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, WasmError> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
     let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
+    let count = read_vec_len(data, &mut pos)?;
     let mut imports = Vec::new();
     for _ in 0..count {
         // Both halves of an import are NAMES, so both are UTF-8 validated.
@@ -346,17 +436,37 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
         if pos >= data.len() {
             return Err("Invalid WASM: malformed import section".into());
         }
-        let kind = normalize_import_kind(data[pos]);
+        // An import's externkind is one of five defined bytes (plus Custom
+        // Descriptors' exact-func spelling). Anything else names no external
+        // type, so the module does not decode.
+        let raw_kind = data[pos];
+        if raw_kind > 4 && raw_kind != EXTERNTYPE_FUNC_EXACT {
+            return Err("malformed import kind".into());
+        }
+        let kind = normalize_import_kind(raw_kind);
         pos += 1;
         let type_index = if kind == 0 {
-            let (type_index, read) = read_leb128_u32(&data[pos..]);
-            pos += read;
+            // A `typeidx` is a `u32`, and its ENCODING must be in range —
+            // `\x80\x80\x80\x80\x80\x00` decodes to 0 with a byte too many.
+            let start = pos;
+            leb_u32_fits(data, &mut pos)?;
+            let (type_index, _) = read_leb128_u32(&data[start..]);
             type_index
         } else {
+            // An imported global carries the same mutability byte as a defined
+            // one; `skip_import_descriptor` steps over it without looking.
+            if kind == 3 {
+                let mut probe = pos;
+                skip_leb128(data, &mut probe); // valtype
+                validate_mutability(data, &mut probe)?;
+            }
             skip_import_descriptor(data, &mut pos, kind);
             0
         };
         imports.push(ImportDetail { kind, type_index });
+    }
+    if pos != data.len() {
+        return Err("section size mismatch".into());
     }
     Ok(imports)
 }
@@ -374,7 +484,7 @@ fn check_u16_immediate_ceiling(idx: u32, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn section_count(data: &[u8]) -> Result<u32, String> {
+fn section_count(data: &[u8]) -> Result<u32, WasmError> {
     if data.is_empty() {
         return Err("Invalid WASM: missing required section count".into());
     }
@@ -385,7 +495,7 @@ fn section_count(data: &[u8]) -> Result<u32, String> {
     Ok(count)
 }
 
-fn section_count_or_zero(data: &[u8]) -> Result<u32, String> {
+fn section_count_or_zero(data: &[u8]) -> Result<u32, WasmError> {
     if data.is_empty() {
         Ok(0)
     } else {
@@ -393,7 +503,7 @@ fn section_count_or_zero(data: &[u8]) -> Result<u32, String> {
     }
 }
 
-fn validate_memory_section(data: &[u8]) -> Result<(), String> {
+fn validate_memory_section(data: &[u8]) -> Result<(), WasmError> {
     if data.is_empty() {
         return Ok(());
     }
@@ -406,6 +516,7 @@ fn validate_memory_section(data: &[u8]) -> Result<(), String> {
         }
         let flags = data[pos];
         pos += 1;
+        validate_limits_flags(flags)?;
         let is_memory64 = flags & 0x04 != 0;
         let has_max = flags & 0x01 != 0;
         let (min, read) = if is_memory64 {
@@ -424,7 +535,7 @@ fn validate_memory_section(data: &[u8]) -> Result<(), String> {
             };
             pos += read;
             if min > max {
-                return Err("Invalid WASM: memory minimum exceeds maximum".into());
+                return Err(WasmError::invalid("size minimum must not be greater than maximum"));
             }
         }
     }
@@ -434,60 +545,53 @@ fn validate_memory_section(data: &[u8]) -> Result<(), String> {
 fn parse_global_mutability(
     data: &[u8],
     imported_globals: usize,
-) -> Result<(usize, Vec<bool>), String> {
+) -> Result<(usize, Vec<bool>), WasmError> {
     let mut mutability = vec![true; imported_globals];
     if data.is_empty() {
         return Ok((imported_globals, mutability));
     }
     let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
+    let count = read_vec_len(data, &mut pos)?;
     for _ in 0..count {
         if pos + 2 > data.len() {
             return Err("Invalid WASM: malformed global section".into());
         }
         pos += 1; // valtype
-        let mutable = data[pos] != 0;
-        pos += 1;
+        // A global's mutability is `0x00` or `0x01` and nothing else — the
+        // same one-byte field a struct field carries, so it is read by the
+        // same validator rather than by a truthiness test.
+        let mutable = data.get(pos) == Some(&GC_MUT);
+        validate_mutability(data, &mut pos)?;
         mutability.push(mutable);
-        while pos < data.len() {
-            let op = data[pos];
-            pos += 1;
-            match op {
-                0x0B => break,
-                0x41 => skip_leb128(data, &mut pos),
-                0x42 => skip_leb128(data, &mut pos),
-                0x43 => pos += 4,
-                0x44 => pos += 8,
-                0x23 => skip_leb128(data, &mut pos),
-                0xD0 => pos += 1,
-                0xD2 => skip_leb128(data, &mut pos),
-                _ => {}
-            }
-        }
+        // ⛔ THE INIT EXPRESSION IS NOT A SECOND WALKER. This inlined a copy of
+        // `skip_const_expr` that skipped every immediate unread, so an overlong
+        // `i32.const` in a global initialiser decoded as well-formed. One
+        // walker, and it is the one that range-checks.
+        skip_const_expr(data, &mut pos)?;
+    }
+    // A section's declared count must account for ALL of its bytes: a count of
+    // 1 over a section holding two globals leaves the second unread, which the
+    // spec calls a size mismatch rather than a tolerated tail.
+    if pos != data.len() {
+        return Err("section size mismatch".into());
     }
     Ok((mutability.len(), mutability))
 }
 
-fn validate_exports(data: &[u8], func_count: usize) -> Result<(), String> {
+fn validate_exports(data: &[u8], func_count: usize) -> Result<(), WasmError> {
     if data.is_empty() {
         return Ok(());
     }
     let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
+    let count = read_vec_len(data, &mut pos)?;
     let mut names = HashSet::new();
     for _ in 0..count {
-        let (nlen, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let name_end = pos + nlen as usize;
-        if name_end > data.len() {
-            return Err("Invalid WASM: malformed export name".into());
-        }
-        let name = &data[pos..name_end];
-        pos = name_end;
-        if !names.insert(name.to_vec()) {
-            return Err("Invalid WASM: duplicate export name".into());
+        // An export name is a NAME, so its length encoding is range-checked
+        // and its bytes are UTF-8 validated, exactly as an import's are.
+        // Decoding it by hand here skipped both.
+        let name = read_name(data, &mut pos)?;
+        if !names.insert(name.into_bytes()) {
+            return Err(WasmError::invalid("duplicate export name"));
         }
         if pos >= data.len() {
             return Err("Invalid WASM: malformed export section".into());
@@ -500,11 +604,16 @@ fn validate_exports(data: &[u8], func_count: usize) -> Result<(), String> {
         if kind == EXTERNTYPE_FUNC_EXACT {
             return Err("Invalid WASM: exact function type in export section".into());
         }
-        let (idx, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
+        // An export's index is a `u32`, encoding included.
+        let start = pos;
+        leb_u32_fits(data, &mut pos)?;
+        let (idx, _) = read_leb128_u32(&data[start..]);
         if kind == 0 && idx as usize >= func_count {
-            return Err("Invalid WASM: function export index out of range".into());
+            return Err(WasmError::invalid("unknown function"));
         }
+    }
+    if pos != data.len() {
+        return Err("section size mismatch".into());
     }
     Ok(())
 }
@@ -514,7 +623,7 @@ fn validate_start(
     types: &[(Vec<u8>, Vec<u8>)],
     imports: &[ImportDetail],
     func_type_indices: &[u32],
-) -> Result<(), String> {
+) -> Result<(), WasmError> {
     if data.is_empty() {
         return Ok(());
     }
@@ -535,38 +644,221 @@ fn validate_start(
             .copied()
     };
     let Some(type_idx) = type_idx else {
-        return Err("Invalid WASM: start function index out of range".into());
+        return Err(WasmError::invalid("unknown function"));
     };
     let Some((params, results)) = types.get(type_idx as usize) else {
         return Err("Invalid WASM: start function type index out of range".into());
     };
     if !params.is_empty() || !results.is_empty() {
-        return Err("Invalid WASM: start function must have type [] -> []".into());
+        return Err(WasmError::invalid("start function must have type [] -> []"));
     }
     Ok(())
 }
 
-fn validate_element_section(data: &[u8], table_count: usize) -> Result<(), String> {
+/// Nullability of each DEFINED table's element type, by table index within the
+/// table section. `None` where it cannot be determined.
+fn defined_table_nullability(data: &[u8]) -> Vec<Option<bool>> {
+    let mut out = Vec::new();
     if data.is_empty() {
-        return Ok(());
+        return out;
     }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
     for _ in 0..count {
-        let (flags, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        if flags == 2 {
-            let (table_idx, _) = read_leb128_u32(&data[pos..]);
-            if table_idx as usize >= table_count {
-                return Err("Invalid WASM: element segment table index out of range".into());
-            }
-        } else if flags == 0 && table_count == 0 {
-            return Err("Invalid WASM: active element segment without table".into());
+        if pos >= data.len() {
+            break;
         }
-        // Full element-section validation is larger; this pass covers active
-        // table-index validity for the runtime reader.
-        break;
+        let has_init = data[pos] == 0x40 && data.get(pos + 1) == Some(&0x00);
+        if has_init {
+            pos += 2;
+        }
+        let Some(lead) = read_value_type(data, &mut pos) else {
+            break;
+        };
+        // `(ref ht)` is the only non-null spelling; `(ref null ht)` and every
+        // `*ref` shorthand are nullable.
+        out.push(Some(lead != 0x64));
+        if pos >= data.len() {
+            break;
+        }
+        let flags = data[pos];
+        pos += 1;
+        let is64 = flags & 0x04 != 0;
+        let has_max = flags & 0x01 != 0;
+        if is64 {
+            let (_, r) = read_leb128_u64_local(&data[pos..]);
+            pos += r;
+        } else {
+            let (_, r) = read_leb128_u32(&data[pos..]);
+            pos += r;
+        }
+        if has_max {
+            if is64 {
+                let (_, r) = read_leb128_u64_local(&data[pos..]);
+                pos += r;
+            } else {
+                let (_, r) = read_leb128_u32(&data[pos..]);
+                pos += r;
+            }
+        }
+        // The `0x40 0x00` form carries a trailing initializer expression.
+        if has_init && skip_const_expr(data, &mut pos).is_err() {
+            break;
+        }
+    }
+    out
+}
+
+/// An element segment's declared element type must BE a reference type.
+///
+/// Only the numeric and vector types are rejected — those can never be
+/// references — so a heap type this does not enumerate still passes, rather
+/// than a valid module being turned away.
+fn validate_elem_reference_type(lead: u8) -> Result<(), WasmError> {
+    if matches!(lead, 0x7F | 0x7E | 0x7D | 0x7C | 0x7B) {
+        return Err("malformed reference type".into());
+    }
+    Ok(())
+}
+
+/// An active element segment's type must be a SUBTYPE of its target table's.
+///
+/// Only the NULLABILITY half is decided: a nullable element type (`funcref`,
+/// `(ref null ht)`) cannot initialise a non-null table (`(ref ht)`). Heap-type
+/// compatibility needs the type section's subtype graph, which this pass does
+/// not build, so those answer "compatible" rather than reject wrongly.
+fn validate_element_section(
+    data: &[u8],
+    table_count: usize,
+    table_section: &[u8],
+    imported_table_count: usize,
+) -> Result<(), WasmError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let defined = defined_table_nullability(table_section);
+    let table_nullable = |idx: usize| -> Option<bool> {
+        idx.checked_sub(imported_table_count)
+            .and_then(|d| defined.get(d).copied().flatten())
+    };
+    let mut pos = 0;
+    let count = read_vec_len(data, &mut pos)?;
+    // Only a walk that read EVERY declared segment can judge the section's
+    // size: the tolerant `break`s below leave `pos` short on shapes this pass
+    // does not fully parse, and a trailing check over one of those would
+    // reject a valid module.
+    let mut segments_read = 0usize;
+    for _ in 0..count {
+        if pos >= data.len() {
+            break;
+        }
+        // The segment's mode is a `u32`, encoding included.
+        let flags_start = pos;
+        leb_u32_fits(data, &mut pos)?;
+        let (flags, _) = read_leb128_u32(&data[flags_start..]);
+        // (active table, element type is nullable)
+        //
+        // The funcidx-list modes (0..=3) initialise each slot with `ref.func x`,
+        // whose type is the NON-NULL `(ref func)` — `elem.wast` declares such a
+        // segment into a `(ref func)` table valid. Only the expression-list
+        // modes (4..=7) carry an element type of their own, and mode 4's is the
+        // nullable `funcref`, which a non-null table rejects.
+        let mut target: Option<usize> = None;
+        let mut elem_nullable = false;
+        match flags {
+            0 => {
+                if table_count == 0 {
+                    return Err(WasmError::invalid("unknown table 0"));
+                }
+                target = Some(0);
+                if skip_const_expr(data, &mut pos).is_err() {
+                    break;
+                }
+            }
+            1 => {
+                pos += 1; // elemkind
+            }
+            2 => {
+                let idx_start = pos;
+                leb_u32_fits(data, &mut pos)?;
+                let (table_idx, _) = read_leb128_u32(&data[idx_start..]);
+                if table_idx as usize >= table_count {
+                    return Err(WasmError::invalid(format!("unknown table {table_idx}")));
+                }
+                target = Some(table_idx as usize);
+                if skip_const_expr(data, &mut pos).is_err() {
+                    break;
+                }
+                pos += 1; // elemkind
+            }
+            3 => {
+                pos += 1; // elemkind
+            }
+            4 => {
+                if table_count == 0 {
+                    return Err(WasmError::invalid("unknown table 0"));
+                }
+                target = Some(0);
+                elem_nullable = true; // implicit `funcref`
+                if skip_const_expr(data, &mut pos).is_err() {
+                    break;
+                }
+            }
+            5 => {
+                let Some(lead) = read_value_type(data, &mut pos) else {
+                    break;
+                };
+                validate_elem_reference_type(lead)?;
+                elem_nullable = lead != 0x64;
+            }
+            6 => {
+                let (table_idx, r) = read_leb128_u32(&data[pos..]);
+                pos += r;
+                if table_idx as usize >= table_count {
+                    return Err(WasmError::invalid(format!("unknown table {table_idx}")));
+                }
+                target = Some(table_idx as usize);
+                if skip_const_expr(data, &mut pos).is_err() {
+                    break;
+                }
+                let Some(lead) = read_value_type(data, &mut pos) else {
+                    break;
+                };
+                validate_elem_reference_type(lead)?;
+                elem_nullable = lead != 0x64;
+            }
+            7 => {
+                let Some(lead) = read_value_type(data, &mut pos) else {
+                    break;
+                };
+                validate_elem_reference_type(lead)?;
+                elem_nullable = lead != 0x64;
+            }
+            _ => return Err("Invalid WASM: unsupported element segment mode".into()),
+        }
+        if let Some(t) = target
+            && elem_nullable
+            && table_nullable(t) == Some(false)
+        {
+            return Err(WasmError::invalid("type mismatch"));
+        }
+        // The item list; walking it is what lets the NEXT segment be read.
+        let (len, r) = read_leb128_u32(&data[pos..]);
+        pos += r;
+        for _ in 0..len {
+            if flags >= 4 {
+                if skip_const_expr(data, &mut pos).is_err() {
+                    return Ok(());
+                }
+            } else {
+                skip_leb128(data, &mut pos);
+            }
+        }
+        segments_read += 1;
+    }
+    if segments_read == count as usize && pos != data.len() {
+        return Err("section size mismatch".into());
     }
     Ok(())
 }
@@ -575,7 +867,7 @@ fn validate_data_sections(
     data_count_section: &[u8],
     data_section: &[u8],
     memory_count: usize,
-) -> Result<(), String> {
+) -> Result<(), WasmError> {
     let actual_count = section_count_or_zero(data_section)?;
     if !data_count_section.is_empty() {
         let declared = section_count(data_count_section)?;
@@ -587,25 +879,50 @@ fn validate_data_sections(
         return Ok(());
     }
     let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data_section[pos..]);
-    pos += read;
+    let count = read_vec_len(data_section, &mut pos)?;
     for _ in 0..count {
-        let (flags, read) = read_leb128_u32(&data_section[pos..]);
-        pos += read;
+        // The segment's MODE and its memory index are both `u32`s whose
+        // encodings must be in range: `\x80\x80\x80\x80\x10` decodes to 0
+        // with unused bits set, which the spec calls "integer too large".
+        let flags_start = pos;
+        leb_u32_fits(data_section, &mut pos)?;
+        let (flags, _) = read_leb128_u32(&data_section[flags_start..]);
         if flags == 2 {
-            let (memidx, _) = read_leb128_u32(&data_section[pos..]);
+            let memidx_start = pos;
+            leb_u32_fits(data_section, &mut pos)?;
+            let (memidx, _) = read_leb128_u32(&data_section[memidx_start..]);
             if memidx as usize >= memory_count {
-                return Err("Invalid WASM: data segment memory index out of range".into());
+                return Err(WasmError::invalid(format!("unknown memory {memidx}")));
             }
         } else if flags == 0 && memory_count == 0 {
-            return Err("Invalid WASM: active data segment without memory".into());
+            return Err(WasmError::invalid("unknown memory 0"));
         }
-        break;
+        // ⛔ THIS USED TO `break` AFTER THE FIRST SEGMENT. Every segment carries
+        // its own memory index, so a module whose SECOND segment named an
+        // unknown memory validated cleanly. Walking the rest means consuming
+        // each segment's offset expression and payload.
+        if flags != 1 {
+            // Active segments carry an offset expression.
+            skip_const_expr(data_section, &mut pos)?;
+        }
+        let len = read_vec_len(data_section, &mut pos)?;
+        pos = pos
+            .checked_add(len as usize)
+            .ok_or_else(|| "Invalid WASM: data segment length overflow".to_string())?;
+        if pos > data_section.len() {
+            return Err("unexpected end of section or function".into());
+        }
+    }
+    // The declared count and each segment's declared length must together
+    // account for every byte: a trailing segment, or a payload longer than its
+    // own length field, is a size mismatch rather than a tolerated tail.
+    if pos != data_section.len() {
+        return Err("section size mismatch".into());
     }
     Ok(())
 }
 
-fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegment>), String> {
+fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegment>), WasmError> {
     if data.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -655,7 +972,7 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
 
 fn parse_element_segments(
     data: &[u8],
-) -> Result<(Vec<Vec<Value>>, Vec<ActiveElementSegment>), String> {
+) -> Result<(Vec<Vec<Value>>, Vec<ActiveElementSegment>), WasmError> {
     if data.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -696,7 +1013,12 @@ fn parse_element_segments(
                 true
             }
             5 => {
-                skip_leb128(data, &mut pos); // reftype
+                // NOT a single LEB: `(ref ht)` (0x64) and `(ref null ht)`
+                // (0x63) carry a heaptype immediate, so `(ref func)` is the
+                // two bytes `64 70`. Skipping one left the heaptype to be read
+                // as the vector length.
+                read_value_type(data, &mut pos)
+                    .ok_or("Invalid WASM: truncated element segment reftype")?;
                 true
             }
             6 => {
@@ -704,11 +1026,13 @@ fn parse_element_segments(
                 pos += read;
                 let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
                 active_init = Some((tableidx, offset));
-                skip_leb128(data, &mut pos); // reftype
+                read_value_type(data, &mut pos)
+                    .ok_or("Invalid WASM: truncated element segment reftype")?;
                 true
             }
             7 => {
-                skip_leb128(data, &mut pos); // reftype
+                read_value_type(data, &mut pos)
+                    .ok_or("Invalid WASM: truncated element segment reftype")?;
                 true
             }
             _ => return Err("Invalid WASM: unsupported element segment mode".into()),
@@ -750,13 +1074,22 @@ fn validate_code_bodies(
     has_data_count_section: bool,
     uses_memory64: bool,
     uses_table64: bool,
-) -> Result<(), String> {
+) -> Result<(), WasmError> {
+    // A module with NO code section is well-formed — every section is
+    // optional. The lenient read this replaced returned a count of 0 here;
+    // `read_vec_len` reports "unexpected end", so the absence has to be
+    // handled before it is asked for a length.
+    if code_sec.is_empty() {
+        return Ok(());
+    }
     let mut pos = 0;
-    let (count, read) = read_leb128_u32(&code_sec[pos..]);
-    pos += read;
+    // Every count and size in the code section is a `u32` whose ENCODING must
+    // be in range, not merely decodable.
+    let count = read_vec_len(code_sec, &mut pos)?;
     for func_idx in 0..count as usize {
-        let (body_size, read) = read_leb128_u32(&code_sec[pos..]);
-        pos += read;
+        let size_start = pos;
+        leb_u32_fits(code_sec, &mut pos)?;
+        let (body_size, _) = read_leb128_u32(&code_sec[size_start..]);
         let body_end = pos
             .checked_add(body_size as usize)
             .ok_or_else(|| "Invalid WASM: code body size overflow".to_string())?;
@@ -764,10 +1097,22 @@ fn validate_code_bodies(
             return Err("Invalid WASM: code body missing end opcode".into());
         }
 
+        // The local declarations stay LENIENT: a body whose locals run to
+        // `body_end` legitimately reads an empty range here, and treating that
+        // as "unexpected end" rejected well-formed modules. The encoding rules
+        // that `binary-leb128` asserts are on the COUNT and BODY SIZE above.
         let (local_groups, read) = read_leb128_u32(&code_sec[pos..body_end]);
         pos += read;
         let mut local_count = 0usize;
         for _ in 0..local_groups {
+            // A local group's COUNT is a `u32`, ENCODING included:
+            // `\80\80\80\80\10` is 2^32, which the spec calls "integer too
+            // large". Guarded on a non-empty range so the lenient read below
+            // keeps answering for a body whose locals run to `body_end`.
+            if pos < body_end {
+                let mut probe = pos;
+                leb_u32_fits(&code_sec[..body_end], &mut probe)?;
+            }
             let (n, read) = read_leb128_u32(&code_sec[pos..body_end]);
             pos += read;
             if pos >= body_end {
@@ -846,16 +1191,18 @@ impl ArityStack {
 
     /// Pop `n` values. Inside an unreachable frame, popping below the
     /// frame base is polymorphic (always allowed) per the spec.
-    fn pop(&mut self, n: usize, context: &str) -> Result<(), String> {
+    fn pop(&mut self, n: usize, context: &str) -> Result<(), WasmError> {
         let frame = self
             .frames
             .last()
-            .ok_or_else(|| format!("Invalid WASM: no frame in {context}"))?;
+            .ok_or_else(|| WasmError::from(format!("Invalid WASM: no frame in {context}")))?;
         for _ in 0..n {
             if self.height > frame.start_height {
                 self.height -= 1;
             } else if !frame.unreachable {
-                return Err(format!("Invalid WASM: stack underflow in {context}"));
+                return Err(WasmError::invalid(format!(
+                    "type mismatch: stack underflow in {context}"
+                )));
             }
         }
         Ok(())
@@ -874,7 +1221,7 @@ impl ArityStack {
         result_arity: usize,
         is_loop: bool,
         context: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WasmError> {
         self.pop(param_arity, context)?;
         self.frames.push(CtrlFrame {
             start_height: self.height,
@@ -887,9 +1234,9 @@ impl ArityStack {
         Ok(())
     }
 
-    fn pop_frame(&mut self, context: &str) -> Result<CtrlFrame, String> {
+    fn pop_frame(&mut self, context: &str) -> Result<CtrlFrame, WasmError> {
         if self.frames.len() <= 1 {
-            return Err(format!("Invalid WASM: unbalanced end in {context}"));
+            return Err(format!("Invalid WASM: unbalanced end in {context}").into());
         }
         let (start, results, unreachable) = {
             let f = self.frames.last().unwrap();
@@ -897,9 +1244,9 @@ impl ArityStack {
         };
         self.pop(results, context)?;
         if self.height != start && !unreachable {
-            return Err(format!(
-                "Invalid WASM: block leaves wrong stack height in {context}"
-            ));
+            return Err(WasmError::invalid(format!(
+                "type mismatch: block leaves wrong stack height in {context}"
+            )));
         }
         self.height = start;
         Ok(self.frames.pop().unwrap())
@@ -907,12 +1254,12 @@ impl ArityStack {
 
     /// Branch-target arity: loops receive their params, blocks/ifs
     /// their results (spec: label types).
-    fn label_arity(&self, depth: u32) -> Result<usize, String> {
+    fn label_arity(&self, depth: u32) -> Result<usize, WasmError> {
         let idx = self
             .frames
             .len()
             .checked_sub(1 + depth as usize)
-            .ok_or_else(|| "Invalid WASM: branch depth out of range".to_string())?;
+            .ok_or_else(|| WasmError::invalid("unknown label: branch depth out of range"))?;
         let f = &self.frames[idx];
         Ok(if f.is_loop {
             f.param_arity
@@ -991,7 +1338,7 @@ fn validate_instruction_stream(
     has_data_count_section: bool,
     uses_memory64: bool,
     _uses_table64: bool,
-) -> Result<(), String> {
+) -> Result<(), WasmError> {
     let mut pos = 0;
     let mut st = ArityStack::new(result_arity);
     // Pop a typed call's params and push its results.
@@ -1000,8 +1347,8 @@ fn validate_instruction_stream(
         sig: Option<&(usize, usize)>,
         context: &str,
         err: &str,
-    ) -> Result<(), String> {
-        let &(params, results) = sig.ok_or_else(|| err.to_string())?;
+    ) -> Result<(), WasmError> {
+        let &(params, results) = sig.ok_or_else(|| WasmError::invalid(err))?;
         st.pop(params, context)?;
         st.push(results);
         Ok(())
@@ -1188,18 +1535,45 @@ fn validate_instruction_stream(
             }
             0x25 => {
                 let (idx, _) = read_leb128_u32(&code[pos..]);
-                check_u16_immediate_ceiling(idx, "table.get table index")?;
                 skip_leb128(code, &mut pos);
                 st.pop(1, "table.get")?;
                 st.push(1);
             }
             0x26 => {
                 let (idx, _) = read_leb128_u32(&code[pos..]);
-                check_u16_immediate_ceiling(idx, "table.set table index")?;
                 skip_leb128(code, &mut pos);
                 st.pop(2, "table.set")?;
             }
             0x28..=0x3E => {
+                // A memarg's OFFSET is a `u64` (memory64) / `u32` LEB. The
+                // encoding must fit: `\ff…\02` sets a bit past 2^64, which is
+                // "integer too large" — `memory64/binary_leb128_64.wast`.
+                if op != 0x3F && op != 0x40 {
+                    // BOTH halves of a memarg are range-checked: the alignment
+                    // is a `u32` and the offset a `u64` (memory64). Only the
+                    // offset was checked, so an overlong ALIGNMENT still
+                    // decoded.
+                    let mut probe = pos;
+                    leb_u32_fits(code, &mut probe)?;
+                    leb_u64_fits(code, probe)?;
+                }
+                // The memop flags field carries the alignment as a base-2
+                // EXPONENT, with bit 6 reserved for the multi-memory memidx
+                // flag. A value of 0x80 or more sets a bit the field does not
+                // define, so it fails to DECODE; a defined field whose
+                // exponent exceeds the access's natural alignment decodes but
+                // fails to VALIDATE.
+                let (align_field, _) = read_leb128_u32(&code[pos..]);
+                if align_field >= 0x80 {
+                    return Err("malformed memop flags".into());
+                }
+                if let Some(natural) = natural_align_exponent(op) {
+                    if align_field & 0x3F > natural {
+                        return Err(WasmError::invalid(
+                            "alignment must not be larger than natural",
+                        ));
+                    }
+                }
                 skip_memarg_or_memory_immediate(code, &mut pos, op);
                 if matches!(op, 0x36..=0x3E) {
                     st.pop(2, "memory store")?;
@@ -1211,13 +1585,11 @@ fn validate_instruction_stream(
             0x3F => {
                 let (memidx, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
-                check_u16_immediate_ceiling(memidx, "memory.size memory index")?;
                 st.push(1); // memory.size
             }
             0x40 => {
                 let (memidx, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
-                check_u16_immediate_ceiling(memidx, "memory.grow memory index")?;
                 st.pop(1, "memory.grow")?;
                 st.push(1);
             }
@@ -1403,8 +1775,12 @@ fn validate_instruction_stream(
                 }
             }
             0xFC => {
-                let (sub, read) = read_leb128_u32(&code[pos..]);
-                pos += read;
+                // A prefixed opcode's sub-index is a `u32`, and its ENCODING is
+                // part of well-formedness: `\xfc\x87\x80\x80\x80\x80\x00`
+                // decodes to 7 but is written with bytes to spare.
+                let sub_start = pos;
+                leb_u32_fits(code, &mut pos)?;
+                let (sub, _) = read_leb128_u32(&code[sub_start..]);
                 match sub {
                     0x00..=0x07 => {
                         // non-trapping float-to-int conversions
@@ -1413,40 +1789,39 @@ fn validate_instruction_stream(
                     }
                     0x08 => {
                         if !has_data_count_section {
-                            return Err("Invalid WASM: memory.init without data_count".into());
+                            return Err("data count section required".into());
                         }
                         let (data_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: memory.init data index out of range".into());
                         }
-                        check_u16_immediate_ceiling(data_idx, "memory.init data index")?;
                         let (memidx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(memidx, "memory.init memory index")?;
                         st.pop(3, "memory.init")?;
                     }
                     0x09 => {
+                        // `data.drop` names a data segment, so it too requires
+                        // the data count section that declares how many exist.
+                        if !has_data_count_section {
+                            return Err("data count section required".into());
+                        }
                         let (data_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: data.drop index out of range".into());
                         }
-                        check_u16_immediate_ceiling(data_idx, "data.drop data index")?;
                     }
                     0x0A => {
                         let (dst_mem, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(dst_mem, "memory.copy dst memory")?;
                         let (src_mem, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(src_mem, "memory.copy src memory")?;
                         st.pop(3, "memory.copy")?;
                     }
                     0x0B => {
                         let (memidx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(memidx, "memory.fill memory index")?;
                         st.pop(3, "memory.fill")?;
                     }
                     0x0C => {
@@ -1457,7 +1832,6 @@ fn validate_instruction_stream(
                                 "Invalid WASM: table.init element index out of range".into()
                             );
                         }
-                        check_u16_immediate_ceiling(elem_idx, "table.init element index")?;
                         skip_leb128(code, &mut pos);
                         st.pop(3, "table.init")?;
                     }
@@ -1468,34 +1842,28 @@ fn validate_instruction_stream(
                         if elem_idx as usize >= elem_count {
                             return Err("Invalid WASM: elem.drop index out of range".into());
                         }
-                        check_u16_immediate_ceiling(elem_idx, "elem.drop element index")?;
                     }
                     0x0E => {
                         let (dst_table, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(dst_table, "table.copy dst table")?;
                         let (src_table, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(src_table, "table.copy src table")?;
                         st.pop(3, "table.copy")?;
                     }
                     0x0F => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(table_idx, "table.grow table index")?;
                         st.pop(2, "table.grow")?;
                         st.push(1);
                     }
                     0x10 => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(table_idx, "table.size table index")?;
                         st.push(1); // table.size
                     }
                     0x11 => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u16_immediate_ceiling(table_idx, "table.fill table index")?;
                         st.pop(3, "table.fill")?;
                     }
                     // Spec: an unrecognised sub-opcode is a MALFORMED module.
@@ -1504,7 +1872,7 @@ fn validate_instruction_stream(
                     other => {
                         return Err(format!(
                             "Invalid WASM: unknown 0xFC sub-opcode 0x{other:02X}"
-                        ));
+                        ).into());
                     }
                 }
             }
@@ -1584,7 +1952,7 @@ fn validate_instruction_stream(
                     other => {
                         return Err(format!(
                             "Invalid WASM: unknown 0xFE sub-opcode 0x{other:02X}"
-                        ));
+                        ).into());
                     }
                 }
             }
@@ -1592,7 +1960,7 @@ fn validate_instruction_stream(
             // silent skip cannot consume immediates it does not know,
             // desyncing the whole byte walk.
             other => {
-                return Err(format!("Invalid WASM: unknown opcode 0x{other:02X}"));
+                return Err(format!("Invalid WASM: unknown opcode 0x{other:02X}").into());
             }
         }
     }
@@ -1603,9 +1971,30 @@ fn validate_instruction_stream(
     }
     let body = &st.frames[0];
     if !body.unreachable && st.height != result_arity {
-        return Err("Invalid WASM: function body leaves wrong stack height".into());
+        // A body that leaves the wrong number of operands is ill-TYPED, not
+        // undecodable: it must carry Phase::Invalid, or `assert_invalid`
+        // discards it as a malformity and reports "the module validated".
+        return Err(WasmError::invalid(
+            "type mismatch: function body leaves wrong stack height",
+        ));
     }
     Ok(())
+}
+
+/// The natural alignment of a plain memory access as a base-2 EXPONENT — the
+/// width the instruction touches — or `None` when `op` is not one.
+fn natural_align_exponent(op: u8) -> Option<u32> {
+    Some(match op {
+        // i32.load8_*, i64.load8_*, i32.store8, i64.store8
+        0x2C | 0x2D | 0x30 | 0x31 | 0x3A | 0x3C => 0,
+        // i32.load16_*, i64.load16_*, i32.store16, i64.store16
+        0x2E | 0x2F | 0x32 | 0x33 | 0x3B | 0x3D => 1,
+        // i32.load, f32.load, i64.load32_*, i32.store, f32.store, i64.store32
+        0x28 | 0x2A | 0x34 | 0x35 | 0x36 | 0x38 | 0x3E => 2,
+        // i64.load, f64.load, i64.store, f64.store
+        0x29 | 0x2B | 0x37 | 0x39 => 3,
+        _ => return None,
+    })
 }
 
 fn skip_memarg_or_memory_immediate(code: &[u8], pos: &mut usize, op: u8) {
@@ -1628,7 +2017,7 @@ fn decode_standard_wasm(
     code_sec: &[u8],
     data_sec: &[u8],
     tag_sec: &[u8],
-) -> Result<Vec<Chunk>, String> {
+) -> Result<Vec<Chunk>, WasmError> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
     let func_type_indices = parse_function_section(func_sec);
@@ -2422,12 +2811,12 @@ fn translate_wasm_to_chunk(
             0x3F => {
                 let (memidx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::MEMORY_SIZE, memidx as u16, 0);
+                chunk.emit_op_idx(Op::MEMORY_SIZE, memidx as u16, 0);
             }
             0x40 => {
                 let (memidx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::MEMORY_GROW, memidx as u16, 0);
+                chunk.emit_op_idx(Op::MEMORY_GROW, memidx as u16, 0);
             }
 
             // f32 arithmetic — ALL opcodes
@@ -2563,24 +2952,24 @@ fn translate_wasm_to_chunk(
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
             0x24 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
-                chunk.emit_op_u16(Op::GLOBAL_SET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_SET, ci, 0);
             }
 
             0x25 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::TABLE_GET, idx as u16, 0);
+                chunk.emit_op_idx(Op::TABLE_GET, idx as u16, 0);
             }
             0x26 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::TABLE_SET, idx as u16, 0);
+                chunk.emit_op_idx(Op::TABLE_SET, idx as u16, 0);
             }
 
             // call_indirect
@@ -2700,62 +3089,58 @@ fn translate_wasm_to_chunk(
                         skip_leb128(wasm, &mut pos);
                         let (memidx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16_u16(Op::MEMORY_INIT, data_idx as u16, memidx as u16, 0);
+                        chunk.emit_op_idx_idx(Op::MEMORY_INIT, data_idx as u16, memidx as u16, 0);
                     }
                     0x09 => {
                         let (data_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::DATA_DROP, data_idx as u16, 0);
+                        chunk.emit_op_idx(Op::DATA_DROP, data_idx as u16, 0);
                     }
                     0x0A => {
                         let (dst_mem, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         let (src_mem, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16_u16(Op::MEMORY_COPY, dst_mem as u16, src_mem as u16, 0);
+                        chunk.emit_op_idx_idx(Op::MEMORY_COPY, dst_mem as u16, src_mem as u16, 0);
                     }
                     0x0B => {
                         let (memidx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::MEMORY_FILL, memidx as u16, 0);
+                        chunk.emit_op_idx(Op::MEMORY_FILL, memidx as u16, 0);
                     }
                     0x0C => {
                         let (elem_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::TABLE_INIT, elem_idx as u16, 0);
-                        chunk.emit((table_idx >> 8) as u8, 0);
-                        chunk.emit((table_idx & 0xff) as u8, 0);
+                        chunk.emit_op_idx_idx(Op::TABLE_INIT, elem_idx, table_idx, 0);
                     }
                     0x0D => {
                         let (elem_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::ELEM_DROP, elem_idx as u16, 0);
+                        chunk.emit_op_idx(Op::ELEM_DROP, elem_idx as u16, 0);
                     }
                     0x0E => {
                         let (dst_table, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         let (src_table, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::TABLE_COPY, dst_table as u16, 0);
-                        chunk.emit((src_table >> 8) as u8, 0);
-                        chunk.emit((src_table & 0xff) as u8, 0);
+                        chunk.emit_op_idx_idx(Op::TABLE_COPY, dst_table, src_table, 0);
                     }
                     0x0F => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::TABLE_GROW, table_idx as u16, 0);
+                        chunk.emit_op_idx(Op::TABLE_GROW, table_idx as u16, 0);
                     }
                     0x10 => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::TABLE_SIZE, table_idx as u16, 0);
+                        chunk.emit_op_idx(Op::TABLE_SIZE, table_idx as u16, 0);
                     }
                     0x11 => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u16(Op::TABLE_FILL, table_idx as u16, 0);
+                        chunk.emit_op_idx(Op::TABLE_FILL, table_idx as u16, 0);
                     }
                     _ => {}
                 }
@@ -2880,7 +3265,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             skip_leb128(wasm, pos); // typeidx
             let (field_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_struct_field_op(Op::STRUCT_GET_U, 1, field_idx as u16, 0);
+            chunk.emit_struct_field_op(Op::STRUCT_GET_U, 1, field_idx, 0);
         }
         _ if op == Op::STRUCT_SET => {
             skip_leb128(wasm, pos); // typeidx
@@ -2890,7 +3275,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             // the same storage `struct.get $t i` reads. typeidx 1 is a
             // non-zero marker: the VM only uses it to select the indexed
             // path, the fieldidx is what addresses the slot.
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 1, field_idx as u16, 0);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 1, field_idx, 0);
         }
         // `array.len` takes NO immediate — reading one consumed the first
         // byte of the following instruction.
@@ -2983,6 +3368,10 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let from_idx = chunk.add_constant(Value::String(name_for(flags & 0b01 != 0)));
             // ht_2 (target) first, then ht_1 (source), then depth — the order
             // `opcode/gc.rs` declares for `U16_U16_U8`.
+            // `BR_ON_CAST`'s immediates are still 16-bit. Narrowing is
+            // checked so a pool past 65535 cannot resolve to the wrong name.
+            let to_idx = u16::try_from(to_idx).expect("heaptype-name constant exceeds a u16 immediate");
+            let from_idx = u16::try_from(from_idx).expect("heaptype-name constant exceeds a u16 immediate");
             chunk.emit_op_u16(op, to_idx, 0);
             chunk.emit((from_idx >> 8) as u8, 0);
             chunk.emit((from_idx & 0xFF) as u8, 0);
@@ -3013,6 +3402,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
             skip_heaptype(wasm, pos);
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
+            let idx = u16::try_from(idx).expect("heaptype-name constant exceeds a u16 immediate");
             chunk.emit_op_u16(op, idx, 0);
         }
         _ => chunk.emit_op(op, 0),
@@ -3242,13 +3632,14 @@ fn parse_tag_section(data: &[u8], types: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 ///
 /// Anything it does not understand it ACCEPTS: this is a targeted rejecter for
 /// rules with fixtures, not a second decoder to drift from the first.
-fn validate_type_section(data: &[u8]) -> Result<(), String> {
+fn validate_type_section(data: &[u8]) -> Result<(), WasmError> {
     if data.is_empty() {
         return Ok(());
     }
     let mut pos = 0usize;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
+    let mut entries = 0u32;
     for _ in 0..count {
         if pos >= data.len() {
             break;
@@ -3263,11 +3654,19 @@ fn validate_type_section(data: &[u8]) -> Result<(), String> {
         } else {
             validate_subtype(data, &mut pos)?;
         }
+        entries += 1;
+    }
+    // The declared count must account for every byte: a count of 1 over a
+    // section holding two types leaves the second unread. Judged only when
+    // every declared entry was read, so the truncation `break` above cannot
+    // turn a short walk into a size complaint.
+    if entries == count && pos != data.len() {
+        return Err("section size mismatch".into());
     }
     Ok(())
 }
 
-fn validate_subtype(data: &[u8], pos: &mut usize) -> Result<(), String> {
+fn validate_subtype(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     if data.get(*pos).is_none() {
         return Ok(());
     }
@@ -3310,36 +3709,134 @@ fn validate_subtype(data: &[u8], pos: &mut usize) -> Result<(), String> {
     validate_comptype(data, pos)
 }
 
-fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), String> {
+/// Does the SIGNED LEB at `pos` fit `BITS`?
+///
+/// A signed LEB is at most `ceil(BITS/7)` bytes, and in the last byte every
+/// payload bit above the value's own width must equal the sign bit — otherwise
+/// the encoding claims a wider number than the type holds.
+fn leb_signed_fits(data: &[u8], pos: &mut usize, bits: u32) -> Result<(), WasmError> {
+    let mut shift = 0u32;
+    loop {
+        let Some(&byte) = data.get(*pos) else {
+            return Err("unexpected end of section or function".into());
+        };
+        *pos += 1;
+        if shift >= bits {
+            return Err("integer representation too long".into());
+        }
+        if byte & 0x80 == 0 {
+            let remaining = bits - shift;
+            if remaining < 7 {
+                // Bits at or above `remaining` are sign extension: all set or
+                // all clear, matching the value's own sign bit.
+                // ⛔ MASK WITHIN THE PAYLOAD. `0x7f << 3` overflows a u8 to
+                // `0xf8`, which includes the CONTINUATION bit — always clear on
+                // a final byte — so a valid maximal-length constant (payload
+                // `0x78`) matched neither "all clear" nor "all set" and was
+                // rejected as "integer too large".
+                let mask = (0x7fu8 << (remaining - 1)) & 0x7f;
+                let masked = byte & mask;
+                if masked != 0 && masked != mask {
+                    return Err("integer too large".into());
+                }
+            }
+            return Ok(());
+        }
+        shift += 7;
+    }
+}
+
+fn leb_s32_fits(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
+    leb_signed_fits(data, pos, 32)
+}
+
+fn leb_s64_fits(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
+    leb_signed_fits(data, pos, 64)
+}
+
+/// A section that is just `vec(u32)` — the function section's type indices.
+///
+/// Only the ENCODINGS are checked here; the values are read by the section's own
+/// parser, which does not return a `Result`.
+fn validate_index_vector_encoding(data: &[u8]) -> Result<(), WasmError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let mut pos = 0usize;
+    let count = read_vec_len(data, &mut pos)?;
+    for _ in 0..count {
+        if pos >= data.len() {
+            return Ok(());
+        }
+        leb_u32_fits(data, &mut pos)?;
+    }
+    Ok(())
+}
+
+/// A vector length: an in-range `u32` LEB, consumed.
+fn read_vec_len(data: &[u8], pos: &mut usize) -> Result<u32, WasmError> {
+    let start = *pos;
+    leb_u32_fits(data, pos)?;
+    let (value, read) = read_leb128_u32(&data[start..]);
+    if read == 0 {
+        return Err("integer representation too long".into());
+    }
+    Ok(value)
+}
+
+/// A field's mutability is `0x00` (const) or `0x01` (var) — nothing else.
+///
+/// The byte used to be skipped unread, so `\x02` decoded as a well-formed
+/// array type. `gc/binary-gc.wast` asserts "malformed mutability" on exactly
+/// that byte.
+fn validate_mutability(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
+    match data.get(*pos) {
+        Some(&GC_IMMUT | &GC_MUT) => {
+            *pos += 1;
+            Ok(())
+        }
+        Some(_) => Err("malformed mutability".into()),
+        None => Err("unexpected end of section or function".into()),
+    }
+}
+
+fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     let Some(&tag) = data.get(*pos) else {
         return Ok(());
     };
     *pos += 1;
+    // A comptype tag is ONE byte — `func` 0x60, `struct` 0x5f, `array` 0x5e —
+    // all below 0x80. A leading continuation bit means the tag was written as a
+    // multi-byte signed LEB (`\xe0\x7f` is -0x20, i.e. 0x60 the long way),
+    // which the spec rejects rather than folding back to the short form.
+    if tag & 0x80 != 0 {
+        return Err("integer representation too long".into());
+    }
     match tag {
         TYPE_FUNC => {
-            let (params, read) = read_leb128_u32(&data[*pos..]);
-            *pos += read;
+            // A vector's LENGTH is a `u32` and its ENCODING must be in range:
+            // `\x82\x80\x80\x80\x80\x00` decodes to 2 but is written with a
+            // byte too many, which the spec calls "integer representation too
+            // long". Reading the value alone accepted it silently.
+            let params = read_vec_len(data, pos)?;
             for _ in 0..params {
                 validate_value_type(data, pos)?;
             }
-            let (results, read) = read_leb128_u32(&data[*pos..]);
-            *pos += read;
+            let results = read_vec_len(data, pos)?;
             for _ in 0..results {
                 validate_value_type(data, pos)?;
             }
         }
         GC_STRUCT => {
-            let (fields, read) = read_leb128_u32(&data[*pos..]);
-            *pos += read;
+            let fields = read_vec_len(data, pos)?;
             for _ in 0..fields {
                 validate_value_type(data, pos)?;
-                // mutability byte
-                *pos += 1;
+                validate_mutability(data, pos)?;
             }
         }
         GC_ARRAY => {
             validate_value_type(data, pos)?;
-            *pos += 1; // mutability
+            validate_mutability(data, pos)?;
         }
         // Anything else is not a shape this pass claims to understand.
         _ => {}
@@ -3347,7 +3844,7 @@ fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_value_type(data: &[u8], pos: &mut usize) -> Result<(), String> {
+fn validate_value_type(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     let Some(&tag) = data.get(*pos) else {
         return Ok(());
     };
@@ -3737,7 +4234,23 @@ fn parse_table_section(data: &[u8]) -> Vec<u64> {
         if pos + 1 >= data.len() {
             break;
         }
-        pos += 1; // reftype
+        // `table ::= tt:tabletype | 0x40 0x00 tt:tabletype e:expr`.
+        // The second form carries an explicit initializer expression; the
+        // `0x40 0x00` prefix is not part of the tabletype and is skipped here,
+        // and the trailing `expr` after the limits below.
+        let has_init = data[pos] == 0x40 && data.get(pos + 1) == Some(&0x00);
+        if has_init {
+            pos += 2;
+        }
+        // A reftype is NOT always one byte: `(ref ht)` / `(ref null ht)` carry
+        // a heaptype immediate. Skipping a fixed one byte read the heaptype as
+        // the limits flags, which desynchronised the rest of the section.
+        if read_value_type(data, &mut pos).is_none() {
+            break;
+        }
+        if pos >= data.len() {
+            break;
+        }
         let flags = data[pos];
         pos += 1;
         let is_table64 = flags & 0x04 != 0;
@@ -3759,6 +4272,10 @@ fn parse_table_section(data: &[u8]) -> Vec<u64> {
                 (value as u64, read)
             };
             pos += read;
+        }
+        // The `0x40 0x00` form's trailing initializer expression.
+        if has_init && skip_const_expr(data, &mut pos).is_err() {
+            break;
         }
         tables.push(min);
     }
@@ -3988,13 +4505,18 @@ fn read_stack_switch_handlers(data: &[u8], pos: &mut usize) -> Vec<StackSwitchHa
 }
 
 #[allow(dead_code)]
-fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), String> {
+fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     while *pos < data.len() {
         let op = data[*pos];
         *pos += 1;
         match op {
             0x0B => return Ok(()),
-            0x41 | 0x42 | 0x23 | 0xD2 => skip_leb128(data, pos),
+            // The immediate's ENCODING is part of well-formedness: `i32.const`
+            // takes an `s32`, `i64.const` an `s64`, and `global.get`/`ref.func`
+            // a `u32`. Skipping the bytes accepted an overlong encoding.
+            0x41 => leb_s32_fits(data, pos)?,
+            0x42 => leb_s64_fits(data, pos)?,
+            0x23 | 0xD2 => leb_u32_fits(data, pos)?,
             0x43 => *pos += 4,
             0x44 => *pos += 8,
             0xD0 => *pos += 1,
@@ -4002,7 +4524,7 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), String> {
             _ => {
                 return Err(format!(
                     "Invalid WASM: unsupported const expr opcode 0x{op:02x}"
-                ));
+                ).into());
             }
         }
         if *pos > data.len() {
@@ -4012,7 +4534,7 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), String> {
     Err("Invalid WASM: unterminated const expression".into())
 }
 
-fn read_i32_const_expr_as_u64(data: &[u8], pos: &mut usize) -> Result<u64, String> {
+fn read_i32_const_expr_as_u64(data: &[u8], pos: &mut usize) -> Result<u64, WasmError> {
     if data.get(*pos).copied() != Some(0x41) {
         return Err("Invalid WASM: active segment offset must be i32.const".into());
     }
@@ -4029,7 +4551,7 @@ fn read_i32_const_expr_as_u64(data: &[u8], pos: &mut usize) -> Result<u64, Strin
     Ok(value as u64)
 }
 
-fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, String> {
+fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, WasmError> {
     if *pos >= data.len() {
         return Err("Invalid WASM: truncated element expression".into());
     }
@@ -4048,10 +4570,17 @@ fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, String> {
             *pos += read;
             Value::I32(func_idx as i32)
         }
+        // `global.get x` is a constant expression too, and an element segment
+        // may initialise a slot from an imported global.
+        0x23 => {
+            let (_global_idx, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            Value::Null
+        }
         _ => {
             return Err(format!(
                 "Invalid WASM: unsupported element expression opcode 0x{op:02x}"
-            ));
+            ).into());
         }
     };
     if data.get(*pos).copied() != Some(0x0B) {
@@ -4134,8 +4663,160 @@ fn atomic_opcode_name(sub: u32) -> &'static str {
     }
 }
 
+/// Does the unsigned LEB at `pos` fit a `u64`?
+///
+/// A `u64` LEB is at most ten bytes, and the tenth carries only ONE payload
+/// bit — the rest must be zero. Neither limit was checked, so an overlong or
+/// over-wide encoding decoded to a truncated value instead of being rejected.
+fn leb_u64_fits(data: &[u8], mut pos: usize) -> Result<(), WasmError> {
+    let mut shift = 0u32;
+    loop {
+        let Some(&byte) = data.get(pos) else {
+            return Err("unexpected end of section or function".into());
+        };
+        pos += 1;
+        if shift == 63 && byte & 0x7e != 0 {
+            return Err("integer too large".into());
+        }
+        if shift >= 64 {
+            return Err("integer representation too long".into());
+        }
+        if byte & 0x80 == 0 {
+            return Ok(());
+        }
+        shift += 7;
+    }
+}
+
+/// Does the unsigned LEB at `pos` fit a `u32`?
+///
+/// At most five bytes, and the fifth carries only four payload bits.
+fn leb_u32_fits(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
+    let mut shift = 0u32;
+    loop {
+        let Some(&byte) = data.get(*pos) else {
+            return Err("unexpected end of section or function".into());
+        };
+        *pos += 1;
+        if shift >= 32 {
+            return Err("integer representation too long".into());
+        }
+        if shift == 28 && byte & 0x70 != 0 {
+            return Err("integer too large".into());
+        }
+        if byte & 0x80 == 0 {
+            return Ok(());
+        }
+        shift += 7;
+    }
+}
+
+/// A limits FLAGS field is one byte drawn from a closed set, not a LEB.
+///
+/// Bit 0 says a maximum follows, bit 1 marks it shared, bit 2 makes the
+/// addresses 64-bit. Every other bit is undefined, so `\x08` and `\x10` are
+/// malformed — and so is `\x81\x00`, the flags byte written as a two-byte
+/// LEB: the continuation bit is bit 7, which no flag claims.
+fn validate_limits_flags(flags: u8) -> Result<(), WasmError> {
+    if flags & !0x07 != 0 {
+        return Err("malformed limits flags".into());
+    }
+    Ok(())
+}
+
+/// A table entry is `reftype limits`; `parse_table_section` answers sizes and
+/// cannot report, so the flags rule lives here beside the memory one.
+fn validate_table_section(data: &[u8]) -> Result<(), WasmError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let mut pos = 0;
+    let count = read_vec_len(data, &mut pos)?;
+    for _ in 0..count {
+        if pos >= data.len() {
+            return Err("Invalid WASM: malformed table section".into());
+        }
+        // A table's type may be the `0x40 0x00` initialiser form, and its
+        // reftype may be multi-byte, so the flags byte is reached through the
+        // same readers the section parser uses.
+        if data[pos] == 0x40 {
+            pos += 2;
+        }
+        read_value_type(data, &mut pos);
+        if pos >= data.len() {
+            return Err("Invalid WASM: malformed table section".into());
+        }
+        let flags = data[pos];
+        pos += 1;
+        validate_limits_flags(flags)?;
+        skip_leb128(data, &mut pos);
+        if flags & 0x01 != 0 {
+            skip_leb128(data, &mut pos);
+        }
+        if data.get(pos).copied() == Some(0x40) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Every limit in a memory or table section must be encoded in range.
+///
+/// `\x82\x80\x80\x80\x80\x80\x80\x80\x80\x80\x00` is minimum 2 written with
+/// ten bytes too many: it DECODES to 2, so nothing downstream noticed, but the
+/// spec calls it "integer representation too long".
+fn validate_limits_encoding(data: &[u8]) -> Result<(), WasmError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let mut pos = 0usize;
+    leb_u32_fits(data, &mut pos)?; // entry count
+    let (count, read) = read_leb128_u32(data);
+    if read == 0 {
+        return Err("integer representation too long".into());
+    }
+    pos = read;
+    for _ in 0..count {
+        let Some(&flags) = data.get(pos) else {
+            return Ok(());
+        };
+        pos += 1;
+        // A table entry's element type sits between the flags-bearing form and
+        // the limits; the `0x40 0x00` prefix and the reftype are skipped by the
+        // section's own parser, so only the plain form is checked here.
+        if flags & 0xf8 != 0 {
+            return Ok(());
+        }
+        let is64 = flags & 0x04 != 0;
+        if is64 {
+            leb_u64_fits(data, pos)?;
+            skip_leb128(data, &mut pos);
+            if flags & 0x01 != 0 {
+                leb_u64_fits(data, pos)?;
+                skip_leb128(data, &mut pos);
+            }
+        } else {
+            leb_u32_fits(data, &mut pos)?;
+            if flags & 0x01 != 0 {
+                leb_u32_fits(data, &mut pos)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn skip_memarg(data: &[u8], pos: &mut usize) {
+    // Bit 6 of the align field says an explicit memidx follows it, and the
+    // memidx sits BETWEEN the align and the offset.
+    let has_memidx = if *pos < data.len() {
+        read_leb128_u32(&data[*pos..]).0 & 0x40 != 0
+    } else {
+        false
+    };
     skip_leb128(data, pos); // align
+    if has_memidx {
+        skip_leb128(data, pos); // memidx
+    }
     skip_leb128(data, pos); // offset
 }
 
@@ -4209,7 +4890,7 @@ fn read_leb128_i32(data: &[u8]) -> (i32, usize) {
     (result, pos)
 }
 
-fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
+fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     let mut pos = 0;
     let (name_len, read) = read_leb128_u32(&data[pos..]);
     pos += read;

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 // `register_dotnet_net` retired — `Dns.GetHostName()` lowers to
 // `node:os.hostname()` via `emitter::dotnet::core::sockets_adapter`.
@@ -74,7 +74,7 @@ fn env_fn(
             // above `register`. The empty vector is the whole point of
             // declaring them: it is what makes a call that passes an argument
             // report itself.
-            params: vec![],
+            params: Param::unnamed_list(vec![]),
             results,
         }),
     );

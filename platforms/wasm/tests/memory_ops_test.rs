@@ -14,14 +14,14 @@ fn memory_grow_and_size() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // memory_size (initial = 0 pages)
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     // Grow by 1 page (64KB)
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     // memory_grow returns old size
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1); // 1 page after grow
 }
@@ -34,7 +34,7 @@ fn memory_grow_returns_minus_one_when_max_exceeded() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), -1);
@@ -300,7 +300,7 @@ fn call_indirect_vm_function() {
     main.emit_i32_const(0, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
-    main.emit_op_u16(Op::TABLE_SET, 0, 0);
+    main.emit_op_idx(Op::TABLE_SET, 0u32, 0);
 
     // call_indirect table 0 with index 0, 0 args, 1 result.
     // `call_indirect` is `U8_U8_U8`: argc, tableidx, expected_results. The

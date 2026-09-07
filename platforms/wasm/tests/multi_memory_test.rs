@@ -818,7 +818,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     let mut grow = Chunk::new("<grow>");
     grow.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     grow.emit_i64_const(2, 0);
-    grow.emit_op_u16(Op::TABLE_GROW, 0, 0);
+    grow.emit_op_idx(Op::TABLE_GROW, 0u32, 0);
     let result = vm.run(vec![grow]).unwrap();
     assert_eq!(result.as_i64(), 3);
     assert_eq!(vm.wasm_tables[0].len(), 5);
@@ -826,20 +826,20 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     let mut chunk = Chunk::new("<table64>");
     chunk.emit_i64_const(1, 0);
     chunk.emit_i32_const(7, 0);
-    chunk.emit_op_u16(Op::TABLE_SET, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_SET, 0u32, 0);
 
     chunk.emit_i64_const(2, 0);
     chunk.emit_i32_const(9, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_FILL, 0u32, 0);
 
     chunk.emit_i64_const(3, 0);
     chunk.emit_i64_const(1, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_idx_idx(Op::TABLE_COPY, 0u32, 0u32, 0);
 
     chunk.emit_i64_const(3, 0);
-    chunk.emit_op_u16(Op::TABLE_GET, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_GET, 0u32, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 7);
@@ -865,7 +865,7 @@ fn spec_table64_init_copies_element_segment_with_i64_indices() {
     chunk.emit_i64_const(3, 0);
     chunk.emit_i64_const(1, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_idx_idx(Op::TABLE_INIT, 0u32, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).expect("table64.init should copy");
@@ -1017,7 +1017,7 @@ fn memory_size_reports_correct_size() {
     let mut vm = VM::new();
     vm.memory.resize(2 * 65536, 0); // 2 pages
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 2, "memory.size should return page count");
 }
@@ -1028,7 +1028,7 @@ fn memory_grow_increases_size_and_returns_old() {
     vm.memory.resize(65536, 0); // 1 page
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 1, "memory.grow returns old size in pages");
     assert_eq!(vm.memory.len(), 3 * 65536, "memory grew by 2 pages");
@@ -1043,7 +1043,7 @@ fn memory_fill_in_memory_zero() {
     chunk.emit_i32_const(8, 0);
     chunk.emit_i32_const(0xAB, 0);
     chunk.emit_i32_const(4, 0);
-    chunk.emit_op_u16(Op::MEMORY_FILL, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_FILL, 0u32, 0);
     // Load back byte at addr 8
     chunk.emit_i32_const(8, 0);
     chunk.emit_op(Op::I32_LOAD8_U, 0);

@@ -762,9 +762,9 @@ fn core_reference_opcodes_have_spec_byte_values() {
 #[test]
 fn memory64_internal_ops_emit_standard_memory_bytes() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -803,7 +803,7 @@ fn memory64_ops_emit_i64_memory_limits_flag() {
     // off any instruction.
     chunk.memory_min_pages = vec![1];
     chunk.memory_is_64 = vec![true];
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);
@@ -865,10 +865,10 @@ fn multi_memory_bulk_ops_emit_memory_index_immediates() {
     // ops (declared in their OperandFormat — the 0xEE selector block is
     // retired).
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u16(Op::MEMORY_GROW, 1, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 1u32, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16_u16(Op::MEMORY_COPY, 1, 2, 0);
-    chunk.emit_op_u16(Op::MEMORY_FILL, 1, 0);
+    chunk.emit_op_idx_idx(Op::MEMORY_COPY, 1u32, 2u32, 0);
+    chunk.emit_op_idx(Op::MEMORY_FILL, 1u32, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);

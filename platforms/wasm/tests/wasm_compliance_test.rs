@@ -3267,7 +3267,7 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
 #[test]
 fn table_size_returns_current_size() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0); // table index 0
+    chunk.emit_op_idx(Op::TABLE_SIZE, 0u32, 0); // table index 0
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (empty)
@@ -3279,9 +3279,9 @@ fn table_grow_returns_old_size_and_resizes() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u16(Op::TABLE_GROW, 0, 0); // table index 0
+    chunk.emit_op_idx(Op::TABLE_GROW, 0u32, 0); // table index 0
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_SIZE, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown by the op)
@@ -3293,15 +3293,15 @@ fn table_fill_assigns_value_across_range() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(5, 0);
-    chunk.emit_op_u16(Op::TABLE_GROW, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_i32_const(1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_FILL, 0u32, 0);
 
-    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::TABLE_SIZE, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown + filled by the ops)

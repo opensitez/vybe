@@ -23,6 +23,9 @@
 //! )
 //! ```
 
+pub mod binary;
+pub use binary::wat_from_binary;
+
 use std::fmt::Write;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
@@ -174,6 +177,17 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
         }
         OperandFormat::U16 => {
             let v = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
+            let _ = write!(out, " {v}");
+        }
+        // A fixed-width big-endian u32: `global.get` / `global.set` carry a
+        // `globalidx`, which is a `u32` in the spec.
+        OperandFormat::U32 => {
+            let v = u32::from_be_bytes([
+                chunk.code[ip + 4],
+                chunk.code[ip + 5],
+                chunk.code[ip + 6],
+                chunk.code[ip + 7],
+            ]);
             let _ = write!(out, " {v}");
         }
         OperandFormat::I16 => {

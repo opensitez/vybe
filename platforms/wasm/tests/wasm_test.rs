@@ -484,7 +484,7 @@ fn reinterpret_f64_i64() {
 fn memory_i32_load8_signed() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0xFF at addr 0
@@ -514,7 +514,7 @@ fn memory_i32_load8_signed() {
 fn memory_i32_load16() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0x8001 as i32 at addr 0
@@ -544,7 +544,7 @@ fn memory_i32_load16() {
 fn memory_f32_roundtrip() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store f32(3.14) at addr 0
@@ -679,11 +679,11 @@ fn roundtrip_memory_ops() {
 
     // memory.grow 1
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // memory.size → should be 1
-    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let wasm_bytes = wasm::write_wasm(&vec![chunk]);
@@ -831,7 +831,7 @@ fn atomic_rmw_add() {
     let mut chunk = Chunk::new("test");
     // Grow memory
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 100 at addr 0
     chunk.emit_i32_const(0, 0);
@@ -853,7 +853,7 @@ fn atomic_rmw_add() {
 fn atomic_cmpxchg() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 50 at addr 0
     chunk.emit_i32_const(0, 0);
@@ -1037,7 +1037,7 @@ fn memory64_grow_and_load() {
     let mut chunk = Chunk::new("test");
     // Grow with i64
     chunk.emit_i64_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 42 at i64 addr 0
     chunk.emit_i64_const(0, 0);
@@ -1059,7 +1059,7 @@ fn memory64_grow_and_load() {
 fn memory64_load_store_apply_memarg_offset() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i64_const(1, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_i64_const(4, 0);

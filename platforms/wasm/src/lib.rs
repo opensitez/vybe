@@ -18,8 +18,8 @@ pub mod encoding;
 pub mod reader;
 pub mod writer;
 
-pub use disassembler::write_wat;
-pub use reader::read_wasm;
+pub use disassembler::{wat_from_binary, write_wat};
+pub use reader::{Phase, WasmError, read_wasm, read_wasm_classified};
 pub use writer::write_wasm;
 
 /// Register this platform's binary loaders with the VM's module

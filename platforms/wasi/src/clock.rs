@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 /// Declare a `wasi:clocks/*` function.
 ///
@@ -17,7 +17,7 @@ fn clock_fn(
 ) {
     vm.register_host(HostFnDecl::new(module, name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }

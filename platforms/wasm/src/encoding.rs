@@ -154,7 +154,7 @@ pub fn encode_memarg_with_memidx(out: &mut Vec<u8>, align: u32, offset: u64, mem
 
 pub fn read_leb128_u32(data: &[u8]) -> (u32, usize) {
     let mut result = 0u32;
-    let mut shift = 0;
+    let mut shift = 0u32;
     let mut pos = 0;
     loop {
         if pos >= data.len() {
@@ -162,6 +162,13 @@ pub fn read_leb128_u32(data: &[u8]) -> (u32, usize) {
         }
         let byte = data[pos];
         pos += 1;
+        // ⛔ A u32 LEB IS AT MOST FIVE BYTES. Past that the shift overflows and
+        // this PANICKED — `binary-leb128.wast` feeds overlong encodings on
+        // purpose, so the decoder has to reject them, not abort the process.
+        // `0` bytes read is the failure signal every caller already tests.
+        if shift >= 32 {
+            return (0, 0);
+        }
         result |= ((byte & 0x7f) as u32) << shift;
         if byte & 0x80 == 0 {
             break;
@@ -236,6 +243,16 @@ pub fn read_u16(code: &[u8], ip: &mut usize) -> u16 {
 
 pub fn read_i16(code: &[u8], ip: &mut usize) -> i16 {
     read_u16(code, ip) as i16
+}
+
+/// A fixed-width big-endian `u32` bytecode operand (`OperandFormat::U32`).
+pub fn read_u32_be(code: &[u8], ip: &mut usize) -> u32 {
+    let mut v = 0u32;
+    for _ in 0..4 {
+        v = (v << 8) | code[*ip] as u32;
+        *ip += 1;
+    }
+    v
 }
 
 // ── Value serialization ─────────────────────────────────────────────────

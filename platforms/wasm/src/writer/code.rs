@@ -328,7 +328,7 @@ fn wasm_struct_type_matching_field_count(
 fn dynamic_prop_name_global(
     chunk: &Chunk,
     type_ctx: &WasmTypeContext,
-    field_name_idx: u16,
+    field_name_idx: u32,
 ) -> Option<u32> {
     let value = chunk.constants.get(field_name_idx as usize)?;
     let text = format!("{value}");
@@ -338,24 +338,46 @@ fn dynamic_prop_name_global(
 fn wasm_struct_field_by_typeidx(
     chunk: &Chunk,
     type_ctx: &WasmTypeContext,
-    typeidx: u16,
-    field_name_idx: u16,
+    typeidx: u32,
+    field_name_idx: u32,
 ) -> Option<(u32, u32)> {
     if typeidx == 0 {
         return None;
     }
-    // The operand is 1-based over `chunk.types`, matching `TypeEntry.parent_index`.
-    let ty = chunk.types.get(typeidx as usize - 1)?;
-    let value = chunk.constants.get(field_name_idx as usize)?;
-    let field_name = format!("{value}");
-    let field_idx = ty.fields.iter().position(|field| field == &field_name)?;
-    Some((type_ctx.struct_type(&ty.name)?, field_idx as u32))
+    // ⛔⛔ TWO FAULTS HERE, AND EACH ONE ALONE MADE THIS RETURN `None`.
+    //
+    // 1. THE OPERAND *IS* THE FIELD INDEX when the typeidx is real. It was read
+    //    as a CONSTANT-POOL index and looked up as a field NAME. Every other
+    //    side disagrees: the compiler emits `ResolvedSlot::Indexed`'s `field`
+    //    (a `position()` result) at `class_slots.rs:463/507`, the wasm reader
+    //    emits `field_idx` at `reader/mod.rs:2883/2893`, and the VM reads it as
+    //    an index — `dispatch.rs:4237`, `if typeidx != 0 { /* struct.set $t i */ }`.
+    //
+    // 2. `chunk.types` IS EMPTY IN EVERY CHUNK BUT 0, and constructors are
+    //    exactly where field writes live. Same trap `wasm_struct_type_for_chunk_type`
+    //    and `descriptor_global_for_chunk_type` above already document; this
+    //    function still had the by-name, by-chunk form. `struct_type_by_index`
+    //    answers without a name and without a chunk.
+    //
+    // Either fault alone yields `None`, and the caller then falls through to
+    // `wasm_struct_field_for_name`'s `(0, 0)` sentinel — where type 0 is a REAL
+    // type, the class's own. Measured on `class Point { a; b; e; }`: all three
+    // initialisers emitted `struct.set $Point $a`, writing `b` and `e` into
+    // `a`'s slot. It reads as plausible in the disassembly, and the program
+    // still printed `1 2 3` because reads go through the name-keyed property
+    // map — so the indexed slots were wrong and nothing could observe it.
+    //
+    // ⛔ No bounds check is possible here (the field count lives on chunk 0),
+    // and none is needed: the compiler derived the index from `position()` over
+    // that very field list, so it is in range by construction.
+    let _ = chunk;
+    Some((type_ctx.struct_type_by_index(typeidx as u32)?, field_name_idx as u32))
 }
 
 fn wasm_struct_field_for_name(
     chunk: &Chunk,
     type_ctx: &WasmTypeContext,
-    field_name_idx: u16,
+    field_name_idx: u32,
 ) -> (u32, u32) {
     let Some(value) = chunk.constants.get(field_name_idx as usize) else {
         return (0, 0);
@@ -600,46 +622,46 @@ pub fn encode_code_section(
                 write_leb128_u32(&mut body, op.sub() as u32);
                 match op {
                     Op::MEMORY_INIT => {
-                        // spec: data_idx, memory_idx (internal: u16 BE + u16 BE)
-                        let data_idx = read_u16(&chunk.code, &mut ip);
-                        let memidx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, data_idx as u32);
-                        write_leb128_u32(&mut body, memidx as u32);
+                        // spec: data_idx, memory_idx — LEB u32 on both sides now.
+                        let data_idx = read_leb_u32(&chunk.code, &mut ip);
+                        let memidx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, data_idx);
+                        write_leb128_u32(&mut body, memidx);
                     }
                     Op::DATA_DROP => {
-                        let data_idx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, data_idx as u32);
+                        let data_idx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, data_idx);
                     }
                     Op::MEMORY_COPY => {
                         // spec: dst_mem, src_mem
-                        let dst_mem = read_u16(&chunk.code, &mut ip);
-                        let src_mem = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, dst_mem as u32);
-                        write_leb128_u32(&mut body, src_mem as u32);
+                        let dst_mem = read_leb_u32(&chunk.code, &mut ip);
+                        let src_mem = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, dst_mem);
+                        write_leb128_u32(&mut body, src_mem);
                     }
                     Op::MEMORY_FILL => {
-                        let memidx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, memidx as u32);
+                        let memidx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, memidx);
                     }
                     Op::TABLE_INIT => {
-                        let elem_idx = read_u16(&chunk.code, &mut ip);
-                        let table_idx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, elem_idx as u32);
-                        write_leb128_u32(&mut body, table_idx as u32);
+                        let elem_idx = read_leb_u32(&chunk.code, &mut ip);
+                        let table_idx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, elem_idx);
+                        write_leb128_u32(&mut body, table_idx);
                     }
                     Op::ELEM_DROP => {
-                        let elem_idx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, elem_idx as u32);
+                        let elem_idx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, elem_idx);
                     }
                     Op::TABLE_COPY => {
-                        let dst_table = read_u16(&chunk.code, &mut ip);
-                        let src_table = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, dst_table as u32);
-                        write_leb128_u32(&mut body, src_table as u32);
+                        let dst_table = read_leb_u32(&chunk.code, &mut ip);
+                        let src_table = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, dst_table);
+                        write_leb128_u32(&mut body, src_table);
                     }
                     Op::TABLE_GROW | Op::TABLE_SIZE | Op::TABLE_FILL => {
-                        let table_idx = read_u16(&chunk.code, &mut ip);
-                        write_leb128_u32(&mut body, table_idx as u32);
+                        let table_idx = read_leb_u32(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, table_idx);
                     }
                     _ => {
                         ip += op.operand_format().size_in(&chunk.code, ip);
@@ -940,8 +962,8 @@ fn emit_core_op(
                 emit_unbox_i32(body, rt_idx);
             }
             body.push(op.sub() as u8);
-            let memidx = read_u16(&chunk.code, ip);
-            write_leb128_u32(body, memidx as u32);
+            let memidx = read_leb_u32(&chunk.code, ip);
+            write_leb128_u32(body, memidx);
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
         // Memory load: the address is the ONLY operand, so it is on top and
@@ -1009,7 +1031,7 @@ fn emit_core_op(
         // constant, then host globals, then the module's own. One definition,
         // consumed at both ends, so no remapping is needed or wanted here.
         _ if op == Op::GLOBAL_GET => {
-            let gidx = read_u16(&chunk.code, ip) as u32;
+            let gidx = read_u32_be(&chunk.code, ip);
             body.push(0x23); // global.get
             write_leb128_u32(body, gidx);
         }
@@ -1025,7 +1047,7 @@ fn emit_core_op(
             //
             // Same false premise as the `LOCAL_SET` arm above, in a second
             // place: a claim about the VM that the VM does not make.
-            let wasm_gidx = read_u16(&chunk.code, ip) as u32;
+            let wasm_gidx = read_u32_be(&chunk.code, ip);
             body.push(0x24); // global.set
             write_leb128_u32(body, wasm_gidx);
         }
@@ -1059,14 +1081,12 @@ fn emit_core_op(
         // Bytecode carries a u16 BE table index; WASM binary uses a
         // LEB128 tableidx, so we re-serialize on the way out.
         _ if op == Op::TABLE_GET => {
-            let tbl = ((chunk.code[*ip] as u32) << 8) | chunk.code[*ip + 1] as u32;
-            *ip += 2;
+            let tbl = read_leb_u32(&chunk.code, ip);
             body.push(0x25);
             write_leb128_u32(body, tbl);
         }
         _ if op == Op::TABLE_SET => {
-            let tbl = ((chunk.code[*ip] as u32) << 8) | chunk.code[*ip + 1] as u32;
-            *ip += 2;
+            let tbl = read_leb_u32(&chunk.code, ip);
             body.push(0x26);
             write_leb128_u32(body, tbl);
         }
@@ -1946,8 +1966,8 @@ fn emit_gc_op(
             emit_externalize(body); // (ref $struct) → externref
         }
         _ if op == Op::STRUCT_GET => {
-            let named_type = read_u16(&chunk.code, ip);
-            let field_name_idx = read_u16(&chunk.code, ip);
+            let named_type = read_leb_u32(&chunk.code, ip);
+            let field_name_idx = read_leb_u32(&chunk.code, ip);
             // ⛔ TYPEIDX 0 IS "NO TYPE", NOT "TYPE 0". A dynamic property read
             // by NAME is not a typed struct access, and lowering it to one
             // emitted `struct.get 0 0` — a well-formed instruction addressing a
@@ -1978,8 +1998,8 @@ fn emit_gc_op(
             // Result is externref (field type) — no conversion needed
         }
         _ if op == Op::STRUCT_SET => {
-            let named_type = read_u16(&chunk.code, ip);
-            let field_name_idx = read_u16(&chunk.code, ip);
+            let named_type = read_leb_u32(&chunk.code, ip);
+            let field_name_idx = read_leb_u32(&chunk.code, ip);
             // See the read side above: typeidx 0 is an untyped by-name write.
             // Stack is `[obj, val]` and the host fn wants `(obj, name, val)`,
             // so the value is parked in the temp while the name is pushed.
@@ -2273,8 +2293,8 @@ fn emit_gc_op(
             // Our struct.get uses a field-name-constant u16 operand;
             // spec packed variants take typeidx + fieldidx. Emit the
             // spec byte with conservative indices for round-trip sanity.
-            let _typeidx = read_u16(&chunk.code, ip);
-            let field_name_idx = read_u16(&chunk.code, ip);
+            let _typeidx = read_leb_u32(&chunk.code, ip);
+            let field_name_idx = read_leb_u32(&chunk.code, ip);
             let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             emit_internalize(body);
             body.push(0xFB);

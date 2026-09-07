@@ -2,7 +2,7 @@
 
 use crate::encoding::*;
 use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::{Op, read_leb_u32};
 
 /// Collect all runtime imports needed by the chunks.
 /// Returns (module, name) pairs for both vybe:rt and wasm:js-* builtins.
@@ -241,8 +241,8 @@ pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
 ///
 /// Opcodes are four bytes (group, sub — both big-endian u16) followed by the
 /// operands, and `STRUCT_GET`/`STRUCT_SET` carry `(typeidx, name-constant)` as
-/// two more big-endian u16s. Decoded here rather than reusing the writer's
-/// walker because this runs before the code section is built.
+/// two LEB128 `u32`s. Decoded here rather than reusing the writer's walker
+/// because this runs before the code section is built.
 fn dynamic_property_names(chunk: &Chunk) -> Vec<String> {
     let mut names = Vec::new();
     let mut ip = 0usize;
@@ -253,12 +253,15 @@ fn dynamic_property_names(chunk: &Chunk) -> Vec<String> {
             continue;
         };
         let operands = ip + 4;
-        if (op == Op::STRUCT_GET || op == Op::STRUCT_SET)
-            && operands + 3 < chunk.code.len()
-            && be(&chunk.code, operands) == 0
-            && let Some(value) = chunk.constants.get(be(&chunk.code, operands + 2) as usize)
-        {
-            names.push(format!("{value}"));
+        if op == Op::STRUCT_GET || op == Op::STRUCT_SET {
+            let mut cursor = operands;
+            let typeidx = read_leb_u32(&chunk.code, &mut cursor);
+            let name_idx = read_leb_u32(&chunk.code, &mut cursor);
+            if typeidx == 0
+                && let Some(value) = chunk.constants.get(name_idx as usize)
+            {
+                names.push(format!("{value}"));
+            }
         }
         ip = operands + op.operand_format().size_in(&chunk.code, operands);
     }
