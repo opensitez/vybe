@@ -406,7 +406,7 @@ pub fn field_defaults(class_name: &str) -> Vec<(&'static str, &'static str)> {
 /// `["Scaffold", "StatefulWidget", "Widget"]`. Stamped as the object's
 /// `__types` array so `x is StatefulWidget` matches by membership.
 ///
-/// The WALK is `vybe_runtime::namespaces::ancestry_of` — one definition shared
+/// The WALK is `vybe_compiler::primitives::namespaces::ancestry_of` — one definition shared
 /// with the other catalog-backed adapters instead of four hand-rolled loops.
 /// What stays here is the `parent_of` lookup, because `FlutterClass` is an
 /// adapter row type and has no business in `vybe_runtime`.
@@ -417,7 +417,7 @@ pub fn field_defaults(class_name: &str) -> Vec<(&'static str, &'static str)> {
 /// lookup — no difference for this catalog, and it is what stops a cyclic
 /// `parent` spinning forever, which the loop this replaces did.
 pub fn ancestry(class: &FlutterClass) -> Vec<String> {
-    vybe_runtime::namespaces::ancestry_of(class.name, |name| {
+    vybe_compiler::primitives::namespaces::ancestry_of(class.name, |name| {
         flutter_classes()
             .iter()
             .find(|c| c.name == name)

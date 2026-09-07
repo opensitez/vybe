@@ -27,7 +27,7 @@
 //! it implements.
 //!
 //! Instance methods are NOT registered in the namespace tree: member dispatch
-//! is receiver-based off the vtable, and `vybe_runtime::namespaces` states that
+//! is receiver-based off the vtable, and `vybe_compiler::primitives::namespaces` states that
 //! only `ctor` and `statics` are reachable by a path walk. `plib`'s registrar
 //! records the same rule.
 
