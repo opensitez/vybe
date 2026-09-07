@@ -42,21 +42,27 @@ materialize_bool_results = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"fmt.Println"     = { emit = "common:go.fmt_println",    min_args = 0, max_args = 255 }
-"fmt.Print"       = { emit = "common:go.fmt_print",      min_args = 0, max_args = 255 }
-"fmt.Printf"      = { emit = "common:go.fmt_printf",     min_args = 1, max_args = 255 }
-"fmt.Sprint"      = { emit = "common:go.fmt_sprint",     min_args = 0, max_args = 255 }
-"fmt.Sprintf"     = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
+"__go_fmt_println" = { emit = "common:go.fmt_println",   min_args = 0, max_args = 255 }
+"__go_fmt_print"  = { emit = "common:go.fmt_print",      min_args = 0, max_args = 255 }
+"__go_fmt_sprint" = { emit = "common:go.fmt_sprint",     min_args = 0, max_args = 255 }
 "__go_sprintf"    = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
-"__go_fmt_string" = { emit = "common:object.to_string_role", min_args = 1, max_args = 1 }
+"__go_fmt_string" = { emit = "common:go.fmt_string",     min_args = 1, max_args = 1 }
+"__go_fmt_quote"  = { emit = "common:go.fmt_quote",      min_args = 1, max_args = 1 }
+"__go_fmt_fix_exp" = { emit = "common:go.fmt_fix_exp",   min_args = 1, max_args = 1 }
+"__go_fmt_slice"  = { emit = "common:go.fmt_slice",      min_args = 1, max_args = 1 }
+
+# ── errors ──────────────────────────────────────────────────────────────────
+
+"__go_errors_new"    = { emit = "common:go.errors_new",    min_args = 1, max_args = 1 }
+"__go_errors_string" = { emit = "common:go.errors_string", min_args = 1, max_args = 1 }
+"__go_errors_unwrap" = { emit = "common:go.errors_unwrap", min_args = 1, max_args = 1 }
+"__go_errors_is"     = { emit = "common:go.errors_is",     min_args = 2, max_args = 2 }
+"__go_errors_join"   = { emit = "common:go.errors_join",   min_args = 0, max_args = 255 }
+"__go_errors_as"     = { emit = "common:go.errors_as",     min_args = 3, max_args = 3 }
+"__go_errors_errorf" = { emit = "common:go.errors_errorf", min_args = 3, max_args = 3 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-"strconv.Atoi"    = { emit = "common:to_int",                    min_args = 1, max_args = 1 }
-"strconv.Itoa"    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
-"strconv.ParseFloat" = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
-"strconv.FormatInt"  = { emit = "host:ecma:number:toString",    min_args = 2, max_args = 2 }
-"strconv.FormatUint" = { emit = "host:ecma:number:toString",    min_args = 2, max_args = 2 }
 "__go_parse_int"     = { emit = "host:ecma:number:parseInt",    min_args = 1, max_args = 2 }
 "__go_parse_float"   = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 "__go_json_stringify" = { emit = "host:ecma:json:stringify",    min_args = 1, max_args = 3 }
@@ -72,8 +78,6 @@ materialize_bool_results = true
 "__go_reflect_len"     = { emit = "common:go.reflect_len",      min_args = 1, max_args = 1 }
 "__go_reflect_index"   = { emit = "common:go.reflect_index",    min_args = 2, max_args = 2 }
 "__go_reflect_field_by_name" = { emit = "common:go.reflect_field_by_name", min_args = 2, max_args = 2 }
-"reflect.TypeOf"      = { emit = "common:go.reflect_typeof",    min_args = 1, max_args = 1 }
-"reflect.ValueOf"     = { emit = "common:go.reflect_valueof",   min_args = 1, max_args = 1 }
 "__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
 "__go_btoa"           = { emit = "common:base64.encode_binary_string", min_args = 1, max_args = 1 }
 "__go_atob"           = { emit = "common:base64.decode_binary_string", min_args = 1, max_args = 1 }
@@ -84,9 +88,48 @@ materialize_bool_results = true
 "__go_text_decode"      = { emit = "host:web:encoding:decode",     min_args = 2, max_args = 2 }
 "__go_str_from_code_point" = { emit = "host:wasm:js-string:fromCodePoint", min_args = 1, max_args = 1 }
 "__go_str_code_point_at"   = { emit = "host:wasm:js-string:codePointAt",   min_args = 2, max_args = 2 }
+"__go_str_char_code_at"    = { emit = "host:wasm:js-string:charCodeAt",    min_args = 2, max_args = 2 }
 "__go_array_from"          = { emit = "host:ecma:array:from",              min_args = 1, max_args = 1 }
 "__go_array_concat"        = { emit = "host:ecma:array:concat",            min_args = 2, max_args = 2 }
 "__go_is_string"           = { emit = "host:wasm:js-string:test",          min_args = 1, max_args = 1 }
+"__go_io_bytes_to_string"  = { emit = "common:go.core_bytes_to_string",    min_args = 1, max_args = 1 }
+"__go_io_string_to_bytes"  = { emit = "common:go.core_string_to_bytes",    min_args = 1, max_args = 1 }
+"__go_string_byte_len"     = { emit = "common:go.core_string_byte_len",    min_args = 1, max_args = 1 }
+"__go_string_to_runes"     = { emit = "common:go.core_string_to_runes",    min_args = 1, max_args = 1 }
+"__go_runes_to_string"     = { emit = "common:go.core_runes_to_string",    min_args = 1, max_args = 1 }
+"__go_rune_value"          = { emit = "common:go.core_rune_value",         min_args = 1, max_args = 1 }
+
+# ── strings adapter helpers ─────────────────────────────────────────────────
+
+"__go_strings_trim_prefix"      = { emit = "common:go.strings.TrimPrefix",      min_args = 2, max_args = 2 }
+"__go_strings_trim_suffix"      = { emit = "common:go.strings.TrimSuffix",      min_args = 2, max_args = 2 }
+"__go_strings_cut_prefix"       = { emit = "common:go.strings.CutPrefix",       min_args = 2, max_args = 2 }
+"__go_strings_cut_suffix"       = { emit = "common:go.strings.CutSuffix",       min_args = 2, max_args = 2 }
+"__go_strings_cut"              = { emit = "common:go.strings.Cut",             min_args = 2, max_args = 2 }
+"__go_strings_replace"          = { emit = "common:go.strings.Replace",         min_args = 4, max_args = 4 }
+"__go_strings_replace_all"      = { emit = "common:go.strings.ReplaceAll",      min_args = 3, max_args = 3 }
+"__go_strings_contains_rune"    = { emit = "common:go.strings.ContainsRune",    min_args = 2, max_args = 2 }
+"__go_strings_contains_any"     = { emit = "common:go.strings.ContainsAny",     min_args = 2, max_args = 2 }
+"__go_strings_contains_func"    = { emit = "common:go.strings.ContainsFunc",    min_args = 2, max_args = 2 }
+"__go_strings_index_byte"       = { emit = "common:go.strings.IndexByte",       min_args = 2, max_args = 2 }
+"__go_strings_index_rune"       = { emit = "common:go.strings.IndexRune",       min_args = 2, max_args = 2 }
+"__go_strings_index_any"        = { emit = "common:go.strings.IndexAny",        min_args = 2, max_args = 2 }
+"__go_strings_index_func"       = { emit = "common:go.strings.IndexFunc",       min_args = 2, max_args = 2 }
+"__go_strings_last_index_byte"  = { emit = "common:go.strings.LastIndexByte",   min_args = 2, max_args = 2 }
+"__go_strings_last_index_any"   = { emit = "common:go.strings.LastIndexAny",    min_args = 2, max_args = 2 }
+"__go_strings_last_index_func"  = { emit = "common:go.strings.LastIndexFunc",   min_args = 2, max_args = 2 }
+"__go_strings_trim_left"        = { emit = "common:go.strings.TrimLeft",        min_args = 2, max_args = 2 }
+"__go_strings_trim_right"       = { emit = "common:go.strings.TrimRight",       min_args = 2, max_args = 2 }
+"__go_strings_trim"             = { emit = "common:go.strings.Trim",            min_args = 2, max_args = 2 }
+"__go_strings_equal_fold"       = { emit = "common:go.strings.EqualFold",       min_args = 2, max_args = 2 }
+"__go_strings_count"            = { emit = "common:go.strings.Count",           min_args = 2, max_args = 2 }
+"__go_strings_to_valid_utf8"    = { emit = "common:go.strings.ToValidUTF8",     min_args = 2, max_args = 2 }
+"__go_strings_map"              = { emit = "common:go.strings.Map",             min_args = 2, max_args = 2 }
+"__go_strings_fields"           = { emit = "common:go.strings.Fields",          min_args = 1, max_args = 1 }
+"__go_strings_fields_func"      = { emit = "common:go.strings.FieldsFunc",      min_args = 2, max_args = 2 }
+"__go_strings_split_n"          = { emit = "common:go.strings.SplitN",          min_args = 3, max_args = 3 }
+"__go_strings_split_after"      = { emit = "common:go.strings.SplitAfter",      min_args = 2, max_args = 2 }
+"__go_strings_split_after_n"    = { emit = "common:go.strings.SplitAfterN",     min_args = 3, max_args = 3 }
 
 # encoding/binary fixed-width byte order helpers. Go owns the API shape;
 # byte/endian mechanics are emitted through vybe_emitter::packing.
@@ -99,81 +142,18 @@ materialize_bool_results = true
 "__go_emit_binary_PutUint64PartsWrap" = { emit = "common:go.binary_put_uint64_parts", min_args = 4, max_args = 4 }
 "__go_emit_binary_AppendUint16" = { emit = "common:go.binary_append_uint16", min_args = 3, max_args = 3 }
 "__go_emit_binary_AppendUint32" = { emit = "common:go.binary_append_uint32", min_args = 3, max_args = 3 }
+"__go_hex_encode_to_string" = { emit = "common:go.hex.EncodeToString", min_args = 1, max_args = 1 }
+"__go_hex_decode_string_bytes" = { emit = "common:go.hex.DecodeStringBytes", min_args = 1, max_args = 1 }
 
-# ── String functions ─────────────────────────────────────────────────────────
-
-"strings.ToUpper" = { emit = "common:strings.to_upper",         min_args = 1, max_args = 1 }
-"strings.ToLower" = { emit = "common:strings.to_lower",         min_args = 1, max_args = 1 }
-"strings.Trim"    = { emit = "common:strings.trim",             min_args = 1, max_args = 1 }
-"strings.TrimSpace" = { emit = "common:strings.trim",           min_args = 1, max_args = 1 }
-"strings.Contains" = { emit = "common:str_contains",            min_args = 2, max_args = 2 }
-"strings.HasPrefix" = { emit = "common:str_starts_with",        min_args = 2, max_args = 2 }
-"strings.HasSuffix" = { emit = "common:str_ends_with",          min_args = 2, max_args = 2 }
-"strings.Index"   = { emit = "common:strings.index_of",         min_args = 2, max_args = 2 }
-"strings.Replace" = { emit = "common:strings.replace",          min_args = 3, max_args = 4 }
-"strings.Count"   = { emit = "intrinsic:count",                min_args = 2, max_args = 2 }
-"strings.Repeat"  = { emit = "common:str_repeat",              min_args = 2, max_args = 2 }
-"strings.Compare" = { emit = "common:str_compare",             min_args = 2, max_args = 2 }
-"strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
-"strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
-"strings.ReplaceAll" = { emit = "host:ecma:string:replaceAll",  min_args = 3, max_args = 3 }
-"strings.LastIndex"  = { emit = "host:ecma:string:lastIndexOf", min_args = 2, max_args = 2 }
-"strings.Title"      = { emit = "host:ecma:string:toUpperCase", min_args = 1, max_args = 1 }
 "__go_regex_split_pat_first" = { emit = "common:go.regex_split_pat_first", min_args = 2, max_args = 2 }
 
-# ── Math functions ───────────────────────────────────────────────────────────
-
-"math.Sqrt"       = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
-"math.Abs"        = { emit = "opcode:f64_abs",                 min_args = 1, max_args = 1 }
-"math.Floor"      = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
-"math.Ceil"       = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
-# `go run`: `math.Round(2.5)`=3, `(-2.5)`=-3 — ties away from zero, per the
-# doc comment on math.Round itself.
-"math.Round"      = { emit = "common:math.round_half_away",    min_args = 1, max_args = 1 }
-"math.Min"        = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
-"math.Max"        = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
-"math.Pow"        = { emit = "opcode:pow",             min_args = 2, max_args = 2 }
-"math.Sin"        = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
-"math.Cos"        = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
-"math.Tan"        = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
-"math.Asin"       = { emit = "host:ecma:math:asin",            min_args = 1, max_args = 1 }
-"math.Acos"       = { emit = "host:ecma:math:acos",            min_args = 1, max_args = 1 }
-"math.Atan"       = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
-"math.Atan2"      = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
-"math.Log"        = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
-"math.Exp"        = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
-"math.Pi"         = { emit = "host:ecma:math:PI",              min_args = 0, max_args = 0 }
-
 # ── Float semantics (IEEE-754) ───────────────────────────────────────────────
-"math.NaN"        = { emit = "common:math.nan",               min_args = 0, max_args = 0 }
-"math.Inf"        = { emit = "common:math.inf",               min_args = 1, max_args = 1 }
-"math.IsNaN"      = { emit = "host:ecma:number:isNaN",        min_args = 1, max_args = 1 }
-"math.IsInf"      = { emit = "common:math.is_inf",            min_args = 2, max_args = 2 }
-"math.Copysign"   = { emit = "common:math.copysign",          min_args = 2, max_args = 2 }
-"math.Signbit"    = { emit = "common:math.signbit",           min_args = 1, max_args = 1 }
-"math.Dim"        = { emit = "common:math.dim",               min_args = 2, max_args = 2 }
 # A reinterpretation is a REPRESENTATION operation, not IEEE arithmetic — it is
 # `math.*` only in Go's own package layout. The shared name is `bits.*`, which
 # Fortran's TRANSFER and .NET/JVM `BitConverter` reach through the same
 # `UnaryOp::Reinterpret` node.
-"math.Float64bits"     = { emit = "common:bits.reinterpret_i64", min_args = 1, max_args = 1 }
-"math.Float64frombits" = { emit = "common:bits.reinterpret_f64", min_args = 1, max_args = 1 }
-"math.Float32bits"     = { emit = "common:bits.reinterpret_i32", min_args = 1, max_args = 1 }
-"math.Float32frombits" = { emit = "common:bits.reinterpret_f32", min_args = 1, max_args = 1 }
-"math.Mod"        = { emit = "common:expressions.f64_mod",     min_args = 2, max_args = 2 }
-"math.Remainder"  = { emit = "common:go.math_remainder",       min_args = 2, max_args = 2 }
 
 # ── math/bits ────────────────────────────────────────────────────────────────
-"bits.OnesCount"      = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
-"bits.OnesCount8"     = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
-"bits.OnesCount16"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
-"bits.OnesCount32"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
-"bits.OnesCount64"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
-"bits.LeadingZeros"   = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
-"bits.LeadingZeros8"  = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
-"bits.LeadingZeros16" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
-"bits.LeadingZeros32" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
-"bits.LeadingZeros64" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
 
 # ── Array/Slice builtins ─────────────────────────────────────────────────────
 
@@ -211,6 +191,10 @@ materialize_bool_results = true
 "__go_maps_clone_common" = { emit = "common:collections.map_clone", min_args = 1, max_args = 1 }
 "__go_maps_copy_common" = { emit = "common:collections.map_copy", min_args = 2, max_args = 2 }
 "__go_maps_delete_func_common" = { emit = "common:collections.map_delete_func", min_args = 2, max_args = 2 }
+"__go_slices_delete_func" = { emit = "common:go.slices_delete_func", min_args = 2, max_args = 2 }
+"__go_slices_compact_func" = { emit = "common:go.slices_compact_func", min_args = 2, max_args = 2 }
+"__go_maps_equal" = { emit = "common:go.maps_equal", min_args = 2, max_args = 2 }
+"__go_maps_equal_func" = { emit = "common:go.maps_equal_func", min_args = 3, max_args = 3 }
 "__go_clear_keyed_common" = { emit = "common:collections.clear_keyed", min_args = 1, max_args = 1 }
 "make"            = { emit = "host:ecma:array:from",           min_args = 1, max_args = 3 }
 "copy"            = { emit = "host:ecma:array:copyWithin",     min_args = 2, max_args = 3 }
@@ -223,30 +207,101 @@ materialize_bool_results = true
 # ── sort package ─────────────────────────────────────────────────────────────
 # Ints/Float64s/Strings sort in place; sort_in_place compares with dynamic `>`
 # (numeric for numbers, lexical for strings), matching Go's ordering.
-"sort.Ints"          = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
-"sort.Float64s"      = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
-"sort.Strings"       = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
-# sort.Search*/Slice*/*AreSorted are rewritten in the walker to the injected
-# sort prelude helpers (they need closures over the target slice).
+# sort.Search*/Slice*/*AreSorted are normalized to private adapter helper leaves
+# because they need closures over the target slice.
+"__go_sort_search"     = { emit = "common:go.sort_search",       min_args = 2, max_args = 2 }
+"__go_sort_search_ordered" = { emit = "common:go.sort_search_ordered", min_args = 2, max_args = 2 }
+"__go_sort_find"       = { emit = "common:go.sort_find",         min_args = 2, max_args = 2 }
+"__go_sort_slice"      = { emit = "common:go.sort_slice",        min_args = 3, max_args = 3 }
+"__go_sort_is_sorted"  = { emit = "common:go.sort_is_sorted",    min_args = 2, max_args = 2 }
+"__go_sort_reverse"    = { emit = "common:go.sort_reverse",      min_args = 1, max_args = 1 }
+
+# ── container package ────────────────────────────────────────────────────────
+# Public container.* names are registered by the Go namespace tree. These
+# private helpers are emitted by Go normalization when it needs adapter calls.
+"__go_container_heap_init"           = { emit = "common:go.container.heap.Init",           min_args = 1, max_args = 1 }
+"__go_container_heap_pop"            = { emit = "common:go.container.heap.Pop",            min_args = 1, max_args = 1 }
+"__go_container_heap_remove"         = { emit = "common:go.container.heap.Remove",         min_args = 2, max_args = 2 }
+"__go_container_heap_fix"            = { emit = "common:go.container.heap.Fix",            min_args = 2, max_args = 2 }
+"__go_container_heap_remove_prepare" = { emit = "common:go.container.heap.remove_prepare", min_args = 2, max_args = 2 }
+"__go_container_list_new"            = { emit = "common:go.container.list.New",            min_args = 0, max_args = 0 }
+"__go_container_list_init"           = { emit = "common:go.container.list.List.Init",      min_args = 1, max_args = 1 }
+"__go_container_list_len"            = { emit = "common:go.container.list.List.Len",       min_args = 1, max_args = 1 }
+"__go_container_list_front"          = { emit = "common:go.container.list.List.Front",     min_args = 1, max_args = 1 }
+"__go_container_list_back"           = { emit = "common:go.container.list.List.Back",      min_args = 1, max_args = 1 }
+"__go_container_list_push_front"     = { emit = "common:go.container.list.List.PushFront", min_args = 2, max_args = 2 }
+"__go_container_list_push_back"      = { emit = "common:go.container.list.List.PushBack",  min_args = 2, max_args = 2 }
+"__go_container_list_insert_before"  = { emit = "common:go.container.list.List.InsertBefore", min_args = 3, max_args = 3 }
+"__go_container_list_insert_after"   = { emit = "common:go.container.list.List.InsertAfter",  min_args = 3, max_args = 3 }
+"__go_container_list_remove"         = { emit = "common:go.container.list.List.Remove",       min_args = 2, max_args = 2 }
+"__go_container_list_move_to_front"  = { emit = "common:go.container.list.List.MoveToFront",  min_args = 2, max_args = 2 }
+"__go_container_list_move_to_back"   = { emit = "common:go.container.list.List.MoveToBack",   min_args = 2, max_args = 2 }
+"__go_container_list_move_before"    = { emit = "common:go.container.list.List.MoveBefore",   min_args = 3, max_args = 3 }
+"__go_container_list_move_after"     = { emit = "common:go.container.list.List.MoveAfter",    min_args = 3, max_args = 3 }
+"__go_container_list_push_back_list" = { emit = "common:go.container.list.List.PushBackList", min_args = 2, max_args = 2 }
+"__go_container_list_push_front_list" = { emit = "common:go.container.list.List.PushFrontList", min_args = 2, max_args = 2 }
+"__go_container_list_element_next"   = { emit = "common:go.container.list.Element.Next",       min_args = 1, max_args = 1 }
+"__go_container_list_element_prev"   = { emit = "common:go.container.list.Element.Prev",       min_args = 1, max_args = 1 }
+"__go_container_ring_new"            = { emit = "common:go.container.ring.New",          min_args = 1, max_args = 1 }
+"__go_container_ring_next"           = { emit = "common:go.container.ring.Ring.Next",    min_args = 1, max_args = 1 }
+"__go_container_ring_prev"           = { emit = "common:go.container.ring.Ring.Prev",    min_args = 1, max_args = 1 }
+"__go_container_ring_len"            = { emit = "common:go.container.ring.Ring.Len",     min_args = 1, max_args = 1 }
+"__go_container_ring_move"           = { emit = "common:go.container.ring.Ring.Move",    min_args = 2, max_args = 2 }
+"__go_container_ring_do"             = { emit = "common:go.container.ring.Ring.Do",      min_args = 2, max_args = 2 }
+"__go_container_ring_link"           = { emit = "common:go.container.ring.Ring.Link",    min_args = 2, max_args = 2 }
+"__go_container_ring_unlink"         = { emit = "common:go.container.ring.Ring.Unlink",  min_args = 2, max_args = 2 }
+"__go_container_ring_get_value"      = { emit = "common:go.container.ring.Ring.Value.Get", min_args = 1, max_args = 1 }
+"__go_container_ring_set_value"      = { emit = "common:go.container.ring.Ring.Value.Set", min_args = 2, max_args = 2 }
 
 # ── Time ─────────────────────────────────────────────────────────────────────
 
-"time.Now"        = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
-
-# ── time primitives exposed to the Go time prelude ───────────────────────────
-# time.Time is modeled as {seconds, nanoseconds, loc} (the wasi system-clock
-# instant shape). Now() uses wasi:clocks/system-clock; calendar breakdown uses
-# ecma:date. These builtins let the prelude reach those host surfaces.
-"__go_wall_now"   = { emit = "host:wasi:clocks/system-clock:now", min_args = 0, max_args = 0 }
-"__go_date_utc"   = { emit = "host:ecma:date:UTC",              min_args = 6, max_args = 7 }
-"__go_date_new"   = { emit = "host:ecma:date:new",              min_args = 1, max_args = 1 }
-"__go_date_year"  = { emit = "host:ecma:date:getUTCFullYear",   min_args = 1, max_args = 1 }
-"__go_date_month" = { emit = "host:ecma:date:getUTCMonth",      min_args = 1, max_args = 1 }
-"__go_date_day"   = { emit = "host:ecma:date:getUTCDate",       min_args = 1, max_args = 1 }
-"__go_date_hour"  = { emit = "host:ecma:date:getUTCHours",      min_args = 1, max_args = 1 }
-"__go_date_min"   = { emit = "host:ecma:date:getUTCMinutes",    min_args = 1, max_args = 1 }
-"__go_date_sec"   = { emit = "host:ecma:date:getUTCSeconds",    min_args = 1, max_args = 1 }
-"__go_date_wday"  = { emit = "host:ecma:date:getUTCDay",        min_args = 1, max_args = 1 }
+"__go_time_utc"               = { emit = "common:go.time_utc",               min_args = 0, max_args = 0 }
+"__go_time_local"             = { emit = "common:go.time_local",             min_args = 0, max_args = 0 }
+"__go_time_date"              = { emit = "common:go.time_date",              min_args = 8, max_args = 8 }
+"__go_time_unix"              = { emit = "common:go.time_unix",              min_args = 2, max_args = 2 }
+"__go_time_now"               = { emit = "common:go.time_now",               min_args = 0, max_args = 0 }
+"__go_time_unix_milli"        = { emit = "common:go.time_unix_milli",        min_args = 1, max_args = 1 }
+"__go_time_unix_micro"        = { emit = "common:go.time_unix_micro",        min_args = 1, max_args = 1 }
+"__go_time_fixed_zone"        = { emit = "common:go.time_fixed_zone",        min_args = 2, max_args = 2 }
+"__go_time_load_location"     = { emit = "common:go.time_load_location",     min_args = 1, max_args = 1 }
+"__go_time_parse"             = { emit = "common:go.time_parse",             min_args = 2, max_args = 2 }
+"__go_time_parse_in_location" = { emit = "common:go.time_parse_in_location", min_args = 3, max_args = 3 }
+"__go_time_parse_duration"    = { emit = "common:go.time_parse_duration",    min_args = 1, max_args = 1 }
+"__go_time_since"             = { emit = "common:go.time_since",             min_args = 1, max_args = 1 }
+"__go_time_until"             = { emit = "common:go.time_until",             min_args = 1, max_args = 1 }
+"__go_time_sleep"             = { emit = "common:go.time_sleep",             min_args = 1, max_args = 1 }
+"__go_time_after"             = { emit = "common:go.time_after",             min_args = 1, max_args = 1 }
+"__go_time_time_format"       = { emit = "common:go.time.Time.Format",       min_args = 2, max_args = 2 }
+"__go_time_time_year"         = { emit = "common:go.time.Time.Year",         min_args = 1, max_args = 1 }
+"__go_time_time_add_date"     = { emit = "common:go.time.Time.AddDate",      min_args = 4, max_args = 4 }
+"__go_time_time_add"          = { emit = "common:go.time.Time.Add",          min_args = 2, max_args = 2 }
+"__go_time_time_sub"          = { emit = "common:go.time.Time.Sub",          min_args = 2, max_args = 2 }
+"__go_time_time_month"        = { emit = "common:go.time.Time.Month",        min_args = 1, max_args = 1 }
+"__go_time_time_month_int"    = { emit = "common:go.time.Time.MonthInt",     min_args = 1, max_args = 1 }
+"__go_time_time_day"          = { emit = "common:go.time.Time.Day",          min_args = 1, max_args = 1 }
+"__go_time_time_hour"         = { emit = "common:go.time.Time.Hour",         min_args = 1, max_args = 1 }
+"__go_time_time_minute"       = { emit = "common:go.time.Time.Minute",       min_args = 1, max_args = 1 }
+"__go_time_time_second"       = { emit = "common:go.time.Time.Second",       min_args = 1, max_args = 1 }
+"__go_time_time_nanosecond"   = { emit = "common:go.time.Time.Nanosecond",   min_args = 1, max_args = 1 }
+"__go_time_time_unix"         = { emit = "common:go.time.Time.Unix",         min_args = 1, max_args = 1 }
+"__go_time_time_unix_nano"    = { emit = "common:go.time.Time.UnixNano",     min_args = 1, max_args = 1 }
+"__go_time_time_unix_milli"   = { emit = "common:go.time.Time.UnixMilli",    min_args = 1, max_args = 1 }
+"__go_time_time_unix_micro"   = { emit = "common:go.time.Time.UnixMicro",    min_args = 1, max_args = 1 }
+"__go_time_time_weekday"      = { emit = "common:go.time.Time.Weekday",      min_args = 1, max_args = 1 }
+"__go_time_time_year_day"     = { emit = "common:go.time.Time.YearDay",      min_args = 1, max_args = 1 }
+"__go_time_time_zone"         = { emit = "common:go.time.Time.Zone",         min_args = 1, max_args = 1 }
+"__go_time_time_before"       = { emit = "common:go.time.Time.Before",       min_args = 2, max_args = 2 }
+"__go_time_time_after"        = { emit = "common:go.time.Time.After",        min_args = 2, max_args = 2 }
+"__go_time_time_equal"        = { emit = "common:go.time.Time.Equal",        min_args = 2, max_args = 2 }
+"__go_time_time_truncate"     = { emit = "common:go.time.Time.Truncate",     min_args = 2, max_args = 2 }
+"__go_time_time_round"        = { emit = "common:go.time.Time.Round",        min_args = 2, max_args = 2 }
+"__go_time_time_utc"          = { emit = "common:go.time.Time.UTC",          min_args = 1, max_args = 1 }
+"__go_time_time_in"           = { emit = "common:go.time.Time.In",           min_args = 2, max_args = 2 }
+"__go_time_time_location"     = { emit = "common:go.time.Time.Location",     min_args = 1, max_args = 1 }
+"__go_time_time_is_zero"      = { emit = "common:go.time.Time.IsZero",       min_args = 1, max_args = 1 }
+"__go_time_location_string"   = { emit = "common:go.time.Location.String",   min_args = 1, max_args = 1 }
+"__go_time_duration_string"   = { emit = "common:go.time.Duration.String",   min_args = 1, max_args = 1 }
+"__go_time_duration_round"    = { emit = "common:go.time.Duration.Round",    min_args = 2, max_args = 2 }
 
 # ── net/url primitives (WHATWG URL host, shared with JS) ─────────────────────
 "__go_url_parse"  = { emit = "host:web:url:parse",                     min_args = 1, max_args = 2 }
@@ -259,25 +314,18 @@ materialize_bool_results = true
 # and must stay rfc3986 — `__go_url_parse_query` already handles `+` itself.
 "__go_url_qunesc" = { emit = "common:url.decode_form",                 min_args = 1, max_args = 1 }
 "__go_url_unesc"  = { emit = "host:ecma:string:decodeURIComponent",    min_args = 1, max_args = 1 }
-
-# ── File I/O ─────────────────────────────────────────────────────────────────
-
-"os.ReadFile"     = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
-"os.WriteFile"    = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
-"os.Mkdir"        = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 2 }
-"os.Remove"       = { emit = "common:filesystem.remove", min_args = 1, max_args = 1 }
-
-# ── Environment ──────────────────────────────────────────────────────────────
-
-# os.Exit(code) — was unbound and threw. Ends the run with the status.
-"os.Exit"         = { emit = "common:control_flow.exit", min_args = 1, max_args = 1 }
-
-"os.Getenv"       = { emit = "host:wasi:cli:getEnv",         min_args = 1, max_args = 1 }
-"os.Setenv"       = { emit = "host:wasi:cli:setEnv",         min_args = 2, max_args = 2 }
-
-# ── Random ───────────────────────────────────────────────────────────────────
-
-"rand.Intn"       = { emit = "host:ecma:math:random",        min_args = 1, max_args = 1 }
+"__go_url_contains"    = { emit = "common:str_contains",               min_args = 2, max_args = 2 }
+"__go_url_index"       = { emit = "common:strings.index_of",           min_args = 2, max_args = 2 }
+"__go_url_last_index"  = { emit = "host:ecma:string:lastIndexOf",      min_args = 2, max_args = 2 }
+"__go_url_replace_all" = { emit = "host:ecma:string:replaceAll",       min_args = 3, max_args = 3 }
+"__go_url_split"       = { emit = "common:strings.split",              min_args = 2, max_args = 2 }
+"__go_url_join"        = { emit = "common:collections.join",           min_args = 2, max_args = 2 }
+"__go_url_sort"        = { emit = "common:collections.sort",           min_args = 1, max_args = 1 }
+"__go_url_join_path"   = { emit = "common:go.path_join",               min_args = 1, max_args = 255 }
+"__go_url_parse_qs"    = { emit = "common:go.url_parse_qs",            min_args = 1, max_args = 2 }
+"__go_url_encode_values" = { emit = "common:go.url_encode_values",     min_args = 1, max_args = 2 }
+"__go_url_values_set"  = { emit = "common:go.url_values_set",          min_args = 3, max_args = 3 }
+"__go_url_values_add"  = { emit = "common:go.url_values_add",          min_args = 3, max_args = 3 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods called on values
@@ -285,106 +333,11 @@ materialize_bool_results = true
 
 [value_methods]
 
-# time.Duration unit accessors (receiver = nanoseconds)
-Minutes      = { emit = "common:go.dur_minutes",      min_args = 0, max_args = 0 }
-Seconds      = { emit = "common:go.dur_seconds",      min_args = 0, max_args = 0 }
-Hours        = { emit = "common:go.dur_hours",        min_args = 0, max_args = 0 }
-Nanoseconds  = { emit = "common:go.dur_nanoseconds",  min_args = 0, max_args = 0 }
-Milliseconds = { emit = "common:go.dur_milliseconds", min_args = 0, max_args = 0 }
-Microseconds = { emit = "common:go.dur_microseconds", min_args = 0, max_args = 0 }
-
-# String methods
-# charCodeAt is a compiler-internal lowering (range-over-string / byte-index emit
-# `s.charCodeAt(i)`); resolve it straight to the native WASM js-string builtin so
-# it never depends on receiver type-inference at the member-call site.
-charCodeAt   = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
-ToUpper      = { emit = "common:str_to_upper",      min_args = 0, max_args = 0 }
-ToLower      = { emit = "common:str_to_lower",      min_args = 0, max_args = 0 }
-Trim         = { emit = "common:str_trim",          min_args = 0, max_args = 0 }
-TrimSpace    = { emit = "common:str_trim",          min_args = 0, max_args = 0 }
-Contains     = { emit = "common:str_contains",      min_args = 1, max_args = 1 }
-HasPrefix    = { emit = "common:str_starts_with",   min_args = 1, max_args = 1 }
-HasSuffix    = { emit = "common:str_ends_with",     min_args = 1, max_args = 1 }
-Index        = { emit = "common:strings.index_of",  min_args = 1, max_args = 2 }
-LastIndex    = { emit = "common:str_last_index_of", min_args = 1, max_args = 2 }
-Replace      = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
-ReplaceAll   = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
-Split        = { emit = "common:strings.split",     min_args = 1, max_args = 1 }
-Join         = { emit = "common:collections.join",  min_args = 1, max_args = 1 }
-
-# Slice/Array methods
-Append       = { emit = "common:collections.push",  min_args = 1, max_args = 255 }
-Len          = { emit = "common:collections.length", min_args = 0, max_args = 0 }
-Cap          = { emit = "common:collections.length", min_args = 0, max_args = 0 }
-
-# Map methods
-HasKey       = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
-Delete       = { emit = "common:reflection.delete", min_args = 1, max_args = 1 }
-Keys         = { emit = "common:reflection.keys",   min_args = 0, max_args = 0 }
-Values       = { emit = "common:reflection.values", min_args = 0, max_args = 0 }
-
-# reflect.Type / reflect.Value methods. The Go adapter exposes the language API
-# while using the shared reflection descriptor fields under the hood.
-Kind        = { emit = "common:go.reflect_kind",      min_args = 0, max_args = 0 }
-Name        = { emit = "common:go.reflect_name",      min_args = 0, max_args = 0 }
-Interface   = { emit = "common:go.reflect_interface", min_args = 0, max_args = 0 }
-Int         = { emit = "common:go.reflect_int",       min_args = 0, max_args = 0 }
-Uint        = { emit = "common:go.reflect_uint",      min_args = 0, max_args = 0 }
-Float       = { emit = "common:go.reflect_float",     min_args = 0, max_args = 0 }
-Bool        = { emit = "common:go.reflect_bool",      min_args = 0, max_args = 0 }
-String      = { emit = "common:go.reflect_string",    min_args = 0, max_args = 0 }
-NumField    = { emit = "common:go.reflect_num_field", min_args = 0, max_args = 0 }
-Field       = { emit = "common:go.reflect_field",     min_args = 1, max_args = 1 }
-FieldByName = { emit = "common:go.reflect_field_by_name", min_args = 1, max_args = 1 }
-MapIndex    = { emit = "common:go.reflect_map_index", min_args = 1, max_args = 1 }
-IsValid     = { emit = "common:go.reflect_is_valid",  min_args = 0, max_args = 0 }
-IsNil       = { emit = "common:go.reflect_is_nil",    min_args = 0, max_args = 0 }
-CanSet      = { emit = "common:go.reflect_can_set",   min_args = 0, max_args = 0 }
-IsZero      = { emit = "common:go.reflect_is_zero",   min_args = 0, max_args = 0 }
-Elem        = { emit = "common:go.reflect_elem",      min_args = 0, max_args = 0 }
-Set         = { emit = "common:go.reflect_set",       min_args = 1, max_args = 1 }
-SetInt      = { emit = "common:go.reflect_set_int",   min_args = 1, max_args = 1 }
-SetUint     = { emit = "common:go.reflect_set_uint",  min_args = 1, max_args = 1 }
-SetString   = { emit = "common:go.reflect_set_string", min_args = 1, max_args = 1 }
-SetBool     = { emit = "common:go.reflect_set_bool",  min_args = 1, max_args = 1 }
-
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY METHODS — higher-order functions
 # ────────────────────────────────────────────────────────────────────────────
 
 [array_methods]
-
-# ────────────────────────────────────────────────────────────────────────────
-# NAMESPACE CONSTANTS
-# ────────────────────────────────────────────────────────────────────────────
-
-[namespace_constants]
-"math.Pi"       = 3.141592653589793
-# time.Duration constants — nanoseconds (Duration is an int64 ns count).
-"time.Nanosecond"  = 1
-"time.Microsecond" = 1000
-"time.Millisecond" = 1000000
-"time.Second"      = 1000000000
-"time.Minute"      = 60000000000
-"time.Hour"        = 3600000000000
-"time.January"     = 1
-"time.February"    = 2
-"time.March"       = 3
-"time.April"       = 4
-"time.May"         = 5
-"time.June"        = 6
-"time.July"        = 7
-"time.August"      = 8
-"time.September"   = 9
-"time.October"     = 10
-"time.November"    = 11
-"time.December"    = 12
-"math.E"        = 2.718281828459045
-"math.Ln2"      = 0.6931471805599453
-"math.Ln10"     = 2.302585092994046
-"math.Sqrt2"    = 1.4142135623730951
-"math.MaxFloat" = 1.7976931348623157e308
-"math.SmallestNonzeroFloat64" = 5e-324
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES
@@ -412,3 +365,4 @@ int    = ["rune", "uintptr"]
 [namespaces]
 roots = []
 extra_imports = []
+type_scopes = ["go"]

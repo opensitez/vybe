@@ -236,6 +236,7 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "argumentexception" => "ArgumentException",
         "argumentnullexception" => "ArgumentNullException",
         "argumentoutofrangeexception" => "ArgumentOutOfRangeException",
+        "parameterbindingexception" => "ParameterBindingException",
         "applicationexception" => "ApplicationException",
         "systemexception" => "SystemException",
         "invalidoperationexception" => "InvalidOperationException",
@@ -411,7 +412,7 @@ pub fn is_exception_type(name: &str) -> bool {
         | "environmenterror" | "interruptederror" | "childprocesserror"
         // .NET / VB / C#
         | "systemexception" | "applicationexception" | "argumentexception" | "argumentnullexception"
-        | "invalidoperationexception" | "notimplementedexception"
+        | "parameterbindingexception" | "invalidoperationexception" | "notimplementedexception"
         | "notsupportedexception" | "nullreferenceexception"
         | "indexoutofrangeexception" | "keynotfoundexception"
         | "formatexception" | "stackoverflowerror" | "stackoverflowexception"
@@ -797,6 +798,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         "ArgumentOutOfRangeException" => &[
             "ArgumentOutOfRangeException",
             "ArgumentException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "ParameterBindingException" => &[
+            "ParameterBindingException",
             "SystemException",
             "Exception",
             "BaseException",

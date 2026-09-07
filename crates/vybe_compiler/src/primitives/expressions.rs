@@ -7,6 +7,46 @@ use super::*;
 use crate::primitives::class_slots;
 
 impl Compiler {
+    fn emit_len_value_method(&mut self, def: &crate::profile::BuiltinDef) -> Result<(), String> {
+        match &def.emit {
+            vybe_runtime::profile::BuiltinEmit::HostCall(module, func) => {
+                let idx = self.import(module, func);
+                self.emit_host_call(idx, 1);
+            }
+            vybe_runtime::profile::BuiltinEmit::Opcode(op_name) => {
+                self.emit_named_opcode(op_name);
+            }
+            vybe_runtime::profile::BuiltinEmit::StrLength => {
+                let line = self.line;
+                common::strings::emit_length(self.chunk(), line);
+            }
+            vybe_runtime::profile::BuiltinEmit::Common(name) => {
+                let line = self.line;
+                let name = name.clone();
+                self.emit_common(&name, 1, line);
+            }
+            vybe_runtime::profile::BuiltinEmit::Invoke(method_name) => {
+                let line = self.line;
+                let name = method_name.clone();
+                common::invoke::emit_invoke_method(
+                    &mut self.chunks,
+                    self.current,
+                    &name,
+                    0,
+                    line,
+                );
+            }
+            vybe_runtime::profile::BuiltinEmit::Intrinsic(_)
+            | vybe_runtime::profile::BuiltinEmit::MutateVar(_)
+            | vybe_runtime::profile::BuiltinEmit::MutateCall(_, _)
+            | vybe_runtime::profile::BuiltinEmit::Print
+            | vybe_runtime::profile::BuiltinEmit::Noop => {
+                common::collections::emit_len(&mut self.chunks, self.current, self.line);
+            }
+        }
+        Ok(())
+    }
+
     /// A named constant, from the profile's own table or — for a dotted
     /// reference into the math namespace — from `primitives::math`.
     ///
@@ -3230,14 +3270,13 @@ impl Compiler {
                 // type produces. The family check added nothing the field name
                 // and the hint did not already say.
                 let receiver_array_rank = if field == "Rank" {
-                    let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
                         let normalized = Self::normalize_type_hint(type_hint);
                         let start = normalized.find('[')?;
                         let rest = &normalized[start + 1..];
                         let end = rest.find(']')?;
                         Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
-                    });
-                    Some(inferred.unwrap_or(1))
+                    })
                 } else {
                     None
                 };
@@ -3311,11 +3350,10 @@ impl Compiler {
                 // spellings stay here — MEASURED: removing them alone strands
                 // vb's `Count`, which loses its runtime-callable path and drops
                 // the left operand of `"R=" & h.lst.Count`.
-                let reads_size_property = self
-                    .profile
-                    .lookup_value_method(field, 0)
-                    .and_then(|def| def.slot)
-                    == Some(vybe_ast::ProtocolSlot::Len)
+                let len_value_method = self.profile.lookup_value_method(field, 0).cloned();
+                let reads_profile_len_slot = len_value_method.as_ref().and_then(|def| def.slot)
+                    == Some(vybe_ast::ProtocolSlot::Len);
+                let reads_size_property = reads_profile_len_slot
                     // ⛔ COMPARED UNDER THE LANGUAGE'S OWN FOLD, never
                     // `eq_ignore_ascii_case`. vb spells `.count` and `.Count`
                     // as one name; kotlin, java and dart do NOT — so a
@@ -3494,10 +3532,18 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.emit_null();
                         self.chunk().emit_else(line);
-                        common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                        if let Some(def) = len_value_method.as_ref() {
+                            self.emit_len_value_method(def)?;
+                        } else {
+                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                        }
                         self.chunk().emit_end(line);
                     } else {
-                        common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                        if let Some(def) = len_value_method.as_ref() {
+                            self.emit_len_value_method(def)?;
+                        } else {
+                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                        }
                     }
                     return Ok(());
                 } else if is_dotnet_observable_count {

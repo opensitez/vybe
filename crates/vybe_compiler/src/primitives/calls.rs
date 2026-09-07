@@ -4752,6 +4752,54 @@ impl Compiler {
             }
         }
 
+        // Common-resolver bare callable leaves (namespaceplan.md): a profile
+        // may make a namespace subtree ambient, so a source-level call like
+        // `ConvertFrom-Markdown ...` or `Button(...)` can resolve without a
+        // dotted qualifier. Builtins and user declarations have already had
+        // priority above; this is the data-driven tree fallback before the
+        // ordinary dynamic/global callable path.
+        if let ExprKind::Ident(name) = &callee.kind {
+            let canon = self.canon(name);
+            if self.profile.uses_namespace_resolver()
+                && self.scope().resolve(name).is_none()
+                && !self.defined_functions.contains(name.as_str())
+                && !self.defined_functions.contains(&canon)
+                && !self.defined_classes.contains(name.as_str())
+                && !self.defined_classes.contains(&canon)
+            {
+                match self.resolve_profile_namespace_chain(&[name.to_string()]) {
+                    Some(super::resolver::Resolution::Tree(
+                        crate::primitives::namespaces::ResolutionTarget::CommonEmit(emit),
+                    )) => {
+                        for arg in &arg_exprs {
+                            self.compile_expr(arg)?;
+                        }
+                        let line = self.line;
+                        self.emit_common(&emit, arg_exprs.len() as u8, line);
+                        return Ok(());
+                    }
+                    Some(
+                        super::resolver::Resolution::HostImport { module, func }
+                        | super::resolver::Resolution::Tree(
+                            crate::primitives::namespaces::ResolutionTarget::HostCall {
+                                module,
+                                func,
+                                ..
+                            },
+                        ),
+                    ) => {
+                        for arg in &arg_exprs {
+                            self.compile_expr(arg)?;
+                        }
+                        let idx = self.import(&module, &func);
+                        self.emit_host_call(idx, arg_exprs.len() as u8);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // ── Builtin check: Member("Console.WriteLine") ─────────────
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {

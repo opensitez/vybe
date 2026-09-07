@@ -6090,8 +6090,69 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     // A WRITE resolves through the same seam as the read, or
                     // the two disagree.
+                    let has_indexed_write = indexed_write.is_some();
                     let slot = indexed_write
                         .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
+                    if !has_indexed_write && !field_name.starts_with("__") {
+                        let obj_slot = self.define_local("__member_set_obj");
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+
+                        let setter_name = format!("__set_{}", field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&setter_name),
+                        );
+                        let setter_slot = self.define_local("__member_setter");
+                        self.emit_u16(Op::LOCAL_SET, setter_slot);
+
+                        self.emit_u16(Op::LOCAL_GET, setter_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let line = self.line;
+                        self.chunk().emit_if(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        let setter = if self.receiver_is_self(object) {
+                            Self::class_set
+                        } else {
+                            Self::class_set_checked
+                        };
+                        setter(
+                            self,
+                            class_slots::ObjSource::Stack,
+                            &slot,
+                            class_slots::ValueSource::Stack,
+                        );
+                        self.chunk().emit_else(line);
+
+                        self.emit_u16(Op::LOCAL_GET, setter_slot);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
+                        let line = self.line;
+                        self.chunk().emit_if(line);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        let setter = if self.receiver_is_self(object) {
+                            Self::class_set
+                        } else {
+                            Self::class_set_checked
+                        };
+                        setter(
+                            self,
+                            class_slots::ObjSource::Stack,
+                            &slot,
+                            class_slots::ValueSource::Stack,
+                        );
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, setter_slot);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        self.emit_direct_callable_invoke(2);
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+                        self.chunk().emit_end(line);
+                        return Ok(());
+                    }
                     // `this.f = v` inside the class's own body needs no test:
                     // the receiver IS this class. It also runs during
                     // CONSTRUCTION, before the instance answers `ref.test` for

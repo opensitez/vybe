@@ -768,6 +768,10 @@ pub fn emit_common(
         "math.ulp64" => {
             crate::primitives::math::emit_ulp(&mut chunks[current], FloatLane::F64, line)
         }
+        "math.erf64" => crate::primitives::math::emit_erf(&mut chunks[current], line),
+        "math.erfc64" => crate::primitives::math::emit_erfc(&mut chunks[current], line),
+        "math.gamma64" => crate::primitives::math::emit_gamma(&mut chunks[current], line),
+        "math.lgamma64" => crate::primitives::math::emit_lgamma(&mut chunks[current], line),
         "math.f64_bits" => {
             crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::I64, line)
         }

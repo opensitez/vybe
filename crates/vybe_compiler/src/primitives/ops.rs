@@ -394,6 +394,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let abstract_eq = chunk.add_import("ecma:value", "abstractEq");
 
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
@@ -507,10 +508,31 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::REF_EQ, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
+    // one `__value` wrapper and one raw primitive/value → wrapped equality
+    emit_object_field_to_slot(chunk, a_slot, a_time_slot, "__value", line);
+    emit_slot_is_null_or_undefined(chunk, a_time_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_i32(line);
+    load(chunk, a_time_slot, line);
+    load(chunk, b_slot, line);
+    call2(chunk, abstract_eq, line);
+    call1(chunk, cast_bool, line);
+    chunk.emit_else(line);
+    emit_object_field_to_slot(chunk, b_slot, b_time_slot, "__value", line);
+    emit_slot_is_null_or_undefined(chunk, b_time_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_i32(line);
+    load(chunk, a_slot, line);
+    load(chunk, b_time_slot, line);
+    call2(chunk, abstract_eq, line);
+    call1(chunk, cast_bool, line);
+    chunk.emit_else(line);
     // object / cross-type → reference equality
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line); // b.__value wrapper
+    chunk.emit_end(line); // a.__value wrapper
     chunk.emit_end(line); // __value object
     chunk.emit_end(line); // comparable object
     chunk.emit_end(line); // bigint

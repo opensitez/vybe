@@ -2694,6 +2694,18 @@ impl Compiler {
                     .map(|method| {
                         self.js_member_storage_name_for_class(&class.name, &method.source_name)
                     })
+                    .chain(
+                        class
+                            .properties
+                            .iter()
+                            .filter(|property| property.auto_field.is_none())
+                            .map(|property| {
+                                self.js_member_storage_name_for_class(
+                                    &class.name,
+                                    &property.source_name,
+                                )
+                            }),
+                    )
                     .collect(),
                 instance_pointer_method_names: class
                     .instance_methods
@@ -8120,6 +8132,11 @@ impl crate::Compiler {
             collect_this_assigned_fields(&ctor.body, &mut assigned);
             for a in assigned {
                 let canon_a = self.canon(&a);
+                if class.properties.iter().any(|property| {
+                    property.auto_field.is_none() && self.canon(&property.source_name) == canon_a
+                }) {
+                    continue;
+                }
                 let stored = field_storage_names
                     .get(&canon_a)
                     .cloned()
@@ -8198,8 +8215,12 @@ impl crate::Compiler {
                     fields.push(pname_canon.clone());
                     field_inits.push((pname_canon, None, None, None));
                 }
-            } else if !p.is_static && !fields.contains(&property_storage_name) {
-                fields.push(property_storage_name.clone());
+            } else if !p.is_static {
+                // A custom property is an accessor surface, not storage.
+                // Publishing its name in `TypeEntry.fields` lets member reads
+                // index the field directly and bypass `__get_<name>`; writes
+                // then bypass or race `__set_<name>`. Only auto-properties
+                // above contribute backing storage.
             }
         }
 

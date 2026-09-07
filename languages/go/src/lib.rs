@@ -1,9 +1,11 @@
 // Force-link every plugin crate in `[dependencies]` so its link-time
 // registration reaches the registry. Generated from Cargo.toml — see build.rs.
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
+pub mod adapters;
 pub mod emitter;
 pub mod normalize_class;
 pub mod protocol;
+pub mod tree_register;
 pub mod walker;
 
 use pest_derive::Parser;
@@ -30,7 +32,7 @@ pub fn register() {
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: None,
+        register_tree: Some(tree_register::register_namespace_tree),
         expand_source: None,
     });
 }

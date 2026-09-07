@@ -4534,9 +4534,16 @@ impl VM {
                             };
                         }
                         if let Some(getter_fn) = getter {
-                            self.push(getter_fn)?;
-                            self.push(obj)?;
-                            self.call_value(1)?;
+                            // Accessors are receiver-first class functions.
+                            // Match STRUCT_SET's setter path: bind the object
+                            // as the receiver, do not pass it as a normal
+                            // argument. Passing it through call_value(1) shifts
+                            // the getter ABI and makes generated class accessors
+                            // read the wrong slot/default value.
+                            let stack_save = self.stack.len();
+                            let result = self.invoke_with_receiver(&getter_fn, obj.clone(), &[]);
+                            self.stack.truncate(stack_save);
+                            self.push(result)?;
                             continue;
                         }
                     }
