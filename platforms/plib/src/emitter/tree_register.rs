@@ -9,7 +9,7 @@
 //! Mirrors the dotnet registrar: the plib platform contributes DATA — its
 //! GCL class table (`gcl::gcl_classes()`, the same table the Pascal
 //! lowering executes) — to the shared namespace tree in
-//! `vybe_runtime::namespaces`. Resolution LOGIC lives only in the common
+//! `vybe_compiler::primitives::namespaces`. Resolution LOGIC lives only in the common
 //! resolver; any language can walk `plib.tbutton.create`.
 //!
 //! Leaves follow the dotnet rules:
@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_compiler::primitives::gui;
-use vybe_runtime::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
 
 /// The GCL row for a class name, however it was spelled.
 fn gcl_class(name: &str) -> Option<&'static super::gcl::GclClass> {
@@ -635,13 +635,13 @@ mod tests {
             ("tedit", "Text"),
             ("tform", "Name"),
         ] {
-            let found = vybe_runtime::namespaces::lookup_type_instance_member(&scope, class, prop);
+            let found = vybe_compiler::primitives::namespaces::lookup_type_instance_member(&scope, class, prop);
             assert!(
                 found.is_some(),
                 "{class}.{prop} did not resolve — registration is not answering"
             );
         }
-        let target = vybe_runtime::namespaces::lookup_type_property_setter_target(
+        let target = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
             &scope, "tlabel", "Caption",
         );
         assert!(target.is_some(), "Caption has no setter target");
