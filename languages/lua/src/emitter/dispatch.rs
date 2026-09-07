@@ -68,8 +68,47 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.assert" => {
             super::metamethods_adapter::emit_lua_assert(chunks, current, argc, line);
         }
+        "lua.assert_row" => {
+            super::metamethods_adapter::emit_lua_assert_row(chunks, current, argc, line);
+        }
+        "lua.dofile" => {
+            super::metamethods_adapter::emit_lua_dofile(chunks, current, argc, line);
+        }
         "lua.collectgarbage" => {
             super::metamethods_adapter::emit_lua_collectgarbage(chunks, current, argc, line);
+        }
+        "lua.rawequal" => {
+            super::metamethods_adapter::emit_lua_rawequal(chunks, current, argc, line);
+        }
+        "lua.os_clock" => {
+            super::metamethods_adapter::emit_lua_os_clock(chunks, current, argc, line);
+        }
+        "lua.os_date" => {
+            super::metamethods_adapter::emit_lua_os_date(chunks, current, argc, line);
+        }
+        "lua.os_difftime" => {
+            super::metamethods_adapter::emit_lua_os_difftime(chunks, current, argc, line);
+        }
+        "lua.os_execute" => {
+            super::metamethods_adapter::emit_lua_os_execute(chunks, current, argc, line);
+        }
+        "lua.os_getenv" => {
+            super::metamethods_adapter::emit_lua_os_getenv(chunks, current, argc, line);
+        }
+        "lua.os_remove" => {
+            super::metamethods_adapter::emit_lua_os_remove(chunks, current, argc, line);
+        }
+        "lua.os_rename" => {
+            super::metamethods_adapter::emit_lua_os_rename(chunks, current, argc, line);
+        }
+        "lua.os_setlocale" => {
+            super::metamethods_adapter::emit_lua_os_setlocale(chunks, current, argc, line);
+        }
+        "lua.os_time" => {
+            super::metamethods_adapter::emit_lua_os_time(chunks, current, argc, line);
+        }
+        "lua.os_tmpname" => {
+            super::metamethods_adapter::emit_lua_os_tmpname(chunks, current, argc, line);
         }
         "lua.float_repr" => {
             super::metamethods_adapter::emit_lua_float_repr(chunks, current, argc, line);
@@ -250,6 +289,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.stdout" => {
             super::metamethods_adapter::emit_lua_stdout(chunks, current, argc, line);
+        }
+        "lua.stdin" => {
+            super::metamethods_adapter::emit_lua_stdin(chunks, current, argc, line);
+        }
+        "lua.stderr" => {
+            super::metamethods_adapter::emit_lua_stderr(chunks, current, argc, line);
         }
         "lua.coroutine_create" => {
             super::metamethods_adapter::emit_lua_coroutine_create(chunks, current, argc, line);

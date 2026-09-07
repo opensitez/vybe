@@ -4,17 +4,25 @@ use pest::iterators::Pair;
 use vybe_ast::*;
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let (start_line, start_col) = pair.as_span().start_pos().line_col();
-    let (end_line, end_col) = pair.as_span().end_pos().line_col();
-    Span {
-        start_line: start_line as u32,
-        start_col: start_col as u32,
-        end_line: end_line as u32,
-        end_col: end_col as u32,
-    }
+    let s = pair.as_span();
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_1based(s.start(), s.end()).unwrap_or_else(|| {
+        let (start_line, start_col) = s.start_pos().line_col();
+        let (end_line, end_col) = s.end_pos().line_col();
+        Span {
+            start_line: start_line as u32,
+            start_col: start_col as u32,
+            end_line: end_line as u32,
+            end_col: end_col as u32,
+        }
+    })
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(source);
     let pairs = LuaParser::parse(Rule::chunk, source).map_err(|e| format!("Parse error: {e}"))?;
     let mut body = Vec::new();
     for pair in pairs {
@@ -35,15 +43,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports: Vec::new(),
         // `self` is an ordinary leading parameter — `function t:m()` is sugar
-        // that DECLARES it, so it is passed like any other argument, which is
-        // what every language without a declared binding already does.
-        //
-        // ⛔ IT USED TO SAY `ReceiverBinding::ExplicitParameter`, AND NOTHING
-        // READ IT — zero readers across `crates/` and `platforms/`. A variant
-        // that only ever gets written is not a protocol, it is a comment with
-        // a type, and it made the receiver look like it had four mechanisms
-        // when it had two.
-        directives: vybe_ast::Directives::default(),
+        // that DECLARES it and `t:m()` is sugar that PASSES it, so the receiver
+        // arrives at the call site like any other argument.
+        directives: vybe_ast::Directives {
+            method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            ..Default::default()
+        },
     };
     super::normalize::normalize_module(&mut module);
     Ok(module)

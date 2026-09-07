@@ -40,10 +40,12 @@ print = { emit = "common:lua.print", min_args = 0, max_args = 255 }
 tonumber = { emit = "common:lua.tonumber", min_args = 1, max_args = 2 }
 tostring = { emit = "common:lua.tostring", min_args = 1, max_args = 1 }
 type = { emit = "common:lua.type", min_args = 1, max_args = 1 }
+rawequal = { emit = "common:lua.rawequal", min_args = 2, max_args = 2 }
 rawlen = { emit = "common:lua.rawlen", min_args = 1, max_args = 1 }
 rawget = { emit = "common:lua.rawget", min_args = 2, max_args = 2 }
 rawset = { emit = "common:lua.rawset", min_args = 3, max_args = 3 }
 assert = { emit = "common:lua.assert", min_args = 1, max_args = 255 }
+dofile = { emit = "common:lua.dofile", min_args = 0, max_args = 1 }
 collectgarbage = { emit = "common:lua.collectgarbage", min_args = 0, max_args = 2 }
 setmetatable = { emit = "common:lua.setmetatable", min_args = 2, max_args = 2 }
 __lua_set_class_metatable = { emit = "common:lua.set_class_metatable", min_args = 3, max_args = 3 }
@@ -79,6 +81,7 @@ select = { emit = "common:lua.select", min_args = 1, max_args = 255 }
 "coroutine.__wrap_resume_row" = { emit = "common:lua.coroutine_wrap_resume_row", min_args = 2, max_args = 2 }
 __lua_print = { emit = "common:lua.print", min_args = 0, max_args = 255 }
 __lua_print_row = { emit = "common:lua.print_row", min_args = 1, max_args = 1 }
+__lua_assert_row = { emit = "common:lua.assert_row", min_args = 1, max_args = 1 }
 __lua_apply_row = { emit = "common:lua.apply_row", min_args = 2, max_args = 2 }
 __lua_apply_row_prefix = { emit = "common:lua.apply_row_prefix", min_args = 3, max_args = 3 }
 __lua_call = { emit = "common:lua.metamethod_call", min_args = 1, max_args = 255 }
@@ -96,6 +99,8 @@ __lua_debug_getinfo_static = { emit = "common:lua.debug_getinfo_static", min_arg
 __lua_table_from_pairs = { emit = "common:lua.table_from_pairs", min_args = 1, max_args = 1 }
 __lua_table_pack_row = { emit = "common:lua.table_pack_row", min_args = 1, max_args = 1 }
 __lua_stdout = { emit = "common:lua.stdout", min_args = 0, max_args = 0 }
+__lua_stdin = { emit = "common:lua.stdin", min_args = 0, max_args = 0 }
+__lua_stderr = { emit = "common:lua.stderr", min_args = 0, max_args = 0 }
 __lua_iter_end = { emit = "common:lua.iter_end", min_args = 1, max_args = 1 }
 __lua_type = { emit = "common:lua.type", min_args = 1, max_args = 1 }
 __lua_truthy = { emit = "common:lua.truthy", min_args = 1, max_args = 1 }
@@ -208,11 +213,20 @@ __lua_index0 = { emit = "common:lua.multi_index0", min_args = 2, max_args = 2 }
 __lua_multi_get0 = { emit = "common:lua.multi_index0", min_args = 2, max_args = 2 }
 __lua_newindex = { emit = "common:lua.metamethod_newindex", min_args = 3, max_args = 3 }
 
-# os.* — wall clock via ecma:date + PHP strftime/getdate (see normalize.rs desugar)
-"os.time" = { emit = "host:ecma:date:nowSeconds", min_args = 0, max_args = 1 }
+# os.* — namespace leaves resolved through the common resolver.
+"os.clock" = { emit = "common:lua.os_clock", min_args = 0, max_args = 0 }
+"os.date" = { emit = "common:lua.os_date", min_args = 0, max_args = 2 }
+"os.difftime" = { emit = "common:lua.os_difftime", min_args = 2, max_args = 2 }
+"os.execute" = { emit = "common:lua.os_execute", min_args = 0, max_args = 1 }
 # os.exit(code) — was unbound, so `os.exit(8)` raised "undefined is not
 # callable" instead of ending the run with status 8.
 "os.exit" = { emit = "common:control_flow.exit", min_args = 0, max_args = 2 }
+"os.getenv" = { emit = "common:lua.os_getenv", min_args = 1, max_args = 1 }
+"os.remove" = { emit = "common:lua.os_remove", min_args = 1, max_args = 1 }
+"os.rename" = { emit = "common:lua.os_rename", min_args = 2, max_args = 2 }
+"os.setlocale" = { emit = "common:lua.os_setlocale", min_args = 0, max_args = 2 }
+"os.time" = { emit = "common:lua.os_time", min_args = 0, max_args = 1 }
+"os.tmpname" = { emit = "common:lua.os_tmpname", min_args = 0, max_args = 0 }
 "__lua_strftime" = { emit = "common:php.strftime", min_args = 1, max_args = 2 }
 "__lua_getdate" = { emit = "common:php.getdate", min_args = 0, max_args = 1 }
 "__lua_monotonic_now" = { emit = "host:wasi:clocks/monotonic-clock:now", min_args = 0, max_args = 0 }
@@ -273,3 +287,10 @@ math_mininteger = { emit = "common:lua.math_mininteger", min_args = 0, max_args 
 # recognises as a float.
 [builtin_slots.double]
 to_string = "common:lua.float_repr"
+
+[namespaces]
+type_scopes = ["lua"]
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "lua"
