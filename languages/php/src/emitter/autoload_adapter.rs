@@ -32,6 +32,7 @@ fn php_class_spelling(name: &str) -> String {
 /// global is still undefined. Stack on exit: `[ctor_ref]`.
 pub fn emit_constructor_ref_with_autoload(
     chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     ctor_global: &str,
     autoload_name: &str,
     line: u32,
@@ -39,6 +40,7 @@ pub fn emit_constructor_ref_with_autoload(
     let spelling = php_class_spelling(autoload_name);
     dynamic_symbols::emit_registered_global_ref(
         chunk,
+        abi,
         ctor_global,
         &spelling,
         php_autoload_stack(),
@@ -51,6 +53,7 @@ pub fn emit_constructor_ref_with_autoload(
 /// autoloading. Stack on exit: `[ctor_ref]`.
 pub fn emit_dynamic_constructor_ref_with_autoload(
     chunk: &mut Chunk,
+    abi: vybe_runtime::chunk::ReceiverAbi,
     primary_ctor_global: &str,
     fallback_ctor_global: Option<&str>,
     autoload_name: &str,
@@ -59,6 +62,7 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     let spelling = php_class_spelling(autoload_name);
     dynamic_symbols::emit_registered_dynamic_global_ref(
         chunk,
+        abi,
         primary_ctor_global,
         fallback_ctor_global,
         &spelling,
@@ -133,6 +137,8 @@ pub fn emit_spl_autoload_call(chunks: &mut [Chunk], current: usize, argc: u8, li
     for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    dynamic_symbols::emit_resolver_stack_invoke(chunk, php_autoload_stack(), None, line);
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    let chunk = &mut chunks[current];
+    dynamic_symbols::emit_resolver_stack_invoke(chunk, abi, php_autoload_stack(), None, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

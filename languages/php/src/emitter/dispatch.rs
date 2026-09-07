@@ -912,11 +912,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_splpriorityqueue" => {
             crate::emitter::spl_adapter::emit_spl_pq_new(chunks, current, argc, line)
         }
+        "php.spl_splfixedarray" => {
+            crate::emitter::spl_adapter::emit_spl_fixedarray_new(chunks, current, argc, line)
+        }
         "php.spl_appenditerator" => {
             crate::emitter::spl_adapter::emit_append_iterator_new(chunks, current, argc, line)
         }
         "php.spl_arrayiterator" => {
             crate::emitter::spl_adapter::emit_array_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_arrayobject" => {
+            crate::emitter::spl_adapter::emit_array_object_new(chunks, current, argc, line)
         }
         "php.spl_cachingiterator" => {
             crate::emitter::spl_adapter::emit_caching_iterator_new(chunks, current, argc, line)
@@ -959,7 +965,53 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_weakmap" => crate::emitter::spl_adapter::emit_spl_objectstorage_new(
             chunks, current, "WeakMap", argc, line,
         ),
-        // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
+        "php.spl_iter_rewind" => {
+            crate::emitter::spl_adapter::emit_spl_iter_rewind(chunks, current, argc, line)
+        }
+        "php.spl_iter_rewind_lifo" => {
+            crate::emitter::spl_adapter::emit_spl_iter_rewind_lifo(chunks, current, argc, line)
+        }
+        "php.spl_iter_next" => {
+            crate::emitter::spl_adapter::emit_spl_iter_next(chunks, current, argc, line)
+        }
+        "php.spl_iter_prev" => {
+            crate::emitter::spl_adapter::emit_spl_iter_prev(chunks, current, argc, line)
+        }
+        "php.spl_iter_key" => {
+            crate::emitter::spl_adapter::emit_spl_iter_key(chunks, current, argc, line)
+        }
+        "php.spl_iter_current" => {
+            crate::emitter::spl_adapter::emit_spl_iter_current(chunks, current, argc, line)
+        }
+        "php.spl_iter_valid" => {
+            crate::emitter::spl_adapter::emit_spl_iter_valid(chunks, current, argc, line)
+        }
+        "php.spl_iter_seek" => {
+            crate::emitter::spl_adapter::emit_spl_iter_seek(chunks, current, argc, line)
+        }
+        "php.spl_iter_set_mode" => {
+            crate::emitter::spl_adapter::emit_spl_iter_set_mode(chunks, current, argc, line)
+        }
+        "php.spl_iter_sort" => {
+            crate::emitter::spl_adapter::emit_spl_iter_sort(chunks, current, argc, line)
+        }
+        "php.spl_pq_insert_method" => {
+            crate::emitter::spl_adapter::emit_spl_pq_insert_method(chunks, current, argc, line)
+        }
+        "php.spl_pq_extract_method" => {
+            crate::emitter::spl_adapter::emit_spl_pq_extract_method(chunks, current, argc, line)
+        }
+        "php.spl_pq_current_method" => {
+            crate::emitter::spl_adapter::emit_spl_pq_current_method(chunks, current, argc, line)
+        }
+        "php.spl_pq_set_extract_flags_method" => {
+            crate::emitter::spl_adapter::emit_spl_pq_set_extract_flags_method(
+                chunks, current, argc, line,
+            )
+        }
+        "php.spl_count_method" => {
+            crate::emitter::spl_adapter::emit_spl_count_method(chunks, current, argc, line)
+        }
         "php.array_merge" => {
             super::type_guard::guard_arg(
                 chunks,

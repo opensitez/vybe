@@ -220,13 +220,19 @@ fn reflection_attribute_expr(__php_w: &mut PhpWalker, attr: &AttributeMeta) -> E
             })
             .collect(),
     ));
-    let instance_props = attribute_instance_props(__php_w, attr);
-    let mut instance_object_props = vec![ObjectProperty::KeyValue {
-        key: Expression::string("__type"),
-        value: Expression::string(&attr.name),
-    }];
-    instance_object_props.extend(instance_props.clone());
-    let instance = Expression::new(ExprKind::Object(instance_object_props));
+    // `newInstance()` CONSTRUCTS. `ExprKind::New` is the one node that
+    // allocates with the attribute class's own WASM type — it runs the real
+    // constructor, so `struct.new_default <typeidx>` stamps the rtt and every
+    // promoted parameter lands in its declared field. An object literal
+    // stamped `__type` is a typeidx-0 bag: it passes no `ref.test`, so a
+    // licensed class's indexed reads cannot reach it, and it re-derives the
+    // constructor by guessing parameter names — the walker compiling what
+    // `classes.rs` already owns. The arguments are already `Argument`s, names
+    // included, so PHP 8 named arguments reach the constructor unchanged.
+    let instance = Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(&attr.name)),
+        args: attr.args.clone(),
+    });
     let get_arguments = Expression::new(ExprKind::Lambda {
         params: vec![mk_param_named("__this")],
         body: LambdaBody::Expr(Box::new(args_array.clone())),
@@ -303,51 +309,7 @@ fn reflection_attribute_expr(__php_w: &mut PhpWalker, attr: &AttributeMeta) -> E
             value: get_attr,
         },
     ];
-    props.extend(instance_props);
     Expression::new(ExprKind::Object(props))
-}
-
-fn attribute_instance_props(__php_w: &mut PhpWalker, attr: &AttributeMeta) -> Vec<ObjectProperty> {
-    let ctor_params = {
-        __php_w.class_registry
-            .get(&attr.name)
-            .map(|m| m.constructor_params.clone())
-            .unwrap_or_default()
-    };
-    let ctor_params = if ctor_params.is_empty() {
-        __php_w
-            .constructor_param_names
-            .get(&attr.name)
-            .cloned()
-            .unwrap_or_default()
-    } else {
-        ctor_params
-    };
-    let ctor_params: Vec<String> = ctor_params
-        .into_iter()
-        .map(|p| p.strip_prefix('$').unwrap_or(&p).to_string())
-        .collect();
-    let mut props = Vec::new();
-    for (idx, arg) in attr.args.iter().enumerate() {
-        let key = arg
-            .name
-            .clone()
-            .or_else(|| ctor_params.get(idx).cloned())
-            .unwrap_or_else(|| idx.to_string());
-        props.push(ObjectProperty::KeyValue {
-            key: Expression::string(&key),
-            value: arg.value.clone(),
-        });
-        if arg.name.is_none() && attr.args.len() == 1 && ctor_params.is_empty() {
-            for alias in ["number", "msg", "key", "text", "path", "name"] {
-                props.push(ObjectProperty::KeyValue {
-                    key: Expression::string(alias),
-                    value: arg.value.clone(),
-                });
-            }
-        }
-    }
-    props
 }
 
 #[derive(Debug, Clone, Default)]
@@ -977,6 +939,8 @@ struct PhpWalker {
     simple_array_vars: std::collections::HashMap<String, Vec<(String, Expression)>>,
     simple_string_vars: std::collections::HashMap<String, String>,
     simple_value_vars: std::collections::HashMap<String, Expression>,
+    simple_object_class_vars: std::collections::HashMap<String, String>,
+    simple_spl_iterator_lifo_vars: std::collections::HashMap<String, bool>,
     simple_object_field_writes: std::collections::HashSet<(String, String)>,
     simple_object_field_values: std::collections::HashMap<(String, String), Expression>,
     simple_static_field_writes: std::collections::HashSet<(String, String)>,
@@ -1384,11 +1348,48 @@ fn lookup_simple_value_var(__php_w: &mut PhpWalker, name: &str) -> Option<Expres
         .cloned()
 }
 
+fn note_simple_object_class_var(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
+    let key = name.trim_start_matches('$');
+    let class_name = php_object_class_from_expr(__php_w, expr);
+    match class_name {
+        Some(class_name) => {
+            __php_w
+                .simple_object_class_vars
+                .insert(key.to_string(), class_name);
+        }
+        None => {
+            __php_w.simple_object_class_vars.remove(key);
+        }
+    }
+}
+
+fn lookup_simple_object_class_var(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
+    __php_w
+        .simple_object_class_vars
+        .get(name.trim_start_matches('$'))
+        .cloned()
+}
+
+fn note_simple_spl_iterator_lifo_var(__php_w: &mut PhpWalker, name: &str, lifo: bool) {
+    __php_w
+        .simple_spl_iterator_lifo_vars
+        .insert(name.trim_start_matches('$').to_string(), lifo);
+}
+
+fn lookup_simple_spl_iterator_lifo_var(__php_w: &mut PhpWalker, name: &str) -> Option<bool> {
+    __php_w
+        .simple_spl_iterator_lifo_vars
+        .get(name.trim_start_matches('$'))
+        .copied()
+}
+
 fn invalidate_simple_var_value(__php_w: &mut PhpWalker, name: &str) {
     let name = name.trim_start_matches('$');
     __php_w.simple_array_vars.remove(name);
     __php_w.simple_string_vars.remove(name);
     __php_w.simple_value_vars.remove(name);
+    __php_w.simple_object_class_vars.remove(name);
+    __php_w.simple_spl_iterator_lifo_vars.remove(name);
 }
 
 fn expr_is_simplexml_value(expr: &Expression) -> bool {
@@ -1622,6 +1623,17 @@ fn php_function_call_return_class(__php_w: &mut PhpWalker, expr: &Expression) ->
             return Some("DateInterval".to_string());
         }
         "__php_datetimezone_new" => return Some("DateTimeZone".to_string()),
+        "__spl_new_splstack" => return Some("SplStack".to_string()),
+        "__spl_new_splqueue" => return Some("SplQueue".to_string()),
+        "__spl_new_spldoublylinkedlist" => return Some("SplDoublyLinkedList".to_string()),
+        "__spl_new_splminheap" => return Some("SplMinHeap".to_string()),
+        "__spl_new_splmaxheap" => return Some("SplMaxHeap".to_string()),
+        "__spl_new_splpriorityqueue" => return Some("SplPriorityQueue".to_string()),
+        "__spl_new_splfixedarray" => return Some("SplFixedArray".to_string()),
+        "__spl_new_arrayobject" => return Some("ArrayObject".to_string()),
+        "__spl_new_arrayiterator" => return Some("ArrayIterator".to_string()),
+        "__spl_new_cachingiterator" => return Some("CachingIterator".to_string()),
+        "__spl_new_infiniteiterator" => return Some("InfiniteIterator".to_string()),
         "__spl_new_splobjectstorage" => return Some("SplObjectStorage".to_string()),
         "__spl_new_weakmap" => return Some("WeakMap".to_string()),
         _ => {}
@@ -1652,6 +1664,9 @@ fn php_object_class_from_expr_inner(__php_w: &mut PhpWalker,
             let key = name.trim_start_matches('$').to_string();
             if !seen.insert(key) {
                 return None;
+            }
+            if let Some(class_name) = lookup_simple_object_class_var(__php_w, name) {
+                return Some(class_name);
             }
             lookup_simple_value_var(__php_w, name).and_then(|value| {
                 php_object_class_from_expr_inner(__php_w, &value, seen)
@@ -2013,6 +2028,11 @@ fn php_literal_int_value(expr: &Expression) -> Option<i64> {
                 Some(value)
             }
         }
+        ExprKind::Binary {
+            op: BinOp::BitOr,
+            left,
+            right,
+        } => Some(php_literal_int_value(left)? | php_literal_int_value(right)?),
         _ => None,
     }
 }
@@ -5441,12 +5461,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
             case_alphabet: Some(CaseAlphabet::Ascii),
             // A php method CALL passes the receiver as a leading argument: the
             // callable is the raw function off the class struct and carries no
-            // receiver of its own, unlike prototype dispatch (JS/Dart, which
-            // rides `__js_this`) or bind-on-access (Python, which burns the
-            // receiver in when the method is READ). Stated here so shared code
-            // reads a PROPERTY instead of asking whose language it is — this
-            // replaced `profile.name == "php"` in `call_supplies_receiver`.
+            // receiver of its own, unlike prototype dispatch (JS/Dart) or
+            // bind-on-access (Python, which burns the receiver in when the
+            // method is READ). Stated here so shared code reads a PROPERTY
+            // instead of asking whose language it is — this replaced
+            // `profile.name == "php"` in `call_supplies_receiver`.
             method_receiver: Some(MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. `method_receiver` above says WHERE a method's
+            // receiver comes from; this says it is a real parameter on every
+            // function type. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             // `die("bye")` prints and exits 0; `exit(3)` exits 3 and prints
             // nothing — one syntax, two meanings, decided at RUNTIME by the
             // argument's type. Stated so the common exit emitter branches on a
@@ -11325,7 +11351,15 @@ fn walk_expression(__php_w: &mut PhpWalker, mut pair: Pair<Rule>) -> Result<Expr
                     ExprKind::Ident(name) => invalidate_simple_var_value(__php_w, name),
                     ExprKind::Index { object, .. } => {
                         if let ExprKind::Ident(name) = &object.kind {
-                            invalidate_simple_var_value(__php_w, name);
+                            if php_object_class_from_expr(__php_w, object).is_none_or(|class_name| {
+                                !matches!(
+                                    class_name.trim_start_matches('\\'),
+                                    "SplFixedArray" | "ArrayObject"
+                                )
+                            })
+                            {
+                                invalidate_simple_var_value(__php_w, name);
+                            }
                         }
                     }
                     _ => {}
@@ -12185,6 +12219,22 @@ fn build_unset_rewrite(__php_w: &mut PhpWalker, target: Expression, span: &Span)
             null_safe: false,
         } => {
             if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                if class_name.trim_start_matches('\\') == "SplFixedArray" {
+                    return Expression::with_span(
+                        ExprKind::Assign {
+                            target: Box::new(Expression::with_span(
+                                ExprKind::Index {
+                                    object: object.clone(),
+                                    index: index.clone(),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            )),
+                            value: Box::new(Expression::null()),
+                        },
+                        span.clone(),
+                    );
+                }
                 let implements_array_access = class_all_interfaces(__php_w, &class_name)
                     .iter()
                     .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
@@ -13612,6 +13662,7 @@ fn walk_assignment(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expressi
                 note_simple_array_var(__php_w, name, &rhs);
                 note_simple_string_var(__php_w, name, &rhs);
                 note_simple_value_var(__php_w, name, &rhs);
+                note_simple_object_class_var(__php_w, name, &rhs);
                 note_simple_xml_var(__php_w, name, &rhs);
                 note_simple_callable_assignment(__php_w, name, &rhs);
                 if let Some(state) = expr_is_php_fiber_new(&rhs) {
@@ -14888,14 +14939,31 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             }
             let name = name_inner.as_str().to_string();
             if !is_fcc {
+                let receiver_class = php_object_class_from_expr(__php_w, &receiver)
+                    .map(|class_name| class_name.trim_start_matches('\\').to_string());
                 let receiver_is_array_backed = matches!(
                     &receiver.kind,
                     ExprKind::Ident(var_name)
                         if lookup_simple_value_var(__php_w, var_name)
                             .is_some_and(|value| matches!(value.kind, ExprKind::Array(_)))
-                );
+                ) || receiver_class
+                    .as_deref()
+                    .is_some_and(|class_name| matches!(class_name, "ArrayObject" | "SplFixedArray"));
                 if receiver_is_array_backed {
                     match name.as_str() {
+                        "setIteratorMode" => {
+                            let args = arg_list_pair
+                                .clone()
+                                .map(|__p| walk_args(__php_w, __p))
+                                .transpose()?
+                                .unwrap_or_default();
+                            if let (ExprKind::Ident(var_name), Some(mode)) =
+                                (&receiver.kind, args.first().and_then(|arg| php_literal_int_value(&arg.value)))
+                            {
+                                note_simple_spl_iterator_lifo_var(__php_w, var_name, mode & 2 != 0);
+                            }
+                            return Ok(Expression::null());
+                        }
                         "append" => {
                             let args = arg_list_pair
                                 .clone()
@@ -14935,6 +15003,61 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                                 },
                                 span.clone(),
                             ));
+                        }
+                        "getArrayCopy" => {
+                            return Ok(php_mk_call(
+                                "__php_copy_on_assign",
+                                vec![receiver.clone()],
+                                &span,
+                            ));
+                        }
+                        "offsetGet" => {
+                            let args = arg_list_pair
+                                .clone()
+                                .map(|__p| walk_args(__php_w, __p))
+                                .transpose()?
+                                .unwrap_or_default();
+                            if let Some(index) = args.first() {
+                                return Ok(Expression::with_span(
+                                    ExprKind::Index {
+                                        object: Box::new(receiver.clone()),
+                                        index: Box::new(index.value.clone()),
+                                        null_safe: false,
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                        "setSize" if receiver_class.as_deref() == Some("SplFixedArray") => {
+                            let args = arg_list_pair
+                                .clone()
+                                .map(|__p| walk_args(__php_w, __p))
+                                .transpose()?
+                                .unwrap_or_default();
+                            if let Some(size) = args.first() {
+                                let resized = php_mk_call(
+                                    "array_pad",
+                                    vec![
+                                        receiver.clone(),
+                                        size.value.clone(),
+                                        Expression::null(),
+                                    ],
+                                    &span,
+                                );
+                                return Ok(Expression::with_span(
+                                    ExprKind::Sequence(vec![
+                                        Expression::with_span(
+                                            ExprKind::Assign {
+                                                target: Box::new(receiver.clone()),
+                                                value: Box::new(resized),
+                                            },
+                                            span.clone(),
+                                        ),
+                                        Expression::null(),
+                                    ]),
+                                    span.clone(),
+                                ));
+                            }
                         }
                         _ => {}
                     }
@@ -15057,6 +15180,98 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                 // cover everything `__php_gen_*` does. The guard below is the
                 // interim; closing the gap is the real fix. See
                 // flexclassplan.md §4k-quater.
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &receiver) {
+                    if name == "setIteratorMode"
+                        && matches!(
+                            class_name.trim_start_matches('\\'),
+                            "SplStack" | "SplDoublyLinkedList" | "SplQueue"
+                        )
+                    {
+                        let args = arg_list_pair
+                            .clone()
+                            .map(|__p| walk_args(__php_w, __p))
+                            .transpose()?
+                            .unwrap_or_default();
+                        if let (ExprKind::Ident(var_name), Some(mode)) =
+                            (&receiver.kind, args.first().and_then(|arg| php_literal_int_value(&arg.value)))
+                        {
+                            note_simple_spl_iterator_lifo_var(__php_w, var_name, mode & 2 != 0);
+                        }
+                    }
+                    let spl_target = match class_name.trim_start_matches('\\') {
+                        "ArrayIterator" | "CachingIterator" | "InfiniteIterator" => {
+                            match name.as_str() {
+                                "rewind" => Some("__spl_iter_rewind"),
+                                "next" => Some("__spl_iter_next"),
+                                "key" => Some("__spl_iter_key"),
+                                "current" => Some("__spl_iter_current"),
+                                "valid" => Some("__spl_iter_valid"),
+                                "seek" => Some("__spl_iter_seek"),
+                                "setIteratorMode" => Some("__spl_iter_set_mode"),
+                                "natcasesort" | "natsort" | "asort" => Some("__spl_iter_sort"),
+                                _ => None,
+                            }
+                        }
+                        "SplStack" | "SplDoublyLinkedList" => {
+                            let lifo = if let ExprKind::Ident(var_name) = &receiver.kind {
+                                lookup_simple_spl_iterator_lifo_var(__php_w, var_name).unwrap_or(true)
+                            } else {
+                                true
+                            };
+                            match name.as_str() {
+                                "rewind" if lifo => Some("__spl_iter_rewind_lifo"),
+                                "rewind" => Some("__spl_iter_rewind"),
+                                "next" if lifo => Some("__spl_iter_prev"),
+                                "next" => Some("__spl_iter_next"),
+                                "key" => Some("__spl_iter_key"),
+                                "current" => Some("__spl_iter_current"),
+                                "valid" => Some("__spl_iter_valid"),
+                                "seek" => Some("__spl_iter_seek"),
+                                "setIteratorMode" => Some("__spl_iter_set_mode"),
+                                _ => None,
+                            }
+                        }
+                        "SplQueue" => match name.as_str() {
+                            "rewind" => Some("__spl_iter_rewind"),
+                            "next" => Some("__spl_iter_next"),
+                            "key" => Some("__spl_iter_key"),
+                            "current" => Some("__spl_iter_current"),
+                            "valid" => Some("__spl_iter_valid"),
+                            "seek" => Some("__spl_iter_seek"),
+                            "setIteratorMode" => Some("__spl_iter_set_mode"),
+                            _ => None,
+                        },
+                        "SplPriorityQueue" => match name.as_str() {
+                            "insert" => Some("__spl_pq_insert_method"),
+                            "extract" => Some("__spl_pq_extract_method"),
+                            "current" => Some("__spl_pq_current_method"),
+                            "setExtractFlags" => Some("__spl_pq_set_extract_flags_method"),
+                            _ => None,
+                        },
+                        "SplFixedArray" => match name.as_str() {
+                            "count" | "getSize" => Some("__spl_count_method"),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(fname) = spl_target {
+                        let mut call_args = vec![Argument::positional(receiver.clone())];
+                        if let Some(al) = arg_list_pair.clone() {
+                            call_args.extend(walk_args(__php_w, al)?);
+                        }
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::with_span(
+                                    ExprKind::Ident(fname.to_string()),
+                                    span.clone(),
+                                )),
+                                args: call_args,
+                                optional: false,
+                            },
+                            span.clone(),
+                        ));
+                    }
+                }
                 let receiver_declares_method = php_object_class_from_expr(__php_w, &receiver)
                     .is_some_and(|class_name| class_has_method(__php_w, &class_name, &name));
                 let generator_target = if receiver_declares_method {
@@ -15492,6 +15707,98 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                         },
                         span.clone(),
                     ));
+                }
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &receiver) {
+                    if name == "setIteratorMode"
+                        && matches!(
+                            class_name.trim_start_matches('\\'),
+                            "SplStack" | "SplDoublyLinkedList" | "SplQueue"
+                        )
+                    {
+                        let args = arg_list_pair
+                            .clone()
+                            .map(|__p| walk_args(__php_w, __p))
+                            .transpose()?
+                            .unwrap_or_default();
+                        if let (ExprKind::Ident(var_name), Some(mode)) =
+                            (&receiver.kind, args.first().and_then(|arg| php_literal_int_value(&arg.value)))
+                        {
+                            note_simple_spl_iterator_lifo_var(__php_w, var_name, mode & 2 != 0);
+                        }
+                    }
+                    let spl_target = match class_name.trim_start_matches('\\') {
+                        "ArrayIterator" | "CachingIterator" | "InfiniteIterator" => {
+                            match name.as_str() {
+                                "rewind" => Some("__spl_iter_rewind"),
+                                "next" => Some("__spl_iter_next"),
+                                "key" => Some("__spl_iter_key"),
+                                "current" => Some("__spl_iter_current"),
+                                "valid" => Some("__spl_iter_valid"),
+                                "seek" => Some("__spl_iter_seek"),
+                                "setIteratorMode" => Some("__spl_iter_set_mode"),
+                                "natcasesort" | "natsort" | "asort" => Some("__spl_iter_sort"),
+                                _ => None,
+                            }
+                        }
+                        "SplStack" | "SplDoublyLinkedList" => {
+                            let lifo = if let ExprKind::Ident(var_name) = &receiver.kind {
+                                lookup_simple_spl_iterator_lifo_var(__php_w, var_name).unwrap_or(true)
+                            } else {
+                                true
+                            };
+                            match name.as_str() {
+                                "rewind" if lifo => Some("__spl_iter_rewind_lifo"),
+                                "rewind" => Some("__spl_iter_rewind"),
+                                "next" if lifo => Some("__spl_iter_prev"),
+                                "next" => Some("__spl_iter_next"),
+                                "key" => Some("__spl_iter_key"),
+                                "current" => Some("__spl_iter_current"),
+                                "valid" => Some("__spl_iter_valid"),
+                                "seek" => Some("__spl_iter_seek"),
+                                "setIteratorMode" => Some("__spl_iter_set_mode"),
+                                _ => None,
+                            }
+                        }
+                        "SplQueue" => match name.as_str() {
+                            "rewind" => Some("__spl_iter_rewind"),
+                            "next" => Some("__spl_iter_next"),
+                            "key" => Some("__spl_iter_key"),
+                            "current" => Some("__spl_iter_current"),
+                            "valid" => Some("__spl_iter_valid"),
+                            "seek" => Some("__spl_iter_seek"),
+                            "setIteratorMode" => Some("__spl_iter_set_mode"),
+                            _ => None,
+                        },
+                        "SplPriorityQueue" => match name.as_str() {
+                            "insert" => Some("__spl_pq_insert_method"),
+                            "extract" => Some("__spl_pq_extract_method"),
+                            "current" => Some("__spl_pq_current_method"),
+                            "setExtractFlags" => Some("__spl_pq_set_extract_flags_method"),
+                            _ => None,
+                        },
+                        "SplFixedArray" => match name.as_str() {
+                            "count" | "getSize" => Some("__spl_count_method"),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(fname) = spl_target {
+                        let mut call_args = vec![Argument::positional(receiver.clone())];
+                        if let Some(al) = arg_list_pair.clone() {
+                            call_args.extend(walk_args(__php_w, al)?);
+                        }
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::with_span(
+                                    ExprKind::Ident(fname.to_string()),
+                                    span.clone(),
+                                )),
+                                args: call_args,
+                                optional: false,
+                            },
+                            span.clone(),
+                        ));
+                    }
                 }
                 // SplFixedArray is a plain array; `$x->getSize()` → `count($x)`
                 // (SPL-only name, no collision with user classes).
@@ -16432,6 +16739,35 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                 }
             }
             let receiver_for_nullsafe = receiver.clone();
+            if !null_safe {
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &receiver) {
+                    if class_name.trim_start_matches('\\') == "ArrayObject"
+                        && !matches!(
+                            name.as_str(),
+                            "append"
+                                | "asort"
+                                | "count"
+                                | "getArrayCopy"
+                                | "offsetGet"
+                                | "offsetSet"
+                                | "offsetExists"
+                                | "offsetUnset"
+                        )
+                    {
+                        return Ok(Expression::with_span(
+                            ExprKind::Index {
+                                object: Box::new(receiver),
+                                index: Box::new(Expression::with_span(
+                                    ExprKind::Lit(Literal::Str(name)),
+                                    span.clone(),
+                                )),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
             let member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
@@ -16786,6 +17122,20 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             // Reflection visibility constants
             if let ExprKind::Ident(cn) = &receiver.kind {
                 let cn_bare = cn.trim_start_matches('\\');
+                if cn_bare == "SplPriorityQueue" {
+                    let val = match name.as_str() {
+                        "EXTR_DATA" => Some(1),
+                        "EXTR_PRIORITY" => Some(2),
+                        "EXTR_BOTH" => Some(3),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(v)),
+                            span.clone(),
+                        ));
+                    }
+                }
                 if matches!(
                     cn_bare,
                     "DateTime" | "DateTimeImmutable" | "DateTimeInterface"
@@ -16819,6 +17169,34 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                         "ALL" => Some(2047),
                         "ALL_WITH_BC" => Some(4095),
                         "PER_COUNTRY" => Some(4096),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(v)),
+                            span.clone(),
+                        ));
+                    }
+                }
+                if matches!(cn_bare, "ArrayObject" | "ArrayIterator") {
+                    let val = match name.as_str() {
+                        "STD_PROP_LIST" => Some(1),
+                        "ARRAY_AS_PROPS" => Some(2),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(v)),
+                            span.clone(),
+                        ));
+                    }
+                }
+                if cn_bare == "SplDoublyLinkedList" {
+                    let val = match name.as_str() {
+                        "IT_MODE_KEEP" => Some(0),
+                        "IT_MODE_DELETE" => Some(1),
+                        "IT_MODE_LIFO" => Some(2),
+                        "IT_MODE_FIFO" => Some(0),
                         _ => None,
                     };
                     if let Some(v) = val {
@@ -18492,6 +18870,21 @@ fn php_resolve_simple_static_access(__php_w: &mut PhpWalker, expr: Expression, s
                     .unwrap_or_else(|| Expression::with_span(ExprKind::Ident(name), span.clone())),
                 other => Expression::with_span(other, span.clone()),
             };
+            if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) =
+                (&class.kind, &member.kind)
+            {
+                if class_name.trim_start_matches('\\') == "SplPriorityQueue" {
+                    let value = match member_name.as_str() {
+                        "EXTR_DATA" => Some(1),
+                        "EXTR_PRIORITY" => Some(2),
+                        "EXTR_BOTH" => Some(3),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        return Expression::with_span(ExprKind::Lit(Literal::Int(value)), span.clone());
+                    }
+                }
+            }
             Expression::with_span(
                 ExprKind::StaticAccess {
                     class: Box::new(class),
@@ -20169,36 +20562,28 @@ fn walk_new(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, Str
             return Ok(Expression::with_span(
                 ExprKind::Call {
                     callee: Box::new(Expression::with_span(
-                        ExprKind::Ident("array_fill".to_string()),
+                        ExprKind::Ident("__spl_new_splfixedarray".to_string()),
                         span.clone(),
                     )),
-                    args: vec![
-                        Argument::positional(Expression::with_span(
-                            ExprKind::Lit(Literal::Int(0)),
-                            span.clone(),
-                        )),
-                        Argument::positional(n),
-                        Argument::positional(Expression::with_span(
-                            ExprKind::Lit(Literal::Null),
-                            span.clone(),
-                        )),
-                    ],
+                    args: vec![Argument::positional(n)],
                     optional: false,
                 },
                 span,
             ));
         }
-        // `ArrayObject` wraps an array. PHP arrays are Vybe's native
-        // representation, so unwrap to the underlying array — `count()`,
-        // `foreach`, offset access (`$o[$k]`), and `iterator_to_array` then all
-        // work directly. `new ArrayObject($arr)` → `$arr`; no-arg → `[]`.
         let bare_cn = cn.trim_start_matches('\\');
         if bare_cn == "ArrayObject" {
-            return Ok(args
-                .into_iter()
-                .next()
-                .map(|a| a.value)
-                .unwrap_or_else(|| Expression::with_span(ExprKind::Array(vec![]), span.clone())));
+            return Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident("__spl_new_arrayobject".to_string()),
+                        span.clone(),
+                    )),
+                    args,
+                    optional: false,
+                },
+                span,
+            ));
         }
         if bare_cn == "RecursiveArrayIterator" {
             return Ok(args

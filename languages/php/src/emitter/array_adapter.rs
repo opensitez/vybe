@@ -1862,6 +1862,7 @@ fn emit_call_via_invoke_dispatch<F>(
 ) where
     F: FnMut(&mut [Chunk], usize),
 {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     lget(chunk, fn_slot, line);
     emit_test_function(chunk, line);
@@ -1869,9 +1870,13 @@ fn emit_call_via_invoke_dispatch<F>(
 
     let chunk = &mut chunks[current];
     lget(chunk, fn_slot, line);
+    // A plain callable declares a receiver at parameter 0 (§10.2.1) and a
+    // `$fn(...)` call binds `undefined` there (§10.2.1.1). The `__invoke`
+    // branch below pushes the object into that same slot.
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     push_args(chunks, current);
     let chunk = &mut chunks[current];
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, argc + recv, line);
     chunk.emit_else(line);
 
     // Object: call $obj->__invoke(args). PHP method ABI passes `$this`
@@ -1987,6 +1992,7 @@ pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 }
 
 pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let flag_slot = alloc_local(chunk);
     let fn_slot = alloc_local(chunk);
@@ -2067,8 +2073,9 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, fn_slot, line);
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, key_slot, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
     chunk.emit_else(line);
 
     lget(chunk, flag_slot, line);
@@ -2076,14 +2083,16 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, fn_slot, line);
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, value_slot, line);
     lget(chunk, key_slot, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
     chunk.emit_else(line);
 
     lget(chunk, fn_slot, line);
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, value_slot, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -4842,6 +4851,7 @@ fn emit_array_udiff_or_uintersect(
     intersect: bool,
     line: u32,
 ) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let (
         cb_slot,
         b_slot,
@@ -4922,9 +4932,10 @@ fn emit_array_udiff_or_uintersect(
         chunk.emit_op(Op::ARRAY_GET, line);
         lset(chunk, bval_slot, line);
         lget(chunk, cb_slot, line);
+        let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
         lget(chunk, aval_slot, line);
         lget(chunk, bval_slot, line);
-        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
         push_const(chunk, Value::F64(0.0), line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
@@ -4977,6 +4988,7 @@ fn emit_array_uassoc_impl(
     intersect: bool,
     line: u32,
 ) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let (
         key_cb_slot,
         val_cb_slot,
@@ -5096,9 +5108,10 @@ fn emit_array_uassoc_impl(
         chunk.emit_op(Op::ARRAY_GET, line);
         lset(chunk, bkey_slot, line);
         lget(chunk, key_cb_slot, line);
+        let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
         lget(chunk, akey_slot, line);
         lget(chunk, bkey_slot, line);
-        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
         push_const(chunk, Value::F64(0.0), line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
@@ -5116,6 +5129,7 @@ fn emit_array_uassoc_impl(
             chunk.emit_call(parse_float, 1, line);
             lset(chunk, bnum_slot, line);
             lget(chunk, val_cb_slot, line);
+            let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
             lget(chunk, anum_slot, line);
             lget(chunk, anum_slot, line);
             chunk.emit_op(Op::F64_EQ, line);
@@ -5130,7 +5144,7 @@ fn emit_array_uassoc_impl(
             lget(chunk, aval_slot, line);
             lget(chunk, bval_slot, line);
             chunk.emit_end(line);
-            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
             chunk.emit_if(line);
@@ -5203,6 +5217,7 @@ fn emit_assoc_sort_impl(
     cmp_slot: Option<u16>,
     line: u32,
 ) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let obj_slot = alloc_local(chunk);
     let keys_slot = alloc_local(chunk);
@@ -5357,6 +5372,7 @@ fn emit_assoc_sort_impl(
             // user(value): cmp(obj[keys[inner]], obj[keys[best]]) < 0
             let cs = cmp_slot.expect("uasort needs cmp_slot");
             lget(chunk, cs, line);
+            let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
             lget(chunk, obj_slot, line);
             lget(chunk, keys_slot, line);
             lget(chunk, inner_slot, line);
@@ -5367,7 +5383,7 @@ fn emit_assoc_sort_impl(
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         }
@@ -5375,13 +5391,14 @@ fn emit_assoc_sort_impl(
             // user(key): cmp(keys[inner], keys[best]) < 0
             let cs = cmp_slot.expect("uksort needs cmp_slot");
             lget(chunk, cs, line);
+            let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
             lget(chunk, keys_slot, line);
             lget(chunk, inner_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             lget(chunk, keys_slot, line);
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         }

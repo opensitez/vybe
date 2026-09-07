@@ -2003,19 +2003,14 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
 // ── str_getcsv ─────────────────────────────────────────────────────
 
-/// PHP `str_getcsv($s)` — parse one CSV row, return array of fields.
-/// MVP: comma delim, double-quote enclosure, doubled-quote escape.
-/// Multi-arg flavors (delim, enclosure, escape overrides) ignored.
-/// PHP `str_getcsv($string, $separator = ",", $enclosure = "\"", $escape = "\\")`.
+/// PHP `str_getcsv($string, $separator = ",", $enclosure = "\"", $escape = "\\")`
+/// — parse one CSV row, return an array of fields.
 ///
 /// The scanner is the SHARED one in `primitives/csv.rs` — fortran's
 /// `str_getcsv` binds the same emitter. What stays here is php's: the string
 /// coercion, and supplying php's defaults for the arguments the caller omitted.
-///
-/// The previous body dropped every optional argument
-/// (`for _ in 1..argc { DROP }`) and hardcoded `,` and `"`, so
-/// `str_getcsv($s, ";")` silently split on commas. The dialect now reaches the
-/// scanner.
+/// ⛔ Every optional argument REACHES the scanner; dropping one makes
+/// `str_getcsv($s, ";")` split on commas.
 pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Stack: str [, sep [, enclosure [, escape ]]] — pop back to front.
     let chunk = &mut chunks[current];
@@ -3209,6 +3204,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
 /// the result, advance past the match. Append any trailing text after
 /// the loop.
 pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let subj_slot = alloc_local(chunk);
     let cb_slot = alloc_local(chunk);
@@ -3316,10 +3312,12 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     }
     lset(chunk, result_slot, line);
 
-    // cb_ret = cb(m)
+    // cb_ret = cb(m) — a plain callable, so the match array is parameter 1 and
+    // parameter 0 binds `undefined` (§10.2.1.1).
     lget(chunk, cb_slot, line);
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, m_slot, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
     coerce_to_str(chunk, line);
     lset(chunk, cb_ret_slot, line);
 

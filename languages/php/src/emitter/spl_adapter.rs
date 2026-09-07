@@ -166,10 +166,59 @@ fn build_iter_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks.len() - 1
 }
 
+fn build_iter_rewind_lifo_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_rewind_lifo");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_SUB, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
 fn build_iter_next_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_next");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
+    let idx_slot = c.alloc_scratch(1);
+    lget(&mut c, 0, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
+    lset(&mut c, idx_slot, line);
+    lget(&mut c, 0, line);
+    lget(&mut c, idx_slot, line);
+    c.emit_f64_const(1.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut c, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_prev_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_prev");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    let idx_slot = c.alloc_scratch(1);
+    lget(&mut c, 0, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
+    lset(&mut c, idx_slot, line);
+    lget(&mut c, 0, line);
+    lget(&mut c, idx_slot, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_SUB, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -180,7 +229,16 @@ fn build_iter_key_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_key");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    c.emit_i32_const(0, line);
+    let idx_slot = c.alloc_scratch(1);
+    lget(&mut c, 0, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
+    lset(&mut c, idx_slot, line);
+    lget(&mut c, 0, line);
+    let keys_key = sconst(&mut c, "__keys");
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &keys_key, Dest::Stack, line);
+    lget(&mut c, idx_slot, line);
+    c.emit_op(Op::ARRAY_GET, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -190,9 +248,11 @@ fn build_iter_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_current");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
+    c.emit_op(Op::ARRAY_GET, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -202,7 +262,60 @@ fn build_iter_valid_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_valid");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    c.emit_bool_const(true, line);
+    let idx_slot = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
+    lset(&mut c, idx_slot, line);
+    lget(&mut c, idx_slot, line);
+    c.emit_f64_const(0.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    lget(&mut c, idx_slot, line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_seek_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_seek");
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    let k = idx_key(&mut c);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_set_mode_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_set_mode");
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    c.emit_op(Op::DROP, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_sort_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_sort");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let sort_i = c.add_import("ecma:array".to_string(), "sort".to_string());
+    c.emit_call(sort_i, 1, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -227,6 +340,11 @@ fn iterator_binds(chunks: &mut Vec<Chunk>, line: u32) -> Vec<(&'static str, usiz
         ("key", build_iter_key_method(chunks, line)),
         ("current", build_iter_current_method(chunks, line)),
         ("valid", build_iter_valid_method(chunks, line)),
+        ("seek", build_iter_seek_method(chunks, line)),
+        ("setiteratormode", build_iter_set_mode_method(chunks, line)),
+        ("natcasesort", build_iter_sort_method(chunks, line)),
+        ("natsort", build_iter_sort_method(chunks, line)),
+        ("asort", build_iter_sort_method(chunks, line)),
     ]
 }
 
@@ -396,15 +514,226 @@ fn build_pq_extract_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.local_count = c.local_count.max(1);
     chunks.push(c);
     let idx = chunks.len() - 1;
+    let pair_slot = chunks[idx].alloc_scratch(1);
     emit_empty_guard(chunks, idx, "Can't extract from an empty heap", line);
     let c = &mut chunks[idx];
     let pop_i = c.add_import("ecma:array".to_string(), "pop".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_call(pop_i, 1, line); // → [priority, value]
-    c.emit_f64_const(1.0, line);
-    c.emit_op(Op::ARRAY_GET, line); // pair[1] = value
+    lset(c, pair_slot, line);
+    emit_pq_project_pair(c, 0, pair_slot, line);
     c.emit_op(Op::RETURN, line);
     idx
+}
+
+fn build_pq_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_pq_current");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    let pair_slot = chunks[idx].alloc_scratch(1);
+    emit_empty_guard(chunks, idx, "Peek at an empty heap", line);
+    let c = &mut chunks[idx];
+    let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_f64_const(-1.0, line);
+    c.emit_call(at_i, 2, line);
+    lset(c, pair_slot, line);
+    emit_pq_project_pair(c, 0, pair_slot, line);
+    c.emit_op(Op::RETURN, line);
+    idx
+}
+
+fn build_pq_set_extract_flags_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_pq_set_extract_flags");
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    let flags = class_slots::resolve(&ClassSlot::Internal("__spl_extract_flags".to_string()), &PlainNames);
+    class_slots::emit_class_set(&mut c, ObjSource::Stack, &flags, ValueSource::Stack, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn emit_pq_pair_value(chunk: &mut Chunk, pair_slot: u16, index: f64, line: u32) {
+    lget(chunk, pair_slot, line);
+    chunk.emit_f64_const(index, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_pq_project_pair(chunk: &mut Chunk, receiver_slot: u16, pair_slot: u16, line: u32) {
+    let flags_slot = chunk.alloc_scratch(1);
+    let receiver = class_slots::resolve(&ClassSlot::Internal("__spl_extract_flags".to_string()), &PlainNames);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &receiver, Dest::Stack, line);
+    lset(chunk, flags_slot, line);
+
+    lget(chunk, flags_slot, line);
+    chunk.emit_f64_const(2.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    emit_pq_pair_value(chunk, pair_slot, 0.0, line);
+    chunk.emit_else(line);
+
+    lget(chunk, flags_slot, line);
+    chunk.emit_f64_const(3.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    let map_new = chunk.add_import("ecma:map".to_string(), "new".to_string());
+    let map_set = chunk.add_import("ecma:map".to_string(), "set".to_string());
+    chunk.emit_call(map_new, 0, line);
+    let map_slot = chunk.alloc_scratch(1);
+    lset(chunk, map_slot, line);
+    lget(chunk, map_slot, line);
+    chunk.emit_string_const("data", line);
+    emit_pq_pair_value(chunk, pair_slot, 1.0, line);
+    chunk.emit_call(map_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, map_slot, line);
+    chunk.emit_string_const("priority", line);
+    emit_pq_pair_value(chunk, pair_slot, 0.0, line);
+    chunk.emit_call(map_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, map_slot, line);
+    chunk.emit_else(line);
+    emit_pq_pair_value(chunk, pair_slot, 1.0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+fn emit_spl_helper_call(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    build: fn(&mut Vec<Chunk>, u32) -> usize,
+) {
+    let idx = build(chunks, line);
+    let mut slots = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        slots.push(chunks[current].alloc_scratch(1));
+    }
+    for slot in slots.iter().rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, *slot, line);
+    }
+    chunks[current].emit_op_u16(Op::REF_FUNC, idx as u16, line);
+    chunks[current].emit(0, line);
+    for slot in &slots {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+    }
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
+}
+
+pub fn emit_spl_iter_rewind(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_rewind_method);
+}
+
+pub fn emit_spl_iter_rewind_lifo(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_rewind_lifo_method);
+}
+
+pub fn emit_spl_iter_next(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_next_method);
+}
+
+pub fn emit_spl_iter_prev(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_prev_method);
+}
+
+pub fn emit_spl_iter_key(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_key_method);
+}
+
+pub fn emit_spl_iter_current(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_current_method);
+}
+
+pub fn emit_spl_iter_valid(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_valid_method);
+}
+
+pub fn emit_spl_iter_seek(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_seek_method);
+}
+
+pub fn emit_spl_iter_set_mode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_set_mode_method);
+}
+
+pub fn emit_spl_iter_sort(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_iter_sort_method);
+}
+
+pub fn emit_spl_pq_insert_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let cmp_idx = build_pq_comparator(chunks, line);
+    let idx = build_pq_insert_method(chunks, cmp_idx, line);
+    let mut slots = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        slots.push(chunks[current].alloc_scratch(1));
+    }
+    for slot in slots.iter().rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, *slot, line);
+    }
+    chunks[current].emit_op_u16(Op::REF_FUNC, idx as u16, line);
+    chunks[current].emit(0, line);
+    for slot in &slots {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+    }
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
+}
+
+pub fn emit_spl_pq_extract_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_pq_extract_method);
+}
+
+pub fn emit_spl_pq_current_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_pq_current_method);
+}
+
+pub fn emit_spl_pq_set_extract_flags_method(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    emit_spl_helper_call(chunks, current, argc, line, build_pq_set_extract_flags_method);
+}
+
+pub fn emit_spl_count_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_spl_helper_call(chunks, current, argc, line, build_count_method);
+}
+
+pub fn emit_spl_fixedarray_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc == 0 {
+        chunk.emit_array_new_fixed(0, 0, line);
+        return;
+    }
+    let count_slot = chunk.alloc_scratch(1);
+    lset(chunk, count_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    lget(chunk, count_slot, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    crate::emitter::array_adapter::emit_array_fill(chunks, current, 3, line);
+}
+
+pub fn emit_array_object_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    match argc {
+        0 => chunk.emit_array_new_fixed(0, 0, line),
+        1 => {}
+        _ => {
+            for _ in 1..argc {
+                chunk.emit_op(Op::DROP, line);
+            }
+        }
+    }
 }
 
 // ── SplObjectStorage / WeakMap (ecma:map, object-identity keys) ─────────
@@ -738,6 +1067,8 @@ pub fn emit_spl_pq_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let binds: Vec<(&'static str, usize)> = vec![
         ("insert", build_pq_insert_method(chunks, cmp_idx, line)),
         ("extract", build_pq_extract_method(chunks, line)),
+        ("current", build_pq_current_method(chunks, line)),
+        ("setextractflags", build_pq_set_extract_flags_method(chunks, line)),
         ("isempty", build_is_empty_method(chunks, line)),
         ("count", build_count_method(chunks, line)),
     ];
@@ -912,7 +1243,7 @@ pub fn emit_spl_heap_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, ar
 /// with methods bound as named props. `foreach`, `count`, `$s[$i]` all work
 /// natively because it's a real array.
 pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u8, line: u32) {
-    let _ = kind; // all three share the same shape
+    let lifo = kind != "SplQueue";
     let binds: Vec<(&'static str, usize)> = vec![
         (
             "push",
@@ -942,6 +1273,26 @@ pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u
         ("bottom", build_bottom_method(chunks, line)),
         ("isempty", build_is_empty_method(chunks, line)),
         ("count", build_count_method(chunks, line)),
+        (
+            "rewind",
+            if lifo {
+                build_iter_rewind_lifo_method(chunks, line)
+            } else {
+                build_iter_rewind_method(chunks, line)
+            },
+        ),
+        (
+            "next",
+            if lifo {
+                build_iter_prev_method(chunks, line)
+            } else {
+                build_iter_next_method(chunks, line)
+            },
+        ),
+        ("key", build_iter_key_method(chunks, line)),
+        ("current", build_iter_current_method(chunks, line)),
+        ("valid", build_iter_valid_method(chunks, line)),
+        ("setiteratormode", build_iter_set_mode_method(chunks, line)),
     ];
     finish_array_instance(chunks, current, argc, binds, line);
 }
@@ -958,7 +1309,7 @@ pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u
 /// puts methods on an object here.
 fn bind_methods(chunk: &mut Chunk, this_slot: u16, binds: Vec<(&'static str, usize)>, line: u32) {
     for (mname, midx) in binds {
-        let cs_slot = class_slots::resolve(&ClassSlot::Internal(mname.to_string()), &PlainNames);
+        let cs_slot = class_slots::resolve(&ClassSlot::instance(mname.to_string()), &PlainNames);
         class_slots::emit_class_set(
             chunk,
             ObjSource::Local(this_slot),
@@ -967,6 +1318,25 @@ fn bind_methods(chunk: &mut Chunk, this_slot: u16, binds: Vec<(&'static str, usi
             line,
         );
     }
+}
+
+fn init_iterator_state(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    let idx = class_slots::resolve(&ClassSlot::Internal(("__idx".to_string())), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &idx, ValueSource::Stack, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_bool_const(false, line);
+    let lifo = class_slots::resolve(&ClassSlot::Internal(("__lifo".to_string())), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &lifo, ValueSource::Stack, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    let keys_i = chunk.add_import("ecma:object".to_string(), "keys".to_string());
+    chunk.emit_call(keys_i, 1, line);
+    let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
 }
 
 fn finish_array_instance(
@@ -988,6 +1358,7 @@ fn finish_array_instance(
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // Bind each method as a named property on the array
+    init_iterator_state(chunk, this_slot, line);
     bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1013,6 +1384,7 @@ fn finish_fixed_values_array_instance(
     chunk.emit_array_new_fixed(0, values.len() as u16, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
+    init_iterator_state(chunk, this_slot, line);
     bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1039,6 +1411,7 @@ fn finish_second_child_array_instance(
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     }
 
+    init_iterator_state(chunk, this_slot, line);
     bind_methods(chunk, this_slot, binds, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1104,13 +1477,28 @@ fn finish_array_iterator_instance(
     let this_slot = chunk.alloc_scratch(1);
 
     if argc >= 1 {
-        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        let source_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, source_slot, line);
         for _ in 1..argc {
             chunk.emit_op(Op::DROP, line);
         }
+        chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+        let values_i = chunk.add_import("ecma:object".to_string(), "values".to_string());
+        chunk.emit_call(values_i, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+        let keys_i = chunk.add_import("ecma:object".to_string(), "keys".to_string());
+        chunk.emit_call(keys_i, 1, line);
+        let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
     } else {
         chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_array_new_fixed(0, 0, line);
+        let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1119,16 +1507,14 @@ fn finish_array_iterator_instance(
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_f64_const(0.0, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
+    chunk.emit_bool_const(false, line);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__lifo".to_string())), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__first").to_string()), &PlainNames);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__spl_current").to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 

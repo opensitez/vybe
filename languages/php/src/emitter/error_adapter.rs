@@ -370,6 +370,7 @@ pub fn emit_set_exception_handler(chunks: &mut [Chunk], current: usize, _argc: u
 /// mask matches; otherwise (or when the handler returns false) record the error
 /// for `error_get_last`. → `true`.
 pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let (level_slot, msg_slot) = {
         let chunk = &mut chunks[current];
         let level = alloc_local(chunk);
@@ -408,13 +409,15 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_if(line);
 
     //     invoke cb(errno, errstr, errfile, errline) → ret
+    //     Plain callable: parameter 0 binds `undefined` (§10.2.1.1).
     lget(chunk, handler_slot, line);
     struct_get_key(chunk, &ClassSlot::internal("cb"), line);
+    let recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, abi, line);
     lget(chunk, level_slot, line);
     lget(chunk, msg_slot, line);
     push_str(chunk, "php", line);
     chunk.emit_f64_const(1.0, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 4, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 4 + recv, line);
     let ret_slot = alloc_local(chunk);
     lset(chunk, ret_slot, line);
     //     if ret === false → record for error_get_last
