@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use vybe_runtime::component_model::ClassType;
+use vybe_compiler::component_classes::ClassType;
 
 use super::winforms::classes::DotnetClass;
 

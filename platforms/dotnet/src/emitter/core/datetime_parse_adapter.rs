@@ -5,10 +5,12 @@
 //! invariant patterns .NET accepts, in order, and falls back to
 //! `ecma:date.parse` for the ISO forms the host already handles.
 
-use vybe_runtime::opcode::Op;
+use vybe_compiler::primitives::class_slots;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::datetime_adapter;
+use super::object_fields::field_slot;
 
 /// Month abbreviations, 3 chars each — `indexOf` gives the month directly.
 /// Read from the FORMATTER's table so the two cannot drift on spelling.
@@ -981,8 +983,70 @@ fn emit_parse_millis(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 }
 
 /// `DateTime.Parse(s)`.
-pub fn emit_datetime_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+pub fn emit_datetime_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        emit_parse_millis(chunks, current, line);
+        datetime_adapter::emit_datetime_from_millis(chunks, current, line);
+        return;
+    }
+
+    {
+        let chunk = &mut chunks[current];
+        for _ in 2..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+    }
+    let base = chunks[current].alloc_scratch(3);
+    let text = base;
+    let provider = base + 1;
+    let pattern = base + 2;
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, provider, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, text, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, provider, line);
+        class_slots::emit_class_get(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &field_slot("shortdatepattern"),
+            class_slots::Dest::Stack,
+            line,
+        );
+        chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, provider, line);
+        class_slots::emit_class_get(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &field_slot("datetimeformat"),
+            class_slots::Dest::Stack,
+            line,
+        );
+        class_slots::emit_class_get(
+            chunk,
+            class_slots::ObjSource::Stack,
+            &field_slot("shortdatepattern"),
+            class_slots::Dest::Stack,
+            line,
+        );
+        chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text, line);
+    }
     emit_parse_millis(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    }
+    emit_call_parse(chunks, current, line);
+    chunks[current].emit_end(line);
     datetime_adapter::emit_datetime_from_millis(chunks, current, line);
 }
 

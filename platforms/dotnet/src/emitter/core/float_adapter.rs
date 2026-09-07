@@ -12,8 +12,8 @@
 //! result is lifted to a real Boolean because .NET returns `Boolean` and VB
 //! renders that as `True`/`False` — an i32 would print `1`.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Park the operand so it can be read twice, and hand back its slot.
 fn operand(chunk: &mut Chunk, line: u32) -> u16 {
@@ -87,6 +87,47 @@ pub fn emit_is_finite(chunks: &mut [Chunk], current: usize, line: u32) {
     as_bool(chunk, line);
 }
 
+/// `Double.IsInteger(x)` / `Half.IsInteger(x)` — finite and equal to trunc(x).
+pub fn emit_is_integer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = operand(chunk, line);
+    lget(chunk, slot, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(f64::INFINITY, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_TRUNC, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    as_bool(chunk, line);
+}
+
+/// `Double.IsNegative(x)` / `Half.IsNegative(x)` — true for values below zero
+/// and for negative zero.
+pub fn emit_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = operand(chunk, line);
+    lget(chunk, slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_LT, line);
+    lget(chunk, slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_f64_const(1.0, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_f64_const(f64::NEG_INFINITY, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+    as_bool(chunk, line);
+}
+
 /// The smallest NORMAL double — `2^-1022`. Below it the exponent field is zero
 /// and the significand loses its implicit leading one, which is what
 /// "subnormal" names.
@@ -95,6 +136,8 @@ pub fn emit_is_finite(chunks: &mut [Chunk], current: usize, line: u32) {
 /// at the other end of the same range; using it as the boundary calls every
 /// subnormal normal.
 const MIN_NORMAL: f64 = f64::MIN_POSITIVE;
+const HALF_MIN_NORMAL: f64 = 0.00006103515625;
+const HALF_MIN_SUBNORMAL: f64 = 0.000000059604645;
 
 /// `[x] → [finite && x <> 0]` in the operand's slot, leaving the ABSOLUTE
 /// value on the stack — the shared half of `IsNormal` and `IsSubnormal`.
@@ -145,4 +188,34 @@ pub fn emit_is_subnormal(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_LT, line);
     chunk.emit_op(Op::I32_AND, line);
     as_bool(chunk, line);
+}
+
+/// `Half.IsSubnormal(x)` — same predicate shape as `Double`, but with Half's
+/// smallest normal value (`2^-14`) as the boundary.
+pub fn emit_half_is_subnormal(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = operand(chunk, line);
+    emit_finite_nonzero_magnitude(chunk, slot, line);
+    chunk.emit_f64_const(HALF_MIN_NORMAL, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_AND, line);
+    as_bool(chunk, line);
+}
+
+/// `Convert.ToHalf(x)` — this platform stores `Half` as the numeric payload.
+/// Values too small to round to the smallest Half subnormal become zero.
+pub fn emit_to_half(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let to_number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(to_number, 1, line);
+    let slot = operand(chunk, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(HALF_MIN_SUBNORMAL / 2.0, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_else(line);
+    lget(chunk, slot, line);
+    chunk.emit_end(line);
 }

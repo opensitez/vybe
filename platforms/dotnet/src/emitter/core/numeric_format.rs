@@ -41,7 +41,12 @@ fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
     emit_dyn_add_into(imports, chunk, line);
 }
 
-fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
+fn emit_str_index_of(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("ecma:string", "indexOf");
+    chunk.emit_call(idx, 2, line);
+}
+
+fn emit_const_index(chunk: &mut Chunk, idx: u32, line: u32) {
     match chunk.constants[idx as usize].clone() {
         Value::Null | Value::TypedNull(_) => {
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
@@ -78,6 +83,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let number = c.add_import("ecma:number", "Number");
     let number_to_string = c.add_import("ecma:number", "toString");
     let to_fixed = c.add_import("ecma:number", "toFixed");
+    let to_exponential = c.add_import("ecma:number", "toExponential");
     let to_upper = c.add_import("ecma:string", "toUpperCase");
     let pad_start = c.add_import("ecma:string", "padStart");
     let pad_end = c.add_import("ecma:string", "padEnd");
@@ -88,11 +94,20 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let zero_str = c.add_constant(Value::String(Arc::from("0")));
     let space_str = c.add_constant(Value::String(Arc::from(" ")));
     let minus_str = c.add_constant(Value::String(Arc::from("-")));
-    let percent_suffix = c.add_constant(Value::String(Arc::from(" %")));
+    let percent_suffix = c.add_constant(Value::String(Arc::from("%")));
+    let dollar_str = c.add_constant(Value::String(Arc::from("$")));
+    let comma_str = c.add_constant(Value::String(Arc::from(",")));
+    let dot_str = c.add_constant(Value::String(Arc::from(".")));
+    let semi_str = c.add_constant(Value::String(Arc::from(";")));
     let d_code = c.add_constant(Value::I32(b'D' as i32));
+    let c_code = c.add_constant(Value::I32(b'C' as i32));
+    let e_code = c.add_constant(Value::I32(b'E' as i32));
+    let g_code = c.add_constant(Value::I32(b'G' as i32));
+    let n_code = c.add_constant(Value::I32(b'N' as i32));
     let x_code = c.add_constant(Value::I32(b'X' as i32));
     let f_code = c.add_constant(Value::I32(b'F' as i32));
     let p_code = c.add_constant(Value::I32(b'P' as i32));
+    let hash_code = c.add_constant(Value::I32(b'#' as i32));
     let minus_code = c.add_constant(Value::I32(b'-' as i32));
 
     let has_format = c.emit_block(0);
@@ -163,6 +178,220 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, first_code, 0);
 
     let dispatch = c.emit_block(0);
+
+    let not_custom_sections = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    emit_const_index(&mut c, semi_str, 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_if_value(0);
+    c.emit_string_const("Pos:", 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(to_str, 1, 0);
+    emit_str_concat(imports, &mut c, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_if_value(0);
+    c.emit_string_const("Neg:", 0);
+    emit_const_index(&mut c, zero_num, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::F64_SUB, 0);
+    c.emit_call(to_str, 1, 0);
+    emit_str_concat(imports, &mut c, 0);
+    c.emit_else(0);
+    c.emit_string_const("Zero", 0);
+    c.emit_end(0);
+    c.emit_end(0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_custom_sections);
+
+    let not_currency = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, c_code, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(number, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_call(to_fixed, 2, 0);
+    emit_const_index(&mut c, comma_str, 0);
+    emit_const_index(&mut c, dot_str, 0);
+    vybe_compiler::primitives::strings::emit_group_digits(std::slice::from_mut(&mut c), 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    emit_const_index(&mut c, dollar_str, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    emit_str_concat(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_currency);
+
+    let not_number = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, n_code, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(number, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_call(to_fixed, 2, 0);
+    emit_const_index(&mut c, comma_str, 0);
+    emit_const_index(&mut c, dot_str, 0);
+    vybe_compiler::primitives::strings::emit_group_digits(std::slice::from_mut(&mut c), 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_number);
+
+    let not_exponential = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, e_code, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(number, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_call(to_exponential, 2, 0);
+    c.emit_call(to_upper, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E+", 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E+", 0);
+    c.emit_string_const("E+00", 0);
+    {
+        let replace = c.add_import("ecma:string", "replace");
+        c.emit_call(replace, 3, 0);
+    }
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_end(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E-", 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E-", 0);
+    c.emit_string_const("E-00", 0);
+    {
+        let replace = c.add_import("ecma:string", "replace");
+        c.emit_call(replace, 3, 0);
+    }
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_end(0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_exponential);
+
+    let not_general = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, g_code, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(number, 1, 0);
+    c.emit_f64_const(2.0, 0);
+    c.emit_call(to_exponential, 2, 0);
+    c.emit_call(to_upper, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E+", 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E+", 0);
+    c.emit_string_const("E+0", 0);
+    {
+        let replace = c.add_import("ecma:string", "replace");
+        c.emit_call(replace, 3, 0);
+    }
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_end(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E-", 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_string_const("E-", 0);
+    c.emit_string_const("E-0", 0);
+    {
+        let replace = c.add_import("ecma:string", "replace");
+        c.emit_call(replace, 3, 0);
+    }
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_end(0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_general);
+
+    let not_custom_numeric = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, zero_str, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
+    emit_str_char_code_at(&mut c, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    emit_const_index(&mut c, hash_code, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_OR, 0);
+    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    emit_const_index(&mut c, dot_str, 0);
+    emit_str_index_of(&mut c, 0);
+    emit_const_index(&mut c, zero_num, 0);
+    emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_if_value(0);
+    c.emit_f64_const(2.0, 0);
+    c.emit_else(0);
+    c.emit_f64_const(0.0, 0);
+    c.emit_end(0);
+    c.emit_op_u16(Op::LOCAL_SET, precision, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_call(number, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_call(to_fixed, 2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
+    emit_str_char_code_at(&mut c, 0);
+    emit_const_index(&mut c, zero_str, 0);
+    core_wasm::i32_const(&mut c, 0, 0);
+    emit_str_char_code_at(&mut c, 0);
+    emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_f64_const(6.0, 0);
+    emit_const_index(&mut c, zero_str, 0);
+    c.emit_call(pad_start, 3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_end(0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_custom_numeric);
 
     let not_decimal = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);

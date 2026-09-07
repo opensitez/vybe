@@ -44,26 +44,36 @@ const REJECT_KEY: &str = "__tcs_reject";
 const DONE_KEY: &str = "__tcs_done";
 const TYPE_NAME: &str = "TaskCompletionSource";
 
-
-
-
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
-fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
         exception_name,
-        class_slots::ValueSource::ConstStr(message.to_string()),
+        message,
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 /// `New TaskCompletionSource(Of T)()` and its `state` / `TaskCreationOptions`
@@ -199,22 +209,23 @@ pub fn emit_tcs_settle(
     };
 
     {
-        let chunk = &mut chunks[current];
         if settle == Settle::Canceled {
             // `SetCanceled()` carries no value — the rejection reason is the
             // cancellation itself, minted here.
-            chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-            vybe_compiler::primitives::errors::emit_exception_new(
-                chunk,
+            chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+            crate::emitter::core::exceptions::emit_new_typed(
+                chunks,
+                current,
                 "TaskCanceledException",
                 class_slots::ValueSource::ConstStr("A task was canceled.".to_string()),
                 line,
             );
-            chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
         } else {
-            chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
         }
+        let chunk = &mut chunks[current];
 
         lget(chunk, obj_slot, line);
         class_slots::emit_class_get(
@@ -320,14 +331,15 @@ pub fn emit_tcs_settle(
             chunk.emit_else(line);
             chunk.emit_bool_const(false, line);
         } else {
-            chunk.emit_else(line);
+            chunks[current].emit_else(line);
             emit_throw_dotnet_exception(
-                chunk,
+                chunks,
+                current,
                 "InvalidOperationException",
                 settle.already_completed(),
                 line,
             );
         }
-        chunk.emit_end(line);
+        chunks[current].emit_end(line);
     }
 }

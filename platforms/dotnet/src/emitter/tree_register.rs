@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_runtime::component_model::{ConstructorTarget, MethodBody};
+use vybe_compiler::component_classes::{ConstructorTarget, MethodBody};
 use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 /// Register every component class descriptor as a `Type` node at
@@ -53,8 +53,7 @@ pub fn register_namespace_tree() {
             // window and park in the GUI event loop. Three copies of this
             // gate briefly existed; copies of one rule drift, so the fact is
             // computed here and only here.
-            let class_is_control = interface
-                .eq_ignore_ascii_case("dotnet.System.Windows.Forms")
+            let class_is_control = interface.eq_ignore_ascii_case("dotnet.System.Windows.Forms")
                 && element_backed_control(&class.name);
             // A form is `document.body`, so node-scoped destruction does not
             // apply to it — see `gui_control_verb`. `inherits` walks the
@@ -89,9 +88,9 @@ pub fn register_namespace_tree() {
                     // first, so an override shadows the base declaration it
                     // re-declares instead of appending a second entry that can
                     // never be selected.
-                    if !entries.iter().any(|(a, _)| *a == m.arity) {
+                    if !entries.iter().any(|(a, _)| *a == m.arity()) {
                         entries.push((
-                            m.arity,
+                            m.arity(),
                             NamespaceNode::CommonEmit(format!(
                                 "{}{verb}",
                                 vybe_compiler::primitives::gui::CTRL_METHOD_EMIT
@@ -102,11 +101,13 @@ pub fn register_namespace_tree() {
                 }
                 let node = match &m.body {
                     MethodBody::Common(emit) => NamespaceNode::CommonEmit(emit.clone()),
-                    // The descriptor knows the arity — record it, so the
-                    // compiler can select by arity from the tree instead of
-                    // calling into this crate.
+                    // The leaf carries what the descriptor declares — the
+                    // parameter list with names and types when stated, else
+                    // the arity as unnamed `any`s — so the compiler selects
+                    // by arity and binds named arguments from the tree
+                    // instead of calling into this crate.
                     MethodBody::HostCall(t) => {
-                        namespaces::host_fn_with_arity(&t.module, &t.name, m.arity)
+                        namespaces::host_fn_with_sig(&t.module, m.signature(&t.name))
                     }
                     // Chunk-backed methods are per-compilation artifacts,
                     // not process-global surface.
@@ -120,8 +121,8 @@ pub fn register_namespace_tree() {
                 let entries = bucket.entry(m.name.to_string()).or_default();
                 // First declaration of an arity wins, matching the
                 // descriptor-order scan this registration replaces.
-                if !entries.iter().any(|(a, _)| *a == m.arity) {
-                    entries.push((m.arity, node));
+                if !entries.iter().any(|(a, _)| *a == m.arity()) {
+                    entries.push((m.arity(), node));
                 }
             }
             for (name, entries) in method_overloads {
@@ -333,8 +334,7 @@ pub fn register_namespace_tree() {
             // under that namespace by the common resolver. A language that
             // wants the short spelling says so in its profile instead of
             // inheriting it from a registration side effect.
-            let mut segments: Vec<String> =
-                interface.split('.').map(|s| s.to_string()).collect();
+            let mut segments: Vec<String> = interface.split('.').map(|s| s.to_string()).collect();
             segments.push(class.name.to_string());
 
             let mut node = ty;
@@ -347,6 +347,7 @@ pub fn register_namespace_tree() {
             namespaces::register_namespace_tree(&segments.pop().expect("root"), node);
         }
         register_color_statics();
+        register_cmdlets();
         register_bcl_constants();
     });
 }
@@ -376,6 +377,15 @@ fn register_bcl_constants() {
     // path builds a SECOND branch that resolves only by folding.
     const ENUMS: &[(&[&str], &[(&str, i32)])] = &[
         (
+            &["System", "Runtime", "InteropServices", "GCHandleType"],
+            &[
+                ("Weak", 0),
+                ("WeakTrackResurrection", 1),
+                ("Normal", 2),
+                ("Pinned", 3),
+            ],
+        ),
+        (
             &["System", "StringComparison"],
             &[
                 ("CurrentCulture", 0),
@@ -397,6 +407,10 @@ fn register_bcl_constants() {
                 ("Friday", 5),
                 ("Saturday", 6),
             ],
+        ),
+        (
+            &["System", "Net", "Sockets", "AddressFamily"],
+            &[("InterNetwork", 2), ("InterNetworkV6", 23)],
         ),
         // How `Math.Round` breaks a tie. `ToEven` is 0 AND the default, which
         // is why an unrecognised mode and no mode at all agree.
@@ -472,7 +486,10 @@ fn register_bcl_constants() {
     for (path, members) in ENUMS {
         let mut leaves = Subtree::new();
         for (member, value) in *members {
-            leaves.insert(member.to_string(), NamespaceNode::Const(vybe_runtime::Value::I32(*value)));
+            leaves.insert(
+                member.to_string(),
+                NamespaceNode::Const(vybe_runtime::Value::I32(*value)),
+            );
         }
         register_under(path, leaves);
     }
@@ -526,6 +543,10 @@ fn register_under(path: &[&str], leaves: Subtree) {
     let mut root = Subtree::new();
     root.insert(path[0].to_string(), node);
     namespaces::register_namespace_tree("dotnet", NamespaceNode::Namespace(root));
+}
+
+fn register_cmdlets() {
+    super::core::cmdlets_adapter::register_cmdlet_tree();
 }
 
 fn register_color_statics() {
@@ -717,7 +738,7 @@ fn text_is_unpainted(class_name: &str) -> bool {
 }
 
 fn accessor_node(
-    target: &vybe_runtime::component_model::HostTarget,
+    target: &vybe_compiler::component_classes::HostTarget,
     prop: &str,
     is_control: bool,
     class_name: &str,
@@ -902,7 +923,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "checkedlistbox" => "select;@size=4;@multiple",
         // The legacy grid is the same control and takes the same element, or
         // the two spellings would render differently for no reason.
-        "datagrid" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
+        "datagrid" => {
+            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
+        }
         // ⚠ These have no widget kind YET, so they render as a label until
         // `widgets` grows one — the designed degradation, visible in a
         // capture instead of the control vanishing. The declaration still buys
@@ -941,7 +964,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "splitcontainer" => "div;display:flex;flex-direction:row",
         // A tab strip over a page. Both are ordinary containers; which page
         // shows is a `display` question the control answers at runtime.
-        "tabcontrol" => "div;display:flex;flex-direction:column;border:1px solid #c8c8c8;background-color:#ffffff",
+        "tabcontrol" => {
+            "div;display:flex;flex-direction:column;border:1px solid #c8c8c8;background-color:#ffffff"
+        }
         "tabpage" => "section",
         // A Timer is a `components` member like the providers below: present and
         // scriptable, never painted.
@@ -1026,12 +1051,16 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         //
         // `border-collapse` is the grid look: one line between cells rather
         // than two, which is what a data grid draws.
-        "datagridview" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
+        "datagridview" => {
+            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
+        }
         // A ListView in its Details mode is a table with a header row, which is
         // what `DataGridView` above already resolves to and what its `Columns`
         // and `Items` append into. The other view modes are a `display`
         // difference over the same items, not a different control.
-        "listview" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
+        "listview" => {
+            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
+        }
         // A month grid — the chrome is declared in `default_markup_for_control`.
         "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff",
 
@@ -1147,7 +1176,10 @@ fn control_ancestry(class_name: &str) -> Vec<String> {
 /// unlike a Flutter widget whose children arrive as constructor arguments. So
 /// `control_fn` is the only thing making this a construction, and the object
 /// IS the element.
-fn control_ctor_spec(class_name: &str, element: &str) -> vybe_compiler::primitives::namespaces::CtorSpec {
+fn control_ctor_spec(
+    class_name: &str,
+    element: &str,
+) -> vybe_compiler::primitives::namespaces::CtorSpec {
     vybe_compiler::primitives::namespaces::CtorSpec {
         params: Vec::new(),
         fields: Vec::new(),
@@ -1213,13 +1245,21 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
         // is the one that made them lozenges and `border`/`background` alone
         // would have left it.
         "bindingnavigator" => concat!(
-            "<button type='button' class='vybe-nav vybe-nav-first' style='", toolstrip_button!(), "'>|&#9664;</button>",
-            "<button type='button' class='vybe-nav vybe-nav-prev' style='", toolstrip_button!(), "'>&#9664;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-first' style='",
+            toolstrip_button!(),
+            "'>|&#9664;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-prev' style='",
+            toolstrip_button!(),
+            "'>&#9664;</button>",
             "<input type='text' class='vybe-nav-position' value='0 of 0'",
             " style='width:64px;text-align:center;margin:0 4px;height:21px;border-radius:0",
             ";border:1px solid #7a7a7a;background-color:#ffffff'>",
-            "<button type='button' class='vybe-nav vybe-nav-next' style='", toolstrip_button!(), "'>&#9654;</button>",
-            "<button type='button' class='vybe-nav vybe-nav-last' style='", toolstrip_button!(), "'>&#9654;|</button>"
+            "<button type='button' class='vybe-nav vybe-nav-next' style='",
+            toolstrip_button!(),
+            "'>&#9654;</button>",
+            "<button type='button' class='vybe-nav vybe-nav-last' style='",
+            toolstrip_button!(),
+            "'>&#9654;|</button>"
         ),
         // Two panes and the splitter between them. `Panel1`/`Panel2` resolve to
         // these, so they must exist before any code adds a control to one.
@@ -1305,13 +1345,13 @@ pub(crate) fn is_element_mapped(class_name: &str) -> bool {
 ///
 /// Nearest declaration first, so the `or_insert` folds at the call site give
 /// override-shadows-base — the same rule real .NET virtual dispatch uses.
-fn inherited_methods(class_name: &str) -> Vec<vybe_runtime::component_model::MethodDef> {
+fn inherited_methods(class_name: &str) -> Vec<vybe_compiler::component_classes::MethodDef> {
     declared_up_the_chain(class_name, |class| class.methods.clone())
 }
 
 /// A class's own properties followed by every inherited one, nearest first, so
 /// an `or_insert` fold gives override-shadows-base.
-fn inherited_properties(class_name: &str) -> Vec<vybe_runtime::component_model::PropertyDef> {
+fn inherited_properties(class_name: &str) -> Vec<vybe_compiler::component_classes::PropertyDef> {
     declared_up_the_chain(class_name, |class| class.properties.clone())
 }
 
@@ -1323,7 +1363,7 @@ fn inherited_properties(class_name: &str) -> Vec<vybe_runtime::component_model::
 /// does — they used to be separate loops that happened to match.
 fn declared_up_the_chain<T, F>(class_name: &str, select: F) -> Vec<T>
 where
-    F: Fn(&vybe_runtime::component_model::ClassType) -> Vec<T>,
+    F: Fn(&vybe_compiler::component_classes::ClassType) -> Vec<T>,
 {
     let descriptor = crate::emitter::surface().component_descriptor();
     let mut out = Vec::new();
@@ -1357,7 +1397,10 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             // pair was gated to avoid.
             ("Item", rw("dotnet.sb_index_get", "dotnet.sb_index_set")),
             ("Length", rw("dotnet.sb_length", "dotnet.sb_set_length")),
-            ("Capacity", rw("dotnet.sb_capacity", "dotnet.sb_set_capacity")),
+            (
+                "Capacity",
+                rw("dotnet.sb_capacity", "dotnet.sb_set_capacity"),
+            ),
             ("MaxCapacity", ro("dotnet.sb_max_capacity")),
         ],
         // `Lazy(Of T)` — READ-ONLY computed properties, which is what makes
@@ -1366,6 +1409,10 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "lazy" => vec![
             ("Value", ro("dotnet.lazy_value")),
             ("IsValueCreated", ro("dotnet.lazy_is_value_created")),
+        ],
+        "threadlocal" => vec![
+            ("Value", ro("dotnet.threadlocal_value")),
+            ("IsValueCreated", ro("dotnet.threadlocal_is_value_created")),
         ],
         "stopwatch" => vec![
             ("ElapsedMilliseconds", ro("dotnet.stopwatch_elapsed_ms")),
@@ -1398,9 +1445,15 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // each write, `Position` is the cursor, and `Capacity`'s setter has to
         // resize the backing store and can refuse.
         "memorystream" => vec![
-            ("Capacity", rw("dotnet.ms_capacity", "dotnet.ms_set_capacity")),
+            (
+                "Capacity",
+                rw("dotnet.ms_capacity", "dotnet.ms_set_capacity"),
+            ),
             ("Length", ro("dotnet.ms_length")),
-            ("Position", rw("dotnet.ms_position", "dotnet.ms_set_position")),
+            (
+                "Position",
+                rw("dotnet.ms_position", "dotnet.ms_set_position"),
+            ),
             ("CanRead", ro("dotnet.ms_can_read")),
             ("CanWrite", ro("dotnet.ms_can_write")),
             ("CanSeek", ro("dotnet.ms_can_seek")),
@@ -1463,10 +1516,9 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // `Columns.Add` builds a `<th>`, `Rows.Add` a whole `<tr>` of `<td>`s.
         // Aliasing them to one `Add` the way the strips do would make a column
         // and a row the same thing, which is exactly what they are not.
-        "datagridview" | "datagrid" => vec![
-            ("Columns", ro("dotnet.self")),
-            ("Rows", ro("dotnet.self")),
-        ],
+        "datagridview" | "datagrid" => {
+            vec![("Columns", ro("dotnet.self")), ("Rows", ro("dotnet.self"))]
+        }
         // The two collection types the members above read back as. They hold
         // nothing and are never constructed — they exist so that `Add` has
         // somewhere to be found, and so that it can be a DIFFERENT `Add` on
@@ -1538,6 +1590,12 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         ));
     }
     out
+}
+
+pub fn has_shared_emit_accessor(class_name: &str, property_name: &str) -> bool {
+    shared_emit_accessors(class_name)
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(property_name))
 }
 
 /// What a member that IS the receiver READS BACK as.
@@ -1698,14 +1756,13 @@ mod ctor_parity_tests {
         let scope = super::dotnet_scope();
         let mut gaps = Vec::new();
         for export in crate::emitter::class_exports::dotnet_class_exports() {
-            let Some(want) = export
-                .class
-                .constructor()
-                .and_then(|c| c.backing.clone())
-            else {
+            let Some(want) = export.class.constructor().and_then(|c| c.backing.clone()) else {
                 continue;
             };
-            let got = vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
+            let got = vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scope,
+                &export.class.name,
+            );
             if got.as_ref() != Some(&want) {
                 gaps.push(format!(
                     "{}: want {:?} got {:?}",
@@ -1735,18 +1792,22 @@ mod member_parity_tests {
                 let want = crate::emitter::surface().lookup_instance_method(
                     &export.class.name,
                     &m.name,
-                    m.arity,
+                    m.arity(),
                 );
                 let got = vybe_compiler::primitives::namespaces::lookup_type_instance_target(
                     &scope,
                     &export.class.name,
                     &m.name,
-                    m.arity,
+                    m.arity(),
                 );
                 if want.is_some() && got != want {
                     gaps.push(format!(
                         "{}.{}/{}: want {:?} got {:?}",
-                        export.class.name, m.name, m.arity, want, got
+                        export.class.name,
+                        m.name,
+                        m.arity(),
+                        want,
+                        got
                     ));
                 }
             }

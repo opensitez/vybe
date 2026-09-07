@@ -1,5 +1,5 @@
 use super::super::types::{KnownTypeMapping, KnownTypeTarget};
-use vybe_runtime::component_model::ConstructorTarget;
+use vybe_compiler::component_classes::ConstructorTarget;
 
 const NOOP_METHODS: &[&str] = &[
     "suspendlayout",

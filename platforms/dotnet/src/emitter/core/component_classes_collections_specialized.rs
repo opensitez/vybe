@@ -5,7 +5,7 @@
 //! frontends, so none of it is a C#-only gap.
 
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
 };
 
@@ -14,7 +14,11 @@ fn inst(name: &'static str, argc: u8, common: &'static str) -> MethodDef {
 }
 
 fn inst_host(name: &'static str, argc: u8, iface: &'static str, func: &'static str) -> MethodDef {
-    MethodDef::new(name, argc, MethodBody::HostCall(HostTarget::new(iface, func)))
+    MethodDef::new(
+        name,
+        argc,
+        MethodBody::HostCall(HostTarget::new(iface, func)),
+    )
 }
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
@@ -61,7 +65,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Specialized",
             ClassType::new("BitVector32")
-                .with_constructor(ConstructorDef::new(1).with_common_backing("collections.identity"))
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("collections.identity"),
+                )
                 .with_method(inst("Data", 0, "collections.identity"))
                 .with_method(MethodDef::static_method(
                     "CreateMask",
@@ -129,7 +135,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.ObjectModel",
             ClassType::new("ReadOnlyCollection")
-                .with_constructor(ConstructorDef::new(1).with_common_backing("collections.identity"))
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("collections.identity"),
+                )
                 .with_method(inst("Count", 0, "collections.length"))
                 .with_method(inst("Item", 1, "dotnet.list_get_checked"))
                 .with_method(inst("Contains", 1, "collections.contains"))
@@ -139,7 +147,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.ObjectModel",
             ClassType::new("ReadOnlyDictionary")
-                .with_constructor(ConstructorDef::new(1).with_common_backing("collections.identity"))
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("collections.identity"),
+                )
                 .with_method(inst_host("Count", 0, "ecma:map", "size"))
                 .with_method(inst("Item", 1, "dotnet.dict_get_or_throw"))
                 .with_method(inst_host("ContainsKey", 1, "ecma:map", "has"))
@@ -155,15 +165,38 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("PriorityQueue")
-                .with_constructor(
-                    ConstructorDef::new(0).with_common_backing("dotnet.priority_queue_new"),
-                )
+                // ⛔ONE constructor. `with_constructor` OVERWRITES rather than
+                // adding an overload, so the empty, capacity and `IComparer`
+                // forms are one registration whose backing reads `argc`.
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.priority_queue_new"),
                 )
                 .with_method(inst("Enqueue", 2, "dotnet.priority_queue_enqueue"))
+                .with_method(inst(
+                    "EnqueueRange",
+                    1,
+                    "dotnet.priority_queue_enqueue_range",
+                ))
+                .with_method(inst(
+                    "EnqueueDequeue",
+                    2,
+                    "dotnet.priority_queue_enqueue_dequeue",
+                ))
                 .with_method(inst("Dequeue", 0, "dotnet.priority_queue_dequeue"))
                 .with_method(inst("Peek", 0, "dotnet.priority_queue_peek"))
+                .with_method(inst("TryDequeue", 2, "dotnet.priority_queue_try_dequeue"))
+                .with_method(inst("TryPeek", 2, "dotnet.priority_queue_try_peek"))
+                .with_method(inst(
+                    "UnorderedItems",
+                    0,
+                    "dotnet.priority_queue_unordered_items",
+                ))
+                .with_method(inst(
+                    "EnsureCapacity",
+                    1,
+                    "dotnet.priority_queue_ensure_capacity",
+                ))
+                .with_method(inst("TrimExcess", 0, "dotnet.priority_queue_trim_excess"))
                 .with_method(inst("Count", 0, "dotnet.priority_queue_count"))
                 .with_method(inst("Clear", 0, "dotnet.priority_queue_clear")),
         ),

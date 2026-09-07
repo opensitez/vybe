@@ -8,8 +8,8 @@
 
 use vybe_compiler::primitives::class_slots::{self, ValueSource};
 use vybe_compiler::primitives::{collections, errors, globals};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// How many collections have run. Incremented by the finalisation drain, which
 /// IS this runtime's collection, so `CollectionCount` reports a real number
@@ -61,7 +61,7 @@ pub fn emit_gc_get_total_memory(chunks: &mut [Chunk], current: usize, argc: u8, 
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op_u16(Op::MEMORY_SIZE, 0, line);
+    chunks[current].emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
     chunks[current].emit_f64_const(65536.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
@@ -75,12 +75,14 @@ pub fn emit_gc_get_generation(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
-    errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentNullException",
         ValueSource::ConstStr("Value cannot be null.".into()),
         line,
     );
+    let chunk = &mut chunks[current];
     errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.emit_i32_const(0, line);
@@ -95,8 +97,9 @@ pub fn emit_gc_memory_pressure(chunks: &mut [Chunk], current: usize, line: u32) 
     vybe_compiler::primitives::ops::emit_dyn_le(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         ValueSource::ConstStr("Value must be positive.".into()),
         line,
@@ -158,12 +161,7 @@ pub fn emit_gc_memory_info(chunks: &mut [Chunk], current: usize, argc: u8, line:
 /// one heap, no collector pauses — and `TotalAvailableMemoryBytes` is the
 /// ceiling we actually run under. `.NET 10` answers `PauseTimePercentage` 0 on
 /// an idle process, measured on the SDK.
-pub fn emit_gc_memory_info_member(
-    chunks: &mut [Chunk],
-    current: usize,
-    value: f64,
-    line: u32,
-) {
+pub fn emit_gc_memory_info_member(chunks: &mut [Chunk], current: usize, value: f64, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_f64_const(value, line);
 }

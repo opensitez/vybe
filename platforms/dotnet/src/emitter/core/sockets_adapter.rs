@@ -75,6 +75,127 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     );
 }
 
+fn emit_ip_field_from_value(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    for spelling in ["AddressFamily", "addressfamily"] {
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from(":")), line);
+        let index_of = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(index_of, 2, line);
+        push_const(chunk, Value::I32(0), line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_if_value(line);
+        push_const(chunk, Value::I32(2), line);
+        chunk.emit_else(line);
+        push_const(chunk, Value::I32(23), line);
+        chunk.emit_end(line);
+        struct_set_drop(chunk, spelling, line);
+    }
+
+    for spelling in ["IsIPv6LinkLocal", "isipv6linklocal"] {
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from("fe80:")), line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        struct_set_drop(chunk, spelling, line);
+    }
+    for spelling in ["IsIPv6Multicast", "isipv6multicast"] {
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from("ff")), line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        struct_set_drop(chunk, spelling, line);
+    }
+    for spelling in ["IsIPv6SiteLocal", "isipv6sitelocal"] {
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from("fec0:")), line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        struct_set_drop(chunk, spelling, line);
+    }
+    for spelling in ["ScopeId", "scopeid"] {
+        core_wasm::dup(chunk, line);
+        let index_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from("%")), line);
+        let index_of = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(index_of, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+        push_const(chunk, Value::I32(0), line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_if_value(line);
+        push_const(chunk, Value::I32(0), line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from("%")), line);
+        let split = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(split, 2, line);
+        push_const(chunk, Value::I32(1), line);
+        let get = chunk.add_import("ecma:array", "get");
+        chunk.emit_call(get, 2, line);
+        let number = chunk.add_import("ecma:number", "Number");
+        chunk.emit_call(number, 1, line);
+        chunk.emit_end(line);
+        struct_set_drop(chunk, spelling, line);
+    }
+}
+
+fn emit_bind_ip_tostring(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
+    let mut method = Chunk::new("__dotnet_ipaddress_tostring");
+    method.arity = 1;
+    method.local_count = 1;
+    method.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Stack,
+        &field_slot("__value"),
+        Dest::Stack,
+        line,
+    );
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    let method_idx = chunks.len() - 1;
+    vybe_compiler::primitives::object::emit_bind_method(
+        &mut chunks[current],
+        obj_slot,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
+        method_idx,
+        line,
+    );
+}
+
+fn emit_ip_address_object_from_slot(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    text_slot: u16,
+    line: u32,
+) {
+    let obj_slot = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("IPAddress")), line);
+    struct_set_drop(chunk, "__type", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    struct_set_drop(chunk, "__value", line);
+
+    emit_ip_field_from_value(chunks, current, text_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_bind_ip_tostring(chunks, current, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
 // ─── Dns ─────────────────────────────────────────────────────────────────
 
 /// `Dns.GetHostAddresses(host)` — resolves `host` to an array of IP
@@ -147,81 +268,116 @@ pub fn emit_dns_get_host_name(chunks: &mut Vec<Chunk>, current: usize, line: u32
 
 pub fn emit_ip_address_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let text_slot = chunk.alloc_scratch(2);
-    let obj_slot = text_slot + 1;
+    let text_slot = chunk.alloc_scratch(1);
 
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_ip_address_object_from_slot(chunks, current, text_slot, line);
+}
 
-    class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+pub fn emit_ip_address_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let text_slot = chunks[current].alloc_scratch(1);
+    let is_ip = chunks[current].add_import("node:net", "isIP");
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_call(is_ip, 1, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    emit_ip_address_object_from_slot(chunks, current, text_slot, line);
+    chunks[current].emit_end(line);
+}
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("IPAddress")), line);
-    struct_set_drop(chunk, "__type", line);
+pub fn emit_ip_address_constant(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    value: &'static str,
+    line: u32,
+) {
+    chunks[current].emit_string_const(value, line);
+    emit_ip_address_parse(chunks, current, line);
+}
 
-    core_wasm::dup(chunk, line);
+pub fn emit_ip_address_get_address_bytes(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let receiver_slot = chunks[current].alloc_scratch(2);
+    let text_slot = receiver_slot + 1;
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    struct_get(chunk, "__value", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    struct_set_drop(chunk, "__value", line);
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    let index_of = chunk.add_import("ecma:string", "indexOf");
+    chunk.emit_call(index_of, 2, line);
+    push_const(chunk, Value::I32(0), line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if_value(line);
 
-    // ⛔ The family was HARDCODED to `InterNetwork`, so `IPAddress.Parse("::1")`
-    // reported IPv4 — a WRONG answer, never a failure. A textual address is
-    // IPv6 exactly when it contains a colon, which .NET agrees with for every
-    // form: `::`, `::1`, `fe80::1` and `2001:db8::ff00:42:8329` are all
-    // `InterNetworkV6`, and every dotted quad is `InterNetwork`. Measured
-    // against `dotnet` 10.
-    //
-    // Both spellings, like every other stamped field: a case-insensitive
-    // frontend folds the member name, and a PascalCase-only field reads
-    // `undefined` rather than erroring.
-    for spelling in ["AddressFamily", "addressfamily"] {
-        core_wasm::dup(chunk, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-        push_const(chunk, Value::String(Arc::from(":")), line);
-        let index_of = chunk.add_import("ecma:string", "indexOf");
-        chunk.emit_call(index_of, 2, line);
-        push_const(chunk, Value::I32(0), line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-        chunk.emit_if_value(line);
-        push_const(chunk, Value::String(Arc::from("InterNetwork")), line);
-        chunk.emit_else(line);
-        push_const(chunk, Value::String(Arc::from("InterNetworkV6")), line);
-        chunk.emit_end(line);
-        struct_set_drop(chunk, spelling, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    push_const(chunk, Value::String(Arc::from(".")), line);
+    let split = chunk.add_import("ecma:string", "split");
+    chunk.emit_call(split, 2, line);
+    let parts_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
+    let get = chunk.add_import("ecma:array", "get");
+    let number = chunk.add_import("ecma:number", "Number");
+    for idx in 0..4 {
+        chunk.emit_op_u16(Op::LOCAL_GET, parts_slot, line);
+        push_const(chunk, Value::I32(idx), line);
+        chunk.emit_call(get, 2, line);
+        chunk.emit_call(number, 1, line);
     }
+    chunk.emit_array_new_fixed(0, 4, line);
 
-    chunk.emit_op(Op::DROP, line);
-
-    // ⛔ Bind `ToString`, do not rely on the declared method alone: the
-    // registered `ToString` only fires when the receiver's type is INFERRED,
-    // and `IPAddress.Parse(...)` carried none — so `"" + ip` and `ip.ToString()`
-    // both rendered `[object IPAddress]`. The bound protocol slot answers
-    // whatever the inference misses.
-    {
-        let mut method = Chunk::new("__dotnet_ipaddress_tostring");
-        method.arity = 1;
-        method.local_count = 1;
-        method.emit_op_u16(Op::LOCAL_GET, 0, line);
-        class_slots::emit_class_get(
-            &mut method,
-            ObjSource::Stack,
-            &field_slot("__value"),
-            Dest::Stack,
-            line,
-        );
-        method.emit_op(Op::RETURN, line);
-        chunks.push(method);
-        let method_idx = chunks.len() - 1;
-        vybe_compiler::primitives::object::emit_bind_method(
-            &mut chunks[current],
-            obj_slot,
-            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
-            method_idx,
-            line,
-        );
+    chunk.emit_else(line);
+    for idx in 0..16 {
+        push_const(chunk, Value::I32(if idx == 15 { 1 } else { 0 }), line);
     }
+    chunk.emit_array_new_fixed(0, 16, line);
+    chunk.emit_end(line);
+}
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+pub fn emit_ip_address_map_to_ipv6(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let receiver_slot = chunks[current].alloc_scratch(2);
+    let text_slot = receiver_slot + 1;
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    push_const(chunk, Value::String(Arc::from("::ffff:")), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    struct_get(chunk, "__value", line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_ip_address_object_from_slot(chunks, current, text_slot, line);
+}
+
+pub fn emit_ip_address_map_to_ipv4(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let receiver_slot = chunks[current].alloc_scratch(3);
+    let text_slot = receiver_slot + 1;
+    let parts_slot = receiver_slot + 2;
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    struct_get(chunk, "__value", line);
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    let split = chunk.add_import("ecma:string", "split");
+    chunk.emit_call(split, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, parts_slot, line);
+    let length = chunk.add_import("ecma:array", "length");
+    chunk.emit_call(length, 1, line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_op(Op::I32_SUB, line);
+    let index_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, parts_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    let get = chunk.add_import("ecma:array", "get");
+    chunk.emit_call(get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_ip_address_object_from_slot(chunks, current, text_slot, line);
 }
 
 pub fn emit_ip_address_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -294,7 +450,8 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_host_port_string(chunk, host_slot, port_slot, line);
     // Stack: [socket, "host:port"]
 
-    let connect_idx = chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.connect");
+    let connect_idx =
+        chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.connect");
     chunks[current].emit_call(connect_idx, 2, line);
     chunks[current].emit_op(Op::DROP, line); // discard connect result
 

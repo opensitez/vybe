@@ -20,10 +20,10 @@ pub mod winforms;
 pub use core::dotnet_core_component_descriptor;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
 };
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
 };
 pub use winforms::classes;
@@ -306,17 +306,17 @@ impl DotnetSurface {
             if let Some(method) = class.methods.iter().find(|method| {
                 !method.is_static
                     && method.name.eq_ignore_ascii_case(method_name)
-                    && method.arity == arg_count
+                    && method.arity() == arg_count
             }) {
                 return match &method.body {
                     MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
-                        arity: method.arity,
+                        arity: method.arity(),
                     }),
                     MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
                         emit: name.clone(),
-                        arity: method.arity,
+                        arity: method.arity(),
                     }),
                     // UserChunk paths are compiled by the wrapper builder
                     // (DotnetClass) — not driven through this lookup.
@@ -380,7 +380,7 @@ impl DotnetSurface {
                     .find(|method| {
                         !method.is_static
                             && method.name.eq_ignore_ascii_case(method_name)
-                            && method.arity == arg_count
+                            && method.arity() == arg_count
                     })
                     .and_then(|method| {
                         dotnet_instance_method_return_type(&class.name, &method.name)
@@ -683,6 +683,55 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     {
         return Some(class_head.to_string());
     }
+    // Every mutation on an immutable collection answers a NEW collection of
+    // the same type — that is what makes the type immutable — so each one has
+    // to declare itself or the chain stops after one hop.
+    if matches!(
+        class_head.to_ascii_lowercase().as_str(),
+        "immutablearray"
+            | "immutablelist"
+            | "immutablehashset"
+            | "immutablesortedset"
+            | "immutabledictionary"
+            | "immutablesorteddictionary"
+            | "immutablequeue"
+            | "immutablestack"
+    ) && matches!(
+        method_name.to_ascii_lowercase().as_str(),
+        "add"
+            | "addrange"
+            | "remove"
+            | "removeat"
+            | "removerange"
+            | "setitem"
+            | "insert"
+            | "insertrange"
+            | "clear"
+            | "sort"
+            | "union"
+            | "intersect"
+            | "except"
+            | "symmetricexcept"
+            | "push"
+            | "pop"
+            | "enqueue"
+            | "dequeue"
+    ) {
+        return Some(class_head.to_string());
+    }
+    if class_head.eq_ignore_ascii_case("ImmutableListBuilder")
+        && method_name.eq_ignore_ascii_case("ToImmutable")
+    {
+        return Some("ImmutableList".into());
+    }
+    // `GetViewBetween` answers a SortedSet, so the view's own `Min`/`Max`/
+    // `Count` resolve. Undeclared, the view read back untyped and every
+    // ordered member on it answered nothing.
+    if class_head.eq_ignore_ascii_case("SortedSet")
+        && method_name.eq_ignore_ascii_case("GetViewBetween")
+    {
+        return Some("SortedSet".into());
+    }
     if class.eq_ignore_ascii_case("TimeZoneInfo") {
         return match method_name.to_ascii_lowercase().as_str() {
             "getutcoffset" => Some("TimeSpan".into()),
@@ -699,11 +748,12 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     // `sb.Append(x).AppendLine(y)` resolve past the first hop.
     if class.eq_ignore_ascii_case("DateTime") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "add" | "adddays" | "addhours" | "addminutes" | "addseconds"
-            | "addmilliseconds" | "addmonths" | "addyears" | "addticks" | "date"
-            | "touniversaltime" | "tolocaltime" | "fromoadate" | "frombinary"
-            | "fromfiletimeutc" | "specifykind" | "parse" | "parseexact" | "now" | "utcnow"
-            | "today" | "minvalue" | "maxvalue" => Some("DateTime".into()),
+            "add" | "adddays" | "addhours" | "addminutes" | "addseconds" | "addmilliseconds"
+            | "addmonths" | "addyears" | "addticks" | "date" | "touniversaltime"
+            | "tolocaltime" | "fromoadate" | "frombinary" | "fromfiletimeutc" | "specifykind"
+            | "parse" | "parseexact" | "now" | "utcnow" | "today" | "minvalue" | "maxvalue" => {
+                Some("DateTime".into())
+            }
             "subtract" | "timeofday" => Some("TimeSpan".into()),
             "tostring" | "toshortdatestring" | "tolongdatestring" | "toshorttimestring"
             | "tolongtimestring" => Some("String".into()),
@@ -743,17 +793,18 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             | "fromminutes" | "fromseconds" | "frommilliseconds" | "fromticks" | "parse"
             | "minvalue" | "maxvalue" | "multiply" | "divide" => Some("TimeSpan".into()),
             "tostring" => Some("String".into()),
-            "compareto" | "compare" | "days" | "hours" | "minutes" | "seconds"
-            | "milliseconds" => Some("Int32".into()),
+            "compareto" | "compare" | "days" | "hours" | "minutes" | "seconds" | "milliseconds" => {
+                Some("Int32".into())
+            }
             "equals" => Some("Boolean".into()),
             _ => None,
         };
     }
     if class.eq_ignore_ascii_case("DateTimeOffset") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "add" | "adddays" | "addhours" | "addminutes" | "addseconds"
-            | "addmilliseconds" | "addmonths" | "addyears" | "addticks" | "touniversaltime"
-            | "tolocaltime" | "parse" | "now" | "utcnow" => Some("DateTimeOffset".into()),
+            "add" | "adddays" | "addhours" | "addminutes" | "addseconds" | "addmilliseconds"
+            | "addmonths" | "addyears" | "addticks" | "touniversaltime" | "tolocaltime"
+            | "parse" | "now" | "utcnow" => Some("DateTimeOffset".into()),
             "subtract" | "offset" => Some("TimeSpan".into()),
             "datetime" | "utcdatetime" | "localdatetime" | "date" => Some("DateTime".into()),
             "tostring" => Some("String".into()),
@@ -768,8 +819,8 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             | "distinct" | "where" | "select" | "orderby" | "orderbydescending" | "take"
             | "skip" | "reverse" | "concat" => Some("List".into()),
             "tostring" => Some("String".into()),
-            "count" | "capacity" | "indexof" | "lastindexof" | "findindex"
-            | "findlastindex" | "binarysearch" | "removeall" => Some("Int32".into()),
+            "count" | "capacity" | "indexof" | "lastindexof" | "findindex" | "findlastindex"
+            | "binarysearch" | "removeall" => Some("Int32".into()),
             "contains" | "exists" | "trueforall" | "any" | "all" | "remove" => {
                 Some("Boolean".into())
             }
@@ -809,7 +860,7 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     }
     if class.eq_ignore_ascii_case("Guid") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "newguid" | "parse" | "empty" => Some("Guid".into()),
+            "newguid" | "parse" | "parseexact" | "empty" => Some("Guid".into()),
             "tostring" => Some("String".into()),
             "equals" => Some("Boolean".into()),
             "compareto" => Some("Int32".into()),
@@ -858,7 +909,12 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             "elements" | "descendants" | "ancestors" | "nodes" | "attributes"
             | "elementsafterself" | "elementsbeforeself" => Some("IEnumerable".into()),
             "element" | "root" | "parent" => Some("XElement".into()),
+            "firstnode" | "lastnode" => Some("XNode".into()),
             "attribute" => Some("XAttribute".into()),
+            "setelementvalue" | "setattributevalue" | "replacewith" | "replacenodes" | "add" => {
+                Some("XElement".into())
+            }
+            "value" | "tostring" => Some("string".into()),
             _ => None,
         };
     }
@@ -874,8 +930,7 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     // The methods themselves have always been declared (they are `wasi:sql`
     // host calls in `component_classes_data_drawing.rs`); what was missing is
     // what they RETURN.
-    if class.eq_ignore_ascii_case("SqlConnection")
-        || class.eq_ignore_ascii_case("OleDbConnection")
+    if class.eq_ignore_ascii_case("SqlConnection") || class.eq_ignore_ascii_case("OleDbConnection")
     {
         return match method_name.to_ascii_lowercase().as_str() {
             "createcommand" => Some("SqlCommand".into()),
@@ -896,8 +951,7 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             _ => None,
         };
     }
-    if class.eq_ignore_ascii_case("SqlDataReader")
-        || class.eq_ignore_ascii_case("OleDbDataReader")
+    if class.eq_ignore_ascii_case("SqlDataReader") || class.eq_ignore_ascii_case("OleDbDataReader")
     {
         return match method_name.to_ascii_lowercase().as_str() {
             "read" | "nextresult" | "isdbnull" => Some("Boolean".into()),
@@ -928,6 +982,14 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         if method_name.eq_ignore_ascii_case("EndOfStream") {
             return Some("Boolean".into());
         }
+    }
+    if class.eq_ignore_ascii_case("StringReader") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "readline" | "readtoend" => Some("string".into()),
+            "readlineasync" => Some("Task".into()),
+            "peek" | "read" | "readblock" => Some("Int32".into()),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("FileStream") && method_name.eq_ignore_ascii_case("Read") {
         return Some("string".into());
@@ -991,11 +1053,29 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         };
     }
     if class.eq_ignore_ascii_case("XElement") {
-        if matches!(method_name.to_ascii_lowercase().as_str(), "element") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "element"
+                | "parent"
+                | "setelementvalue"
+                | "setattributevalue"
+                | "replacewith"
+                | "replacenodes"
+                | "add"
+        ) {
             return Some("XElement".into());
         }
-        if matches!(method_name.to_ascii_lowercase().as_str(), "elements") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "elements" | "descendants" | "ancestors"
+        ) {
             return Some("IEnumerable".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "firstnode" | "lastnode"
+        ) {
+            return Some("XNode".into());
         }
         if matches!(method_name.to_ascii_lowercase().as_str(), "name") {
             return Some("XName".into());
@@ -1014,12 +1094,48 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         if matches!(method_name.to_ascii_lowercase().as_str(), "root") {
             return Some("XElement".into());
         }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "element" | "elements" | "descendants" | "ancestors"
+        ) {
+            return Some("IEnumerable".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "firstnode" | "lastnode"
+        ) {
+            return Some("XNode".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "value" | "tostring"
+        ) {
+            return Some("string".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("XComment")
+        || class.eq_ignore_ascii_case("XProcessingInstruction")
+    {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "value" | "data" | "target" | "tostring"
+        ) {
+            return Some("string".into());
+        }
     }
     if class.eq_ignore_ascii_case("XName") {
         if matches!(
             method_name.to_ascii_lowercase().as_str(),
             "localname" | "namespacename" | "tostring"
         ) {
+            return Some("string".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("XNode") {
+        if method_name.eq_ignore_ascii_case("DeepEquals") {
+            return Some("Boolean".into());
+        }
+        if method_name.eq_ignore_ascii_case("ToString") {
             return Some("string".into());
         }
     }
@@ -1314,7 +1430,10 @@ pub fn generic_binding_args_suppressed(class_path: &str, method_name: &str) -> b
 /// raw marker string. Keyed on the type leaf so a closed generic
 /// (`Comparer<int>`, `Comparer(Of Integer)`) answers the same as the open one.
 fn is_comparer_static(class_path: &str, member_name: &str) -> bool {
-    match dotnet_type_path_leaf(class_path).to_ascii_lowercase().as_str() {
+    match dotnet_type_path_leaf(class_path)
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "comparer" | "equalitycomparer" => member_name.eq_ignore_ascii_case("Default"),
         "stringcomparer" => {
             member_name.eq_ignore_ascii_case("Ordinal")
@@ -1384,6 +1503,9 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
         if member_name.eq_ignore_ascii_case("RemoveEmptyEntries") {
             return Some("__dotnet_stringsplit_removeemptyentries");
         }
+        if member_name.eq_ignore_ascii_case("TrimEntries") {
+            return Some("__dotnet_stringsplit_trimentries");
+        }
         if member_name.eq_ignore_ascii_case("None") {
             return Some("__dotnet_stringsplit_none");
         }
@@ -1404,6 +1526,9 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
         return Some(match member_name.to_ascii_lowercase().as_str() {
             "toeven" => "ToEven",
             "awayfromzero" => "AwayFromZero",
+            "tozero" => "ToZero",
+            "tonegativeinfinity" => "ToNegativeInfinity",
+            "topositiveinfinity" => "ToPositiveInfinity",
             _ => return None,
         });
     }
@@ -1567,12 +1692,49 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
     {
         return true;
     }
+    if member_name.eq_ignore_ascii_case("Empty")
+        && matches!(
+            dotnet_type_path_leaf(normalized)
+                .to_ascii_lowercase()
+                .as_str(),
+            "memory" | "readonlymemory"
+        )
+    {
+        return true;
+    }
+    if matches!(
+        dotnet_type_path_leaf(normalized)
+            .to_ascii_lowercase()
+            .as_str(),
+        "ipaddress"
+    ) && matches!(
+        member_name.to_ascii_lowercase().as_str(),
+        "any" | "broadcast" | "loopback" | "ipv6loopback" | "none"
+    ) {
+        return true;
+    }
+    if matches!(
+        dotnet_type_path_leaf(normalized)
+            .to_ascii_lowercase()
+            .as_str(),
+        "index"
+    ) && matches!(member_name.to_ascii_lowercase().as_str(), "start" | "end")
+    {
+        return true;
+    }
+    if dotnet_type_path_leaf(normalized).eq_ignore_ascii_case("Range")
+        && member_name.eq_ignore_ascii_case("All")
+    {
+        return true;
+    }
     // `JsonNamingPolicy.CamelCase` — a value-shaped static with no parentheses,
     // so the walker reads it as a FIELD unless declared here.
     // `AesGcm.IsSupported` — a value-shaped static with no parentheses.
     if member_name.eq_ignore_ascii_case("IsSupported")
         && matches!(
-            dotnet_type_path_leaf(normalized).to_ascii_lowercase().as_str(),
+            dotnet_type_path_leaf(normalized)
+                .to_ascii_lowercase()
+                .as_str(),
             "aesgcm" | "chacha20poly1305" | "aesccm" | "sha3_256" | "sha3_384" | "sha3_512"
         )
     {
@@ -1771,16 +1933,40 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("Type") && method_name.eq_ignore_ascii_case("GetTypeCode") {
         return Some("TypeCode");
     }
+    // A VALUE TYPE's `Parse` answers ITSELF, and saying so is what keeps the
+    // result on the tree. `[version]"6.0.1"` is a cast that PowerShell performs
+    // as `Version.Parse`, and undeclared the result was untyped — so `.Clone()`
+    // never resolved, a `SortedDictionary[version, string]` could not order its
+    // keys, and an overload declared `([version]$v)` lost to the `([string]$v)`
+    // one because nothing said which it was.
+    if matches!(
+        class.to_ascii_lowercase().as_str(),
+        "guid" | "version" | "timespan" | "ipaddress" | "datetime" | "datetimeoffset"
+    ) && method_name.eq_ignore_ascii_case("Parse")
+    {
+        return Some(match class.to_ascii_lowercase().as_str() {
+            "guid" => "Guid",
+            "version" => "Version",
+            "timespan" => "TimeSpan",
+            "ipaddress" => "IPAddress",
+            "datetimeoffset" => "DateTimeOffset",
+            _ => "DateTime",
+        });
+    }
     // Same shape again: `XDocument.Parse` / `XElement.Parse` are the ENTRY
     // POINT into LINQ-to-XML, and undeclared they leave `Dim doc =
     // XDocument.Parse(…)` untyped — so `doc.Descendants(…)` never reaches the
     // tree at all and the whole query surface is unreachable however
     // completely it is registered.
-    if matches!(class.to_ascii_lowercase().as_str(), "xdocument" | "xelement")
-        && method_name.eq_ignore_ascii_case("Parse")
+    if matches!(
+        class.to_ascii_lowercase().as_str(),
+        "xdocument" | "xelement" | "xmldocument"
+    ) && method_name.eq_ignore_ascii_case("Parse")
     {
         return Some(if class.eq_ignore_ascii_case("xelement") {
             "XElement"
+        } else if class.eq_ignore_ascii_case("xmldocument") {
+            "XmlDocument"
         } else {
             "XDocument"
         });
@@ -1795,6 +1981,47 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     // Same shape as the DateOnly/TimeOnly chaining gap.
     if class.eq_ignore_ascii_case("ArrayPool") && method_name.eq_ignore_ascii_case("Shared") {
         return Some("ArrayPool");
+    }
+    // The immutable factories and `Tuple.Create` are the SAME entry-point
+    // shape: the value they build carries every one of that type's members,
+    // and none of them is reachable until the factory says what it answers.
+    // ⛔`::new(…)` already types itself — the compiler reads a constructor off
+    // the tree — so only the STATIC spellings need declaring, and a corpus
+    // written with `Create` sees none of the surface a corpus written with
+    // `new` does.
+    if matches!(
+        class.to_ascii_lowercase().as_str(),
+        "tuple"
+            | "valuetuple"
+            | "immutablearray"
+            | "immutablelist"
+            | "immutablehashset"
+            | "immutablesortedset"
+            | "immutabledictionary"
+            | "immutablesorteddictionary"
+            | "immutablequeue"
+            | "immutablestack"
+    ) {
+        if method_name.eq_ignore_ascii_case("CreateBuilder") {
+            return Some("ImmutableListBuilder");
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "create" | "createrange" | "empty"
+        ) {
+            return Some(match class.to_ascii_lowercase().as_str() {
+                "tuple" => "Tuple",
+                "valuetuple" => "ValueTuple",
+                "immutablearray" => "ImmutableArray",
+                "immutablelist" => "ImmutableList",
+                "immutablehashset" => "ImmutableHashSet",
+                "immutablesortedset" => "ImmutableSortedSet",
+                "immutabledictionary" => "ImmutableDictionary",
+                "immutablesorteddictionary" => "ImmutableSortedDictionary",
+                "immutablequeue" => "ImmutableQueue",
+                _ => "ImmutableStack",
+            });
+        }
     }
     // Same shape: `IncrementalHash.CreateHash(...)` answers an `IncrementalHash`,
     // and without saying so `AppendData` / `GetHashAndReset` are unreachable on
@@ -1859,6 +2086,17 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     {
         return Some("Boolean");
     }
+    if class.eq_ignore_ascii_case("XNode") && method_name.eq_ignore_ascii_case("DeepEquals") {
+        return Some("Boolean");
+    }
+    if class.eq_ignore_ascii_case("XDocument")
+        && matches!(method_name.to_ascii_lowercase().as_str(), "parse" | "load")
+    {
+        return Some("XDocument");
+    }
+    if class.eq_ignore_ascii_case("XElement") && method_name.eq_ignore_ascii_case("Parse") {
+        return Some("XElement");
+    }
     if class.eq_ignore_ascii_case("TimeSpan")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
@@ -1883,12 +2121,21 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("IPAddress")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "parse" | "loopback" | "any" | "ipv6loopback" | "ipv6any" | "none" | "broadcast"
+            "parse"
+                | "loopback"
+                | "any"
+                | "ipv6loopback"
+                | "ipv6any"
+                | "none"
+                | "broadcast"
+                | "maptoipv4"
+                | "maptoipv6"
         )
     {
         return Some("IPAddress");
     }
-    if class.eq_ignore_ascii_case("MediaTypeHeaderValue") && method_name.eq_ignore_ascii_case("Parse")
+    if class.eq_ignore_ascii_case("MediaTypeHeaderValue")
+        && method_name.eq_ignore_ascii_case("Parse")
     {
         return Some("MediaTypeHeaderValue");
     }
@@ -1910,9 +2157,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("TimeOnly") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "fromdatetime" | "fromtimespan" | "parse" | "minvalue" | "maxvalue" => {
-                Some("TimeOnly")
-            }
+            "fromdatetime" | "fromtimespan" | "parse" | "minvalue" | "maxvalue" => Some("TimeOnly"),
             "compare" => Some("Int32"),
             "equals" | "tryparse" | "tryparseexact" => Some("Boolean"),
             _ => None,
@@ -1980,13 +2225,17 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("BitConverter") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "tochar" => Some("Char"),
+            "tochar" => Some("String"),
             "toboolean" => Some("Boolean"),
             "todouble" | "tosingle" => Some("Double"),
             "toint16" | "toint32" | "touint16" | "touint32" => Some("Int32"),
             "toint64" | "touint64" => Some("Int64"),
             "tostring" => Some("String"),
             "getbytes" => Some("Array"),
+            "singletoint32bits" => Some("Int32"),
+            "int32bitstosingle" => Some("Single"),
+            "doubletoint64bits" => Some("Int64"),
+            "int64bitstodouble" => Some("Double"),
             _ => None,
         };
     }
@@ -2038,7 +2287,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("Guid")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "empty" | "newguid" | "parse"
+            "empty" | "newguid" | "parse" | "parseexact"
         )
     {
         return Some("Guid");
@@ -2071,13 +2320,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("Task")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "delay"
-                | "yield"
-                | "whenall"
-                | "whenany"
-                | "whenanycompleted"
-                | "fromresult"
-                | "run"
+            "delay" | "yield" | "whenall" | "whenany" | "whenanycompleted" | "fromresult" | "run"
         )
     {
         return Some("Task");
@@ -2137,6 +2380,29 @@ pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'s
     }
     if class.eq_ignore_ascii_case("Guid") && property_name.eq_ignore_ascii_case("Empty") {
         return Some("Guid");
+    }
+    if class.eq_ignore_ascii_case("IPAddress")
+        && matches!(
+            property_name.to_ascii_lowercase().as_str(),
+            "any" | "broadcast" | "loopback" | "ipv6loopback" | "none"
+        )
+    {
+        return Some("IPAddress");
+    }
+    if class.eq_ignore_ascii_case("Index")
+        && matches!(property_name.to_ascii_lowercase().as_str(), "start" | "end")
+    {
+        return Some("Index");
+    }
+    if class.eq_ignore_ascii_case("Range") && property_name.eq_ignore_ascii_case("All") {
+        return Some("Range");
+    }
+    if matches!(
+        class.to_ascii_lowercase().as_str(),
+        "memory" | "readonlymemory"
+    ) && property_name.eq_ignore_ascii_case("Empty")
+    {
+        return Some("ReadOnlyMemory");
     }
     if class.eq_ignore_ascii_case("Stopwatch") {
         return match property_name.to_ascii_lowercase().as_str() {
@@ -2216,6 +2482,18 @@ pub fn declared_instance_property_types(
         ],
         // The same for `DateTime` itself.
         "datetime" => &[("Date", "DateTime"), ("TimeOfDay", "TimeSpan")],
+        // `MemoryStream` accessors are computed in `tree_register`; their
+        // declared types keep chains like `lazy.Value.Length.ToString()`
+        // resolving through the same dotnet surface instead of falling back to
+        // an untyped field read.
+        "memorystream" => &[
+            ("Capacity", "Int32"),
+            ("Length", "Int64"),
+            ("Position", "Int64"),
+            ("CanRead", "Boolean"),
+            ("CanWrite", "Boolean"),
+            ("CanSeek", "Boolean"),
+        ],
         // `tcs.Task` hands back the consumer half. Undeclared, the promise read
         // back untyped and the NEXT hop resolved against nothing —
         // `tcs.Task.IsCompleted` and `tcs.Task.Status` answered `undefined`
@@ -2377,7 +2655,7 @@ fn collection_runtime_method_arities(
             }
             out.entry(method.name.to_lowercase())
                 .or_default()
-                .insert(method.arity);
+                .insert(method.arity());
         }
     }
     out
@@ -2576,7 +2854,7 @@ mod tests {
 
 pub fn registry_lookup_constructor(
     name: &str,
-) -> Option<vybe_runtime::component_model::ConstructorTarget> {
+) -> Option<vybe_compiler::component_classes::ConstructorTarget> {
     surface().lookup_constructor(name)
 }
 
@@ -2584,14 +2862,14 @@ pub fn registry_lookup_instance_method(
     class_name: &str,
     method_name: &str,
     arg_count: u8,
-) -> Option<vybe_runtime::component_model::InstanceMethodTarget> {
+) -> Option<vybe_compiler::component_classes::InstanceMethodTarget> {
     surface().lookup_instance_method(class_name, method_name, arg_count)
 }
 
 pub fn registry_lookup_instance_property(
     class_name: &str,
     property_name: &str,
-) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
+) -> Option<vybe_compiler::component_classes::InstancePropertyTarget> {
     surface().lookup_instance_property(class_name, property_name)
 }
 

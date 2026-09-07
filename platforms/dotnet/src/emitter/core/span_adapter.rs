@@ -85,6 +85,40 @@ fn emit_array_segment_from_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, object_slot, line);
 }
 
+fn emit_array_segment_bounds_check(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    offset_slot: u16,
+    count_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
+        "ArgumentException",
+        "Offset and length were out of bounds for the array.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
 fn emit_array_with_length(chunks: &mut [Chunk], current: usize, count_slot: u16, line: u32) {
     let idx = chunks[current].add_import("ecma:array", "newWithLength");
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
@@ -185,6 +219,7 @@ pub fn emit_array_segment_ctor(chunks: &mut [Chunk], current: usize, argc: u8, l
         vybe_compiler::primitives::collections::emit_len(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     }
+    emit_array_segment_bounds_check(chunks, current, array_slot, offset_slot, count_slot, line);
     emit_array_segment_from_slots(chunks, current, array_slot, offset_slot, count_slot, line);
 }
 
@@ -673,16 +708,57 @@ pub fn emit_memory_slice(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
     bind_memory_to_string(chunks, current, line);
 }
 
-/// `"text".AsMemory()` — the characters, with the slot bound.
+fn emit_memory_source_as_array(chunk: &mut Chunk, source_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    let is_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    let split = chunk.add_import("ecma:string", "split");
+    chunk.emit_string_const(&std::sync::Arc::from(""), line);
+    chunk.emit_call(split, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    chunk.emit_end(line);
+}
+
+/// `Memory<T>.Empty` / `ReadOnlyMemory<T>.Empty`.
+pub fn emit_memory_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    bind_memory_to_string(chunks, current, line);
+}
+
+/// `AsMemory(source[, start[, length]])` — strings become char arrays, arrays
+/// stay views over the same backing storage, and every result carries the
+/// memory-specific `ToString` role.
 pub fn emit_as_memory(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    {
-        let chunk = &mut chunks[current];
-        for _ in 1..argc {
-            chunk.emit_op(Op::DROP, line);
+    if argc >= 3 {
+        let len_slot = chunks[current].alloc_scratch(3);
+        let start_slot = len_slot + 1;
+        let source_slot = len_slot + 2;
+        chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+        emit_memory_source_as_array(&mut chunks[current], source_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, start_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        crate::emitter::core::array_adapter::emit_get_range_checked(chunks, current, line);
+    } else {
+        let start_slot = chunks[current].alloc_scratch(2);
+        let source_slot = start_slot + 1;
+        if argc == 2 {
+            chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
+        } else {
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
         }
-        let split = chunk.add_import("ecma:string", "split");
-        chunk.emit_string_const(&std::sync::Arc::from(""), line);
-        chunk.emit_call(split, 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+        emit_memory_source_as_array(&mut chunks[current], source_slot, line);
+        if argc == 2 {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, start_slot, line);
+            let idx = chunks[current].add_import("ecma:array", "slice");
+            chunks[current].emit_call(idx, 2, line);
+        }
     }
     bind_memory_to_string(chunks, current, line);
 }

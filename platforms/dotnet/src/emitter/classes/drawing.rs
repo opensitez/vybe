@@ -1622,7 +1622,8 @@ pub fn classes() -> &'static [DotnetClass] {
             // which needs an element this descriptor has no way to make.
             // Composed by `dotnet.graphics_new` — an identity record. A real
             // surface comes from `CreateGraphics`/`FromImage`, never from here.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "Pen",
             parent: Some("MarshalByRefObject"),
@@ -1648,14 +1649,16 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: PEN_METHODS,
             ctor_arity: 2,
             // Composed by `dotnet.pen_new` — a record of colour and width.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "Brush",
             parent: Some("MarshalByRefObject"),
             properties: &[],
             methods: BRUSH_METHODS,
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "SolidBrush",
             parent: Some("Brush"),
@@ -1663,7 +1666,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 1,
             // Composed by `dotnet.solid_brush_new` — a record of one colour.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "HatchBrush",
             parent: Some("Brush"),
@@ -1671,7 +1675,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 3,
             // Composed by `dotnet.hatch_brush_new`.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "LinearGradientBrush",
             parent: Some("Brush"),
@@ -1687,7 +1692,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 4,
             // Composed by `dotnet.linear_gradient_brush_new`.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // System.Drawing.Point — position value type. `new Point(x, y)`
         // composes an object with `{x, y}` in bytecode (`dotnet.point_new`).
         // `.X` / `.Y` are NOT accessors: a value type declares none, so they
@@ -1700,7 +1706,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 2,
             // Composed by `dotnet.point_new` — see `common_ctor_for`. A value
             // type has no element, so the factory only ever allocated.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // System.Drawing.Size — dimensions value type. Mirror of Point.
         DotnetClass {
             name: "Size",
@@ -1709,7 +1716,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 2,
             // Composed by `dotnet.size_new` — the mirror of `Point`.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // System.Drawing.Color — four channels, 0-255. The `Graphics` bodies
         // read `pen.color.r`/`.g`/`.b`/`.a` as NUMBERS to build
         // `web:canvas::setStrokeStyle`, so the channel names are the contract.
@@ -1720,7 +1728,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 4,
             // Composed by `dotnet.color_new` — see `common_ctor_for`.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // System.Drawing.Font — `New Font(name, size)`.
         //
         // It had NO class entry here at all: its only declaration was a host
@@ -1736,7 +1745,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 2,
             // Composed by `dotnet.font_new` — see `common_ctor_for`.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // System.Drawing.Rectangle — position AND extent in one value, and the
         // argument GDI+ overloads half its drawing surface on
         // (`DrawEllipse(pen, rect)`, `DrawRectangle(pen, rect)`).
@@ -1755,48 +1765,48 @@ pub fn classes() -> &'static [DotnetClass] {
         // Width`) and are not stored; they are listed so the property axis
         // knows the names, and read back through the same keyed getter that
         // answers `Point.X`.
-            // **The floating-point mirrors — `SizeF`, `PointF`, `RectangleF`.**
-            //
-            // `System.Drawing` declares each value type twice, once in integers
-            // and once in `Single`, and only the integer half was here. Every
-            // VB designer emits
-            // `Me.AutoScaleDimensions = New System.Drawing.SizeF(6.0!, 13.0!)`,
-            // so a form whose designer includes that line failed with
-            // "undefined is not callable" inside `InitializeComponent` — the
-            // constructor resolved to nothing. Samples that happened to omit
-            // the line ran, which is why this looked like one broken project
-            // rather than a missing type.
-            //
-            // Separate declarations rather than aliases of the integer ones:
-            // the `__type` string IS the identity a value type compares by, so
-            // a `SizeF` answering "Size" would make the two equal.
-            DotnetClass {
-                name: "SizeF",
-                parent: None,
-                properties: &["Width", "Height", "IsEmpty"],
-                methods: &[],
-                ctor_arity: 2,
-                widget_host_fn: None,
-            },
-            DotnetClass {
-                name: "PointF",
-                parent: None,
-                properties: &["X", "Y", "IsEmpty"],
-                methods: &[],
-                ctor_arity: 2,
-                widget_host_fn: None,
-            },
-            DotnetClass {
-                name: "RectangleF",
-                parent: None,
-                properties: &[
-                    "X", "Y", "Width", "Height", "Left", "Top", "Right", "Bottom", "Location",
-                    "Size", "IsEmpty",
-                ],
-                methods: &[],
-                ctor_arity: 4,
-                widget_host_fn: None,
-            },
+        // **The floating-point mirrors — `SizeF`, `PointF`, `RectangleF`.**
+        //
+        // `System.Drawing` declares each value type twice, once in integers
+        // and once in `Single`, and only the integer half was here. Every
+        // VB designer emits
+        // `Me.AutoScaleDimensions = New System.Drawing.SizeF(6.0!, 13.0!)`,
+        // so a form whose designer includes that line failed with
+        // "undefined is not callable" inside `InitializeComponent` — the
+        // constructor resolved to nothing. Samples that happened to omit
+        // the line ran, which is why this looked like one broken project
+        // rather than a missing type.
+        //
+        // Separate declarations rather than aliases of the integer ones:
+        // the `__type` string IS the identity a value type compares by, so
+        // a `SizeF` answering "Size" would make the two equal.
+        DotnetClass {
+            name: "SizeF",
+            parent: None,
+            properties: &["Width", "Height", "IsEmpty"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "PointF",
+            parent: None,
+            properties: &["X", "Y", "IsEmpty"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "RectangleF",
+            parent: None,
+            properties: &[
+                "X", "Y", "Width", "Height", "Left", "Top", "Right", "Bottom", "Location", "Size",
+                "IsEmpty",
+            ],
+            methods: &[],
+            ctor_arity: 4,
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "Rectangle",
             parent: None,
@@ -1806,6 +1816,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 4,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

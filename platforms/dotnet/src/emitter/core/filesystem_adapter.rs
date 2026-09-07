@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
-use vybe_compiler::primitives::{fs_path, paths};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::{classes, fs_path, ops, paths};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -83,15 +83,19 @@ fn emit_throw_io(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    class_slots::emit_class_alloc(chunk, line);
-    core_wasm::dup(chunk, line);
     chunk.emit_string_const(prefix, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     paths::emit_full_path(chunk, line);
     chunk.emit_string_const("'.", line);
     vybe_compiler::primitives::strings::emit_concat(chunk, 3, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, kind, line);
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
+        kind,
+        class_slots::ValueSource::Stack,
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
 }
 
 /// `FileNotFoundException` when the value on the stack is null.
@@ -378,34 +382,103 @@ pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u
 }
 
 pub fn emit_file_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
-    let path_slot = reserve_slot(chunk);
-    let obj_slot = reserve_slot(chunk);
+    let path_slot = reserve_slot(&mut chunks[current]);
+    let obj_slot = reserve_slot(&mut chunks[current]);
 
-    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
-    class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    set_field_const(
-        chunk,
+    chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    let typeidx =
+        classes::reserve_platform_type(chunks, &["FileInfo".to_string(), "Object".to_string()]);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    classes::emit_new_typed_object(
+        &mut chunks[current],
         obj_slot,
-        "__type",
-        Value::String(Arc::from("FileInfo")),
+        "System.IO.FileInfo",
+        typeidx,
         line,
     );
+    let chunk = &mut chunks[current];
     set_field_from_slot(chunk, obj_slot, "FullName", path_slot, line);
+    set_field_from_slot(chunk, obj_slot, "fullname", path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     paths::emit_file_name(chunk, line);
     set_field_with_stack_value(chunk, obj_slot, "Name", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    paths::emit_file_name(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "name", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     paths::emit_extension(chunk, line);
     set_field_with_stack_value(chunk, obj_slot, "Extension", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    paths::emit_extension(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "extension", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     fs_path::emit_exists(chunk, line);
     set_field_with_stack_value(chunk, obj_slot, "Exists", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    fs_path::emit_exists(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "exists", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     fs_path::emit_file_size(chunk, line);
     set_field_with_stack_value(chunk, obj_slot, "Length", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    fs_path::emit_file_size(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "length", line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_directory_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path_slot = reserve_slot(&mut chunks[current]);
+    let obj_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    let typeidx = classes::reserve_platform_type(
+        chunks,
+        &["DirectoryInfo".to_string(), "Object".to_string()],
+    );
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    classes::emit_new_typed_object(
+        &mut chunks[current],
+        obj_slot,
+        "System.IO.DirectoryInfo",
+        typeidx,
+        line,
+    );
+    let chunk = &mut chunks[current];
+    set_field_from_slot(chunk, obj_slot, "FullName", path_slot, line);
+    set_field_from_slot(chunk, obj_slot, "fullname", path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    paths::emit_file_name(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "Name", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    paths::emit_file_name(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "name", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    fs_path::emit_is_dir(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "Exists", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    fs_path::emit_is_dir(chunk, line);
+    set_field_with_stack_value(chunk, obj_slot, "exists", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_directory_create_directory(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    fs_path::emit_mkdir_all(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    emit_directory_info_new(chunks, current, line);
+}
+
+pub fn emit_directory_get_parent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    paths::emit_directory(&mut chunks[current], line);
+    emit_directory_info_new(chunks, current, line);
 }
 
 pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -695,33 +768,7 @@ fn emit_directory_entries(
     vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
-    if !want_directories {
-        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_if(line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-        push_const(chunk, Value::String(Arc::from("*")), line);
-        host::emit(chunk, "ecma:string", "startsWith", 2, line);
-        chunk.emit_if(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        host::emit(chunk, "ecma:string", "slice", 2, line);
-        host::emit(chunk, "ecma:string", "endsWith", 2, line);
-        chunk.emit_else(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        chunk.emit_end(line);
-        chunk.emit_op_u16(Op::LOCAL_SET, allowed_slot, line);
-        chunk.emit_end(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, allowed_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
-        chunk.emit_br_if(0, line);
-    }
+    emit_directory_pattern_filter(chunk, entry_slot, pattern_slot, allowed_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
@@ -736,12 +783,123 @@ fn emit_directory_entries(
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+fn emit_directory_pattern_filter(
+    chunk: &mut Chunk,
+    entry_slot: u16,
+    pattern_slot: u16,
+    allowed_slot: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_else(line);
+    emit_directory_wildcard_match(chunk, entry_slot, pattern_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, allowed_slot, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, allowed_slot, line);
+    ops::emit_dyn_not(chunk, line);
+    chunk.emit_br_if(0, line);
+}
+
+fn emit_directory_wildcard_match(chunk: &mut Chunk, entry_slot: u16, pattern_slot: u16, line: u32) {
+    let starts_star = reserve_slot(chunk);
+    let ends_star = reserve_slot(chunk);
+    let question_at = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::String(Arc::from("*")), line);
+    host::emit(chunk, "ecma:string", "startsWith", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, starts_star, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::String(Arc::from("*")), line);
+    host::emit(chunk, "ecma:string", "endsWith", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ends_star, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::String(Arc::from("?")), line);
+    host::emit(chunk, "ecma:string", "indexOf", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, question_at, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, starts_star, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ends_star, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    host::emit(chunk, "ecma:string", "length", 1, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    host::emit(chunk, "ecma:string", "slice", 3, line);
+    host::emit(chunk, "ecma:string", "includes", 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, starts_star, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    host::emit(chunk, "ecma:string", "slice", 2, line);
+    host::emit(chunk, "ecma:string", "endsWith", 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ends_star, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    host::emit(chunk, "ecma:string", "length", 1, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    host::emit(chunk, "ecma:string", "slice", 3, line);
+    host::emit(chunk, "ecma:string", "startsWith", 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, question_at, line);
+    chunk.emit_f64_const(0.0, line);
+    ops::emit_dyn_lt(chunk, line);
+    ops::emit_dyn_not(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    host::emit(chunk, "ecma:string", "length", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    host::emit(chunk, "ecma:string", "length", 1, line);
+    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, question_at, line);
+    host::emit(chunk, "ecma:string", "slice", 3, line);
+    host::emit(chunk, "ecma:string", "startsWith", 2, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 pub fn emit_directory_get_files(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_directory_entries(chunks, current, argc, line, false);
 }
 
 pub fn emit_directory_get_directories(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_directory_entries(chunks, current, 1, line, true);
+}
+
+pub fn emit_directory_get_directories_with_pattern(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    emit_directory_entries(chunks, current, argc, line, true);
 }
 
 pub fn emit_directory_delete(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

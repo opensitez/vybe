@@ -264,7 +264,11 @@ pub fn emit_media_type_header_parse(chunks: &mut Vec<Chunk>, current: usize, lin
         get(chunk, obj_slot, line);
 
         core_wasm::dup(chunk, line);
-        push_const(chunk, Value::String(Arc::from("MediaTypeHeaderValue")), line);
+        push_const(
+            chunk,
+            Value::String(Arc::from("MediaTypeHeaderValue")),
+            line,
+        );
         struct_set_drop(chunk, TYPE_KEY, line);
         for key in ["MediaType", "mediatype"] {
             core_wasm::dup(chunk, line);

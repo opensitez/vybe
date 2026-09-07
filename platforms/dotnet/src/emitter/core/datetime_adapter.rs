@@ -36,14 +36,14 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
-fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
     if let Some((idx, _)) = chunk
         .constants
         .iter()
         .enumerate()
         .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
     {
-        idx as u16
+        idx as u32
     } else {
         chunk.add_constant(Value::String(Arc::from(key)))
     }
@@ -66,13 +66,7 @@ fn struct_set_named_field_drop(chunk: &mut Chunk, key: &str, line: u32) {
 }
 
 fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 fn call_import(
@@ -461,14 +455,17 @@ fn emit_wrap_ms_internal(
         struct_set_named_field_drop(chunk, "timeofday", line);
     }
 
-    bind_datetime_to_string(chunks, current, obj_slot, line);
-    bind_datetime_compare(chunks, current, obj_slot, line);
+    if include_composites {
+        bind_datetime_to_string(chunks, current, obj_slot, line);
+        bind_datetime_to_universal_time(chunks, current, obj_slot, line);
+        bind_datetime_compare(chunks, current, obj_slot, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 /// Wrap a millisecond timestamp on stack-top as a DateTime object.
 /// Stack on entry: `[ms]` ; Stack on exit: `[datetime_obj]`.
-fn emit_wrap_ms(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+pub(crate) fn emit_wrap_ms(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_wrap_ms_internal(chunks, current, line, true);
 }
 
@@ -546,6 +543,12 @@ pub fn emit_datetime_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
             push_const(chunk, Value::F64(10_000.0), line);
             chunk.emit_op(Op::F64_DIV, line);
             emit_wrap_ms(chunks, current, line);
+            for spelling in ["Ticks", "ticks"] {
+                let chunk = &mut chunks[current];
+                chunk.emit_dup(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, ticks_slot, line);
+                struct_set_named_field_drop(chunk, spelling, line);
+            }
         }
         3 | 6 | 7 | 8 => {
             let second_slot = chunk.alloc_scratch(9);
@@ -675,6 +678,18 @@ pub fn emit_datetime_kind(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get_named_field(&mut chunks[current], "Kind", line);
 }
 
+pub fn emit_datetime_kind_unspecified(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_string_const("Unspecified", line);
+}
+
+pub fn emit_datetime_kind_utc(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_string_const("Utc", line);
+}
+
+pub fn emit_datetime_kind_local(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_string_const("Local", line);
+}
+
 pub fn emit_datetime_date(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get_named_field(&mut chunks[current], "Date", line);
 }
@@ -728,6 +743,20 @@ pub fn emit_datetime_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u3
         Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
         line,
     );
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    emit_wrap_ms(chunks, current, line);
+}
+
+pub fn emit_datetime_add_seconds(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value_slot = chunk.alloc_scratch(2);
+    let date_slot = value_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
+    emit_datetime_time_from_obj(chunk, date_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
@@ -851,12 +880,14 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     push_const(chunk, Value::I32(1), line);
     chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         class_slots::ValueSource::ConstStr("Year must be between 1 and 9999.".to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     // Rule is shared; the range guard above is .NET's own (`DateTime.IsLeapYear`
@@ -923,7 +954,13 @@ pub fn emit_datetime_add_timespan(chunks: &mut Vec<Chunk>, current: usize, line:
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, span_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("TotalMilliseconds"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("TotalMilliseconds"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
 }
@@ -1172,7 +1209,7 @@ fn emit_seconds_of_day(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
 }
 
-/// `"h:mm:ss tt"`, with a leading space when it follows a date.
+/// `"h:mm:ss\u{202f}tt"`, with a leading space when it follows a date.
 ///
 /// Stack: `[]` → `[str]`.
 fn emit_time_of_day_suffix(chunk: &mut Chunk, obj_slot: u16, leading_space: bool, line: u32) {
@@ -1208,7 +1245,7 @@ fn emit_time_of_day_suffix(chunk: &mut Chunk, obj_slot: u16, leading_space: bool
     emit_field_padded(chunk, obj_slot, "Second", line);
     emit_concat(chunk, line);
 
-    push_const(chunk, Value::String(Arc::from(" ")), line);
+    push_const(chunk, Value::String(Arc::from("\u{202f}")), line);
     emit_concat(chunk, line);
     emit_named_field_from_obj(chunk, obj_slot, "Hour", line);
     push_const(chunk, Value::F64(12.0), line);
@@ -1317,8 +1354,7 @@ fn bind_datetime_compare(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16,
 }
 
 fn bind_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
-    let method_idx =
-        push_datetime_display_chunk(chunks, "__datetime_tostring", true, line);
+    let method_idx = push_datetime_display_chunk(chunks, "__datetime_tostring", true, line);
 
     emit_bind_method(
         &mut chunks[current],
@@ -1327,6 +1363,33 @@ fn bind_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u1
         method_idx,
         line,
     );
+}
+
+fn bind_datetime_to_universal_time(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    obj_slot: u16,
+    line: u32,
+) {
+    let mut method = create_function_chunk("__datetime_touniversaltime", 1);
+    method.local_count = 1;
+    chunks.push(method);
+    let method_idx = chunks.len() - 1;
+
+    emit_datetime_time_from_obj(&mut chunks[method_idx], 0, line);
+    emit_wrap_ms_internal(chunks, method_idx, line, false);
+    let method = &mut chunks[method_idx];
+    core_wasm::dup(method, line);
+    push_const(method, Value::String(Arc::from("Utc")), line);
+    struct_set_named_field_drop(method, "Kind", line);
+    core_wasm::dup(method, line);
+    push_const(method, Value::String(Arc::from("Utc")), line);
+    struct_set_named_field_drop(method, "kind", line);
+    method.emit_op(Op::RETURN, line);
+
+    for name in ["ToUniversalTime", "touniversaltime"] {
+        emit_bind_method(&mut chunks[current], obj_slot, name, method_idx, line);
+    }
 }
 
 fn bind_datetime_date_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
@@ -1414,7 +1477,13 @@ pub fn emit_datetime_parse_exact(chunks: &mut Vec<Chunk>, current: usize, argc: 
 fn emit_timespan_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = string_key(chunk, "TotalMilliseconds");
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("TotalMilliseconds"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("TotalMilliseconds"),
+        Dest::Stack,
+        line,
+    );
 }
 
 fn bind_datetimeoffset_roles(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
@@ -1911,12 +1980,7 @@ fn emit_offset_text_from_slot(chunk: &mut Chunk, offset_ms_slot: u16, line: u32)
 /// The offset object carries `Year`/`Month`/… and `__offset_ms`, which is all
 /// `zzz` needs, so there is no second implementation to keep in step. Its
 /// no-format rendering is .NET's general pattern plus the offset.
-pub fn emit_datetimeoffset_to_string(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_datetimeoffset_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     {
         let chunk = &mut chunks[current];
         let obj_slot = chunk.alloc_scratch(2);

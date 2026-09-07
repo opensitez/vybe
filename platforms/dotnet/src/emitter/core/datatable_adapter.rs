@@ -58,9 +58,7 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     class_slots::emit_class_construct(
         chunk,
         "DataTable",
-        &[
-            (field_slot("tablename"), ValueSource::Local(name_slot)),
-        ],
+        &[(field_slot("tablename"), ValueSource::Local(name_slot))],
         line,
     );
     set_field(
@@ -89,9 +87,7 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     class_slots::emit_class_construct(
         chunk,
         "DataSet",
-        &[
-            (field_slot("datasetname"), ValueSource::Local(name_slot)),
-        ],
+        &[(field_slot("datasetname"), ValueSource::Local(name_slot))],
         line,
     );
     set_field(

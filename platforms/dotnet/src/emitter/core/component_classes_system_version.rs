@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![DotnetClassExport::new(
@@ -13,6 +13,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "Parse",
                 1,
                 MethodBody::Common("dotnet.version_parse".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "TryParse",
+                1,
+                MethodBody::Common("dotnet.version_try_parse".into()),
             ))
             .with_method(MethodDef::static_method(
                 "TryParse",
@@ -64,6 +69,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "Clone",
                 0,
                 MethodBody::Common("dotnet.version_clone".into()),
+            ))
+            .with_method(MethodDef::new(
+                "GetHashCode",
+                0,
+                MethodBody::Common("dotnet.version_hash_code".into()),
             ))
             .with_method(MethodDef::new(
                 "Equals",

@@ -53,13 +53,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn struct_get(chunk: &mut Chunk, object_local: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 fn struct_set_from_local(chunk: &mut Chunk, object_local: u16, key: &str, value: u16, line: u32) {
@@ -99,9 +93,7 @@ pub fn emit_bindingsource_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     class_slots::emit_class_construct(
         chunk,
         "BindingSource",
-        &[
-            (field_slot(POSITION_KEY), ValueSource::ConstF64(0.0)),
-        ],
+        &[(field_slot(POSITION_KEY), ValueSource::ConstF64(0.0))],
         line,
     );
     set_field(

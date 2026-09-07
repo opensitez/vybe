@@ -24,7 +24,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<progress>` — created by the element mapping.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "TrackBar",
             parent: Some("Control"),
@@ -42,7 +43,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<input type="range">`
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "NumericUpDown",
             parent: Some("Control"),
@@ -61,6 +63,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<input type="number">`
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

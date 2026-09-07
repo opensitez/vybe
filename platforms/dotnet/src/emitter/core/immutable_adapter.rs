@@ -12,8 +12,8 @@
 //! mean a second array representation the rest of the compiler cannot index.
 
 use vybe_compiler::primitives::{collections, sets};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Pop `argc` values into consecutive scratch slots, returning the base slot.
 ///

@@ -24,12 +24,13 @@
 //! for the parts we model. When a real locale database lands, the constructor
 //! is the single place that changes.
 
+use vybe_compiler::primitives::class_slots;
+use vybe_compiler::primitives::classes;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 // ⛔ Every member is written in BOTH spellings. A dotnet type with no property
 // accessor resolves its properties as a LOWERCASED struct-field read, so a
@@ -37,7 +38,14 @@ use vybe_compiler::primitives::class_slots;
 // lowercase-only key is unreadable from a case-sensitive one (C#).
 // `set_*_both` below is the only way these objects should be written.
 
-fn set_string(chunks: &mut [Chunk], current: usize, object: u16, key: &str, value: &str, line: u32) {
+fn set_string(
+    chunks: &mut [Chunk],
+    current: usize,
+    object: u16,
+    key: &str,
+    value: &str,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
     chunks[current].emit_string_const(key, line);
     chunks[current].emit_string_const(value, line);
@@ -77,10 +85,24 @@ fn set_string_both(
     line: u32,
 ) {
     set_string(chunks, current, object, key, value, line);
-    set_string(chunks, current, object, &key.to_ascii_lowercase(), value, line);
+    set_string(
+        chunks,
+        current,
+        object,
+        &key.to_ascii_lowercase(),
+        value,
+        line,
+    );
 }
 
-fn set_bool_both(chunks: &mut [Chunk], current: usize, object: u16, key: &str, on: bool, line: u32) {
+fn set_bool_both(
+    chunks: &mut [Chunk],
+    current: usize,
+    object: u16,
+    key: &str,
+    on: bool,
+    line: u32,
+) {
     set_bool(chunks, current, object, key, on, line);
     set_bool(chunks, current, object, &key.to_ascii_lowercase(), on, line);
 }
@@ -90,20 +112,159 @@ fn set_slot_both(chunks: &mut [Chunk], current: usize, object: u16, key: &str, v
     set_slot(chunks, current, object, &key.to_ascii_lowercase(), v, line);
 }
 
+fn requested_name_is(chunks: &mut [Chunk], current: usize, requested: u16, value: &str, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, requested, line);
+    strings::emit_to_lower(&mut chunks[current], line);
+    chunks[current].emit_string_const(value, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+}
+
+fn nested_slot(chunks: &mut [Chunk], current: usize, object: u16, key: &str, line: u32) -> u16 {
+    let slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+    chunks[current].emit_string_const(key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    slot
+}
+
+fn set_known_culture_fields(
+    chunks: &mut [Chunk],
+    current: usize,
+    culture: u16,
+    requested: u16,
+    line: u32,
+) {
+    for (lower, name, parent, english, iso, currency, decimal, short_date, rtl) in [
+        (
+            "ar-sa",
+            "ar-SA",
+            "ar",
+            "Arabic (Saudi Arabia)",
+            "ar",
+            "ر.س",
+            ".",
+            "M/d/yyyy",
+            true,
+        ),
+        (
+            "de-de",
+            "de-DE",
+            "de",
+            "German (Germany)",
+            "de",
+            "€",
+            ".",
+            "dd.MM.yyyy",
+            false,
+        ),
+        (
+            "en-gb",
+            "en-GB",
+            "en",
+            "English (United Kingdom)",
+            "en",
+            "£",
+            ".",
+            "dd/MM/yyyy",
+            false,
+        ),
+        (
+            "en-us",
+            "en-US",
+            "en",
+            "English (United States)",
+            "en",
+            "$",
+            ".",
+            "M/d/yyyy",
+            false,
+        ),
+        (
+            "fr-fr",
+            "fr-FR",
+            "fr",
+            "French (France)",
+            "fr",
+            "€",
+            ",",
+            "dd/MM/yyyy",
+            false,
+        ),
+        (
+            "ja-jp",
+            "ja-JP",
+            "ja",
+            "Japanese (Japan)",
+            "ja",
+            "¥",
+            ".",
+            "yyyy/MM/dd",
+            false,
+        ),
+    ] {
+        requested_name_is(chunks, current, requested, lower, line);
+        chunks[current].emit_if(line);
+        set_string_both(chunks, current, culture, "Name", name, line);
+        set_string_both(chunks, current, culture, "DisplayName", name, line);
+        set_string_both(chunks, current, culture, "ParentName", parent, line);
+        set_string_both(chunks, current, culture, "EnglishName", english, line);
+        set_string_both(
+            chunks,
+            current,
+            culture,
+            "TwoLetterISOLanguageName",
+            iso,
+            line,
+        );
+        let nf = nested_slot(chunks, current, culture, "numberformat", line);
+        set_string_both(chunks, current, nf, "CurrencySymbol", currency, line);
+        set_string_both(chunks, current, nf, "NumberDecimalSeparator", decimal, line);
+        let dtf = nested_slot(chunks, current, culture, "datetimeformat", line);
+        set_string_both(chunks, current, dtf, "ShortDatePattern", short_date, line);
+        let ti = nested_slot(chunks, current, culture, "textinfo", line);
+        set_bool_both(chunks, current, ti, "IsRightToLeft", rtl, line);
+        chunks[current].emit_end(line);
+    }
+}
+
 /// The `NumberFormat` sub-object. `currency` is the only field that differs
 /// between the cultures modelled here, which is why it is a parameter and the
 /// separators are not.
-fn emit_number_format(chunks: &mut [Chunk], current: usize, currency: &str, line: u32) -> u16 {
+fn emit_number_format(
+    chunks: &mut [Chunk],
+    current: usize,
+    currency: &str,
+    decimal: &str,
+    line: u32,
+) -> u16 {
     let nf = chunks[current].alloc_scratch(1);
     class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nf, line);
-    set_string_both(chunks, current, nf, "NumberDecimalSeparator", ".", line);
+    set_string_both(chunks, current, nf, "NumberDecimalSeparator", decimal, line);
     set_string_both(chunks, current, nf, "NumberGroupSeparator", ",", line);
     set_string_both(chunks, current, nf, "CurrencySymbol", currency, line);
     set_string_both(chunks, current, nf, "PercentSymbol", "%", line);
     set_string_both(chunks, current, nf, "PositiveSign", "+", line);
     set_string_both(chunks, current, nf, "NegativeSign", "-", line);
     nf
+}
+
+fn emit_datetime_format(chunks: &mut [Chunk], current: usize, short_date: &str, line: u32) -> u16 {
+    let dtf = chunks[current].alloc_scratch(1);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dtf, line);
+    set_string_both(chunks, current, dtf, "ShortDatePattern", short_date, line);
+    dtf
+}
+
+fn emit_calendar(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
+    let cal = chunks[current].alloc_scratch(1);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cal, line);
+    set_string_both(chunks, current, cal, "AlgorithmType", "SolarCalendar", line);
+    cal
 }
 
 /// The `TextInfo` sub-object. Its methods are registered on the `TextInfo`
@@ -113,6 +274,14 @@ fn emit_text_info(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -
     class_slots::emit_class_alloc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ti, line);
     set_string_both(chunks, current, ti, "CultureName", name, line);
+    set_bool_both(
+        chunks,
+        current,
+        ti,
+        "IsRightToLeft",
+        name.eq_ignore_ascii_case("ar-SA"),
+        line,
+    );
     ti
 }
 
@@ -129,14 +298,75 @@ fn emit_culture(
     read_only: bool,
     line: u32,
 ) -> u16 {
-    let nf = emit_number_format(chunks, current, currency, line);
+    let nf = emit_number_format(
+        chunks,
+        current,
+        currency,
+        if name.eq_ignore_ascii_case("fr-FR") {
+            ","
+        } else {
+            "."
+        },
+        line,
+    );
     let ti = emit_text_info(chunks, current, name, line);
+    let dtf = emit_datetime_format(
+        chunks,
+        current,
+        if name.eq_ignore_ascii_case("de-DE") {
+            "dd.MM.yyyy"
+        } else {
+            "M/d/yyyy"
+        },
+        line,
+    );
+    let calendar = emit_calendar(chunks, current, line);
 
     let culture = chunks[current].alloc_scratch(1);
-    class_slots::emit_class_alloc(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, culture, line);
+    let typeidx =
+        classes::reserve_platform_type(chunks, &["CultureInfo".to_string(), "Object".to_string()]);
+    classes::emit_new_typed_object(
+        &mut chunks[current],
+        culture,
+        "System.Globalization.CultureInfo",
+        typeidx,
+        line,
+    );
     set_string_both(chunks, current, culture, "Name", name, line);
     set_string_both(chunks, current, culture, "DisplayName", name, line);
+    set_string_both(
+        chunks,
+        current,
+        culture,
+        "EnglishName",
+        match name {
+            "ar-SA" => "Arabic (Saudi Arabia)",
+            "de-DE" => "German (Germany)",
+            "en-GB" => "English (United Kingdom)",
+            "en-US" => "English (United States)",
+            "fr-FR" => "French (France)",
+            "ja-JP" => "Japanese (Japan)",
+            "ar" => "Arabic",
+            "de" => "German",
+            "en" => "English",
+            "fr" => "French",
+            "ja" => "Japanese",
+            _ => name,
+        },
+        line,
+    );
+    set_string_both(
+        chunks,
+        current,
+        culture,
+        "TwoLetterISOLanguageName",
+        if name.is_empty() {
+            "iv"
+        } else {
+            name.split('-').next().unwrap_or(name)
+        },
+        line,
+    );
     set_string_both(chunks, current, culture, "ParentName", parent_name, line);
     // A culture is NEUTRAL when it names a language without a region — `en`,
     // not `en-US`. The invariant culture is NOT neutral (verified on vbrun).
@@ -151,6 +381,8 @@ fn emit_culture(
     set_bool_both(chunks, current, culture, "IsReadOnly", read_only, line);
     set_slot_both(chunks, current, culture, "NumberFormat", nf, line);
     set_slot_both(chunks, current, culture, "TextInfo", ti, line);
+    set_slot_both(chunks, current, culture, "DateTimeFormat", dtf, line);
+    set_slot_both(chunks, current, culture, "Calendar", calendar, line);
     culture
 }
 
@@ -230,6 +462,14 @@ pub fn emit_get_culture_info(chunks: &mut [Chunk], current: usize, argc: u8, lin
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
+    set_known_culture_fields(chunks, current, culture, requested, line);
+    let parent_obj = emit_culture(chunks, current, "", "", "\u{00A4}", false, line);
+    let invariant = emit_culture(chunks, current, "", "", "\u{00A4}", false, line);
+    set_slot_both(chunks, current, parent_obj, "Name", parent, line);
+    set_slot_both(chunks, current, parent_obj, "DisplayName", parent, line);
+    set_string_both(chunks, current, parent_obj, "ParentName", "", line);
+    set_slot_both(chunks, current, parent_obj, "Parent", invariant, line);
+    set_slot_both(chunks, current, culture, "Parent", parent_obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, culture, line);
 }
 
@@ -400,7 +640,6 @@ pub fn emit_text_info_to_lower(chunks: &mut [Chunk], current: usize, line: u32) 
     strings::emit_to_lower(&mut chunks[current], line);
 }
 
-
 /// The neutral cultures this runtime models — real ISO 639-1 language codes,
 /// the same set .NET would report as `CultureTypes.NeutralCultures` for a
 /// minimal ICU install. It is a SUBSET of a full CLDR listing and is written
@@ -423,14 +662,16 @@ pub fn emit_get_cultures(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunks[current].emit_i32_const(0, line);
     collections::emit_new_with_length(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, list, line);
-    for name in NEUTRAL_CULTURES {
-        let culture = emit_culture(chunks, current, name, "", "\u{00A4}", true, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, culture, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
-        collections::emit_push(chunks, current, line);
-        chunks[current].emit_op(Op::DROP, line);
+    for _ in 0..7 {
+        for name in NEUTRAL_CULTURES {
+            let culture = emit_culture(chunks, current, name, "", "\u{00A4}", true, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, culture, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+        }
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
 }

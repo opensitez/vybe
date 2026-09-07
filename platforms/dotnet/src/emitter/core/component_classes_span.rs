@@ -12,7 +12,9 @@
 //! array, so they resolve without help.
 
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 /// Members shared by every span/memory shape, as `(name, arity, module, func)`.
 ///
@@ -83,7 +85,9 @@ fn view_class(name: &'static str) -> ClassType {
     // sub-range. A class carries ONE constructor slot and the emit passes the
     // real argument count, so both arities share a single argc-branching
     // adapter rather than two `ConstructorDef`s.
-    class = class.with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.span_ctor"));
+    class = class
+        .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.span_ctor"))
+        .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.span_ctor"));
     class
 }
 
@@ -129,6 +133,13 @@ fn memory_class(name: &'static str) -> ClassType {
         ));
     }
     class
+        .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.span_ctor"))
+        .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.span_ctor"))
+        .with_method(MethodDef::static_method(
+            "Empty",
+            0,
+            MethodBody::Common("dotnet.memory_empty".into()),
+        ))
         .with_method(MethodDef::new(
             "Span",
             0,
@@ -138,6 +149,16 @@ fn memory_class(name: &'static str) -> ClassType {
             "ToString",
             0,
             MethodBody::Common("dotnet.memory_to_string".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Equals",
+            1,
+            MethodBody::Common("collections.sequence_equal".into()),
+        ))
+        .with_method(MethodDef::new(
+            "GetHashCode",
+            0,
+            MethodBody::Common("object.hash_array".into()),
         ))
 }
 
@@ -232,6 +253,21 @@ fn memory_extensions_class() -> ClassType {
             "TrimEnd",
             2,
             MethodBody::Common("dotnet.span_trim_end".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "AsMemory",
+            1,
+            MethodBody::Common("dotnet.as_memory".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "AsMemory",
+            2,
+            MethodBody::Common("dotnet.as_memory".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "AsMemory",
+            3,
+            MethodBody::Common("dotnet.as_memory".into()),
         ))
         .with_method(MethodDef::static_method(
             "AsSpan",
@@ -356,131 +392,131 @@ fn array_pool_class() -> ClassType {
 /// and only a leaf answers a dotted path.
 pub fn binary_primitives_class() -> ClassType {
     ClassType::new("BinaryPrimitives")
-                .with_method(MethodDef::static_method(
-                    "ReadInt16LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i16_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadInt16BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i16_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt16LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u16_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt16BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u16_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadInt32LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i32_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadInt32BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i32_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt32LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u32_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt32BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u32_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadInt64LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i64_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadInt64BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_i64_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt64LittleEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u64_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReadUInt64BigEndian",
-                    1,
-                    MethodBody::Common("dotnet.binprim_read_u64_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt16LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i16_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt16BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i16_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt16LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u16_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt16BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u16_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt32LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i32_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt32BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i32_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt32LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u32_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt32BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u32_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt64LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i64_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteInt64BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_i64_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt64LittleEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u64_le".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "WriteUInt64BigEndian",
-                    2,
-                    MethodBody::Common("dotnet.binprim_write_u64_be".into()),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ReverseEndianness",
-                    1,
-                    MethodBody::Common("dotnet.binprim_reverse_i32".into()),
-                ))
+        .with_method(MethodDef::static_method(
+            "ReadInt16LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i16_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadInt16BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i16_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt16LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u16_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt16BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u16_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadInt32LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i32_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadInt32BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i32_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt32LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u32_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt32BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u32_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadInt64LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i64_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadInt64BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_i64_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt64LittleEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u64_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReadUInt64BigEndian",
+            1,
+            MethodBody::Common("dotnet.binprim_read_u64_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt16LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i16_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt16BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i16_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt16LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u16_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt16BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u16_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt32LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i32_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt32BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i32_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt32LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u32_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt32BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u32_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt64LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i64_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteInt64BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_i64_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt64LittleEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u64_le".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "WriteUInt64BigEndian",
+            2,
+            MethodBody::Common("dotnet.binprim_write_u64_be".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ReverseEndianness",
+            1,
+            MethodBody::Common("dotnet.binprim_reverse_i32".into()),
+        ))
 }
 
 fn memory_pool_class() -> ClassType {

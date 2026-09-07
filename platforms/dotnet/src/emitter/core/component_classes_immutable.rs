@@ -13,7 +13,7 @@
 //! `Count`, indexer, and iteration path for no observable gain.
 
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, HostTarget, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, HostTarget, MethodBody, MethodDef};
 
 const IFACE: &'static str = "dotnet.System.Collections.Immutable";
 
@@ -37,7 +37,11 @@ fn inst(name: &'static str, argc: u8, common: &'static str) -> MethodDef {
 /// container, so `ContainsKey` must not acquire a second implementation that
 /// can drift from the first — only the members that COPY are new.
 fn inst_host(name: &'static str, argc: u8, iface: &'static str, func: &'static str) -> MethodDef {
-    MethodDef::new(name, argc, MethodBody::HostCall(HostTarget::new(iface, func)))
+    MethodDef::new(
+        name,
+        argc,
+        MethodBody::HostCall(HostTarget::new(iface, func)),
+    )
 }
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {

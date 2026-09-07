@@ -119,5 +119,6 @@ pub fn classes() -> &'static [DotnetClass] {
         // element-backed control and answers `dotnet.self` — a form's children
         // ARE its element's children — so the factory has nothing left to
         // provide.
-        widget_host_fn: None,    }]
+        widget_host_fn: None,
+    }]
 }

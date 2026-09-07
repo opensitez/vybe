@@ -98,7 +98,8 @@ pub fn normalize_class(
                 }
 
                 let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
-                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
+                let special_kind =
+                    resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
@@ -184,7 +185,11 @@ pub fn normalize_class(
                     is_static: m.is_static || m.is_shared,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                    auto_field: if *is_auto && !m.is_abstract {
+                        Some(pname.clone())
+                    } else {
+                        None
+                    },
                 });
             }
             // VB.NET has single inheritance plus interfaces and no trait/mixin

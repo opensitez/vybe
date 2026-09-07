@@ -2,6 +2,22 @@ use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
+        exception_name,
+        message,
+        line,
+    );
+}
+
 fn stash_two(chunk: &mut Chunk, line: u32) -> (u16, u16) {
     let first = chunk.alloc_scratch(2);
     let second = first + 1;
@@ -42,7 +58,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(to_f64, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, number_slot, line);
 
-    // ⛔ THIS USED TO EMIT `[value, 0, 0, 0]` — the whole number in element 0
+    // This used to emit `[value, 0, 0, 0]` -- the whole number in element 0
     // with zero padding, not its BYTES. It round-tripped only because the
     // reader was the matching stub (one `ARRAY_GET` at element 0), so the two
     // wrongs cancelled and `GetBytes(300)(0)` answered 300 instead of 44.
@@ -51,7 +67,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_FLOOR, line);
     chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
     chunk.emit_op(Op::F64_NE, line);
-    // ⛔ MAGNITUDE, not value: `-9e18` is not `> i32::MAX`, so a bare `>` test
+    // Magnitude, not value: `-9e18` is not `> i32::MAX`, so a bare `>` test
     // sent it down the 4-byte lane and threw the top bytes away.
     chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
     chunk.emit_op(Op::F64_ABS, line);
@@ -59,11 +75,11 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if_value(line);
-    // ⚠ THE 64-BIT / DOUBLE LANE IS STILL A PAIRED STUB: the value itself in
+    // The 64-bit / Double lane is still a paired stub: the value itself in
     // element 0, zero-padded, read back by `emit_to_number64`. A real encoding
     // needs the IEEE-754 bit pattern (`bits::emit_reinterpret` to `I64`) for a
     // Double and true 8-byte integer bytes for a Long, and the two cannot be
-    // told apart here — `GetBytes` picks its overload from the argument's
+    // told apart here: `GetBytes` picks its overload from the argument's
     // STATIC type in .NET, and this adapter sees only a runtime f64. Converting
     // one side alone regresses the round-trips (measured: 7 tests, including
     // csharp `bit_converter_double_bytes_reconstruct_original_fraction`).
@@ -79,10 +95,39 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
-/// The 64-bit/double reader — the OTHER half of the stub above. Reads element
+pub fn emit_get_bytes_half(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
+}
+
+pub fn emit_get_bytes_char(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value_slot = chunk.alloc_scratch(1);
+    let code_slot = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(0, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+    chunk.emit_i32_const(255, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+    chunk.emit_i32_const(8, line);
+    chunk.emit_op(Op::I32_SHR_U, line);
+    chunk.emit_i32_const(255, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_array_new_fixed(0, 2, line);
+}
+
+/// The 64-bit/double reader -- the other half of the stub above. Reads element
 /// `startIndex` whole, because that is where its writer put the value.
-pub fn emit_to_number64(chunks: &mut [Chunk], current: usize, line: u32) {
-    let (bytes_slot, offset_slot) = stash_two(&mut chunks[current], line);
+pub fn emit_to_number64(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (bytes_slot, offset_slot) = stash_bytes_offset(&mut chunks[current], argc, line);
+    emit_throw_if_null(chunks, current, bytes_slot, line);
+    emit_throw_if_read_out_of_range(chunks, current, bytes_slot, offset_slot, 8, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
@@ -107,7 +152,7 @@ fn emit_bytes_of_width(
     chunks[current].emit_array_new_fixed(0, width as u16, line);
     let array_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
-    // ⛔ The packing stores narrow with `I32_TRUNC_F64_U`, which TRAPS on a
+    // The packing stores narrow with `I32_TRUNC_F64_U`, which traps on a
     // negative. Two's complement IS the unsigned value `2^32 + n`, so
     // normalising here is both what the encoding means and what keeps the
     // shared helper total.
@@ -163,20 +208,82 @@ fn emit_bytes_of_width(
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
 }
 
-/// `BitConverter.To*(bytes, startIndex)` — the shared little-endian byte
+/// `BitConverter.To*(bytes, startIndex)` -- the shared little-endian byte
 /// decode from [`packing`], which already owns this for Lua `string.unpack`,
 /// PHP `unpack` and Ruby `String#unpack`.
 ///
-/// ⛔ `width` BYTES, not one. Reading a single `ARRAY_GET` at `startIndex` is
+/// `width` bytes, not one. Reading a single `ARRAY_GET` at `startIndex` is
 /// the low byte only: it answers correctly for any value under 256 and silently
 /// truncates everything else, which is why `ToInt32` looked fine on small
 /// numbers. .NET fixes the width per method name, so each leaf states its own.
 ///
 /// `startIndex` is a runtime value while the packing helpers index from 0, so
-/// the window is sliced first — one `ecma:array.slice`, on arrays of 2 to 8
+/// the window is sliced first: one `ecma:array.slice`, on arrays of 2 to 8
 /// bytes.
-fn emit_to_width(chunks: &mut [Chunk], current: usize, width: i32, line: u32) {
-    let (bytes_slot, offset_slot) = stash_two(&mut chunks[current], line);
+fn stash_bytes_offset(chunk: &mut Chunk, argc: u8, line: u32) -> (u16, u16) {
+    if argc <= 1 {
+        let base = chunk.alloc_scratch(2);
+        let offset = base + 1;
+        chunk.emit_op_u16(Op::LOCAL_SET, base, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, offset, line);
+        (base, offset)
+    } else {
+        stash_two(chunk, line)
+    }
+}
+
+fn emit_throw_if_null(chunks: &mut [Chunk], current: usize, bytes_slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "ArgumentNullException",
+        "Value cannot be null.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+fn emit_throw_if_read_out_of_range(
+    chunks: &mut [Chunk],
+    current: usize,
+    bytes_slot: u16,
+    offset_slot: u16,
+    width: i32,
+    line: u32,
+) {
+    let len_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_i32_const(width, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "ArgumentException",
+        "Destination array is not long enough.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+fn emit_to_width(chunks: &mut [Chunk], current: usize, argc: u8, width: i32, line: u32) {
+    let (bytes_slot, offset_slot) = stash_bytes_offset(&mut chunks[current], argc, line);
+    emit_throw_if_null(chunks, current, bytes_slot, line);
+    emit_throw_if_read_out_of_range(chunks, current, bytes_slot, offset_slot, width, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
@@ -214,31 +321,33 @@ fn emit_sign_extend(chunks: &mut [Chunk], current: usize, bits: i32, line: u32) 
     chunks[current].emit_end(line);
 }
 
-/// `ToUInt32` — a four-byte window, unsigned.
-pub fn emit_to_number(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_to_width(chunks, current, 4, line);
+/// `ToUInt32` -- a four-byte window, unsigned.
+pub fn emit_to_number(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_to_width(chunks, current, argc, 4, line);
 }
 
-/// `ToInt32` — the same window, two's-complement.
-pub fn emit_to_int32(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_to_width(chunks, current, 4, line);
+/// `ToInt32` -- the same window, two's-complement.
+pub fn emit_to_int32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_to_width(chunks, current, argc, 4, line);
     emit_sign_extend(chunks, current, 32, line);
 }
 
-/// `ToUInt16`/`ToChar` — a two-byte window, unsigned.
-pub fn emit_to_number16(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_to_width(chunks, current, 2, line);
+/// `ToUInt16`/`ToChar` -- a two-byte window, unsigned.
+pub fn emit_to_number16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_to_width(chunks, current, argc, 2, line);
 }
 
-/// `ToInt16` — the same window, two's-complement.
-pub fn emit_to_int16(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_to_width(chunks, current, 2, line);
+/// `ToInt16` -- the same window, two's-complement.
+pub fn emit_to_int16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_to_width(chunks, current, argc, 2, line);
     emit_sign_extend(chunks, current, 16, line);
 }
 
-/// `ToBoolean` reads ONE byte — .NET defines it as "nonzero at startIndex".
-pub fn emit_to_boolean(chunks: &mut [Chunk], current: usize, line: u32) {
-    let (bytes_slot, offset_slot) = stash_two(&mut chunks[current], line);
+/// `ToBoolean` reads one byte; .NET defines it as "nonzero at startIndex".
+pub fn emit_to_boolean(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (bytes_slot, offset_slot) = stash_bytes_offset(&mut chunks[current], argc, line);
+    emit_throw_if_null(chunks, current, bytes_slot, line);
+    emit_throw_if_read_out_of_range(chunks, current, bytes_slot, offset_slot, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
     vybe_compiler::primitives::collections::emit_get(chunks, current, line);
@@ -248,23 +357,66 @@ pub fn emit_to_boolean(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// A .NET `Char` is UTF-16: TWO bytes, not one.
-pub fn emit_to_char(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_to_number16(chunks, current, line);
-    host::emit(&mut chunks[current], "ecma:string", "fromCharCode", 1, line);
+pub fn emit_to_char(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_to_width(chunks, current, argc, 2, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "fromCharCode",
+        1,
+        line,
+    );
 }
 
-pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let bytes_slot = chunk.alloc_scratch(5);
+    let bytes_slot = chunk.alloc_scratch(7);
     let len_slot = bytes_slot + 1;
     let i_slot = bytes_slot + 2;
     let result_slot = bytes_slot + 3;
     let part_slot = bytes_slot + 4;
+    let start_slot = bytes_slot + 5;
+    let count_slot = bytes_slot + 6;
 
-    chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    match argc {
+        3 => {
+            chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+            vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+            host::emit(chunk, "ecma:array", "slice", 3, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+        }
+        2 => {
+            chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+            chunk.emit_op(Op::ARRAY_LENGTH, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+            chunk.emit_op(Op::I32_SUB, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+            chunk.emit_op(Op::ARRAY_LENGTH, line);
+            host::emit(chunk, "ecma:array", "slice", 3, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+        }
+        _ => {
+            chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+            chunk.emit_op(Op::ARRAY_LENGTH, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+        }
+    }
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_i32_const(0, line);
@@ -366,15 +518,42 @@ pub fn emit_block_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
+pub fn emit_to_half(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (bytes_slot, offset_slot) = stash_bytes_offset(&mut chunks[current], argc, line);
+    emit_throw_if_null(chunks, current, bytes_slot, line);
+    emit_throw_if_read_out_of_range(chunks, current, bytes_slot, offset_slot, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+}
+
+pub fn emit_try_write_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(3);
+    let dest_slot = value_slot + 1;
+    let bytes_slot = value_slot + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dest_slot, line);
+    emit_bytes_of_width(chunks, current, value_slot, 4, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dest_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_i32_const(4, line);
+    emit_block_copy(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+}
+
 pub fn emit_is_little_endian(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::bool_const(&mut chunks[current], line, true);
 }
 
-// ── Bit reinterpretation ────────────────────────────────────────────────────
+// Bit reinterpretation
 //
 // `System.BitConverter`'s bit-cast family. These lower to the SAME shared
-// emitter the AST's `UnaryOp::Reinterpret` uses — the node Fortran's `TRANSFER`,
-// Go's `Float32bits` and Java's `floatToIntBits` all reach — so the concept
+// emitter the AST's `UnaryOp::Reinterpret` uses -- the node Fortran's `TRANSFER`,
+// Go's `Float32bits` and Java's `floatToIntBits` all reach -- so the concept
 // stays unified while the .NET SPELLING lives here, in the platform that owns
 // `System.*`, rather than in a language walker.
 //

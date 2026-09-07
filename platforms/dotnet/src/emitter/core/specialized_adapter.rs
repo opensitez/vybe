@@ -6,8 +6,8 @@
 //! map and a read-only wrapper IS its wrapped collection.
 
 use vybe_compiler::primitives::{callable, collections, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Where a `PriorityQueue` parks its comparer.
 ///
@@ -195,10 +195,14 @@ fn emit_find_min_index(chunks: &mut [Chunk], current: usize, recv: u16, line: u3
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     // A `Comparer<T>.Create(fn)` IS `fn`, so the comparer is invoked directly.
+    // ⛔ `a` IS DATA, NOT THE RECEIVER — a comparator is a plain callback, so
+    // its receiver is argument 0 (`undefined`, §10.2.1.1).
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     get(chunks, current, cmp, line);
+    let __recv = callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     get(chunks, current, a, line);
     get(chunks, current, b, line);
-    callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_i32_const(0, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -233,7 +237,7 @@ pub fn emit_priority_queue_peek(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    emit_empty_queue_throw(chunks, current, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
     get(chunks, current, best, line);
@@ -241,6 +245,26 @@ pub fn emit_priority_queue_peek(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_i32_const(0, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_end(line);
+}
+
+/// `Peek` and `Dequeue` on an EMPTY queue raise `InvalidOperationException` in
+/// .NET rather than answering the element type's default.
+fn emit_empty_queue_throw(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
+        "InvalidOperationException",
+        vybe_compiler::primitives::class_slots::ValueSource::ConstStr(
+            "The queue is empty.".to_string(),
+        ),
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
+        &mut chunks[current],
+        "InvalidOperationException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
 }
 
 /// `pq.Dequeue()` — the minimum-priority element, REMOVED.
@@ -253,8 +277,7 @@ pub fn emit_priority_queue_dequeue(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_empty_queue_throw(chunks, current, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
     get(chunks, current, best, line);
@@ -283,6 +306,153 @@ pub fn emit_priority_queue_clear(chunks: &mut [Chunk], current: usize, line: u32
     collections::emit_clear(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `pq.UnorderedItems` — the `[element, priority]` pairs in storage order.
+/// A copy: enumerating the queue must not expose the array a later `Dequeue`
+/// mutates.
+pub fn emit_priority_queue_unordered_items(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_clone(chunks, current, line);
+}
+
+/// `pq.EnsureCapacity(n)` — an array grows on demand, so the capacity a caller
+/// asks for is already available. .NET answers the capacity it settled on,
+/// which is never below the request.
+pub fn emit_priority_queue_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash(chunks, current, 2, line);
+    get(chunks, current, base + 1, line);
+}
+
+/// `pq.TrimExcess()` — nothing to release; an array holds no slack this
+/// backing can see.
+pub fn emit_priority_queue_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// One half of a `(element, priority)` pair from `EnqueueRange`.
+///
+/// The pairs arrive as `Tuple`/`ValueTuple` objects, whose halves are named
+/// `Item1`/`Item2`, or as two-element arrays. Reading the name first and
+/// falling back to the index covers both without a type test.
+fn emit_pair_part(chunks: &mut [Chunk], current: usize, pair: u16, index: i32, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    get(chunks, current, pair, line);
+    chunks[current].emit_string_const(&format!("Item{}", index + 1), line);
+    let obj_get = chunks[current].add_import("ecma:object", "get");
+    chunks[current].emit_call(obj_get, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    get(chunks, current, value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, pair, line);
+    chunks[current].emit_i32_const(index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, value, line);
+    chunks[current].emit_end(line);
+}
+
+/// `pq.EnqueueRange(pairs)` — one `Enqueue` per `(element, priority)` pair.
+pub fn emit_priority_queue_enqueue_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash(chunks, current, 2, line);
+    let (recv, pairs) = (base, base + 1);
+    let cursor = chunks[current].alloc_scratch(2);
+    let pair = cursor + 1;
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cursor, line);
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    get(chunks, current, cursor, line);
+    get(chunks, current, pairs, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    get(chunks, current, pairs, line);
+    get(chunks, current, cursor, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+
+    get(chunks, current, recv, line);
+    emit_pair_part(chunks, current, pair, 0, line);
+    emit_pair_part(chunks, current, pair, 1, line);
+    collections::emit_array_new(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(chunks, current, cursor, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `pq.TryDequeue(out element, out priority)` / `pq.TryPeek(…)` — a BOOL
+/// answer, with both halves of the minimum pair written through the
+/// out-parameters and nothing written when the queue is empty.
+/// Stack: `[recv, element_ref, priority_ref]` → `[bool]`.
+pub fn emit_priority_queue_try_out(chunks: &mut [Chunk], current: usize, remove: bool, line: u32) {
+    let base = stash(chunks, current, 3, line);
+    let (recv, element_cell, priority_cell) = (base, base + 1, base + 2);
+    let best = emit_find_min_index(chunks, current, recv, line);
+    let pair = chunks[current].alloc_scratch(2);
+    let part = pair + 1;
+
+    get(chunks, current, best, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_else(line);
+
+    get(chunks, current, recv, line);
+    get(chunks, current, best, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+
+    for (index, cell) in [(0, element_cell), (1, priority_cell)] {
+        get(chunks, current, pair, line);
+        chunks[current].emit_i32_const(index, line);
+        collections::emit_get(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, part, line);
+        get(chunks, current, cell, line);
+        vybe_compiler::primitives::references::emit_cell_store(chunks, current, part, line);
+    }
+
+    if remove {
+        get(chunks, current, recv, line);
+        get(chunks, current, best, line);
+        collections::emit_remove_at(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_end(line);
+}
+
+/// `pq.EnqueueDequeue(element, priority)` — enqueue, then dequeue. .NET fuses
+/// the two for speed; the answer is the same as doing them in order.
+pub fn emit_priority_queue_enqueue_dequeue(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash(chunks, current, 3, line);
+    let (recv, element, priority) = (base, base + 1, base + 2);
+
+    get(chunks, current, recv, line);
+    get(chunks, current, element, line);
+    get(chunks, current, priority, line);
+    collections::emit_array_new(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(chunks, current, recv, line);
+    emit_priority_queue_dequeue(chunks, current, line);
 }
 
 // ── NameValueCollection ───────────────────────────────────────────────────

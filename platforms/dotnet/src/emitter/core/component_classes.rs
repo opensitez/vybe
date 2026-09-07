@@ -1,20 +1,22 @@
 use std::sync::LazyLock;
 
 use super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::ClassType;
+use vybe_compiler::component_classes::ClassType;
 
+#[path = "component_classes_cmdlets.rs"]
+mod component_classes_cmdlets;
 #[path = "component_classes_collections.rs"]
 mod component_classes_collections;
+#[path = "component_classes_collections_specialized.rs"]
+mod component_classes_collections_specialized;
 #[path = "component_classes_common.rs"]
 mod component_classes_common;
+#[path = "component_classes_comparer.rs"]
+mod component_classes_comparer;
 #[path = "component_classes_data_drawing.rs"]
 mod component_classes_data_drawing;
 #[path = "component_classes_diagnostics_process.rs"]
 mod component_classes_diagnostics_process;
-#[path = "component_classes_collections_specialized.rs"]
-mod component_classes_collections_specialized;
-#[path = "component_classes_comparer.rs"]
-mod component_classes_comparer;
 #[path = "component_classes_immutable.rs"]
 mod component_classes_immutable;
 #[path = "component_classes_io.rs"]
@@ -54,6 +56,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.push(enumerable);
         exports.push(component_classes_linq::enumerable_static_export());
         exports.extend(component_classes_collections_specialized::exports());
+        exports.extend(component_classes_cmdlets::exports());
         exports.extend(component_classes_comparer::exports());
         exports.extend(component_classes_immutable::exports());
         exports.extend(component_classes_span::exports());
@@ -70,7 +73,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.extend(component_classes_network::exports());
         exports.extend(component_classes_uri::exports());
         exports.extend(component_classes_io::exports());
-            exports.extend(component_classes_xml::exports());
+        exports.extend(component_classes_xml::exports());
         exports
     });
     EXPORTS.as_slice()

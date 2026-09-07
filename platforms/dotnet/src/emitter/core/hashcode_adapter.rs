@@ -36,8 +36,8 @@
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, errors, object, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::object_fields::field_slot;
 
@@ -92,14 +92,7 @@ fn mix_final_step(chunk: &mut Chunk, hash: u16, shift: i32, mul: Option<i32>, li
 }
 
 /// `values[index + offset]` onto the stack.
-fn element(
-    chunks: &mut [Chunk],
-    current: usize,
-    values: u16,
-    index: u16,
-    offset: i32,
-    line: u32,
-) {
+fn element(chunks: &mut [Chunk], current: usize, values: u16, index: u16, offset: i32, line: u32) {
     get(&mut chunks[current], values, line);
     get(&mut chunks[current], index, line);
     if offset != 0 {
@@ -522,13 +515,16 @@ pub fn emit_unsupported(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     // allocated, duplicated, then finalized with its message. Passing only the
     // message produced a throwable whose `GetType().Name` answered `Object` —
     // caught, but not catchable AS `NotSupportedException`.
-    class_slots::emit_class_alloc(&mut chunks[current], line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const(
-        "HashCode is a mutable struct and should not be compared with other HashCodes.",
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
+        "NotSupportedException",
+        class_slots::ValueSource::ConstStr(
+            "HashCode is a mutable struct and should not be compared with other HashCodes."
+                .to_string(),
+        ),
         line,
     );
-    errors::emit_exception_new_finalize(&mut chunks[current], "NotSupportedException", line);
     errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

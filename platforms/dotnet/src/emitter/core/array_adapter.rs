@@ -14,26 +14,33 @@
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
-fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
         exception_name,
-        class_slots::ValueSource::ConstStr(message.to_string()),
+        message,
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 fn emit_index_bounds_check(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     arr_slot: u16,
     index_slot: u16,
     exception_name: &str,
     message: &str,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_i32_const(0, line);
     vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
@@ -44,7 +51,8 @@ fn emit_index_bounds_check(
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    emit_throw_dotnet_exception(chunk, exception_name, message, line);
+    emit_throw_dotnet_exception(chunks, current, exception_name, message, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
@@ -182,11 +190,13 @@ pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentException",
         "Destination array was not long enough.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, src_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, dst_slot, line);
@@ -210,13 +220,15 @@ pub fn emit_array_get_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     emit_index_bounds_check(
-        chunk,
+        chunks,
+        current,
         arr_slot,
         index_slot,
         "IndexOutOfRangeException",
         "Index was outside the bounds of the array.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
@@ -231,13 +243,15 @@ pub fn emit_list_get_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     emit_index_bounds_check(
-        chunk,
+        chunks,
+        current,
         arr_slot,
         index_slot,
         "ArgumentOutOfRangeException",
         "Index was out of range. Must be non-negative and less than the size of the collection.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
@@ -273,11 +287,13 @@ pub fn emit_get_range_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         "Specified argument was out of the range of valid values.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
@@ -296,13 +312,15 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     emit_index_bounds_check(
-        chunk,
+        chunks,
+        current,
         arr_slot,
         index_slot,
         "IndexOutOfRangeException",
         "Index was outside the bounds of the array.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -311,14 +329,18 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// `Array.Resize(arr, newSize)` — extend or truncate `arr` to
-/// `newSize` elements. Lowers to `__vybe_redim` runtime helper.
+/// `newSize` elements.
 ///
 /// Stack on entry: `[arr, newSize]` ; Stack on exit: `[arr]` (the
 /// runtime helper returns the resized array; .NET `Array.Resize`
 /// signature is by-ref but the bytecode propagates the value).
 pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = chunks[current].alloc_scratch(2);
+    let arr_slot = chunks[current].alloc_scratch(6);
     let size_slot = arr_slot + 1;
+    let out_slot = arr_slot + 2;
+    let i_slot = arr_slot + 3;
+    let limit_slot = arr_slot + 4;
+    let old_len_slot = arr_slot + 5;
     chunks[current].emit_op_u16(Op::LOCAL_SET, size_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -327,15 +349,54 @@ pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
     vybe_compiler::primitives::collections::emit_new_with_length(chunks, current, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
-    vybe_compiler::primitives::collections::emit_runtime_helper_call(
-        chunks,
-        current,
-        "__vybe_redim",
-        2,
-        line,
-    );
+    vybe_compiler::primitives::collections::emit_new_with_length(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, old_len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old_len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old_len_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limit_slot, line);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    let done = chunks[current].emit_block(line);
+    let (again, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op(Op::ARRAY_SET, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_end(line);
 }
 
@@ -437,11 +498,17 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = vybe_compiler::primitives::callable::push_callback_from_slot(
+        chunks, current, fn_slot, line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        1 + __recv,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, matched_slot, line);
 
@@ -525,12 +592,19 @@ pub fn emit_array_exists(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = alloc_locals(&mut chunks[current], 4);
     let fn_slot = arr_slot + 1;
     let idx_slot = arr_slot + 2;
-    let _result_slot = arr_slot + 3;
+    let result_slot = arr_slot + 3;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     vybe_compiler::primitives::loops::emit_any_every(
-        chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ true, line,
+        chunks,
+        current,
+        fn_slot,
+        arr_slot,
+        idx_slot,
+        result_slot,
+        /* is_some= */ true,
+        line,
     );
 }
 
@@ -539,12 +613,19 @@ pub fn emit_array_true_for_all(chunks: &mut [Chunk], current: usize, line: u32) 
     let arr_slot = alloc_locals(&mut chunks[current], 4);
     let fn_slot = arr_slot + 1;
     let idx_slot = arr_slot + 2;
-    let _result_slot = arr_slot + 3;
+    let result_slot = arr_slot + 3;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     vybe_compiler::primitives::loops::emit_any_every(
-        chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ false, line,
+        chunks,
+        current,
+        fn_slot,
+        arr_slot,
+        idx_slot,
+        result_slot,
+        /* is_some= */ false,
+        line,
     );
 }
 
@@ -556,6 +637,9 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     let len_slot = arr_slot + 3;
     let elem_slot = arr_slot + 4;
     let result_slot = arr_slot + 5;
+    // Read before the borrow: `module_receiver_abi` reads chunk 0 and the
+    // body below holds `chunks[current]`.
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
@@ -581,8 +665,9 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, __abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + __recv, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
@@ -606,6 +691,9 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Array.FindLast(arr, pred)` → last matching element or the value-type default.
 /// Stack: `[arr, pred]` → `[elem | 0]`.
 pub fn emit_array_find_last(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Read before the borrow: `module_receiver_abi` reads chunk 0 and the
+    // body below holds `chunks[current]`.
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let arr_slot = chunk.alloc_scratch(5);
     let fn_slot = arr_slot + 1;
@@ -638,8 +726,9 @@ pub fn emit_array_find_last(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, __abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + __recv, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
@@ -670,9 +759,11 @@ pub fn emit_array_find_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     vybe_compiler::primitives::loops::emit_filter(
         chunks,
         current,
+        abi,
         fn_slot,
         arr_slot,
         result_slot,
@@ -685,6 +776,9 @@ pub fn emit_array_find_all(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Array.FindIndex(arr[, start[, count]], pred)` — forward predicate search.
 /// Stack: `[arr, pred]`, `[arr, start, pred]`, or `[arr, start, count, pred]`.
 pub fn emit_array_find_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Read before the borrow: `module_receiver_abi` reads chunk 0 and the
+    // body below holds `chunks[current]`.
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let arr_slot = chunk.alloc_scratch(8);
     let fn_slot = arr_slot + 1;
@@ -735,8 +829,9 @@ pub fn emit_array_find_index(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, __abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + __recv, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -758,6 +853,9 @@ pub fn emit_array_find_index(chunks: &mut [Chunk], current: usize, argc: u8, lin
 
 /// `Array.FindLastIndex(arr[, start[, count]], pred)` — reverse predicate search.
 pub fn emit_array_find_last_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Read before the borrow: `module_receiver_abi` reads chunk 0 and the
+    // body below holds `chunks[current]`.
+    let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let arr_slot = chunk.alloc_scratch(8);
     let fn_slot = arr_slot + 1;
@@ -812,8 +910,9 @@ pub fn emit_array_find_last_index(chunks: &mut [Chunk], current: usize, argc: u8
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(chunk, __abi, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + __recv, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);

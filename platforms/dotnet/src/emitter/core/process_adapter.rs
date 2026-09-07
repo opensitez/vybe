@@ -535,8 +535,9 @@ pub fn emit_process_get_by_id(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunks[current].emit_i32_const(0, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentException",
         class_slots::ValueSource::ConstStr("Process not found.".to_string()),
         line,

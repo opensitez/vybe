@@ -265,4 +265,3 @@ pub fn emit_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     chunk.emit_ref_null(heaptype::HT_EXTERN, line);
 }
-

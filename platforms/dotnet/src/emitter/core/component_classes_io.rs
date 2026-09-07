@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 
@@ -8,61 +8,54 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // `MemoryStream` — see `memory_stream_adapter`.
         // `Capacity`/`Length`/`Position`/`CanRead`/`CanWrite`/`CanSeek` are
         // COMPUTED accessors, declared in `tree_register::shared_emit_accessors`.
-        DotnetClassExport::new(
-            "dotnet.System.IO",
-            {
-                let mut ty = ClassType::new("MemoryStream");
-                for argc in [0, 1, 2, 3, 4, 5] {
-                    ty = ty.with_constructor(
-                        ConstructorDef::new(argc).with_common_backing("dotnet.memory_stream_new"),
-                    );
-                }
-                for (name, arity, emit) in [
-                    ("ToArray", 0u8, "dotnet.ms_to_array"),
-                    ("GetBuffer", 0, "dotnet.ms_get_buffer"),
-                    ("TryGetBuffer", 0, "dotnet.ms_try_get_buffer"),
-                    ("WriteByte", 1, "dotnet.ms_write_byte"),
-                    ("ReadByte", 0, "dotnet.ms_read_byte"),
-                    ("Write", 1, "dotnet.ms_write"),
-                    ("Write", 3, "dotnet.ms_write"),
-                    ("Read", 1, "dotnet.ms_read"),
-                    ("Read", 3, "dotnet.ms_read"),
-                    ("Seek", 2, "dotnet.ms_seek"),
-                    ("SetLength", 1, "dotnet.ms_set_length"),
-                    ("WriteTo", 1, "dotnet.ms_write_to"),
-                    ("Close", 0, "dotnet.ms_close"),
-                    ("Dispose", 0, "dotnet.ms_close"),
-                    ("Flush", 0, "dotnet.ms_flush"),
-                    // `CopyTo`/`CopyToAsync` — every arity .NET declares, so
-                    // the buffer-size and cancellation-token overloads resolve
-                    // rather than falling through to nothing.
-                    ("CopyTo", 1, "dotnet.ms_copy_to"),
-                    ("CopyTo", 2, "dotnet.ms_copy_to"),
-                    ("CopyToAsync", 1, "dotnet.ms_copy_to_async"),
-                    ("CopyToAsync", 2, "dotnet.ms_copy_to_async"),
-                    ("CopyToAsync", 3, "dotnet.ms_copy_to_async"),
-                    ("FlushAsync", 0, "dotnet.ms_flush_async"),
-                    ("FlushAsync", 1, "dotnet.ms_flush_async"),
-                    ("DisposeAsync", 0, "dotnet.ms_dispose_async"),
-                    ("WriteAsync", 1, "dotnet.ms_write_async"),
-                    ("WriteAsync", 2, "dotnet.ms_write_async"),
-                    ("WriteAsync", 3, "dotnet.ms_write_async"),
-                    ("WriteAsync", 4, "dotnet.ms_write_async"),
-                    ("ReadAsync", 1, "dotnet.ms_read_async"),
-                    ("ReadAsync", 2, "dotnet.ms_read_async"),
-                    ("ReadAsync", 3, "dotnet.ms_read_async"),
-                    ("ReadAsync", 4, "dotnet.ms_read_async"),
-                    ("CanTimeout", 0, "dotnet.ms_can_timeout"),
-                ] {
-                    ty = ty.with_method(MethodDef::new(
-                        name,
-                        arity,
-                        MethodBody::Common(emit.into()),
-                    ));
-                }
-                ty
-            },
-        ),
+        DotnetClassExport::new("dotnet.System.IO", {
+            let mut ty = ClassType::new("MemoryStream");
+            for argc in [0, 1, 2, 3, 4, 5] {
+                ty = ty.with_constructor(
+                    ConstructorDef::new(argc).with_common_backing("dotnet.memory_stream_new"),
+                );
+            }
+            for (name, arity, emit) in [
+                ("ToArray", 0u8, "dotnet.ms_to_array"),
+                ("GetBuffer", 0, "dotnet.ms_get_buffer"),
+                ("TryGetBuffer", 0, "dotnet.ms_try_get_buffer"),
+                ("WriteByte", 1, "dotnet.ms_write_byte"),
+                ("ReadByte", 0, "dotnet.ms_read_byte"),
+                ("Write", 1, "dotnet.ms_write"),
+                ("Write", 3, "dotnet.ms_write"),
+                ("Read", 1, "dotnet.ms_read"),
+                ("Read", 3, "dotnet.ms_read"),
+                ("Seek", 2, "dotnet.ms_seek"),
+                ("SetLength", 1, "dotnet.ms_set_length"),
+                ("WriteTo", 1, "dotnet.ms_write_to"),
+                ("Close", 0, "dotnet.ms_close"),
+                ("Dispose", 0, "dotnet.ms_close"),
+                ("Flush", 0, "dotnet.ms_flush"),
+                // `CopyTo`/`CopyToAsync` — every arity .NET declares, so
+                // the buffer-size and cancellation-token overloads resolve
+                // rather than falling through to nothing.
+                ("CopyTo", 1, "dotnet.ms_copy_to"),
+                ("CopyTo", 2, "dotnet.ms_copy_to"),
+                ("CopyToAsync", 1, "dotnet.ms_copy_to_async"),
+                ("CopyToAsync", 2, "dotnet.ms_copy_to_async"),
+                ("CopyToAsync", 3, "dotnet.ms_copy_to_async"),
+                ("FlushAsync", 0, "dotnet.ms_flush_async"),
+                ("FlushAsync", 1, "dotnet.ms_flush_async"),
+                ("DisposeAsync", 0, "dotnet.ms_dispose_async"),
+                ("WriteAsync", 1, "dotnet.ms_write_async"),
+                ("WriteAsync", 2, "dotnet.ms_write_async"),
+                ("WriteAsync", 3, "dotnet.ms_write_async"),
+                ("WriteAsync", 4, "dotnet.ms_write_async"),
+                ("ReadAsync", 1, "dotnet.ms_read_async"),
+                ("ReadAsync", 2, "dotnet.ms_read_async"),
+                ("ReadAsync", 3, "dotnet.ms_read_async"),
+                ("ReadAsync", 4, "dotnet.ms_read_async"),
+                ("CanTimeout", 0, "dotnet.ms_can_timeout"),
+            ] {
+                ty = ty.with_method(MethodDef::new(name, arity, MethodBody::Common(emit.into())));
+            }
+            ty
+        }),
         DotnetClassExport::new(
             "dotnet.System.IO",
             ClassType::new("FileStream")
@@ -95,14 +88,8 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.stream_writer_flush".into()),
                 )),
         ),
-        DotnetClassExport::new(
-            "dotnet.System.IO",
-            binary_reader_class(),
-        ),
-        DotnetClassExport::new(
-            "dotnet.System.IO",
-            binary_writer_class(),
-        ),
+        DotnetClassExport::new("dotnet.System.IO", binary_reader_class()),
+        DotnetClassExport::new("dotnet.System.IO", binary_writer_class()),
         DotnetClassExport::new(
             "dotnet.System.IO",
             ClassType::new("StreamReader")
@@ -201,7 +188,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "ReadLineAsync",
                     0,
-                    MethodBody::Common("dotnet.stream_reader_read_line".into()),
+                    MethodBody::Common("dotnet.string_reader_read_line_async".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ReadToEnd",
@@ -357,9 +344,33 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System.IO",
-            ClassType::new("FileInfo").with_constructor(
-                ConstructorDef::new(1).with_common_backing("dotnet.file_info_new"),
-            ),
+            ClassType::new("FileInfo")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.file_info_new"),
+                )
+                .with_field("FullName")
+                .with_field("fullname")
+                .with_field("Name")
+                .with_field("name")
+                .with_field("Extension")
+                .with_field("extension")
+                .with_field("Exists")
+                .with_field("exists")
+                .with_field("Length")
+                .with_field("length"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
+            ClassType::new("DirectoryInfo")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.directory_info_new"),
+                )
+                .with_field("FullName")
+                .with_field("fullname")
+                .with_field("Name")
+                .with_field("name")
+                .with_field("Exists")
+                .with_field("exists"),
         ),
         DotnetClassExport::new(
             "dotnet.System.IO",
@@ -372,7 +383,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "CreateDirectory",
                     1,
-                    MethodBody::Common("filesystem.mkdir".to_string()),
+                    MethodBody::Common("dotnet.directory_create_directory".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Delete",
@@ -400,6 +411,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.directory_get_directories".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "GetParent",
+                    1,
+                    MethodBody::Common("dotnet.directory_get_parent".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "GetCurrentDirectory",
                     0,
                     MethodBody::Common("dotnet.get_current_directory".into()),
@@ -411,7 +427,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 // ⚠The last `node:path` reference on the `Path` class, kept
                 // only because `PropertyDef::getter` accepts a `HostTarget`
                 // and nothing else — there is no `Common` getter, and widening
-                // that enum in `vybe_runtime::component_model` to move one
+                // that enum in `vybe_compiler::component_classes` to move one
                 // constant character is not a trade worth making. Every METHOD
                 // below is now on `primitives::paths`.
                 .with_property(

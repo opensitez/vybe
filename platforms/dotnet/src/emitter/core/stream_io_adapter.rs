@@ -70,17 +70,21 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_throw_object_disposed(chunk: &mut Chunk, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_object_disposed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ObjectDisposedException",
         class_slots::ValueSource::ConstStr("Cannot read from a closed TextReader.".to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
-fn emit_throw_if_disposed(chunk: &mut Chunk, reader_slot: u16, line: u32) {
+fn emit_throw_if_disposed(chunks: &mut [Chunk], current: usize, reader_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
     class_slots::emit_class_get(
         chunk,
         ObjSource::Local(reader_slot),
@@ -89,7 +93,8 @@ fn emit_throw_if_disposed(chunk: &mut Chunk, reader_slot: u16, line: u32) {
         line,
     );
     chunk.emit_if_value(line);
-    emit_throw_object_disposed(chunk, line);
+    emit_throw_object_disposed(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
@@ -129,6 +134,130 @@ fn bind_string_writer_to_string(
             None,
             line,
         );
+    }
+}
+
+fn push_string_writer_method_chunk(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    arity: u8,
+    emit_body: fn(&mut Vec<Chunk>, usize, u32),
+    line: u32,
+) -> usize {
+    let method_idx = chunks.len();
+    chunks.push(create_function_chunk(name, arity));
+    emit_body(chunks, method_idx, line);
+    chunks[method_idx].emit_op(Op::RETURN, line);
+    chunks[method_idx].local_count = arity as u16;
+    method_idx
+}
+
+fn emit_string_writer_write_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 1, line);
+    emit_stream_writer_write(chunks, current, line);
+}
+
+fn emit_string_writer_write_3_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    for local in 0..4 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, local, line);
+    }
+    emit_stream_writer_write_3(chunks, current, line);
+}
+
+fn emit_string_writer_write_line_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 1, line);
+    emit_stream_writer_write_line(chunks, current, line);
+}
+
+fn emit_string_writer_write_line_async_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 1, line);
+    emit_stream_writer_write_line_async(chunks, current, line);
+}
+
+fn emit_string_writer_get_builder_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 0, line);
+    emit_string_writer_get_string_builder(chunks, current, line);
+}
+
+fn emit_string_writer_noop_body(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, 0, line);
+    emit_string_writer_noop(chunks, current, line);
+}
+
+fn bind_string_writer_methods(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
+    bind_string_writer_to_string(chunks, current, this_slot, line);
+
+    let write_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_write",
+        2,
+        emit_string_writer_write_body,
+        line,
+    );
+    let write_3_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_write_3",
+        4,
+        emit_string_writer_write_3_body,
+        line,
+    );
+    let write_line_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_write_line",
+        2,
+        emit_string_writer_write_line_body,
+        line,
+    );
+    let write_line_async_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_write_line_async",
+        2,
+        emit_string_writer_write_line_async_body,
+        line,
+    );
+    let get_builder_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_get_string_builder",
+        1,
+        emit_string_writer_get_builder_body,
+        line,
+    );
+    let noop_idx = push_string_writer_method_chunk(
+        chunks,
+        "__string_writer_noop",
+        1,
+        emit_string_writer_noop_body,
+        line,
+    );
+
+    let chunk = &mut chunks[current];
+    for name in ["write", "Write"] {
+        emit_bind_method_with_slot(chunk, this_slot, name, None, write_idx, None, line);
+    }
+    emit_bind_method_with_slot(chunk, this_slot, "Write__3", None, write_3_idx, None, line);
+    emit_bind_method_with_slot(chunk, this_slot, "write__3", None, write_3_idx, None, line);
+    for name in ["writeline", "WriteLine"] {
+        emit_bind_method_with_slot(chunk, this_slot, name, None, write_line_idx, None, line);
+    }
+    for name in ["writelineasync", "WriteLineAsync"] {
+        emit_bind_method_with_slot(
+            chunk,
+            this_slot,
+            name,
+            None,
+            write_line_async_idx,
+            None,
+            line,
+        );
+    }
+    for name in ["getstringbuilder", "GetStringBuilder"] {
+        emit_bind_method_with_slot(chunk, this_slot, name, None, get_builder_idx, None, line);
+    }
+    for name in ["flush", "Flush", "close", "Close", "dispose", "Dispose"] {
+        emit_bind_method_with_slot(chunk, this_slot, name, None, noop_idx, None, line);
     }
 }
 
@@ -290,7 +419,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 
     // reader_slot = pop reader
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    emit_throw_if_disposed(chunk, reader_slot, line);
+    emit_throw_if_disposed(chunks, current, reader_slot, line);
+    let chunk = &mut chunks[current];
 
     // content = reader.__content
     class_slots::emit_class_get(
@@ -409,13 +539,19 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+pub fn emit_string_reader_read_line_async(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stream_reader_read_line(chunks, current, line);
+    super::thread_adapter::emit_task_from_result(chunks, current, line);
+}
+
 /// `reader.ReadToEnd()` — return remaining content from `__pos` to end,
 /// advancing `__pos` to end. Stack: `[reader]` → `[remaining]`.
 pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    emit_throw_if_disposed(chunk, reader_slot, line);
+    emit_throw_if_disposed(chunks, current, reader_slot, line);
+    let chunk = &mut chunks[current];
 
     // content = reader.__content
     class_slots::emit_class_get(
@@ -467,7 +603,8 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
     let reader_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    emit_throw_if_disposed(chunk, reader_slot, line);
+    emit_throw_if_disposed(chunks, current, reader_slot, line);
+    let chunk = &mut chunks[current];
 
     // pos
     class_slots::emit_class_get(
@@ -505,8 +642,14 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, li
         WRITER_TYPE,
         &[
             (field_slot(BUF_KEY), ValueSource::ConstStr(String::new())),
-            (field_slot("NewLine"), ValueSource::ConstStr("\n".to_string())),
-            (field_slot("newline"), ValueSource::ConstStr("\n".to_string())),
+            (
+                field_slot("NewLine"),
+                ValueSource::ConstStr("\n".to_string()),
+            ),
+            (
+                field_slot("newline"),
+                ValueSource::ConstStr("\n".to_string()),
+            ),
         ],
         line,
     );
@@ -573,8 +716,14 @@ pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         &[
             (field_slot(BUF_KEY), ValueSource::Local(initial_slot)),
             (field_slot(BUILDER_KEY), ValueSource::Local(builder_slot)),
-            (field_slot("NewLine"), ValueSource::ConstStr("\n".to_string())),
-            (field_slot("newline"), ValueSource::ConstStr("\n".to_string())),
+            (
+                field_slot("NewLine"),
+                ValueSource::ConstStr("\n".to_string()),
+            ),
+            (
+                field_slot("newline"),
+                ValueSource::ConstStr("\n".to_string()),
+            ),
         ],
         line,
     );
@@ -584,8 +733,14 @@ pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         chunk,
         "Encoding",
         &[
-            (field_slot("WebName"), ValueSource::ConstStr("utf-16".to_string())),
-            (field_slot("webname"), ValueSource::ConstStr("utf-16".to_string())),
+            (
+                field_slot("WebName"),
+                ValueSource::ConstStr("utf-16".to_string()),
+            ),
+            (
+                field_slot("webname"),
+                ValueSource::ConstStr("utf-16".to_string()),
+            ),
         ],
         line,
     );
@@ -605,7 +760,7 @@ pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     let _ = chunk;
 
-    bind_string_writer_to_string(chunks, current, obj_slot, line);
+    bind_string_writer_methods(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -781,7 +936,8 @@ pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buffer_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    emit_throw_if_disposed(chunk, reader_slot, line);
+    emit_throw_if_disposed(chunks, current, reader_slot, line);
+    let chunk = &mut chunks[current];
 
     class_slots::emit_class_get(
         chunk,
@@ -872,7 +1028,8 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
     let result_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
-    emit_throw_if_disposed(chunk, reader_slot, line);
+    emit_throw_if_disposed(chunks, current, reader_slot, line);
+    let chunk = &mut chunks[current];
     class_slots::emit_class_get(
         chunk,
         ObjSource::Local(reader_slot),

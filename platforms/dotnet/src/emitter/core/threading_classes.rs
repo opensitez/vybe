@@ -20,9 +20,7 @@
 //! `interop_classes` documents: unconditional injection shifts typeidx
 //! numbering for every language while the class model is mid-conversion.
 
-use super::interop_classes::{
-    assign, by_ref_param, class, getter, me, method, param, typed_field,
-};
+use super::interop_classes::{assign, by_ref_param, class, getter, me, method, param, typed_field};
 use vybe_ast::{
     BinOp, ClassMember, ConstructorInitializerTarget, ExprKind, Expression, Literal, Param, Span,
     Statement, StmtKind, Visibility,
@@ -42,7 +40,6 @@ pub fn is_synthesized_threading_class(name: &str) -> bool {
             | "periodictimer"
             | "threadlocal"
             | "lock"
-
     )
 }
 
@@ -196,10 +193,7 @@ fn spin_wait_class() -> Statement {
             method(
                 "SpinOnce",
                 Vec::new(),
-                vec![assign(
-                    count,
-                    binary(me(count), BinOp::Add, int_lit(1)),
-                )],
+                vec![assign(count, binary(me(count), BinOp::Add, int_lit(1)))],
                 true,
             ),
             method("Reset", Vec::new(), vec![assign(count, int_lit(0))], true),
@@ -294,7 +288,12 @@ fn manual_reset_event_slim_class() -> Statement {
                 vec![assign(set, ident("initialState"))],
             ),
             method("Set", Vec::new(), vec![assign(set, bool_lit(true))], true),
-            method("Reset", Vec::new(), vec![assign(set, bool_lit(false))], true),
+            method(
+                "Reset",
+                Vec::new(),
+                vec![assign(set, bool_lit(false))],
+                true,
+            ),
             method(
                 "Wait",
                 vec![param("timeout", int_lit(0))],
@@ -378,7 +377,11 @@ fn semaphore_slim_class() -> Statement {
 /// `System.Threading.SemaphoreFullException` — not in the shared exception
 /// hierarchy, so it is injected here alongside its only thrower.
 fn semaphore_full_exception_class() -> Statement {
-    class("SemaphoreFullException", vec!["Exception".into()], Vec::new())
+    class(
+        "SemaphoreFullException",
+        vec!["Exception".into()],
+        Vec::new(),
+    )
 }
 
 /// `System.Threading.SpinLock` — an uncontended lock flag.
@@ -429,7 +432,12 @@ fn spin_lock_class() -> Statement {
                 ],
                 true,
             ),
-            method("Exit", Vec::new(), vec![assign(held, bool_lit(false))], true),
+            method(
+                "Exit",
+                Vec::new(),
+                vec![assign(held, bool_lit(false))],
+                true,
+            ),
             getter("IsHeld", vec![ret(me(held))]),
         ],
     )
@@ -520,10 +528,30 @@ fn reader_writer_lock_slim_class() -> Statement {
                     assign(upgradeable, bool_lit(false)),
                 ],
             ),
-            method("EnterReadLock", Vec::new(), vec![assign(read, bool_lit(true))], true),
-            method("ExitReadLock", Vec::new(), vec![assign(read, bool_lit(false))], true),
-            method("EnterWriteLock", Vec::new(), vec![assign(write, bool_lit(true))], true),
-            method("ExitWriteLock", Vec::new(), vec![assign(write, bool_lit(false))], true),
+            method(
+                "EnterReadLock",
+                Vec::new(),
+                vec![assign(read, bool_lit(true))],
+                true,
+            ),
+            method(
+                "ExitReadLock",
+                Vec::new(),
+                vec![assign(read, bool_lit(false))],
+                true,
+            ),
+            method(
+                "EnterWriteLock",
+                Vec::new(),
+                vec![assign(write, bool_lit(true))],
+                true,
+            ),
+            method(
+                "ExitWriteLock",
+                Vec::new(),
+                vec![assign(write, bool_lit(false))],
+                true,
+            ),
             method(
                 "EnterUpgradeableReadLock",
                 Vec::new(),
@@ -589,7 +617,10 @@ fn thread_local_class() -> Statement {
             typed_field(created, "Boolean"),
             typed_field(factory, "Object"),
             ctor(
-                vec![param("valueFactory", Expression::new(ExprKind::Lit(Literal::Null)))],
+                vec![param(
+                    "valueFactory",
+                    Expression::new(ExprKind::Lit(Literal::Null)),
+                )],
                 vec![
                     assign(factory, ident("valueFactory")),
                     assign(created, bool_lit(false)),

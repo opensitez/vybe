@@ -21,8 +21,8 @@
 //! the literal never could.
 
 use vybe_compiler::primitives::{object, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub const ORDINAL: &str = "__dotnet_stringcomparer_ordinal";
 pub const ORDINAL_IGNORE_CASE: &str = "__dotnet_stringcomparer_ordinalignorecase";
@@ -36,13 +36,7 @@ pub fn emit_marker(chunks: &mut [Chunk], current: usize, marker: &str, line: u32
 
 /// Push `slot` folded to lower case when `recv` is the ignore-case comparer,
 /// and unfolded otherwise.
-fn emit_operand_folded_for(
-    chunks: &mut [Chunk],
-    current: usize,
-    recv: u16,
-    slot: u16,
-    line: u32,
-) {
+fn emit_operand_folded_for(chunks: &mut [Chunk], current: usize, recv: u16, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_string_const(ORDINAL_IGNORE_CASE, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -78,17 +72,115 @@ fn stash_and_fold(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     base
 }
 
+fn emit_string_comparer_marker_test(chunks: &mut [Chunk], current: usize, recv: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_string_const(ORDINAL, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_string_const(ORDINAL_IGNORE_CASE, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+}
+
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
+    let idx = chunks[current].add_import(module, name);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+fn emit_simple_compare3_slots(chunks: &mut [Chunk], current: usize, a: u16, b: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    call_import(chunks, current, "wasm:js-string", "compare", 2, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    call_import(chunks, current, "wasm:js-number", "test", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    call_import(chunks, current, "wasm:js-number", "test", 1, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 /// `comparer.Compare(a, b)` → -1 / 0 / 1.
 ///
 /// Routed to the SHARED `object.compare`, which the JVM tree already reaches
 /// under the same name. A .NET-only spaceship here would be a second answer to
 /// a question that already has one.
 pub fn emit_compare(chunks: &mut [Chunk], current: usize, line: u32) {
-    stash_and_fold(chunks, current, line);
-    // `object.compare` takes [a, b, comparator]; the comparator slot is the
-    // user-supplied one, and these built-ins are exactly the absence of it.
+    let base = stash_and_fold(chunks, current, line);
+    let recv = base;
+    let folded = chunks[current].alloc_scratch(2);
+    let (folded_a, folded_b) = (folded, folded + 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, folded_b, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, folded_a, line);
+
+    emit_string_comparer_marker_test(chunks, current, recv, line);
+    chunks[current].emit_if_i32(line);
+    emit_simple_compare3_slots(chunks, current, folded_a, folded_b, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, folded_a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, folded_b, line);
+    // `object.compare` takes [a, b, comparator]; these built-ins are exactly
+    // the absence of a user-supplied comparator.
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    object::emit_compare(&mut chunks[current], line);
+    object::emit_compare(&mut chunks[current], abi, line);
+    chunks[current].emit_end(line);
 }
 
 /// `comparer.Equals(a, b)`.
@@ -123,8 +215,15 @@ pub fn emit_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
 /// there is no such value to invoke.
 pub fn emit_array_sort_with_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = chunks[current].alloc_scratch(7);
-    let (cmp, arr, len, i, j, tmp, probe) =
-        (base, base + 1, base + 2, base + 3, base + 4, base + 5, base + 6);
+    let (cmp, arr, len, i, j, tmp, probe) = (
+        base,
+        base + 1,
+        base + 2,
+        base + 3,
+        base + 4,
+        base + 5,
+        base + 6,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, cmp, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
@@ -168,8 +267,9 @@ pub fn emit_array_sort_with_comparer(chunks: &mut [Chunk], current: usize, line:
 
     emit_operand_folded_for(chunks, current, cmp, tmp, line);
     emit_operand_folded_for(chunks, current, cmp, probe, line);
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    object::emit_compare(&mut chunks[current], line);
+    object::emit_compare(&mut chunks[current], abi, line);
     chunks[current].emit_i32_const(0, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);

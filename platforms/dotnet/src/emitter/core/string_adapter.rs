@@ -1,20 +1,26 @@
+use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
         exception_name,
-        class_slots::ValueSource::ConstStr(message.to_string()),
+        message,
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 /// Is this `StringComparison` one of the case-insensitive members?
@@ -586,7 +592,16 @@ pub fn emit_string_substring(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
-        emit_substring_bounds_check(chunk, start_slot, len_slot, end_slot, str_len_slot, line);
+        emit_substring_bounds_check(
+            chunks,
+            current,
+            start_slot,
+            len_slot,
+            end_slot,
+            str_len_slot,
+            line,
+        );
+        let chunk = &mut chunks[current];
         emit_string_substr_from_slots(chunk, value_slot, start_slot, len_slot, line);
     } else {
         let start_slot = reserve_slot(chunk);
@@ -606,11 +621,13 @@ pub fn emit_string_substring(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         emit_throw_dotnet_exception(
-            chunk,
+            chunks,
+            current,
             "ArgumentOutOfRangeException",
             "startIndex cannot be larger than length of string.",
             line,
         );
+        let chunk = &mut chunks[current];
         chunk.emit_end(line);
         chunk.emit_op_u16(Op::LOCAL_GET, str_len_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
@@ -640,11 +657,13 @@ pub fn emit_string_char_at_checked(chunks: &mut [Chunk], current: usize, line: u
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "IndexOutOfRangeException",
         "Index was outside the bounds of the string.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
@@ -655,13 +674,15 @@ pub fn emit_string_char_at_checked(chunks: &mut [Chunk], current: usize, line: u
 }
 
 fn emit_substring_bounds_check(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     start_slot: u16,
     len_slot: u16,
     end_slot: u16,
     str_len_slot: u16,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_i32_const(0, line);
     vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
@@ -680,11 +701,13 @@ fn emit_substring_bounds_check(
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         "Index and length must refer to a location within the string.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
@@ -727,7 +750,111 @@ pub fn emit_string_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line
     host::emit(&mut chunks[current], "ecma:string", "replaceAll", 3, line);
 }
 
+pub fn emit_string_insert(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let insert_slot = reserve_slot(chunk);
+    let index_slot = reserve_slot(chunk);
+    let value_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, insert_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_string_len(chunk, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, insert_slot, line);
+    host::emit(chunk, "wasm:js-string", "concat", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+    host::emit(chunk, "wasm:js-string", "concat", 2, line);
+}
+
+pub fn emit_string_remove_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let start_slot = reserve_slot(chunk);
+    let value_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+}
+
+pub fn emit_string_remove_range(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let count_slot = reserve_slot(chunk);
+    let start_slot = reserve_slot(chunk);
+    let value_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    let end_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_string_len(chunk, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+    host::emit(chunk, "wasm:js-string", "concat", 2, line);
+}
+
 pub fn emit_string_concat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_string_const("", line);
+        return;
+    }
+    if argc == 1 {
+        let value_slot = reserve_slot(&mut chunks[current]);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        super::runtime_adapter::emit_string_join_sep_first(chunks, current, line);
+        chunks[current].emit_else(line);
+        let result_slot = reserve_slot(&mut chunks[current]);
+        super::console_adapter::emit_dotnet_stringify(
+            &mut chunks[current],
+            value_slot,
+            result_slot,
+            line,
+        );
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+        chunks[current].emit_end(line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+    }
+    for i in 0..argc {
+        let result_slot = reserve_slot(&mut chunks[current]);
+        super::console_adapter::emit_dotnet_stringify(
+            &mut chunks[current],
+            base + i as u16,
+            result_slot,
+            line,
+        );
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    }
     vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], argc as usize, line);
 }
 
@@ -736,6 +863,8 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let value_slot = reserve_slot(chunk);
     let delims_slot = reserve_slot(chunk);
     let remove_empty_slot = reserve_slot(chunk);
+    let trim_entries_slot = reserve_slot(chunk);
+    let count_slot = reserve_slot(chunk);
 
     match argc {
         0 | 1 => {
@@ -745,6 +874,10 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunks[current].emit_op_u16(Op::LOCAL_SET, delims_slot, line);
             chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, trim_entries_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
         }
         2 => {
             let arg_slot = reserve_slot(&mut chunks[current]);
@@ -763,6 +896,10 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunks[current].emit_end(line);
             chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, trim_entries_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
         }
         3 => {
             let second_slot = reserve_slot(&mut chunks[current]);
@@ -771,12 +908,14 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunks[current].emit_op_u16(Op::LOCAL_SET, first_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
-            chunks[current].emit_string_const("__dotnet_stringsplit_removeemptyentries", line);
-            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            emit_value_type_is_numeric(&mut chunks[current], second_slot, line);
             chunks[current].emit_if(line);
-            chunks[current].emit_bool_const(true, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+            chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, trim_entries_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
             host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -790,11 +929,34 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunks[current].emit_end(line);
             chunks[current].emit_else(line);
             chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+            chunks[current].emit_string_const("__dotnet_stringsplit_removeemptyentries", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+            chunks[current].emit_string_const("__dotnet_stringsplit_trim_removeemptyentries", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_OR, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
-            vybe_compiler::primitives::collections::emit_array_new(chunks, current, 2, line);
+            host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, delims_slot, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
+            vybe_compiler::primitives::collections::emit_array_new(chunks, current, 1, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, delims_slot, line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+            chunks[current].emit_string_const("__dotnet_stringsplit_trimentries", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+            chunks[current].emit_string_const("__dotnet_stringsplit_trim_removeemptyentries", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_OR, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, trim_entries_slot, line);
             chunks[current].emit_end(line);
         }
         _ => {
@@ -816,6 +978,10 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunks[current].emit_op_u16(Op::LOCAL_SET, delims_slot, line);
             chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, trim_entries_slot, line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
         }
     }
 
@@ -825,6 +991,8 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         value_slot,
         delims_slot,
         remove_empty_slot,
+        trim_entries_slot,
+        count_slot,
         line,
     );
 }
@@ -891,6 +1059,8 @@ fn emit_string_split_slots(
     value_slot: u16,
     delims_slot: u16,
     remove_empty_slot: u16,
+    trim_entries_slot: u16,
+    count_slot: u16,
     line: u32,
 ) {
     let source_slot = reserve_slot(&mut chunks[current]);
@@ -947,6 +1117,8 @@ fn emit_string_split_slots(
     chunks[current].emit_op_u16(Op::LOCAL_SET, parts_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, remove_empty_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, trim_entries_slot, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -962,10 +1134,21 @@ fn emit_string_split_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, part_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, trim_entries_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, part_slot, line);
+    host::emit(&mut chunks[current], "ecma:string", "trim", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, part_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, remove_empty_slot, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, part_slot, line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, part_slot, line);
@@ -980,6 +1163,77 @@ fn emit_string_split_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parts_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    emit_string_split_count_limit(chunks, current, result_slot, count_slot, delim0_slot, line);
+}
+
+fn emit_string_split_count_limit(
+    chunks: &mut [Chunk],
+    current: usize,
+    result_slot: u16,
+    count_slot: u16,
+    delim_slot: u16,
+    line: u32,
+) {
+    let limited_slot = reserve_slot(&mut chunks[current]);
+    let i_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+    let tail_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if(line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limited_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    let copy_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limited_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, copy_loop, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_compiler::primitives::collections::emit_slice(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delim_slot, line);
+    vybe_compiler::primitives::collections::emit_join(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tail_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limited_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tail_slot, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limited_slot, line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_end(line);
 }
 

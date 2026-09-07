@@ -233,6 +233,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     set_alias_from_field(chunk, obj_slot, "pathname", "LocalPath", line);
     set_alias_from_field(chunk, obj_slot, "href", "AbsoluteUri", line);
     set_alias_from_field(chunk, obj_slot, "href", "OriginalString", line);
+    set_alias_from_field(chunk, obj_slot, "href", "__value", line);
     set_alias_from_field(chunk, obj_slot, "host", "Authority", line);
 
     // `Uri` is what `GetType().Name` owes, whatever spelling reached the cast.
@@ -327,9 +328,25 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             chunk.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
             chunk.emit_op_u16(Op::LOCAL_SET, base_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+            push_str(chunk, "Absolute", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+            push_str(chunk, "Relative", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            chunk.emit_op(Op::I32_OR, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+            push_str(chunk, "RelativeOrAbsolute", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            chunk.emit_op(Op::I32_OR, line);
+            chunk.emit_if_value(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
+            chunk.emit_call(url_idx, 1, line);
+            chunk.emit_else(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
             struct_get(chunk, "href", line);
             chunk.emit_call(url_idx, 2, line);
+            chunk.emit_end(line);
         }
         _ => {
             for _ in 1..argc {
@@ -341,22 +358,16 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             host::emit(chunk, "node:url", "canParse", 1, line);
             chunk.emit_op(Op::I32_EQZ, line);
             chunk.emit_if(line);
-            class_slots::emit_class_alloc(chunk, line);
-            chunk.emit_dup(line);
-            chunk.emit_string_const(
-                "Invalid URI: The format of the URI could not be determined.",
-                line,
-            );
-            vybe_compiler::primitives::errors::emit_exception_new_finalize(
-                chunk,
+            crate::emitter::core::exceptions::emit_new_typed(
+                chunks,
+                current,
                 "UriFormatException",
+                class_slots::ValueSource::ConstStr(
+                    "Invalid URI: The format of the URI could not be determined.".to_string(),
+                ),
                 line,
             );
-            vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
-                chunk,
-                "UriFormatException",
-                line,
-            );
+            let chunk = &mut chunks[current];
             vybe_compiler::primitives::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);

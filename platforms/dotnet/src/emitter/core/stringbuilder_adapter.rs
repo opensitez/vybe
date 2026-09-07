@@ -90,12 +90,24 @@ fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) 
     let capacity_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
@@ -142,7 +154,10 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
                 &[
                     (field_slot(BUFFER_KEY), ValueSource::ConstStr(String::new())),
                     (field_slot(CAPACITY_KEY), ValueSource::ConstI32(16)),
-                    (field_slot(MAX_CAPACITY_KEY), ValueSource::ConstI32(i32::MAX)),
+                    (
+                        field_slot(MAX_CAPACITY_KEY),
+                        ValueSource::ConstI32(i32::MAX),
+                    ),
                 ],
                 line,
             );
@@ -251,7 +266,13 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     if argc == 3 {
         let i_slot = reserve_slot(chunk);
         push_const(chunk, Value::I32(0), line);
@@ -319,7 +340,13 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     emit_format_append_value(chunk, s_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
@@ -389,7 +416,13 @@ pub fn emit_sb_append_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_SET, formatted_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, formatted_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     class_slots::emit_class_set(
@@ -421,7 +454,13 @@ pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, joined_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     class_slots::emit_class_set(
@@ -448,14 +487,26 @@ pub fn emit_sb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(BUFFER_KEY),
+            Dest::Stack,
+            line,
+        );
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
     } else {
-        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(BUFFER_KEY),
+            Dest::Stack,
+            line,
+        );
     }
 }
 
@@ -483,14 +534,26 @@ pub fn emit_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb]` ; Stack on exit: `[length:i32]`
 pub fn emit_sb_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     host::emit(chunk, "wasm:js-string", "length", 1, line);
 }
 
 /// `sb.Capacity` — tracked as a numeric field, defaulting to 16.
 pub fn emit_sb_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_sb_set_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -541,7 +604,13 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, new_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
@@ -616,7 +685,13 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_SET, desired_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
@@ -645,7 +720,13 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(CAPACITY_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(CAPACITY_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -668,7 +749,13 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
     push_const(chunk, Value::I32(0), line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
@@ -722,9 +809,21 @@ pub fn emit_sb_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, other_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 }
 
@@ -749,7 +848,13 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Read sb.__buffer once and stash.
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     // before = buf.substring(0, idx)
@@ -804,7 +909,13 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -844,7 +955,13 @@ pub fn emit_sb_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     host::emit(chunk, "ecma:string", "charAt", 2, line);
 }
@@ -864,7 +981,13 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -924,7 +1047,13 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     if argc == 5 {
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-        class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(BUFFER_KEY),
+            Dest::Stack,
+            line,
+        );
         chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -954,12 +1083,12 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
         class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(BUFFER_KEY),
-        ValueSource::Stack,
-        line,
-    );
+            chunk,
+            ObjSource::Stack,
+            &field_slot(BUFFER_KEY),
+            ValueSource::Stack,
+            line,
+        );
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
         return;
     }
@@ -967,7 +1096,13 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // [sb, sb, buf, old, new] — buffer + replace args
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(BUFFER_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(BUFFER_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, old_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);
 

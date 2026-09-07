@@ -80,13 +80,7 @@ fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
 /// `[] → [value]` — a field of the object in `slot`.
 fn field(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     get(chunk, slot, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 /// `[value] → []` — store into a field of the object in `slot`.
@@ -99,32 +93,33 @@ fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
 }
 
 /// Throw a .NET exception of `class` with `message`.
-fn throw(chunk: &mut Chunk, class: &str, message: &str, line: u32) {
-    class_slots::emit_class_alloc(chunk, line);
-    core_wasm::dup(chunk, line);
-    push_str(chunk, message, line);
-    errors::emit_exception_new_finalize(chunk, class, line);
-    errors::emit_throw(chunk, line);
+fn throw(chunks: &mut [Chunk], current: usize, class: &str, message: &str, line: u32) {
+    crate::emitter::core::exceptions::emit_throw_typed(chunks, current, class, message, line);
 }
 
 /// `if <cond on stack> { throw }`
-fn throw_if(chunk: &mut Chunk, class: &str, message: &str, line: u32) {
+fn throw_if(chunks: &mut [Chunk], current: usize, class: &str, message: &str, line: u32) {
+    let chunk = &mut chunks[current];
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    throw(chunk, class, message, line);
+    throw(chunks, current, class, message, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
 /// Every member starts here: a closed stream answers `ObjectDisposedException`
 /// to everything, which is what `Close()` then `WriteByte(1)` must do.
-fn guard_open(chunk: &mut Chunk, obj: u16, line: u32) {
+fn guard_open(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
+    let chunk = &mut chunks[current];
     field(chunk, obj, CLOSED, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "ObjectDisposedException",
         "Cannot access a closed Stream.",
         line,
     );
+    let chunk = &mut chunks[current];
 }
 
 /// `[] → [capacity]`
@@ -135,7 +130,8 @@ fn capacity_of(chunk: &mut Chunk, obj: u16, line: u32) {
 
 /// Grow the backing store so `needed` bytes fit, or throw on a fixed stream.
 /// Stack: `[needed] → []`
-fn ensure_capacity(chunk: &mut Chunk, obj: u16, line: u32) {
+fn ensure_capacity(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
+    let chunk = &mut chunks[current];
     let needed = chunk.alloc_scratch(3);
     let cap = needed + 1;
     let target = needed + 2;
@@ -155,11 +151,13 @@ fn ensure_capacity(chunk: &mut Chunk, obj: u16, line: u32) {
     field(chunk, obj, EXPANDABLE, line);
     ops::emit_dyn_not(chunk, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "NotSupportedException",
         "Memory stream is not expandable.",
         line,
     );
+    let chunk = &mut chunks[current];
 
     // .NET's rule: at least 256, and at least double what we have.
     get(chunk, needed, line);
@@ -462,7 +460,8 @@ pub fn emit_set_position(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = value + 1;
     set(chunk, value, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
     get(chunk, value, line);
     store(chunk, obj, POS, line);
 }
@@ -474,26 +473,31 @@ pub fn emit_set_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = value + 1;
     set(chunk, value, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     // Below the logical length the data would be lost — .NET refuses.
     get(chunk, value, line);
     field(chunk, obj, LEN, line);
     ops::emit_dyn_lt(chunk, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         "capacity was less than the current size.",
         line,
     );
+    let chunk = &mut chunks[current];
     field(chunk, obj, EXPANDABLE, line);
     ops::emit_dyn_not(chunk, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "NotSupportedException",
         "Memory stream is not expandable.",
         line,
     );
+    let chunk = &mut chunks[current];
     get(chunk, value, line);
     emit_resize_buffer(chunk, obj, line);
 }
@@ -532,16 +536,26 @@ pub fn emit_write_byte(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = byte + 1;
     set(chunk, byte, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
-    emit_store_byte_at_position(chunk, obj, byte, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
+    emit_store_byte_at_position(chunks, current, obj, byte, line);
+    let chunk = &mut chunks[current];
 }
 
 /// Write one byte at the cursor, growing and extending as .NET does.
-fn emit_store_byte_at_position(chunk: &mut Chunk, obj: u16, byte: u16, line: u32) {
+fn emit_store_byte_at_position(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj: u16,
+    byte: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
     field(chunk, obj, POS, line);
     num(chunk, 1.0, line);
     chunk.emit_op(Op::F64_ADD, line);
-    ensure_capacity(chunk, obj, line);
+    ensure_capacity(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     field(chunk, obj, BUF, line);
     field(chunk, obj, POS, line);
@@ -588,7 +602,8 @@ pub fn emit_write(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         call(chunk, "ecma:array", "length", 1, line);
         set(chunk, count, line);
     }
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     num(chunk, 0.0, line);
     set(chunk, i, line);
@@ -606,7 +621,8 @@ pub fn emit_write(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     set(chunk, byte, line);
-    emit_store_byte_at_position(chunk, obj, byte, line);
+    emit_store_byte_at_position(chunks, current, obj, byte, line);
+    let chunk = &mut chunks[current];
     get(chunk, i, line);
     num(chunk, 1.0, line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -624,7 +640,8 @@ pub fn emit_read_byte(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = chunk.alloc_scratch(2);
     let out = obj + 1;
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
     num(chunk, -1.0, line);
     set(chunk, out, line);
     field(chunk, obj, POS, line);
@@ -667,7 +684,8 @@ pub fn emit_read(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         call(chunk, "ecma:array", "length", 1, line);
         set(chunk, count, line);
     }
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     // Never read past the logical end.
     field(chunk, obj, LEN, line);
@@ -741,7 +759,8 @@ pub fn emit_seek(chunks: &mut [Chunk], current: usize, line: u32) {
     set(chunk, origin, line);
     set(chunk, offset, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     num(chunk, 0.0, line);
     set(chunk, base, line);
@@ -776,11 +795,13 @@ pub fn emit_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = value + 1;
     set(chunk, value, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     // Growing past the fixed buffer is what `NotSupportedException` is for.
     get(chunk, value, line);
-    ensure_capacity(chunk, obj, line);
+    ensure_capacity(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     // Bytes between the old and new length must read as ZERO, whatever the
     // buffer happened to be carrying there.
@@ -841,11 +862,13 @@ pub fn emit_get_buffer(chunks: &mut [Chunk], current: usize, line: u32) {
     field(chunk, obj, VISIBLE, line);
     ops::emit_dyn_not(chunk, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "UnauthorizedAccessException",
         "MemoryStream's internal buffer cannot be accessed.",
         line,
     );
+    let chunk = &mut chunks[current];
     field(chunk, obj, BUF, line);
 }
 
@@ -891,7 +914,8 @@ pub fn emit_write_to(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj = dest + 1;
     set(chunk, dest, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
     get(chunk, dest, line);
     field(chunk, obj, BUF, line);
     num(chunk, 0.0, line);
@@ -921,7 +945,8 @@ pub fn emit_flush(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let obj = chunk.alloc_scratch(1);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -958,26 +983,31 @@ pub fn emit_copy_to(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     set(chunk, dest, line);
     set(chunk, obj, line);
-    guard_open(chunk, obj, line);
+    guard_open(chunks, current, obj, line);
+    let chunk = &mut chunks[current];
 
     // .NET validates the destination before anything else.
     get(chunk, dest, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "ArgumentNullException",
         "Value cannot be null. (Parameter 'destination')",
         line,
     );
+    let chunk = &mut chunks[current];
     get(chunk, size, line);
     num(chunk, 1.0, line);
     ops::emit_dyn_lt(chunk, line);
     throw_if(
-        chunk,
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         "Positive number required. (Parameter 'bufferSize')",
         line,
     );
+    let chunk = &mut chunks[current];
 
     // count = len - pos, clamped at zero: a cursor past the end copies nothing.
     field(chunk, obj, LEN, line);

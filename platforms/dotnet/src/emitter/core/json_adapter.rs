@@ -41,8 +41,8 @@ pub fn emit_json_deserialize(chunks: &mut [Chunk], current: usize, argc: u8, lin
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Value;
+use vybe_runtime::opcode::Op;
 
 use super::object_fields::field_slot;
 

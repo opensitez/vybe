@@ -24,7 +24,7 @@ fn emit_to_f64(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:number", "Number", 1, line);
 }
 
-fn state_key(chunk: &mut Chunk) -> u16 {
+fn state_key(chunk: &mut Chunk) -> u32 {
     chunk.add_constant(Value::String(STATE_KEY.into()))
 }
 

@@ -25,4 +25,3 @@ vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_language_js = { workspace = true }
 uuid = { workspace = true }
-

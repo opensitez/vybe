@@ -20,8 +20,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::object_fields::field_slot;
 

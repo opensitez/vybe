@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -113,8 +113,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data",
             ClassType::new("DataAdapter")
                 .with_constructor(
-                    ConstructorDef::new(0)
-                        .with_common_backing("dotnet.sql_data_adapter_new"),
+                    ConstructorDef::new(0).with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",
@@ -141,8 +140,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlConnection")
                 .with_constructor(
-                    ConstructorDef::new(1)
-                        .with_common_backing("dotnet.sql_connection_new"),
+                    ConstructorDef::new(1).with_common_backing("dotnet.sql_connection_new"),
                 )
                 .with_method(MethodDef::new(
                     "Open",
@@ -174,8 +172,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlCommand")
                 .with_constructor(
-                    ConstructorDef::new(2)
-                        .with_common_backing("dotnet.sql_command_new"),
+                    ConstructorDef::new(2).with_common_backing("dotnet.sql_command_new"),
                 )
                 .with_method(MethodDef::new(
                     "ExecuteNonQuery",
@@ -217,8 +214,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlDataAdapter")
                 .with_constructor(
-                    ConstructorDef::new(2)
-                        .with_common_backing("dotnet.sql_data_adapter_new"),
+                    ConstructorDef::new(2).with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",
@@ -396,8 +392,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Data.OleDb",
             ClassType::new("OleDbDataAdapter")
                 .with_constructor(
-                    ConstructorDef::new(2)
-                        .with_common_backing("dotnet.sql_data_adapter_new"),
+                    ConstructorDef::new(2).with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",

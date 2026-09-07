@@ -129,7 +129,8 @@ dim_statement = {
 // `Static x = 1, y = 2` — same comma-separated declarator list `Dim` already
 // had, so it reuses `dim_declaration_part` (initializer optional, exactly like
 // `Dim`).
-static_statement = { ^"Static" ~ dim_declaration_part ~ ("," ~ dim_declaration_part)* }
+static_kw = @{ ^"Static" ~ !(ASCII_ALPHANUMERIC | "_") }
+static_statement = { static_kw ~ dim_declaration_part ~ ("," ~ dim_declaration_part)* }
 // `As type_name` is optional: with Option Infer on (the default), `Const v = 5`
 // infers from the initializer. `parse_const_statement` already builds `type_hint`
 // opportunistically, so the absent clause needs no walker change.
@@ -358,6 +359,8 @@ line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifie
 virtual_keyword = @{ ^"Virtual" ~ !(ASCII_ALPHANUMERIC | "_") }
 sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"Widening" | ^"Narrowing" | ^"MustOverride" | ^"Overridable" | virtual_keyword | ^"NotOverridable" | ^"Shadows" }
 sub_modifier = _{ visibility_modifier | sub_modifier_keyword | partial_keyword | async_kw }
+sub_kw = @{ ^"Sub" ~ !(ASCII_ALPHANUMERIC | "_") }
+function_kw = @{ ^"Function" ~ !(ASCII_ALPHANUMERIC | "_") }
 sub_name = { identifier | member_identifier | ^"New" }
 function_name = { identifier | member_identifier }
 handles_clause = { ^"Handles" ~ dotted_identifier ~ ("," ~ dotted_identifier)* }
@@ -365,7 +368,7 @@ implements_target = { type_name ~ ("." ~ member_identifier)? }
 implements_member_clause = { ^"Implements" ~ implements_target ~ ("," ~ implements_target)* }
 sub_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ handles_clause? ~ implements_member_clause?
+    sub_modifier* ~ sub_kw ~ sub_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ handles_clause? ~ implements_member_clause?
     ~ (sub_expr_body | sub_inline_body | sub_block_body | abstract_body)
 }
 abstract_body = { &(NEWLINE | EOI) }
@@ -376,7 +379,7 @@ sub_end = { ^"End" ~ ^"Sub" }
 
 function_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
+    sub_modifier* ~ function_kw ~ function_name ~ generic_suffix? ~ "(" ~ nl_skip ~ param_list? ~ nl_skip ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
     ~ (func_expr_body | func_inline_body | func_block_body | abstract_body)
 }
 func_expr_body = { "=>" ~ expression }
@@ -395,7 +398,7 @@ operator_block_body = { (NEWLINE | EOI) ~ (!operator_end ~ line)* ~ operator_end
 operator_end = { ^"End" ~ ^"Operator" }
 
 param_list = { param ~ (nl_skip ~ "," ~ nl_skip ~ param)* }
-pass_type_keyword = { ^"ByVal" | ^"ByRef" }
+pass_type_keyword = @{ (^"ByVal" | ^"ByRef") ~ !(ASCII_ALPHANUMERIC | "_") }
 optional_keyword = { ^"Optional" }
 paramarray_keyword = { ^"ParamArray" }
 // `ParamArray` appears on BOTH sides of `ByVal` because real VB writes
@@ -705,7 +708,7 @@ primary = _{
     // statements are already matched earlier in the alternation.
     | (!statement_head ~ member_identifier)
     | tuple_literal
-    | "(" ~ expression ~ ")"
+    | "(" ~ nl_skip ~ expression ~ nl_skip ~ ")"
 }
 
 /// Keywords that can only START a statement, so they are never a bare name in
@@ -756,7 +759,7 @@ aggregate_call = { identifier ~ "(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")" }
 // character after the SPACE and reject the legal `New Foo()`.
 new_keyword = @{ ^"New" ~ !(ASCII_ALPHANUMERIC | "_") }
 anonymous_new_expression = { new_keyword ~ WHITESPACE* ~ with_initializer }
-new_expression = { new_keyword ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
+new_expression = { new_keyword ~ WHITESPACE* ~ type_name ~ ("(" ~ nl_skip ~ argument_list? ~ nl_skip ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
 from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
 key_initializer_modifier = { ^"Key" }
@@ -783,7 +786,7 @@ member_chain_null_invoke = { "?" ~ member_chain_invoke }
 member_chain_null_call = { "?" ~ member_chain_call }
 member_chain_null_access = { "?" ~ member_chain_access }
 member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_xml_attribute_axis | member_chain_null_invoke | member_chain_null_call | member_chain_null_access | member_chain_invoke | member_chain_call | member_chain_access }
-member_call = { identifier ~ member_chain+ }
+member_call = { (generic_type_reference | identifier) ~ member_chain+ }
 call_statement = {
     call_keyword? ~ (
         cast_member_call
@@ -801,7 +804,7 @@ expression_statement = { dot_call_statement | dot_member_access | postfix }
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }
-event_target = { cast_expression ~ ("." ~ member_identifier)+ | dotted_identifier }
+event_target = { cast_expression ~ ("." ~ member_identifier)+ | generic_type_reference ~ ("." ~ member_identifier)+ | dotted_identifier }
 addhandler_statement = { ^"AddHandler" ~ event_target ~ "," ~ expression }
 removehandler_statement = { ^"RemoveHandler" ~ event_target ~ "," ~ expression }
 
@@ -864,7 +867,7 @@ boolean_literal = { ^"True" | ^"False" }
 
 // Types: support dotted type names like System.Windows.Forms.Form
 type_name = {
-    tuple_type
+    tuple_type ~ array_type_suffix*
     |
     (
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
@@ -884,7 +887,7 @@ generic_constraint = { "{" ~ generic_constraint_item ~ ("," ~ generic_constraint
 generic_constraint_item = { ^"Class" | ^"Structure" | ^"New" | type_name }
 
 // Identifiers
-identifier = @{ "[" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "]" | !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+identifier = @{ "[" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "]" | !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "$"? }
 // Member identifier: allows keywords like Next, Close, Open, etc. as method/property names after a dot
 // The bracketed form is VB's ESCAPED IDENTIFIER: `[Error]` names a member
 // called `Error` even though `Error` is a keyword, and real VB REQUIRES the
@@ -909,13 +912,15 @@ call_keyword = @{ ^"Call" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // ── LINQ Query Syntax ──
 query_expression = { from_clause ~ NEWLINE* ~ query_body }
-from_clause = { ^"From" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ("," ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression)* }
+query_line_tail = @{ (!NEWLINE ~ ANY)* }
+from_clause = { ^"From" ~ query_line_tail }
 query_body = { (query_operator ~ NEWLINE*)* ~ select_or_group_clause? }
-query_operator = { group_join_query_clause | join_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | distinct_clause | let_clause | group_by_query_clause }
+query_operator = { from_query_clause | group_join_query_clause | join_query_clause | into_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | distinct_clause | let_clause | group_by_query_operator }
 
 where_clause = { ^"Where" ~ expression }
 order_by_clause = { ^"Order" ~ ^"By" ~ ordering ~ ("," ~ ordering)* }
 ordering = { expression ~ (^"Ascending" | ^"Descending")? }
+from_query_clause = { ^"From" ~ query_line_tail }
 skip_while_clause = { ^"Skip" ~ ^"While" ~ expression }
 take_while_clause = { ^"Take" ~ ^"While" ~ expression }
 skip_clause = { ^"Skip" ~ expression }
@@ -923,23 +928,28 @@ take_clause = { ^"Take" ~ expression }
 distinct_clause = { ^"Distinct" }
 let_clause = { ^"Let" ~ let_binding ~ ("," ~ let_binding)* }
 let_binding = { identifier ~ "=" ~ expression }
-group_by_query_clause = { ^"Group" ~ ^"By" ~ group_key ~ ("," ~ group_key)* ~ ^"Into" ~ identifier }
+group_by_query_clause = { ^"Group" ~ query_line_tail }
+group_by_query_operator = { group_by_query_clause ~ &(NEWLINE* ~ query_following_clause) }
+query_following_clause = _{ from_query_clause | group_join_query_clause | join_query_clause | into_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | distinct_clause | let_clause | select_clause }
 group_key = { (identifier ~ "=")? ~ expression }
-join_query_clause = { ^"Join" ~ (!NEWLINE ~ ANY)* }
-group_join_query_clause = { ^"Group" ~ ^"Join" ~ (!NEWLINE ~ ANY)* }
+join_query_clause = { ^"Join" ~ query_line_tail }
+group_join_query_clause = { ^"Group" ~ ^"Join" ~ query_line_tail }
+into_query_clause = { ^"Into" ~ query_line_tail }
 
-select_or_group_clause = { select_clause | group_clause }
-select_clause = { ^"Select" ~ expression ~ ("," ~ expression)* }
+select_or_group_clause = { select_clause | group_by_query_clause | group_clause }
+select_clause = { ^"Select" ~ query_line_tail }
 group_clause = { ^"Group" ~ (expression ~ ("," ~ expression)*)? ~ ^"By" ~ expression ~ (^"Into" ~ expression)? }
 
 // ── XML Literals ──
-xml_literal = { xml_document | xml_element }
+xml_literal = { xml_document | xml_element | xml_comment | xml_processing_instruction }
 xml_document = { xml_declaration? ~ xml_element }
 xml_declaration = { "<?xml" ~ xml_attribute* ~ "?>" }
 
 xml_element = {
     "<" ~ xml_name ~ xml_attribute* ~ "/>"
     | "<" ~ xml_name ~ xml_attribute* ~ ">" ~ xml_content* ~ "</" ~ xml_name ~ ">"
+    | "<" ~ xml_embedded_expression ~ xml_attribute* ~ "/>"
+    | "<" ~ xml_embedded_expression ~ xml_attribute* ~ ">" ~ xml_content* ~ "</>"
 }
 
 xml_name = @{ (ASCII_ALPHA | "_" | ":") ~ (ASCII_ALPHANUMERIC | "_" | ":" | "-" | ".")* }
@@ -948,6 +958,7 @@ xml_content = {
     xml_element
     | xml_comment
     | xml_cdata
+    | xml_processing_instruction
     | xml_embedded_expression
     | xml_text
 }
@@ -955,6 +966,7 @@ xml_content = {
 xml_text = @{ (!("<" | "<%=") ~ ANY)+ }
 xml_comment = { "<!--" ~ (!"-->" ~ ANY)* ~ "-->" }
 xml_cdata = { "<![CDATA[" ~ (!"]]>" ~ ANY)* ~ "]]>" }
+xml_processing_instruction = { "<?" ~ xml_name ~ (!"?>" ~ ANY)* ~ "?>" }
 xml_embedded_expression = { "<%=" ~ expression ~ "%>" }
 
 // ── Threading / SyncLock ──

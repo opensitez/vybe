@@ -14,7 +14,8 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["Tag"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "FileDialog",
             parent: Some("CommonDialog"),
@@ -39,7 +40,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "OpenFileDialog",
             parent: Some("FileDialog"),
@@ -52,14 +54,16 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "SaveFileDialog",
             parent: Some("FileDialog"),
             properties: &["CreatePrompt", "OverwritePrompt"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "FontDialog",
             parent: Some("CommonDialog"),
@@ -82,7 +86,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ColorDialog",
             parent: Some("CommonDialog"),
@@ -97,7 +102,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "FolderBrowserDialog",
             parent: Some("CommonDialog"),
@@ -109,6 +115,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

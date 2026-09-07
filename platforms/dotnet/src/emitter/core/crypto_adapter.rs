@@ -25,8 +25,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::object_fields::field_slot;
 
@@ -589,7 +589,13 @@ fn emit_hex_to_bytes(chunk: &mut Chunk, hex: u16, line: u32) {
 }
 
 /// `MD5.Create()` / `SHA1.Create()` — a handle carrying the algorithm.
-pub fn emit_legacy_create(chunks: &mut [Chunk], current: usize, algorithm: &str, argc: u8, line: u32) {
+pub fn emit_legacy_create(
+    chunks: &mut [Chunk],
+    current: usize,
+    algorithm: &str,
+    argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     drop_args(chunk, 0, argc, line);
     let algo = chunk.alloc_scratch(1);

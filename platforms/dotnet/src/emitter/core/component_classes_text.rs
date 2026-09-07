@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 use vybe_runtime::component::ValType;
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
@@ -46,6 +46,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                         "GetNumericValue",
                         1,
                         MethodBody::Common("dotnet.rune_numeric_value".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "TryCreate",
+                        1,
+                        MethodBody::Common("dotnet.rune_try_create".into()),
                     ))
                     .with_method(MethodDef::new(
                         "ToString",
@@ -414,29 +419,31 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System.Security.Cryptography",
-            ClassType::new("RSA").with_method(MethodDef::static_method(
-                "Create",
-                1,
-                MethodBody::Common("dotnet.crypto_rsa_create".into()),
-            ))
-            .with_method(MethodDef::new(
-                "Dispose",
-                0,
-                MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
-            )),
+            ClassType::new("RSA")
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    1,
+                    MethodBody::Common("dotnet.crypto_rsa_create".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Security.Cryptography",
-            ClassType::new("ECDsa").with_method(MethodDef::static_method(
-                "Create",
-                1,
-                MethodBody::Common("dotnet.crypto_ecdsa_create".into()),
-            ))
-            .with_method(MethodDef::new(
-                "Dispose",
-                0,
-                MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
-            )),
+            ClassType::new("ECDsa")
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    1,
+                    MethodBody::Common("dotnet.crypto_ecdsa_create".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Security.Cryptography",

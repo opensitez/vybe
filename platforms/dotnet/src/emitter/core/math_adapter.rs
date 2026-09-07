@@ -32,14 +32,49 @@ fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
     );
 }
 
-fn emit_throw_argument_out_of_range(chunk: &mut Chunk, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_argument_out_of_range(
+    chunks: &mut [Chunk],
+    current: usize,
+    message: &str,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         ValueSource::ConstStr(message.to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
+}
+
+/// Normalise `MidpointRounding` in `slot` to its ORDINAL.
+///
+/// ⛔ THE MODE ARRIVES AS ITS .NET NAME. `static_member_constant` publishes
+/// `MidpointRounding.AwayFromZero` as the string `"AwayFromZero"` — the
+/// spelling, so a lowering can select on it without a second representation —
+/// and the tie ladder below compares against 1.0. A string never equalled an
+/// ordinal, so EVERY named mode fell through to `F64_NEAREST` and rounded
+/// ties-to-even. A caller that already passes a number is left alone.
+fn emit_mode_ordinal(chunk: &mut Chunk, slot: u16, line: u32) {
+    for (name, ordinal) in [
+        ("AwayFromZero", 1.0),
+        ("ToZero", 2.0),
+        ("ToNegativeInfinity", 3.0),
+        ("ToPositiveInfinity", 4.0),
+        ("ToEven", 0.0),
+    ] {
+        get(chunk, slot, line);
+        chunk.emit_string_const(name, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_f64_const(ordinal, line);
+        set(chunk, slot, line);
+        chunk.emit_end(line);
+    }
 }
 
 /// `Math.Round(value)` / `(value, digits)` / `(value, digits, mode)`.
@@ -83,6 +118,25 @@ pub fn emit_round(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     set(chunk, value, line);
 
+    // ⛔ AT TWO ARGUMENTS THE SECOND IS EITHER `digits` OR THE MODE.
+    // `Round(2.5, MidpointRounding.AwayFromZero)` is a real .NET overload, and
+    // a `MidpointRounding` is a NAME here, not a number — fed to `pow` as a
+    // digit count it answered `NaN`. Only a number can be a digit count.
+    if argc == 2 {
+        get(chunk, digits, line);
+        let is_number = chunk.add_import("wasm:js-number", "test");
+        chunk.emit_call(is_number, 1, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        get(chunk, digits, line);
+        set(chunk, mode, line);
+        chunk.emit_f64_const(0.0, line);
+        set(chunk, digits, line);
+        chunk.emit_end(line);
+    }
+
+    emit_mode_ordinal(chunk, mode, line);
+
     // `digits` is bounded 0..=15 and .NET throws outside it. Guarded only where
     // a caller actually supplied one: the mode-only and no-argument forms
     // synthesize 0, which is always in range.
@@ -96,12 +150,14 @@ pub fn emit_round(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::I32_OR, line);
         chunk.emit_if(line);
         emit_throw_argument_out_of_range(
-            chunk,
+            chunks,
+            current,
             "Rounding digits must be between 0 and 15, inclusive. (Parameter 'digits')",
             line,
         );
-        chunk.emit_end(line);
+        chunks[current].emit_end(line);
     }
+    let chunk = &mut chunks[current];
 
     chunk.emit_f64_const(10.0, line);
     get(chunk, digits, line);
@@ -281,4 +337,208 @@ pub fn emit_scaleb(chunks: &mut [Chunk], current: usize, line: u32) {
     let pow = chunk.add_import("ecma:math", "pow");
     chunk.emit_call(pow, 2, line);
     chunk.emit_op(Op::F64_MUL, line);
+}
+
+// ── System.Decimal's integer-bit surface ───────────────────────────────────
+//
+// A Decimal is an f64 in this tree, so it carries no stored scale of its own.
+// `GetBits` therefore RECOVERS the scale — the fewest decimal places that make
+// the value integral — and the pair round-trips exactly for every value an f64
+// holds, which is the contract the corpus asserts. The word layout is .NET's:
+// `[lo, mid, hi, flags]`, magnitude little-endian across the first three and
+// the scale in bits 16..23 of `flags` with the sign in bit 31.
+
+/// The largest scale .NET's Decimal admits.
+const DECIMAL_MAX_SCALE: f64 = 28.0;
+
+/// `Decimal.Negate(d)`.
+pub fn emit_decimal_negate(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::math::emit_neg(&mut chunks[current], line);
+}
+
+/// `Decimal.Compare(a, b)` → −1 / 0 / 1, through the SHARED spaceship the
+/// comparer surface already uses. A Decimal-only ordering would be a second
+/// answer to a question that already has one.
+pub fn emit_decimal_compare(chunks: &mut [Chunk], current: usize, line: u32) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::object::emit_compare(&mut chunks[current], abi, line);
+}
+
+/// Leave `10^n` on the stack for the value in `slot`.
+fn emit_pow10(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_f64_const(10.0, line);
+    get(chunk, slot, line);
+    let pow = chunk.add_import("ecma:math", "pow");
+    chunk.emit_call(pow, 2, line);
+}
+
+/// `Decimal.GetBits(d)` → `Integer()` of four words.
+pub fn emit_decimal_get_bits(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let scratch = chunk.alloc_scratch(4);
+    let (value, scale, mag, word) = (scratch, scratch + 1, scratch + 2, scratch + 3);
+    set(chunk, value, line);
+
+    // The scale: multiply by ten until the magnitude is integral, or until
+    // .NET's own ceiling is reached.
+    get(chunk, value, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    set(chunk, mag, line);
+    chunk.emit_f64_const(0.0, line);
+    set(chunk, scale, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    get(chunk, mag, line);
+    get(chunk, mag, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_br_if(1, line);
+    get(chunk, scale, line);
+    chunk.emit_f64_const(DECIMAL_MAX_SCALE, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_br_if(1, line);
+    get(chunk, mag, line);
+    chunk.emit_f64_const(10.0, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    set(chunk, mag, line);
+    get(chunk, scale, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    set(chunk, scale, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    // Rounding the accumulated product removes the error the repeated ×10
+    // introduces — `123.45 * 100` is `12344.999999999998` in f64.
+    get(chunk, mag, line);
+    chunk.emit_op(Op::F64_NEAREST, line);
+    set(chunk, mag, line);
+
+    // lo, mid, hi — the magnitude little-endian in 32-bit words.
+    for shift in 0..3u32 {
+        get(chunk, mag, line);
+        if shift > 0 {
+            chunk.emit_f64_const(4294967296f64.powi(shift as i32), line);
+            chunk.emit_op(Op::F64_DIV, line);
+            chunk.emit_op(Op::F64_FLOOR, line);
+        }
+        set(chunk, word, line);
+        get(chunk, word, line);
+        get(chunk, word, line);
+        chunk.emit_f64_const(4294967296.0, line);
+        chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_op(Op::F64_FLOOR, line);
+        chunk.emit_f64_const(4294967296.0, line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_SUB, line);
+    }
+
+    // flags — the scale in bits 16..23, the sign in bit 31.
+    get(chunk, scale, line);
+    chunk.emit_f64_const(65536.0, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    get(chunk, value, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(2147483648.0, line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_end(line);
+    chunk.emit_op(Op::F64_ADD, line);
+
+    chunk.emit_array_new_fixed(0, 4, line);
+}
+
+/// `New Decimal(bits)` — the inverse of [`emit_decimal_get_bits`]. An ordinary
+/// number argument is the scalar constructor and passes straight through.
+pub fn emit_decimal_from_bits(chunks: &mut [Chunk], current: usize, line: u32) {
+    let scratch = chunks[current].alloc_scratch(4);
+    let (arg, mag, flags, scale) = (scratch, scratch + 1, scratch + 2, scratch + 3);
+    set(&mut chunks[current], arg, line);
+
+    get(&mut chunks[current], arg, line);
+    let is_number = chunks[current].add_import("wasm:js-number", "test");
+    chunks[current].emit_call(is_number, 1, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], arg, line);
+    chunks[current].emit_else(line);
+
+    // The magnitude, little-endian across the first three words. A word read
+    // back as a negative Int32 is the same 32 bits, so it folds by +2^32.
+    chunks[current].emit_f64_const(0.0, line);
+    set(&mut chunks[current], mag, line);
+    for word in 0..3u32 {
+        get(&mut chunks[current], arg, line);
+        chunks[current].emit_f64_const(word as f64, line);
+        vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+        set(&mut chunks[current], flags, line);
+        get(&mut chunks[current], flags, line);
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_op(Op::F64_LT, line);
+        chunks[current].emit_if_value(line);
+        get(&mut chunks[current], flags, line);
+        chunks[current].emit_f64_const(4294967296.0, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+        chunks[current].emit_else(line);
+        get(&mut chunks[current], flags, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_f64_const(4294967296f64.powi(word as i32), line);
+        chunks[current].emit_op(Op::F64_MUL, line);
+        get(&mut chunks[current], mag, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+        set(&mut chunks[current], mag, line);
+    }
+
+    get(&mut chunks[current], arg, line);
+    chunks[current].emit_f64_const(3.0, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], flags, line);
+
+    get(&mut chunks[current], flags, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_f64_const(65536.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    set(&mut chunks[current], scale, line);
+    get(&mut chunks[current], flags, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_f64_const(65536.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    get(&mut chunks[current], scale, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    set(&mut chunks[current], scale, line);
+
+    get(&mut chunks[current], mag, line);
+    emit_pow10(&mut chunks[current], scale, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    set(&mut chunks[current], mag, line);
+
+    // Bit 31 of `flags` is the sign, whichever way the word was read back.
+    // ⛔ BOTH ARMS PUSH. The magnitude is parked in its slot first: negating a
+    // value the `if` did not push leaves the arms at different heights.
+    get(&mut chunks[current], flags, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    get(&mut chunks[current], flags, line);
+    chunks[current].emit_f64_const(2147483648.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], mag, line);
+    chunks[current].emit_op(Op::F64_NEG, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], mag, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
 }

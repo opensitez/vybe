@@ -45,21 +45,24 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "MenuStrip",
             parent: Some("ToolStrip"),
             properties: &["MdiWindowListItem", "ShowItemToolTips", "Stretch"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "StatusStrip",
             parent: Some("ToolStrip"),
             properties: &["LayoutStyle", "ShowItemToolTips", "SizingGrip", "Stretch"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ContextMenuStrip",
             parent: Some("ToolStrip"),
@@ -72,7 +75,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // ── The items ──────────────────────────────────────────────────────
         // `ToolStripItem` is .NET's shared base for everything that sits ON a
         // strip. It is a `Component`, NOT a `Control`, which is why it carries
@@ -103,7 +107,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // `ToolStripDropDownItem` is what makes an item OPEN something —
         // declared so `DropDownItems` resolves, even though drop-downs do not
         // open yet.
@@ -113,7 +118,8 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["DropDown", "DropDownItems", "HasDropDownItems"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolStripMenuItem",
             parent: Some("ToolStripDropDownItem"),
@@ -127,34 +133,39 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolStripButton",
             parent: Some("ToolStripItem"),
             properties: &["CheckOnClick", "CheckState", "Checked"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolStripLabel",
             parent: Some("ToolStripItem"),
             properties: &["IsLink", "LinkColor", "LinkVisited"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolStripStatusLabel",
             parent: Some("ToolStripLabel"),
             properties: &["BorderSides", "BorderStyle", "Spring"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolStripSeparator",
             parent: Some("ToolStripItem"),
             properties: &[],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

@@ -7,8 +7,6 @@ use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::memory as common_memory;
 use vybe_compiler::primitives::pointers as common_pointers;
-use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
-use vybe_platform_dotnet::emitter::core::interop_classes as dotnet_interop;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
 thread_local! {
@@ -45,6 +43,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // `[Conditional("SYM")]` call elision below.
     let (source, defined_symbols) = preprocess_source_directives(source);
     __w.defined_symbols = defined_symbols;
+    let _line_index = vybe_ast::line_index::LineIndex::install(source.as_ref());
     let pairs = CSharpParser::parse(Rule::program, source.as_ref())
         .map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
@@ -183,7 +182,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // ahead of the exception hierarchy for the reason `interop_classes`
     // documents: their bodies call their own methods, so they have to reach a
     // frontend's implicit-self pass like any other declared class.
-    body.splice(0..0, dotnet_interop::synthesize_interop_classes(&source));
     body.splice(
         0..0,
         vybe_platform_dotnet::emitter::core::threading_classes::synthesize_threading_classes(&source),
@@ -194,10 +192,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
             &source, &body,
         ),
     );
-
-    let mut synthesized = dotnet_exceptions::synthesize_exception_classes();
-    synthesized.extend(synthesize_checked_numeric_helpers());
-    body.splice(0..0, synthesized);
 
     let mut module = Module {
         canon: Default::default(),
@@ -221,6 +215,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // .NET spells a Boolean `True`/`False` wherever a string needs it —
             // `Boolean.ToString` and every concatenation and interpolation.
             bool_text: Some(vybe_ast::BoolText::TitleCase),
+            // A .NET method is the raw function off the class; the CALL
+            // supplies the receiver as a leading argument, unlike prototype
+            // dispatch (JS/Dart) or bind-on-access (Python).
+            method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             ..Default::default()
         },
     };
@@ -1517,6 +1519,7 @@ fn normalize_attribute_type_name(
 }
 
 fn parse_csharp_inline_expression(__w: &mut CsWalker, text: &str) -> Option<Expression> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(text);
     let mut parsed = CSharpParser::parse(Rule::expression, text).ok()?;
     let pair = parsed.next()?;
     walk_expression(__w, pair).ok()
@@ -8838,71 +8841,6 @@ fn expr_dotted_name(expr: &Expression) -> Option<String> {
     }
 }
 
-fn synthesize_checked_numeric_helpers() -> Vec<Statement> {
-    vec![synthesize_checked_byte_cast_helper()]
-}
-
-fn synthesize_checked_byte_cast_helper() -> Statement {
-    let overflow_cond = Expression::new(ExprKind::Binary {
-        op: BinOp::Or,
-        left: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::Lt,
-            left: Box::new(Expression::ident("value")),
-            right: Box::new(Expression::int(0)),
-        })),
-        right: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::Gt,
-            left: Box::new(Expression::ident("value")),
-            right: Box::new(Expression::int(255)),
-        })),
-    });
-
-    Statement::with_span(
-        StmtKind::FunctionDecl {
-            name: "__vybe_csharp_checked_byte_cast".into(),
-            params: vec![Param {
-                name: "value".into(),
-                type_hint: Some("int".into()),
-                default: None,
-                pass_by: PassBy::Value,
-                is_rest: false,
-                is_kwargs: false,
-                is_optional: false,
-                is_nullable: false,
-            }],
-            return_type: Some("byte".into()),
-            body: vec![
-                Statement::new(StmtKind::If {
-                    cond: overflow_cond,
-                    then_body: vec![Statement::new(StmtKind::Throw {
-                        expr: Some(Expression::new(ExprKind::New {
-                            class: Box::new(Expression::ident("OverflowException")),
-                            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
-                                Literal::Str(
-                                    "Arithmetic operation resulted in an overflow.".into(),
-                                ),
-                            )))],
-                        })),
-                        cause: None,
-                    })],
-                    elifs: vec![],
-                    else_body: None,
-                }),
-                Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
-                    callee: Box::new(build_dotted_expr("Convert.ToByte")),
-                    args: vec![Argument::positional(Expression::ident("value"))],
-                    optional: false,
-                })))),
-            ],
-            modifiers: Modifiers::default(),
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        },
-        Span::default(),
-    )
-}
 
 // ── Top-level items ─────────────────────────────────────────────────────────
 
@@ -18068,6 +18006,17 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                 expr = Expression::ident(&name);
                 continue;
             }
+            // `System.Int128` / `System.UInt128` live directly under
+            // `System`, unlike the vector types above. They are still
+            // synthesized as short-named dotnet classes backed by the shared
+            // BigInt primitive, so qualified static access needs the same
+            // namespace collapse.
+            if matches!(name.as_str(), "Int128" | "UInt128")
+                && dotted_path_of(&expr).as_deref() == Some("System")
+            {
+                expr = Expression::ident(&name);
+                continue;
+            }
             // ⛔ THE SAME GAP, ONE NAMESPACE OVER. `System.Runtime.InteropServices`
             // classes are synthesized too, and their qualified path was never
             // collapsed — so
@@ -20966,14 +20915,21 @@ fn walk_body(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, Str
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let start = pair.as_span().start_pos().line_col();
-    let end = pair.as_span().end_pos().line_col();
-    Span {
-        start_line: start.0 as u32 - 1,
-        start_col: start.1 as u32 - 1,
-        end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1,
-    }
+    let s = pair.as_span();
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_0based(s.start(), s.end()).unwrap_or_else(|| {
+        let start = s.start_pos().line_col();
+        let end = s.end_pos().line_col();
+        Span {
+            start_line: start.0 as u32 - 1,
+            start_col: start.1 as u32 - 1,
+            end_line: end.0 as u32 - 1,
+            end_col: end.1 as u32 - 1,
+        }
+    })
 }
 
 fn unquote(s: &str) -> String {
@@ -23152,6 +23108,7 @@ fn parse_interpolated_expr_text(__w: &mut CsWalker, text: &str) -> Result<Expres
         }));
     }
 
+    let _line_index = vybe_ast::line_index::LineIndex::install(trimmed);
     let mut parsed = CSharpParser::parse(Rule::expression, trimmed)
         .map_err(|e| format!("Interpolation parse error: {}", e))?;
     let pair = parsed.next().ok_or("Empty interpolation expression")?;

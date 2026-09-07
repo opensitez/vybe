@@ -34,7 +34,8 @@ pub fn classes() -> &'static [DotnetClass] {
             // `widget_host_fn` FIRST, so leaving one here would pin the control
             // to a factory and the element mapping would never be reached —
             // only a `<canvas>` tag owns a drawing surface.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "WebBrowser",
             parent: Some("Control"),
@@ -65,6 +66,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 0,
             // `<iframe>` — see `html_element_for_control`. Renders as a plain
             // box until `widgets` grows a `webbrowser` kind.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

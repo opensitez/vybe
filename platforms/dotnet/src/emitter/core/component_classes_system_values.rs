@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut exports = vec![DotnetClassExport::new(
@@ -7,6 +7,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ClassType::new("Guid")
             .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.guid_new"))
             .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.guid_new"))
+            .with_constructor(ConstructorDef::new(11).with_common_backing("dotnet.guid_new"))
             .with_method(MethodDef::static_method(
                 "Empty",
                 0,
@@ -23,9 +24,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common("dotnet.guid_parse".into()),
             ))
             .with_method(MethodDef::static_method(
+                "ParseExact",
+                2,
+                MethodBody::Common("dotnet.guid_parse_exact".into()),
+            ))
+            .with_method(MethodDef::static_method(
                 "TryParse",
                 2,
                 MethodBody::Common("dotnet.guid_try_parse".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "TryParseExact",
+                3,
+                MethodBody::Common("dotnet.guid_try_parse_exact".into()),
             ))
             .with_method(MethodDef::new(
                 "ToString",
@@ -46,18 +57,33 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "GetHashCode",
                 0,
                 MethodBody::Common("dotnet.guid_get_hash_code".into()),
+            ))
+            .with_method(MethodDef::new(
+                "CompareTo",
+                1,
+                MethodBody::Common("dotnet.guid_compare_to".into()),
             )),
     )];
 
     for (name, parse_emit) in [
         ("Int32", "dotnet.parse_int"),
         ("int", "dotnet.parse_int"),
+        ("UInt32", "dotnet.parse_int"),
+        ("uint32", "dotnet.parse_int"),
+        ("uint", "dotnet.parse_int"),
         ("Byte", "dotnet.parse_byte"),
         ("byte", "dotnet.parse_byte"),
+        ("SByte", "dotnet.parse_int"),
+        ("sbyte", "dotnet.parse_int"),
+        ("UInt16", "dotnet.parse_int"),
+        ("uint16", "dotnet.parse_int"),
         ("Int64", "dotnet.parse_long"),
         ("long", "dotnet.parse_long"),
+        ("UInt64", "dotnet.bigint_parse"),
+        ("uint64", "dotnet.bigint_parse"),
         ("Single", "dotnet.parse_float"),
         ("float", "dotnet.parse_float"),
+        ("Half", "dotnet.parse_float"),
         ("Decimal", "dotnet.parse_decimal"),
         ("decimal", "dotnet.parse_decimal"),
         ("Double", "dotnet.parse_double"),
@@ -72,6 +98,43 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             1,
             MethodBody::Common(parse_emit.into()),
         ));
+        if matches!(
+            name,
+            "Int32"
+                | "int"
+                | "UInt32"
+                | "uint32"
+                | "uint"
+                | "Byte"
+                | "byte"
+                | "SByte"
+                | "sbyte"
+                | "UInt16"
+                | "uint16"
+                | "Int64"
+                | "long"
+                | "UInt64"
+                | "uint64"
+                | "Single"
+                | "float"
+                | "Half"
+                | "Decimal"
+                | "decimal"
+                | "Double"
+                | "double"
+        ) {
+            ty = ty
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    2,
+                    MethodBody::Common(parse_emit.into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    3,
+                    MethodBody::Common(parse_emit.into()),
+                ));
+        }
         if matches!(name, "Decimal" | "decimal") {
             ty = ty
                 .with_method(MethodDef::static_method(
@@ -108,6 +171,37 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Abs",
                     1,
                     MethodBody::Common("dotnet.system.math.abs".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Negate",
+                    1,
+                    MethodBody::Common("dotnet.decimal_negate".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Compare",
+                    2,
+                    MethodBody::Common("dotnet.decimal_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetBits",
+                    1,
+                    MethodBody::Common("dotnet.decimal_get_bits".into()),
+                ))
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.decimal_from_bits"),
+                );
+        }
+        if matches!(name, "UInt64" | "uint64") {
+            ty = ty
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.bigint_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.bigint_to_string".into()),
                 ));
         }
         // `System.Char`'s static surface. Only `Parse` was registered, so
@@ -144,7 +238,10 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("IsAscii", "dotnet.char_is_ascii"),
                 ("IsAsciiDigit", "dotnet.char_is_ascii_digit"),
                 ("IsAsciiLetter", "dotnet.char_is_ascii_letter"),
-                ("IsAsciiLetterOrDigit", "dotnet.char_is_ascii_letter_or_digit"),
+                (
+                    "IsAsciiLetterOrDigit",
+                    "dotnet.char_is_ascii_letter_or_digit",
+                ),
                 ("IsAsciiHexDigit", "dotnet.char_is_ascii_hex_digit"),
                 ("IsControl", "dotnet.char_is_control"),
                 ("IsSeparator", "dotnet.char_is_separator"),
@@ -176,10 +273,10 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // Integral types floor, so they take the `int` body; the rest keep
         // their fraction.
         let try_parse_emit = match name {
-            "Int32" | "int" | "Int64" | "long" | "Byte" | "byte" | "Int16" | "short" => {
-                Some("dotnet.try_parse_int")
-            }
-            "Single" | "float" | "Double" | "double" | "Decimal" | "decimal" => {
+            "Int32" | "int" | "UInt32" | "uint32" | "uint" | "Int64" | "long" | "UInt64"
+            | "uint64" | "Byte" | "byte" | "SByte" | "sbyte" | "Int16" | "short" | "UInt16"
+            | "uint16" => Some("dotnet.try_parse_int"),
+            "Single" | "float" | "Half" | "Double" | "double" | "Decimal" | "decimal" => {
                 Some("dotnet.try_parse_double")
             }
             _ => None,
@@ -197,15 +294,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // first match — so declaring `IsNaN` separately left it unreachable
         // while `Parse` on the other copy resolved. It also gets them the
         // lowercase spellings (`double.IsNaN`) for free.
-        if matches!(name, "Single" | "float" | "Double" | "double") {
+        if matches!(name, "Single" | "float" | "Half" | "Double" | "double") {
             for (member, emit) in [
                 ("IsNaN", "dotnet.double_is_nan"),
                 ("IsInfinity", "dotnet.double_is_infinity"),
                 ("IsPositiveInfinity", "dotnet.double_is_positive_infinity"),
                 ("IsNegativeInfinity", "dotnet.double_is_negative_infinity"),
                 ("IsFinite", "dotnet.double_is_finite"),
+                ("IsInteger", "dotnet.double_is_integer"),
+                ("IsNegative", "dotnet.double_is_negative"),
                 ("IsNormal", "dotnet.double_is_normal"),
-                ("IsSubnormal", "dotnet.double_is_subnormal"),
+                (
+                    "IsSubnormal",
+                    if name == "Half" {
+                        "dotnet.half_is_subnormal"
+                    } else {
+                        "dotnet.double_is_subnormal"
+                    },
+                ),
             ] {
                 ty = ty.with_method(MethodDef::static_method(
                     member,

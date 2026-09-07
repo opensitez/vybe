@@ -14,8 +14,8 @@
 //! `FreeHGlobal` answers null, matching `memory::free_value()`: allocations are
 //! GC-owned, so freeing is an accounting no-op, and .NET's method returns void.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `Marshal.AllocHGlobal(cb)` / `AllocCoTaskMem(cb)` — a zeroed byte block.
 pub fn emit_alloc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 
@@ -255,8 +255,7 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
     }
 
     if let Some(emit) = common_ctor_for(class.name) {
-        out = out
-            .with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
+        out = out.with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
     } else if crate::emitter::tree_register::is_element_mapped(class.name) {
         // An element-mapped class is CONSTRUCTIBLE without any host factory:
         // the element mapping is what materializes it, and the

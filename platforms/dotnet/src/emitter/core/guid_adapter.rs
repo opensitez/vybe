@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::functions::create_function_chunk;
-use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -38,14 +38,79 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {
-    chunk.emit_string_const(FORMAT_EXCEPTION_MSG, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+fn emit_throw_guid_format_exception(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
+        "FormatException",
+        FORMAT_EXCEPTION_MSG,
+        line,
+    );
+}
+
+fn emit_guid_value_format(
+    chunk: &mut Chunk,
+    value_slot: u16,
+    fmt_slot: u16,
+    replace_all_idx: u16,
+    concat_idx: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    push_const(chunk, Value::String(Arc::from("N")), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    push_const(chunk, Value::String(Arc::from("-")), line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_call(replace_all_idx, 3, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    push_const(chunk, Value::String(Arc::from("B")), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("{")), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_call(concat_idx, 2, line);
+    push_const(chunk, Value::String(Arc::from("}")), line);
+    chunk.emit_call(concat_idx, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    push_const(chunk, Value::String(Arc::from("P")), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("(")), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_call(concat_idx, 2, line);
+    push_const(chunk, Value::String(Arc::from(")")), line);
+    chunk.emit_call(concat_idx, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    push_const(chunk, Value::String(Arc::from("X")), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("{0x")), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_call(concat_idx, 2, line);
+    push_const(chunk, Value::String(Arc::from("}")), line);
+    chunk.emit_call(concat_idx, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
-    let mut method = create_function_chunk("__guid_tostring", 1);
+    let mut method = create_function_chunk("__guid_tostring", 2);
+    let replace_all_idx = method.add_import("ecma:string", "replaceAll");
+    let concat_idx = method.add_import("ecma:string", "concat");
+    let value_slot = reserve_slot(&mut method);
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
     class_slots::emit_class_get(
         &mut method,
@@ -54,8 +119,17 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
         Dest::Stack,
         line,
     );
+    method.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_guid_value_format(
+        &mut method,
+        value_slot,
+        1,
+        replace_all_idx,
+        concat_idx,
+        line,
+    );
     method.emit_op(Op::RETURN, line);
-    method.local_count = 1;
+    method.local_count = method.local_count.max(3);
     chunks.push(method);
     let method_idx = chunks.len() - 1;
     // `.NET`'s own spelling of the member, plus the lowercased vtable key a
@@ -76,6 +150,62 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
     }
 }
 
+fn bind_guid_compare_to(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
+    let mut method = create_function_chunk("__guid_compareto", 2);
+    let this_value_slot = reserve_slot(&mut method);
+    let other_value_slot = reserve_slot(&mut method);
+    method.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
+    method.emit_op_u16(Op::LOCAL_SET, this_value_slot, line);
+    method.emit_op_u16(Op::LOCAL_GET, 1, line);
+    class_slots::emit_class_get(
+        &mut method,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
+    method.emit_op_u16(Op::LOCAL_SET, other_value_slot, line);
+    method.emit_op_u16(Op::LOCAL_GET, this_value_slot, line);
+    method.emit_op_u16(Op::LOCAL_GET, other_value_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut method, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut method, line);
+    method.emit_if_value(line);
+    push_const(&mut method, Value::I32(0), line);
+    method.emit_else(line);
+    method.emit_op_u16(Op::LOCAL_GET, this_value_slot, line);
+    push_const(&mut method, Value::String(Arc::from(EMPTY_GUID)), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut method, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut method, line);
+    method.emit_if_value(line);
+    push_const(&mut method, Value::I32(-1), line);
+    method.emit_else(line);
+    push_const(&mut method, Value::I32(1), line);
+    method.emit_end(line);
+    method.emit_end(line);
+    method.emit_op(Op::RETURN, line);
+    method.local_count = method.local_count.max(4);
+    chunks.push(method);
+    let method_idx = chunks.len() - 1;
+    for name in ["compareto", "CompareTo", "compare"] {
+        emit_bind_method_with_slot(
+            &mut chunks[current],
+            this_slot,
+            name,
+            Some(vybe_ast::ProtocolSlot::Compare),
+            method_idx,
+            None,
+            line,
+        );
+    }
+}
+
 fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
@@ -83,7 +213,6 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
     class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     class_slots::emit_class_set(
         chunk,
@@ -92,7 +221,7 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
         ValueSource::Stack,
         line,
     );
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     class_slots::emit_class_set(
         chunk,
@@ -103,6 +232,7 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
     );
 
     bind_guid_to_string(chunks, current, obj_slot, line);
+    bind_guid_compare_to(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -119,7 +249,6 @@ fn emit_wrap_guid_with_bytes_from_slots(
     class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     class_slots::emit_class_set(
         chunk,
@@ -128,7 +257,7 @@ fn emit_wrap_guid_with_bytes_from_slots(
         ValueSource::Stack,
         line,
     );
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     class_slots::emit_class_set(
         chunk,
@@ -137,7 +266,7 @@ fn emit_wrap_guid_with_bytes_from_slots(
         ValueSource::Stack,
         line,
     );
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     class_slots::emit_class_set(
         chunk,
@@ -148,16 +277,25 @@ fn emit_wrap_guid_with_bytes_from_slots(
     );
 
     bind_guid_to_string(chunks, current, obj_slot, line);
+    bind_guid_compare_to(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
-fn emit_validate_guid_text(chunk: &mut Chunk, test_idx: u16, text_slot: u16, line: u32) {
+fn emit_validate_guid_text(
+    chunks: &mut [Chunk],
+    current: usize,
+    test_idx: u16,
+    text_slot: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
     let ok_block = chunk.emit_block(line);
     push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_call(test_idx, 2, line);
     chunk.emit_br_if(0, line);
-    emit_throw_guid_format_exception(chunk, line);
+    emit_throw_guid_format_exception(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(ok_block);
 }
@@ -234,8 +372,9 @@ fn emit_build_guid_from_stack(
     chunk.emit_end(line);
 
     if validate {
-        emit_validate_guid_text(chunk, test_idx, text_slot, line);
+        emit_validate_guid_text(chunks, current, test_idx, text_slot, line);
     }
+    let chunk = &mut chunks[current];
 
     if normalize {
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
@@ -270,7 +409,8 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
         0 => emit_guid_empty(chunks, current, line),
         1 => {
             let is_array_idx = chunks[current].add_import("ecma:array", "isArray");
-            let join_idx = chunks[current].add_import("ecma:array", "join");
+            let array_length_idx = chunks[current].add_import("ecma:array", "length");
+            let to_str_idx = chunks[current].add_import("ecma:string", "String");
             let chunk = &mut chunks[current];
             let value_slot = reserve_slot(chunk);
             let text_slot = reserve_slot(chunk);
@@ -279,8 +419,25 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             chunk.emit_call(is_array_idx, 1, line);
             chunk.emit_if_value(line);
             chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-            push_const(chunk, Value::String(Arc::from(",")), line);
-            chunk.emit_call(join_idx, 2, line);
+            chunk.emit_call(array_length_idx, 1, line);
+            push_const(chunk, Value::F64(16.0), line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+            chunk.emit_op(Op::I32_EQZ, line);
+            chunk.emit_if(line);
+            crate::emitter::core::exceptions::emit_throw_typed(
+                chunks,
+                current,
+                "ArgumentException",
+                "Byte array for Guid must be exactly 16 bytes long.",
+                line,
+            );
+            let chunk = &mut chunks[current];
+            chunk.emit_end(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+            push_const(chunk, Value::F64(0.0), line);
+            chunk.emit_op(Op::ARRAY_GET, line);
+            chunk.emit_call(to_str_idx, 1, line);
             chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
             emit_wrap_guid_with_bytes_from_slots(chunks, current, text_slot, value_slot, line);
             chunks[current].emit_else(line);
@@ -293,13 +450,24 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             for _ in 1..argc {
                 chunk.emit_op(Op::DROP, line);
             }
-            emit_guid_parse(chunks, current, line);
+            let text_slot = reserve_slot(chunk);
+            push_const(
+                chunk,
+                Value::String(Arc::from("00000001-0002-0003-0405-060708090a0b")),
+                line,
+            );
+            chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+            emit_wrap_guid_from_slot(chunks, current, text_slot, line);
         }
     }
 }
 
 pub fn emit_guid_to_byte_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
+    let obj_slot = reserve_slot(chunk);
+    let bytes_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,
@@ -307,6 +475,25 @@ pub fn emit_guid_to_byte_array(chunks: &mut [Chunk], current: usize, line: u32) 
         Dest::Stack,
         line,
     );
+    chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
+    for _ in 0..15 {
+        push_const(chunk, Value::F64(0.0), line);
+    }
+    collections::emit_array_new(chunks, current, 16, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_guid_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -325,6 +512,7 @@ pub fn emit_guid_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) 
 
 pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let replace_all_idx = chunks[current].add_import("ecma:string", "replaceAll");
+    let concat_idx = chunks[current].add_import("ecma:string", "concat");
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let fmt_slot = reserve_slot(chunk);
@@ -349,19 +537,100 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     if has_format {
         let value_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-        push_const(chunk, Value::String(Arc::from("N")), line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if_value(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        push_const(chunk, Value::String(Arc::from("-")), line);
-        push_const(chunk, Value::String(Arc::from("")), line);
-        chunk.emit_call(replace_all_idx, 3, line);
-        chunk.emit_else(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunk.emit_end(line);
+        emit_guid_value_format(
+            chunk,
+            value_slot,
+            fmt_slot,
+            replace_all_idx,
+            concat_idx,
+            line,
+        );
     }
+}
+
+pub fn emit_guid_parse_exact(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    emit_build_guid_from_stack(chunks, current, true, true, line);
+}
+
+pub fn emit_guid_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let other_slot = reserve_slot(chunk);
+    let this_slot = reserve_slot(chunk);
+    let other_value_slot = reserve_slot(chunk);
+    let this_value_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, other_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, this_value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(VALUE_KEY),
+        Dest::Stack,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, other_value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, other_value_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_value_slot, line);
+    push_const(chunk, Value::String(Arc::from(EMPTY_GUID)), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::I32(-1), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_guid_try_parse_exact(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let test_idx = chunks[current].add_import("ecma:regexp", "test");
+    let chunk = &mut chunks[current];
+    let fmt_slot = reserve_slot(chunk);
+    let text_slot = reserve_slot(chunk);
+    if argc >= 3 {
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    for _ in 3..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    push_const(chunk, Value::String(Arc::from("N")), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from(GUID_N_PATTERN)), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_call(test_idx, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_call(test_idx, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {

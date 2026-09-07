@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use vybe_runtime::component_model::ClassType;
+use vybe_compiler::component_classes::ClassType;
 
 pub fn component_class_exports() -> &'static [(&'static str, ClassType)] {
     static EXPORTS: LazyLock<Vec<(&'static str, ClassType)>> = LazyLock::new(|| {

@@ -107,7 +107,13 @@ fn compile_body_offset(
             MethodOp::PushThisField(field) => {
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(field), Dest::Stack, line);
+                class_slots::emit_class_get(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(field),
+                    Dest::Stack,
+                    line,
+                );
             }
             MethodOp::PushArgField(n, field) => {
                 debug_assert!(
@@ -118,7 +124,13 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(field), Dest::Stack, line);
+                class_slots::emit_class_get(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(field),
+                    Dest::Stack,
+                    line,
+                );
             }
             MethodOp::PushArgFieldField(n, f1, f2) => {
                 debug_assert!(
@@ -129,9 +141,21 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
-                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(f1), Dest::Stack, line);
+                class_slots::emit_class_get(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(f1),
+                    Dest::Stack,
+                    line,
+                );
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
-                class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(f2), Dest::Stack, line);
+                class_slots::emit_class_get(
+                    chunk,
+                    ObjSource::Stack,
+                    &field_slot(f2),
+                    Dest::Stack,
+                    line,
+                );
             }
             MethodOp::PushConstInt(v) => {
                 chunk.emit_f64_const(v as f64, line);

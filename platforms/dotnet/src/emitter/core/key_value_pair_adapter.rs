@@ -14,6 +14,7 @@
 //! shared `primitives::records::emit_value_fields_equal` that the `==` operator
 //! already uses.
 
+use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::classes;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::convert;
@@ -21,7 +22,6 @@ use vybe_compiler::primitives::records;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 /// Field names are written in BOTH spellings.
 ///
@@ -34,7 +34,14 @@ use vybe_compiler::primitives::class_slots;
 const KEY_FIELDS: [&str; 2] = ["Key", "key"];
 const VALUE_FIELDS: [&str; 2] = ["Value", "value"];
 
-fn set_field(chunks: &mut [Chunk], current: usize, object: u16, field: &str, value: u16, line: u32) {
+fn set_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    object: u16,
+    field: &str,
+    value: u16,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
     chunks[current].emit_string_const(field, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);

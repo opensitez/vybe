@@ -2,7 +2,9 @@
 //! language module; the common dispatcher delegates here).
 
 use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::{Chunk, Value};
 
@@ -11,8 +13,8 @@ use vybe_runtime::{Chunk, Value};
 /// pushes and the order the type declares cannot disagree.
 use crate::emitter::classes::drawing::fields_for as vt_fields;
 
-use vybe_runtime::opcode::Op;
 use crate::emitter::core::object_fields::field_slot;
+use vybe_runtime::opcode::Op;
 
 /// `Control.CreateGraphics()` — **`element.getContext("2d")`**, HTML §4.12.5.
 ///
@@ -28,14 +30,8 @@ use crate::emitter::core::object_fields::field_slot;
 /// draw is a silent no-op, because a canvas op on an unresolved target paints
 /// nothing rather than raising.
 ///
-/// `__type` is re-stamped to `Graphics` because guest code downcasts on it
-/// (`emit_get_type` below reads the same field); the raw context introduces
-/// itself as `CanvasRenderingContext2D`, which is true of the handle and wrong
-/// for the .NET object wrapping it.
-///
 /// Stack on entry: `[control]`; on exit: `[graphics]`.
 fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     let get_context = chunk.add_import("web:canvas", "getContext");
     let save = chunk.add_import("web:canvas", "save");
     chunk.emit_string_const("2d", line); // [control, "2d"]
@@ -47,20 +43,6 @@ fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
     core_wasm::dup(chunk, line); // [graphics, graphics]
     chunk.emit_call(save, 1, line); // [graphics, null]
     chunk.emit_op(Op::DROP, line); // [graphics]
-    // `STRUCT_SET` consumes the object AND the value, so the `dup` above is
-    // what keeps the context on the stack — there is nothing left to drop
-    // afterwards. Dropping here emptied the stack and `Dim g As Graphics`
-    // bound `null`, which is why every later `g.DrawX()` was a call on null:
-    // it painted nothing and raised nothing.
-    core_wasm::dup(chunk, line); // [graphics, graphics]
-    chunk.emit_string_const("Graphics", line); // [graphics, graphics, "Graphics"]
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("__type"),
-        ValueSource::Stack,
-        line,
-    ); // [graphics]
 }
 
 /// VB `Choose(idx, v1, v2, ..., vN)` — variadic 1-indexed selector.
@@ -85,33 +67,82 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op(Op::ARRAY_GET, line);
 }
 
-/// `.NET object.GetType()` — return a Type-like descriptor with at least `Name`.
-/// Stack: `[value] -> [{ Name = value.name || value.__type || typeof(value) }]`.
+/// VB `Switch(cond1, value1, ..., condN, valueN)` — return the first value
+/// whose paired condition is truthy, or Nothing when no condition matches.
+fn emit_switch(chunk: &mut Chunk, argc: u8, line: u32) {
+    if argc < 2 {
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        return;
+    }
+
+    let mut slots = Vec::with_capacity(argc as usize);
+    for index in 0..argc {
+        let slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        slots.push((index, slot));
+    }
+    slots.reverse();
+
+    let result_slot = chunk.alloc_scratch(1);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let matched_slot = chunk.alloc_scratch(1);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+
+    for pair in slots.chunks(2) {
+        if pair.len() < 2 {
+            break;
+        }
+        let cond_slot = pair[0].1;
+        let value_slot = pair[1].1;
+        chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, cond_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+        chunk.emit_bool_const(true, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `.NET object.GetType()` — return a Type-like descriptor.
+/// Stack: `[value] -> [{ Name, FullName }]`.
 fn emit_get_type(chunk: &mut Chunk, line: u32) {
-    let value_slot = chunk.alloc_scratch(3);
+    let value_slot = chunk.alloc_scratch(4);
     let name_slot = value_slot + 1;
-    let out_slot = value_slot + 2;
+    let short_slot = value_slot + 2;
+    let out_slot = value_slot + 3;
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("name"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("name"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    // ⛔BOTH FALLBACKS ARE `if`, NOT `block` + `br_if`.
-    //
-    // A branch out of a bare block unwinds the operand stack to the block's
-    // entry depth, and this emitter runs with whatever the surrounding
-    // expression already pushed sitting UNDERNEATH it. Inside an object
-    // literal that is the object being built, so `@{ R = $x.GetType() }`
-    // discarded it and the WHOLE literal came back empty — every field, not
-    // just this one. `if` composes because it declares its own boundary; the
-    // two guards below this already use it and always worked.
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     emit_slot_is_nullish(chunk, name_slot, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__type"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
@@ -124,12 +155,35 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunk.emit_string_const("number", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let test_i32 = chunk.add_import("wasm:js-number", "testI32");
+    chunk.emit_call(test_i32, 1, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("System.Int32", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("System.Double", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    normalize_type_name_slot(chunk, name_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunk.emit_string_const("object", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    let exception_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__exception_type"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__exception_type"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
@@ -138,15 +192,31 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot("__exception_type"), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("__exception_type"),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
+
+    normalize_type_name_slot(chunk, name_slot, line);
+
+    let split = chunk.add_import("ecma:string", "split");
+    let at = chunk.add_import("ecma:array", "at");
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunk.emit_string_const(".", line);
+    chunk.emit_call(split, 2, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_call(at, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, short_slot, line);
 
     class_slots::emit_class_alloc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-    let public_name_key = chunk.add_constant(Value::String(Arc::from("Name")));
+    chunk.emit_op_u16(Op::LOCAL_GET, short_slot, line);
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,
@@ -156,6 +226,84 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     );
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("FullName"),
+        ValueSource::Stack,
+        line,
+    );
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+fn normalize_type_name_slot(chunk: &mut Chunk, slot: u16, line: u32) {
+    for (from, to) in [
+        ("string", "System.String"),
+        ("number", "System.Double"),
+        ("boolean", "System.Boolean"),
+        ("bigint", "System.Numerics.BigInteger"),
+        ("object", "System.Object"),
+        ("undefined", "System.Object"),
+        ("ErrorRecord", "System.Management.Automation.ErrorRecord"),
+        ("PSSerializer", "System.Management.Automation.PSSerializer"),
+        ("DebugRecord", "System.Management.Automation.DebugRecord"),
+        (
+            "WarningRecord",
+            "System.Management.Automation.WarningRecord",
+        ),
+        (
+            "InformationRecord",
+            "System.Management.Automation.InformationRecord",
+        ),
+        (
+            "ErrorCategoryInfo",
+            "System.Management.Automation.ErrorCategoryInfo",
+        ),
+        (
+            "ShouldProcessReason",
+            "System.Management.Automation.ShouldProcessReason",
+        ),
+        (
+            "ConfirmImpact",
+            "System.Management.Automation.ConfirmImpact",
+        ),
+        (
+            "CmdletBindingAttribute",
+            "System.Management.Automation.CmdletBindingAttribute",
+        ),
+        (
+            "ParameterAttribute",
+            "System.Management.Automation.ParameterAttribute",
+        ),
+        (
+            "RuntimeDefinedParameter",
+            "System.Management.Automation.RuntimeDefinedParameter",
+        ),
+        (
+            "RuntimeDefinedParameterDictionary",
+            "System.Management.Automation.RuntimeDefinedParameterDictionary",
+        ),
+        (
+            "InvocationInfo",
+            "System.Management.Automation.InvocationInfo",
+        ),
+        ("CommandInfo", "System.Management.Automation.CommandInfo"),
+        ("ErrorDetails", "System.Management.Automation.ErrorDetails"),
+        (
+            "ActionPreferenceStopException",
+            "System.Management.Automation.ActionPreferenceStopException",
+        ),
+    ] {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_string_const(from, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_string_const(to, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunk.emit_end(line);
+    }
 }
 
 fn emit_slot_is_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -167,7 +315,8 @@ fn emit_slot_is_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
 }
 
-fn emit_to_byte(chunk: &mut Chunk, line: u32) {
+fn emit_to_byte(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
     let value_slot = chunk.alloc_scratch(1);
     let number_idx = chunk.add_import("ecma:number", "Number");
     chunk.emit_call(number_idx, 1, line);
@@ -181,12 +330,16 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "OverflowException",
-        class_slots::ValueSource::ConstStr("Arithmetic operation resulted in an overflow.".to_string()),
+        class_slots::ValueSource::ConstStr(
+            "Arithmetic operation resulted in an overflow.".to_string(),
+        ),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
         chunk,
         "OverflowException",
@@ -252,24 +405,117 @@ pub(crate) fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[
             line,
         );
     }
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    core_wasm::dup(chunk, line);
-    chunk.emit_string_const(type_name, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("__type"),
-        ValueSource::Stack,
-        line,
-    );
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
-    use crate::emitter::core::comparer_adapter as cmp;
     use crate::emitter::core::bitarray_adapter as ba;
-    use crate::emitter::core::specialized_adapter as sp;
+    use crate::emitter::core::comparer_adapter as cmp;
     use crate::emitter::core::immutable_adapter as imm;
+    use crate::emitter::core::specialized_adapter as sp;
     if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line) {
+        return true;
+    }
+    {
+        use crate::emitter::core::interop_classes as interop;
+        let handled = match name {
+            interop::GCHANDLE_ALLOC => {
+                Some(interop::emit_gchandle_alloc(chunks, current, argc, line))
+            }
+            interop::GCHANDLE_FREE => Some(interop::emit_gchandle_free(chunks, current, line)),
+            interop::GCHANDLE_ADDR_OF_PINNED => {
+                Some(interop::emit_gchandle_addr_of_pinned(chunks, current, line))
+            }
+            interop::GCHANDLE_IDENTITY => {
+                Some(interop::emit_gchandle_identity(chunks, current, argc, line))
+            }
+            interop::SAFEHANDLE_NEW => {
+                Some(interop::emit_safehandle_new(chunks, current, argc, line))
+            }
+            interop::SAFEHANDLE_ZERO_OR_MINUS_ONE_NEW => Some(
+                interop::emit_safehandle_zero_or_minus_one_new(chunks, current, argc, line),
+            ),
+            interop::SAFEHANDLE_SET_HANDLE => {
+                Some(interop::emit_safehandle_set_handle(chunks, current, line))
+            }
+            interop::SAFEHANDLE_DANGEROUS_GET_HANDLE => Some(
+                interop::emit_safehandle_dangerous_get_handle(chunks, current, line),
+            ),
+            interop::SAFEHANDLE_SET_HANDLE_AS_INVALID => Some(
+                interop::emit_safehandle_set_handle_as_invalid(chunks, current, line),
+            ),
+            interop::SAFEHANDLE_RELEASE_HANDLE => Some(interop::emit_safehandle_release_handle(
+                chunks, current, line,
+            )),
+            interop::SAFEHANDLE_DANGEROUS_ADD_REF => Some(
+                interop::emit_safehandle_dangerous_add_ref(chunks, current, line),
+            ),
+            interop::SAFEHANDLE_DANGEROUS_RELEASE => Some(
+                interop::emit_safehandle_dangerous_release(chunks, current, line),
+            ),
+            interop::SAFEHANDLE_DISPOSE => {
+                Some(interop::emit_safehandle_dispose(chunks, current, line))
+            }
+            _ => None,
+        };
+        if handled.is_some() {
+            return true;
+        }
+    }
+    // The `#into` form of any other constructor: the receiver a derived
+    // class allocated sits above the arguments. Build the instance the plain
+    // way, then merge its slots into the receiver, which keeps its own type.
+    if let Some(base) = name.strip_suffix(vybe_compiler::component_classes::CTOR_INTO_SUFFIX)
+        && !base.starts_with(crate::emitter::core::exceptions::EXCEPTION_CTOR_PREFIX)
+    {
+        // Adapters that write their fields onto a given receiver.
+        if base == crate::emitter::core::interop_classes::SAFEHANDLE_NEW {
+            crate::emitter::core::interop_classes::emit_safehandle_new_into(
+                chunks,
+                current,
+                argc.saturating_sub(1),
+                line,
+            );
+            return true;
+        }
+        if base == crate::emitter::core::interop_classes::SAFEHANDLE_ZERO_OR_MINUS_ONE_NEW {
+            crate::emitter::core::interop_classes::emit_safehandle_zero_or_minus_one_new_into(
+                chunks,
+                current,
+                argc.saturating_sub(1),
+                line,
+            );
+            return true;
+        }
+        let receiver = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, receiver, line);
+        if !dispatch(base, chunks, current, argc.saturating_sub(1), line) {
+            return false;
+        }
+        let chunk = &mut chunks[current];
+        let fresh = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, fresh, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, receiver, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, fresh, line);
+        let assign = chunk.add_import("ecma:object", "assign");
+        chunk.emit_call(assign, 2, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, receiver, line);
+        return true;
+    }
+    if let Some(class) = name.strip_prefix(crate::emitter::core::exceptions::EXCEPTION_CTOR_PREFIX)
+    {
+        match class.strip_suffix(vybe_compiler::component_classes::CTOR_INTO_SUFFIX) {
+            Some(class) => crate::emitter::core::exceptions::emit_exception_ctor_into(
+                chunks,
+                current,
+                class,
+                argc.saturating_sub(1),
+                line,
+            ),
+            None => crate::emitter::core::exceptions::emit_exception_ctor(
+                chunks, current, class, argc, line,
+            ),
+        }
         return true;
     }
     match name {
@@ -330,9 +576,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // between two such authors produces: objects that are wrong and look
         // right. Order here IS the storage order, so it is the same contract
         // `ClassType.fields` indexes by.
-        "dotnet.rectangle_new" if argc == 4 => {
-            emit_value_type_new(&mut chunks[current], "Rectangle", vt_fields("Rectangle"), line)
-        }
+        "dotnet.rectangle_new" if argc == 4 => emit_value_type_new(
+            &mut chunks[current],
+            "Rectangle",
+            vt_fields("Rectangle"),
+            line,
+        ),
         "dotnet.point_new" if argc == 2 => {
             emit_value_type_new(&mut chunks[current], "Point", vt_fields("Point"), line)
         }
@@ -404,9 +653,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.pen_new" if argc == 2 => {
             emit_value_type_new(&mut chunks[current], "Pen", vt_fields("Pen"), line)
         }
-        "dotnet.solid_brush_new" if argc == 1 => {
-            emit_value_type_new(&mut chunks[current], "SolidBrush", vt_fields("SolidBrush"), line)
-        }
+        "dotnet.solid_brush_new" if argc == 1 => emit_value_type_new(
+            &mut chunks[current],
+            "SolidBrush",
+            vt_fields("SolidBrush"),
+            line,
+        ),
         // The two patterned brushes. Field names and ORDER are the contract the
         // retired factories set, reproduced exactly — a brush is read by
         // property name, so renaming a
@@ -418,8 +670,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // introduced here. Fixing it means routing these to the canvas
         // `createPattern` / `createLinearGradient` that `widgets` now has,
         // which is the fill path, not the constructor.
-        // `new Graphics()` — a bare identity record, exactly what `graphicsNew`
-        // built: no arguments, three stamped fields, no canvas.
+        // `new Graphics()` — a bare graphics record with no canvas.
         //
         // A REAL drawing surface never comes from here — it comes from
         // `CreateGraphics` (`getContext("2d")`) or `Graphics.FromImage`. This
@@ -429,7 +680,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let chunk = &mut chunks[current];
             class_slots::emit_class_alloc(chunk, line);
             for (field, value) in [
-                ("__type", "Graphics"),
                 ("__control_type", "Graphics"),
                 ("__control_name", "graphics"),
             ] {
@@ -456,7 +706,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             line,
         ),
         "dotnet.get_type" => emit_get_type(&mut chunks[current], line),
-        "dotnet.to_byte" => emit_to_byte(&mut chunks[current], line),
+        "dotnet.to_byte" => emit_to_byte(chunks, current, line),
         "dotnet.control_create_graphics" => {
             emit_control_create_graphics(&mut chunks[current], line);
         }
@@ -489,14 +739,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.bitconverter_get_bytes" => {
             crate::emitter::core::bitconverter_adapter::emit_get_bytes(chunks, current, line)
         }
+        "dotnet.bitconverter_get_bytes_half" => {
+            crate::emitter::core::bitconverter_adapter::emit_get_bytes_half(chunks, current, line)
+        }
+        "dotnet.bitconverter_get_bytes_char" => {
+            crate::emitter::core::bitconverter_adapter::emit_get_bytes_char(chunks, current, line)
+        }
         "dotnet.bitconverter_to_number" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_number(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_number(chunks, current, argc, line)
         }
         "dotnet.bitconverter_to_int32" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_int32(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_int32(chunks, current, argc, line)
         }
         "dotnet.bitconverter_to_int16" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_int16(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_int16(chunks, current, argc, line)
         }
         // `Convert.To<Integral>` — narrowing WITH the .NET range check.
         "dotnet.convert_to_byte" => crate::emitter::core::convert_adapter::emit_convert_checked(
@@ -512,25 +768,59 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks, current, 0.0, 65_535.0, "UInt16", line,
         ),
         "dotnet.convert_to_int32" => crate::emitter::core::convert_adapter::emit_convert_checked(
-            chunks, current, -2_147_483_648.0, 2_147_483_647.0, "Int32", line,
+            chunks,
+            current,
+            -2_147_483_648.0,
+            2_147_483_647.0,
+            "Int32",
+            line,
         ),
+        "dotnet.convert_to_int32_base" => {
+            crate::emitter::core::convert_adapter::emit_convert_to_int32_base(chunks, current, line)
+        }
+        "dotnet.convert_to_string_base" => {
+            crate::emitter::core::convert_adapter::emit_convert_to_string_base(
+                chunks, current, line,
+            )
+        }
+        "dotnet.checked_byte_cast" => {
+            crate::emitter::core::convert_adapter::emit_checked_byte_cast(chunks, current, line)
+        }
+        "dotnet.convert_to_boolean" => {
+            crate::emitter::core::convert_adapter::emit_convert_to_boolean(chunks, current, line)
+        }
         "dotnet.convert_to_uint32" => crate::emitter::core::convert_adapter::emit_convert_checked(
-            chunks, current, 0.0, 4_294_967_295.0, "UInt32", line,
+            chunks,
+            current,
+            0.0,
+            4_294_967_295.0,
+            "UInt32",
+            line,
         ),
         "dotnet.bitconverter_to_number16" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_number16(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_number16(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.bitconverter_to_number64" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_number64(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_number64(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.bitconverter_to_boolean" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_boolean(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_boolean(chunks, current, argc, line)
         }
         "dotnet.bitconverter_to_char" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_char(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_char(chunks, current, argc, line)
         }
         "dotnet.bitconverter_to_string" => {
-            crate::emitter::core::bitconverter_adapter::emit_to_string(chunks, current, line)
+            crate::emitter::core::bitconverter_adapter::emit_to_string(chunks, current, argc, line)
+        }
+        "dotnet.bitconverter_to_half" => {
+            crate::emitter::core::bitconverter_adapter::emit_to_half(chunks, current, argc, line)
+        }
+        "dotnet.bitconverter_try_write_bytes" => {
+            crate::emitter::core::bitconverter_adapter::emit_try_write_bytes(chunks, current, line)
         }
         "dotnet.bitconverter_single_to_int32_bits" => {
             crate::emitter::core::bitconverter_adapter::emit_single_to_int32_bits(
@@ -561,8 +851,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.ip_address_parse" => {
             crate::emitter::core::sockets_adapter::emit_ip_address_parse(chunks, current, line)
         }
+        "dotnet.ip_address_try_parse" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_try_parse(chunks, current, line)
+        }
+        "dotnet.ip_address_any" => crate::emitter::core::sockets_adapter::emit_ip_address_constant(
+            chunks, current, "0.0.0.0", line,
+        ),
+        "dotnet.ip_address_broadcast" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_constant(
+                chunks,
+                current,
+                "255.255.255.255",
+                line,
+            )
+        }
+        "dotnet.ip_address_loopback" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_constant(
+                chunks,
+                current,
+                "127.0.0.1",
+                line,
+            )
+        }
+        "dotnet.ip_address_ipv6_loopback" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_constant(
+                chunks, current, "::1", line,
+            )
+        }
         "dotnet.ip_address_to_string" => {
             crate::emitter::core::sockets_adapter::emit_ip_address_to_string(chunks, current, line)
+        }
+        "dotnet.ip_address_get_address_bytes" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_get_address_bytes(
+                chunks, current, line,
+            )
+        }
+        "dotnet.ip_address_map_to_ipv6" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_map_to_ipv6(
+                chunks, current, line,
+            )
+        }
+        "dotnet.ip_address_map_to_ipv4" => {
+            crate::emitter::core::sockets_adapter::emit_ip_address_map_to_ipv4(
+                chunks, current, line,
+            )
         }
         "dotnet.tcp_client_new" => {
             crate::emitter::core::sockets_adapter::emit_tcp_client_new(chunks, current, line)
@@ -810,11 +1142,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.double_is_finite" => {
             crate::emitter::core::float_adapter::emit_is_finite(chunks, current, line)
         }
+        "dotnet.double_is_integer" => {
+            crate::emitter::core::float_adapter::emit_is_integer(chunks, current, line)
+        }
+        "dotnet.double_is_negative" => {
+            crate::emitter::core::float_adapter::emit_is_negative(chunks, current, line)
+        }
         "dotnet.double_is_normal" => {
             crate::emitter::core::float_adapter::emit_is_normal(chunks, current, line)
         }
         "dotnet.double_is_subnormal" => {
             crate::emitter::core::float_adapter::emit_is_subnormal(chunks, current, line)
+        }
+        "dotnet.half_is_subnormal" => {
+            crate::emitter::core::float_adapter::emit_half_is_subnormal(chunks, current, line)
+        }
+        "dotnet.convert_to_half" => {
+            crate::emitter::core::float_adapter::emit_to_half(chunks, current, line)
         }
 
         // ── System.Char statics ─────────────────────────────────────────────
@@ -911,6 +1255,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.lazy_is_value_created" => {
             crate::emitter::core::lazy_adapter::emit_lazy_is_value_created(chunks, current, line)
         }
+        "dotnet.lazy_to_string" => {
+            crate::emitter::core::lazy_adapter::emit_lazy_to_string(chunks, current, line)
+        }
+        "dotnet.threadlocal_new" => {
+            crate::emitter::core::thread_adapter::emit_threadlocal_new(chunks, current, argc, line)
+        }
+        "dotnet.threadlocal_value" => {
+            crate::emitter::core::thread_adapter::emit_threadlocal_value(chunks, current, line)
+        }
+        "dotnet.threadlocal_is_value_created" => {
+            crate::emitter::core::thread_adapter::emit_threadlocal_is_value_created(
+                chunks, current, line,
+            )
+        }
         "dotnet.stopwatch_is_running" => {
             crate::emitter::core::stopwatch_adapter::emit_stopwatch_is_running(
                 chunks, current, line,
@@ -976,6 +1334,153 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 true,
             );
         }
+        "dotnet.pscustomobject_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscustomobject_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.error_record_new" => crate::emitter::core::cmdlets_adapter::emit_error_record_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.psserializer_serialize" => {
+            crate::emitter::core::cmdlets_adapter::emit_psserializer_serialize(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.psserializer_deserialize" => {
+            crate::emitter::core::cmdlets_adapter::emit_psserializer_deserialize(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.debug_record_new" => crate::emitter::core::cmdlets_adapter::emit_debug_record_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.warning_record_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_warning_record_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.information_record_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_information_record_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.error_details_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_details_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.error_category_authentication_error" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "AuthenticationError",
+                line,
+            )
+        }
+        "dotnet.error_category_connection_error" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "ConnectionError",
+                line,
+            )
+        }
+        "dotnet.error_category_device_error" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "DeviceError",
+                line,
+            )
+        }
+        "dotnet.error_category_invalid_operation" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "InvalidOperation",
+                line,
+            )
+        }
+        "dotnet.error_category_permission_denied" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "PermissionDenied",
+                line,
+            )
+        }
+        "dotnet.error_category_syntax_error" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "SyntaxError",
+                line,
+            )
+        }
+        "dotnet.error_category_write_error" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks,
+                current,
+                "WriteError",
+                line,
+            )
+        }
+        "dotnet.should_process_reason_none" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "None", line,
+            )
+        }
+        "dotnet.should_process_reason_whatif" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "WhatIf", line,
+            )
+        }
+        "dotnet.confirm_impact_none" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "None", line,
+            )
+        }
+        "dotnet.confirm_impact_low" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "Low", line,
+            )
+        }
+        "dotnet.confirm_impact_medium" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "Medium", line,
+            )
+        }
+        "dotnet.confirm_impact_high" => {
+            crate::emitter::core::cmdlets_adapter::emit_error_category_const(
+                chunks, current, "High", line,
+            )
+        }
+        "dotnet.cmdlet_binding_attribute_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_cmdlet_binding_attribute_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.parameter_attribute_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_parameter_attribute_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.runtime_defined_parameter_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_runtime_defined_parameter_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.runtime_defined_parameter_dictionary_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_runtime_defined_parameter_dictionary_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.action_preference_stop_exception_new" => {
+            crate::emitter::core::cmdlets_adapter::emit_action_preference_stop_exception_new(
+                chunks, current, argc, line,
+            )
+        }
 
         // ── .NET LINQ-to-XML adapter ────────────────────────────────
         // Tree operations compose `web:dom-parser`; XName operations delegate
@@ -986,17 +1491,52 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.xml_xattribute_new" => {
             crate::emitter::core::xml_linq_adapter::emit_xattribute_new(chunks, current, argc, line)
         }
+        "dotnet.xml_xelement_parse" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_parse(chunks, current, line)
+        }
+        "dotnet.xml_xcomment_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xcomment_new(chunks, current, argc, line)
+        }
+        "dotnet.xml_xcdata_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xcdata_new(chunks, current, argc, line)
+        }
+        "dotnet.xml_xprocessing_instruction_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xprocessing_instruction_new(
+                chunks, current, argc, line,
+            )
+        }
         "dotnet.xml_xdocument_new" => {
             crate::emitter::core::xml_linq_adapter::emit_xdocument_new(chunks, current, argc, line)
         }
         "dotnet.xml_xdocument_parse" => {
             crate::emitter::core::xml_linq_adapter::emit_xdocument_parse(chunks, current, line)
         }
+        "dotnet.xml_xdocument_load" => {
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_load(chunks, current, line)
+        }
+        "dotnet.xml_xdocument_save" => {
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_save(chunks, current, line)
+        }
         "dotnet.xml_xdocument_root" => {
             crate::emitter::core::xml_linq_adapter::emit_xdocument_root(chunks, current, line)
         }
+        "dotnet.xml_first_node" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_first_node(chunks, current, line)
+        }
+        "dotnet.xml_last_node" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_last_node(chunks, current, line)
+        }
+        "dotnet.xml_parent" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_parent(chunks, current, line)
+        }
+        "dotnet.xml_ancestors" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_ancestors(chunks, current, line)
+        }
         "dotnet.xml_xelement_name" => {
             crate::emitter::core::xml_linq_adapter::emit_xelement_name(chunks, current, line)
+        }
+        "dotnet.xml_node_name" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_node_name(chunks, current, line)
         }
         "dotnet.xml_value" => {
             crate::emitter::core::xml_linq_adapter::emit_xml_value(chunks, current, line)
@@ -1016,6 +1556,47 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.xml_attribute" => {
             crate::emitter::core::xml_linq_adapter::emit_xml_attribute(chunks, current, line)
         }
+        "dotnet.xml_ps_get_member" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_ps_get_member(chunks, current, line)
+        }
+        "dotnet.xml_ps_set_member" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_ps_set_member(chunks, current, line)
+        }
+        "dotnet.xml_inner_xml" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_inner_xml(chunks, current, line)
+        }
+        "dotnet.xml_has_child_nodes" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_has_child_nodes(chunks, current, line)
+        }
+        "dotnet.xml_attributes" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_attributes(chunks, current, line)
+        }
+        "dotnet.xml_select_nodes" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_select_nodes(chunks, current, line)
+        }
+        "dotnet.xml_select_single_node" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_select_single_node(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_load_xml" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_load_xml(chunks, current, line)
+        }
+        "dotnet.xml_create_element" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_create_element(chunks, current, line)
+        }
+        "dotnet.xml_set_attribute" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_set_attribute(chunks, current, line)
+        }
+        "dotnet.xml_append_child" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_append_child(chunks, current, line)
+        }
+        "dotnet.xml_remove_child" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_remove_child(chunks, current, line)
+        }
+        "dotnet.xml_clone_node" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_clone_node(chunks, current, line)
+        }
         "dotnet.xml_attribute_value" => {
             crate::emitter::core::xml_linq_adapter::emit_attribute_value(chunks, current, line)
         }
@@ -1025,8 +1606,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.xml_xelement_remove" => {
             crate::emitter::core::xml_linq_adapter::emit_xelement_remove(chunks, current, line)
         }
+        "dotnet.xml_xelement_replace_with" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_replace_with(
+                chunks, current, line,
+            )
+        }
         "dotnet.xml_xelement_replace_nodes" => {
             crate::emitter::core::xml_linq_adapter::emit_xelement_replace_nodes(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_set_element_value" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_set_element_value(
                 chunks, current, line,
             )
         }
@@ -1034,6 +1625,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::xml_linq_adapter::emit_xelement_set_attribute_value(
                 chunks, current, line,
             )
+        }
+        "dotnet.xml_xnode_deep_equals" => {
+            crate::emitter::core::xml_linq_adapter::emit_xnode_deep_equals(chunks, current, line)
         }
 
         // ── .NET System.Array static-method adapter ─────────────────
@@ -1063,6 +1657,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.array_sort" => {
             crate::emitter::core::array_adapter::emit_array_sort(chunks, current, line)
+        }
+        "dotnet.hashset_contains" => {
+            crate::emitter::core::collections_adapter::emit_hashset_contains(chunks, current, line)
+        }
+        "dotnet.hashset_remove" => {
+            crate::emitter::core::collections_adapter::emit_hashset_remove(chunks, current, line)
         }
         "dotnet.hashset_add" => {
             crate::emitter::core::collections_adapter::emit_hashset_add(chunks, current, line)
@@ -1094,11 +1694,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.current_culture" => {
             crate::emitter::core::culture_adapter::emit_current_culture(chunks, current, line)
         }
-        "dotnet.get_culture_info" => {
-            crate::emitter::core::culture_adapter::emit_get_culture_info(
-                chunks, current, argc, line,
-            )
-        }
+        "dotnet.get_culture_info" => crate::emitter::core::culture_adapter::emit_get_culture_info(
+            chunks, current, argc, line,
+        ),
         "dotnet.get_cultures" => {
             crate::emitter::core::culture_adapter::emit_get_cultures(chunks, current, argc, line)
         }
@@ -1156,19 +1754,36 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.priority_queue_peek" => sp::emit_priority_queue_peek(chunks, current, line),
         "dotnet.priority_queue_count" => sp::emit_priority_queue_count(chunks, current, line),
         "dotnet.priority_queue_clear" => sp::emit_priority_queue_clear(chunks, current, line),
+        "dotnet.priority_queue_unordered_items" => {
+            sp::emit_priority_queue_unordered_items(chunks, current, line)
+        }
+        "dotnet.priority_queue_ensure_capacity" => {
+            sp::emit_priority_queue_ensure_capacity(chunks, current, line)
+        }
+        "dotnet.priority_queue_trim_excess" => {
+            sp::emit_priority_queue_trim_excess(chunks, current, line)
+        }
+        "dotnet.priority_queue_enqueue_range" => {
+            sp::emit_priority_queue_enqueue_range(chunks, current, line)
+        }
+        "dotnet.priority_queue_try_dequeue" => {
+            sp::emit_priority_queue_try_out(chunks, current, true, line)
+        }
+        "dotnet.priority_queue_try_peek" => {
+            sp::emit_priority_queue_try_out(chunks, current, false, line)
+        }
+        "dotnet.priority_queue_enqueue_dequeue" => {
+            sp::emit_priority_queue_enqueue_dequeue(chunks, current, line)
+        }
         // ── Comparer / EqualityComparer / StringComparer ──────────────
         //
         // The statics answer a sentinel; the behaviour lives here, so every
         // .NET frontend gets it from one place instead of re-deriving it.
-        "dotnet.comparer_default" => {
-            cmp::emit_marker(chunks, current, cmp::COMPARER_DEFAULT, line)
-        }
+        "dotnet.comparer_default" => cmp::emit_marker(chunks, current, cmp::COMPARER_DEFAULT, line),
         "dotnet.equality_comparer_default" => {
             cmp::emit_marker(chunks, current, cmp::EQUALITY_COMPARER_DEFAULT, line)
         }
-        "dotnet.string_comparer_ordinal" => {
-            cmp::emit_marker(chunks, current, cmp::ORDINAL, line)
-        }
+        "dotnet.string_comparer_ordinal" => cmp::emit_marker(chunks, current, cmp::ORDINAL, line),
         "dotnet.string_comparer_ordinal_ignore_case" => {
             cmp::emit_marker(chunks, current, cmp::ORDINAL_IGNORE_CASE, line)
         }
@@ -1284,16 +1899,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.hashset_overlaps" => {
             crate::emitter::core::collections_adapter::emit_hashset_overlaps(chunks, current, line)
         }
-        "dotnet.tcs_new" => {
-            crate::emitter::core::task_completion_source_adapter::emit_tcs_new(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.tcs_task" => {
-            crate::emitter::core::task_completion_source_adapter::emit_tcs_task(
-                chunks, current, line,
-            )
-        }
+        "dotnet.tcs_new" => crate::emitter::core::task_completion_source_adapter::emit_tcs_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.tcs_task" => crate::emitter::core::task_completion_source_adapter::emit_tcs_task(
+            chunks, current, line,
+        ),
         "dotnet.tcs_set_result"
         | "dotnet.tcs_try_set_result"
         | "dotnet.tcs_set_exception"
@@ -1310,11 +1921,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             };
             emit_tcs_settle(chunks, current, settle, name.contains("_try_"), line)
         }
-        "dotnet.weakref_new" => {
-            crate::emitter::core::weak_reference_adapter::emit_weakref_new(
-                chunks, current, argc, line,
-            )
-        }
+        "dotnet.weakref_new" => crate::emitter::core::weak_reference_adapter::emit_weakref_new(
+            chunks, current, argc, line,
+        ),
         "dotnet.weakref_target" => {
             crate::emitter::core::weak_reference_adapter::emit_weakref_target(chunks, current, line)
         }
@@ -1462,10 +2071,49 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.linked_list_find" => {
-            crate::emitter::core::collections_adapter::emit_linked_list_find(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_linked_list_find_node(
+                chunks, current, false, line,
+            )
         }
         "dotnet.linked_list_first" => {
-            crate::emitter::core::collections_adapter::emit_linked_list_first(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_linked_list_end(
+                chunks, current, false, line,
+            )
+        }
+        "dotnet.linked_list_last" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_end(
+                chunks, current, true, line,
+            )
+        }
+        "dotnet.linked_list_find_last" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_find_node(
+                chunks, current, true, line,
+            )
+        }
+        "dotnet.linked_list_add_before" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_add_relative(
+                chunks, current, false, line,
+            )
+        }
+        "dotnet.linked_list_add_after" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_add_relative(
+                chunks, current, true, line,
+            )
+        }
+        "dotnet.linked_list_remove_first" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_remove_end(
+                chunks, current, false, line,
+            )
+        }
+        "dotnet.linked_list_remove_last" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_remove_end(
+                chunks, current, true, line,
+            )
+        }
+        "dotnet.linked_list_remove" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_remove(
+                chunks, current, line,
+            )
         }
         "dotnet.vb_collection_new" => {
             crate::emitter::core::collections_adapter::emit_vb_collection_new(chunks, current, line)
@@ -1502,7 +2150,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.dict_new_ignore_arg" => {
             crate::emitter::core::collections_adapter::emit_dict_new_ignore_arg(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.dict_try_add" => {
@@ -1523,10 +2171,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::collections_adapter::emit_index_new(chunks, current, line)
         }
         "dotnet.index_from_start" => {
+            if argc == 0 {
+                chunks[current].emit_i32_const(0, line);
+            }
             crate::emitter::core::collections_adapter::emit_index_from(chunks, current, false, line)
         }
         "dotnet.index_from_end" => {
+            if argc == 0 {
+                chunks[current].emit_i32_const(0, line);
+            }
             crate::emitter::core::collections_adapter::emit_index_from(chunks, current, true, line)
+        }
+        "dotnet.index_get_offset" => {
+            crate::emitter::core::collections_adapter::emit_index_get_offset(chunks, current, line)
+        }
+        "dotnet.index_equals" => {
+            crate::emitter::core::collections_adapter::emit_index_equals(chunks, current, line)
+        }
+        "dotnet.index_hash_code" => {
+            crate::emitter::core::collections_adapter::emit_index_hash_code(chunks, current, line)
+        }
+        "dotnet.index_to_string" => {
+            crate::emitter::core::collections_adapter::emit_index_to_string(chunks, current, line)
         }
         "dotnet.range_new" => {
             crate::emitter::core::collections_adapter::emit_range_new(chunks, current, line)
@@ -1540,6 +2206,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.range_all" => {
             crate::emitter::core::collections_adapter::emit_range_all(chunks, current, line)
         }
+        "dotnet.range_get_offset_and_length" => {
+            crate::emitter::core::collections_adapter::emit_range_get_offset_and_length(
+                chunks, current, line,
+            )
+        }
+        "dotnet.range_equals" => {
+            crate::emitter::core::collections_adapter::emit_range_equals(chunks, current, line)
+        }
+        "dotnet.range_hash_code" => {
+            crate::emitter::core::collections_adapter::emit_range_hash_code(chunks, current, line)
+        }
+        "dotnet.range_to_string" => {
+            crate::emitter::core::collections_adapter::emit_range_to_string(chunks, current, line)
+        }
         "dotnet.collection_is_empty" => {
             crate::emitter::core::collections_adapter::emit_collection_is_empty(
                 chunks, current, line,
@@ -1547,6 +2227,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.stack_to_array" => {
             crate::emitter::core::collections_adapter::emit_stack_to_array(chunks, current, line)
+        }
+        "dotnet.stack_copy_to" => {
+            crate::emitter::core::collections_adapter::emit_stack_copy_to(chunks, current, line)
+        }
+        "dotnet.collection_copy_to" => {
+            crate::emitter::core::collections_adapter::emit_collection_copy_to(
+                chunks, current, line,
+            )
         }
         // The root object: an empty instance, allocated by the class-slot owner.
         "dotnet.gc_suppress_finalize" => {
@@ -1568,11 +2256,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.blocking_collection_add" => {
             crate::emitter::core::collections_adapter::emit_blocking_collection_add(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.blocking_collection_try_add" => {
             crate::emitter::core::collections_adapter::emit_blocking_collection_try_add(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.blocking_collection_to_array" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_to_array(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_dispose" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_dispose(
                 chunks, current, line,
             )
         }
@@ -1686,23 +2384,61 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `ecma:map/new` backing cannot do, so the comparer overload silently
         // discarded its argument and every ordering/equality question fell
         // back to the default.
-        "dotnet.sorted_map_new" => {
-            vybe_compiler::primitives::sorted_collection::emit_sorted_collection_new(
-                chunks, current, argc, true, line,
+        "dotnet.sorted_map_new" => crate::emitter::core::collections_adapter::emit_sorted_map_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.sorted_map_add" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_add(chunks, current, line)
+        }
+        "dotnet.sorted_map_set" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_set(chunks, current, line)
+        }
+        "dotnet.sorted_map_contains_key" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_contains_key(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_map_get_or_throw" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_get_or_throw(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_map_remove" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_remove(chunks, current, line)
+        }
+        "dotnet.sorted_map_comparer" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_comparer(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_map_copy_to" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_copy_to(
+                chunks, current, argc, line,
             )
         }
         "dotnet.sorted_map_keys" => {
-            vybe_compiler::primitives::sorted_collection::emit_sorted_map_key_set(
-                chunks, current, line,
-            )
+            crate::emitter::core::collections_adapter::emit_sorted_map_keys(chunks, current, line)
         }
         "dotnet.sorted_map_values" => {
-            vybe_compiler::primitives::sorted_collection::emit_sorted_map_values(
+            crate::emitter::core::collections_adapter::emit_sorted_map_values(chunks, current, line)
+        }
+        "dotnet.sorted_map_entries" => {
+            crate::emitter::core::collections_adapter::emit_sorted_map_entries(
                 chunks, current, line,
             )
         }
-        "dotnet.sorted_map_entries" => {
-            vybe_compiler::primitives::sorted_collection::emit_sorted_map_entries(
+        "dotnet.sorted_list_remove_at" => {
+            crate::emitter::core::collections_adapter::emit_sorted_list_remove_at(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_list_index_of_key" => {
+            crate::emitter::core::collections_adapter::emit_sorted_list_index_of_key(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_list_index_of_value" => {
+            crate::emitter::core::collections_adapter::emit_sorted_list_index_of_value(
                 chunks, current, line,
             )
         }
@@ -1745,7 +2481,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::thread_adapter::emit_threading_timer_change(chunks, current, line)
         }
         "dotnet.threading_timer_dispose" => {
-            crate::emitter::core::thread_adapter::emit_threading_timer_dispose(chunks, current, line)
+            crate::emitter::core::thread_adapter::emit_threading_timer_dispose(
+                chunks, current, line,
+            )
         }
         "dotnet.timeout_infinite" => {
             chunks[current].emit_f64_const(-1.0, line);
@@ -1760,13 +2498,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::timespan_adapter::emit_timespan_min_value(chunks, current, line)
         }
         "dotnet.timespan_to_string" => {
+            if argc > 0 {
+                for _ in 0..argc {
+                    chunks[current].emit_op(Op::DROP, line);
+                }
+            }
             crate::emitter::core::timespan_adapter::emit_timespan_to_string(chunks, current, line)
         }
         "dotnet.timespan_compare" => {
             crate::emitter::core::timespan_adapter::emit_timespan_compare(chunks, current, line)
         }
         "dotnet.timespan_parse" => {
+            if argc > 1 {
+                for _ in 1..argc {
+                    chunks[current].emit_op(Op::DROP, line);
+                }
+            }
             crate::emitter::core::timespan_adapter::emit_timespan_parse(chunks, current, line)
+        }
+        "dotnet.timespan_try_parse" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_try_parse(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.timespan_negate" => {
             crate::emitter::core::timespan_adapter::emit_timespan_negate(chunks, current, line)
@@ -1793,6 +2546,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.guid_parse" => {
             crate::emitter::core::guid_adapter::emit_guid_parse(chunks, current, line)
         }
+        "dotnet.guid_parse_exact" => {
+            crate::emitter::core::guid_adapter::emit_guid_parse_exact(chunks, current, line)
+        }
         "dotnet.guid_new" => {
             crate::emitter::core::guid_adapter::emit_guid_new(chunks, current, argc, line)
         }
@@ -1808,12 +2564,35 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.guid_try_parse" => {
             crate::emitter::core::guid_adapter::emit_guid_try_parse(chunks, current, argc, line)
         }
+        "dotnet.guid_try_parse_exact" => {
+            crate::emitter::core::guid_adapter::emit_guid_try_parse_exact(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.guid_compare_to" => {
+            crate::emitter::core::guid_adapter::emit_guid_compare_to(chunks, current, line)
+        }
 
         // `System.HashCode` — one fold shared by `Combine` and
         // `Add`/`ToHashCode`, so .NET's guarantee that they agree is
         // structural rather than a coincidence to re-prove.
         // `Int128` / `UInt128` — the width discipline the synthesized classes
         // call out to; see `int128_adapter`.
+        "dotnet.bigint_add" => {
+            crate::emitter::core::biginteger_adapter::emit_add(chunks, current, line)
+        }
+        "dotnet.bigint_subtract" => {
+            crate::emitter::core::biginteger_adapter::emit_subtract(chunks, current, line)
+        }
+        "dotnet.bigint_multiply" => {
+            crate::emitter::core::biginteger_adapter::emit_multiply(chunks, current, line)
+        }
+        "dotnet.bigint_divide" => {
+            crate::emitter::core::biginteger_adapter::emit_divide(chunks, current, line)
+        }
+        "dotnet.bigint_remainder" => {
+            crate::emitter::core::biginteger_adapter::emit_remainder(chunks, current, line)
+        }
         "dotnet.bigint_zero" => {
             crate::emitter::core::int128_adapter::emit_const(chunks, current, 0, line)
         }
@@ -1835,15 +2614,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.i128_sign" => {
             crate::emitter::core::int128_adapter::emit_sign(chunks, current, line)
         }
-        "dotnet.i128_abs" => {
-            crate::emitter::core::int128_adapter::emit_abs(chunks, current, line)
-        }
+        "dotnet.i128_abs" => crate::emitter::core::int128_adapter::emit_abs(chunks, current, line),
         "dotnet.i128_is_even" => {
             crate::emitter::core::int128_adapter::emit_is_even(chunks, current, line)
         }
-        "dotnet.i128_cmp" => {
-            crate::emitter::core::int128_adapter::emit_cmp(chunks, current, line)
-        }
+        "dotnet.i128_cmp" => crate::emitter::core::int128_adapter::emit_cmp(chunks, current, line),
         "dotnet.i128_clamp" => {
             crate::emitter::core::int128_adapter::emit_clamp(chunks, current, line)
         }
@@ -1907,6 +2682,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.int128_shr" => {
             crate::emitter::core::int128_adapter::emit_shift(chunks, current, false, line)
         }
+        "dotnet.uint32_ushr" => {
+            crate::emitter::core::uint_adapter::emit_uint32_ushr(chunks, current, line)
+        }
 
         "dotnet.hashcode_new" => {
             crate::emitter::core::hashcode_adapter::emit_new(chunks, current, line)
@@ -1943,6 +2721,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.version_clone" => {
             crate::emitter::core::version_adapter::emit_version_clone(chunks, current, line)
+        }
+        "dotnet.version_hash_code" => {
+            crate::emitter::core::version_adapter::emit_version_hash_code(chunks, current, line)
         }
         "dotnet.version_compare" => {
             crate::emitter::core::version_adapter::emit_version_compare(chunks, current, line)
@@ -2081,7 +2862,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::memory_stream_adapter::emit_flush(chunks, current, line)
         }
         "dotnet.datetime_parse" => {
-            crate::emitter::core::datetime_parse_adapter::emit_datetime_parse(chunks, current, line)
+            crate::emitter::core::datetime_parse_adapter::emit_datetime_parse(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.datetime_try_parse" => {
             crate::emitter::core::datetime_parse_adapter::emit_datetime_try_parse(
@@ -2148,6 +2931,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datetime_kind" => {
             crate::emitter::core::datetime_adapter::emit_datetime_kind(chunks, current, line)
+        }
+        "dotnet.datetime_kind_unspecified" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_kind_unspecified(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_kind_utc" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_kind_utc(chunks, current, line)
+        }
+        "dotnet.datetime_kind_local" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_kind_local(chunks, current, line)
         }
         "dotnet.datetime_date" => {
             crate::emitter::core::datetime_adapter::emit_datetime_date(chunks, current, line)
@@ -2224,15 +3018,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         // `System.Globalization.HijriCalendar` — see `core::hijri_calendar_adapter`.
-        "dotnet.hijri_new" => {
-            crate::emitter::core::hijri_calendar_adapter::emit_hijri_new(chunks, current, argc, line)
-        }
-        "dotnet.hijri_get_year" => crate::emitter::core::hijri_calendar_adapter::emit_hijri_date_part(
-            chunks,
-            current,
-            crate::emitter::core::hijri_calendar_adapter::DatePart::Year,
-            line,
+        "dotnet.hijri_new" => crate::emitter::core::hijri_calendar_adapter::emit_hijri_new(
+            chunks, current, argc, line,
         ),
+        "dotnet.hijri_get_year" => {
+            crate::emitter::core::hijri_calendar_adapter::emit_hijri_date_part(
+                chunks,
+                current,
+                crate::emitter::core::hijri_calendar_adapter::DatePart::Year,
+                line,
+            )
+        }
         "dotnet.hijri_get_month" => {
             crate::emitter::core::hijri_calendar_adapter::emit_hijri_date_part(
                 chunks,
@@ -2262,9 +3058,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
-        "dotnet.hijri_get_era" => {
-            crate::emitter::core::hijri_calendar_adapter::emit_hijri_era(chunks, current, argc, line)
-        }
+        "dotnet.hijri_get_era" => crate::emitter::core::hijri_calendar_adapter::emit_hijri_era(
+            chunks, current, argc, line,
+        ),
         "dotnet.hijri_is_leap_year" => {
             crate::emitter::core::hijri_calendar_adapter::emit_hijri_is_leap_year(
                 chunks, current, argc, line,
@@ -2298,11 +3094,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `System.DateOnly` / `System.TimeOnly` — see `core::date_time_only_adapter`.
         // Exact-string arms, so nothing here is shadowed by the `datetime_*`
         // rows above or below it.
-        "dotnet.dateonly_new" => {
-            crate::emitter::core::date_time_only_adapter::emit_dateonly_new(
-                chunks, current, argc, line,
-            )
-        }
+        "dotnet.dateonly_new" => crate::emitter::core::date_time_only_adapter::emit_dateonly_new(
+            chunks, current, argc, line,
+        ),
         "dotnet.dateonly_from_datetime" => {
             crate::emitter::core::date_time_only_adapter::emit_dateonly_from_datetime(
                 chunks, current, line,
@@ -2314,6 +3108,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.dateonly_parse" => {
+            if argc > 1 {
+                for _ in 1..argc {
+                    chunks[current].emit_op(Op::DROP, line);
+                }
+            }
             crate::emitter::core::date_time_only_adapter::emit_dateonly_parse(chunks, current, line)
         }
         "dotnet.dateonly_min_value" => {
@@ -2351,11 +3150,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
-        "dotnet.timeonly_new" => {
-            crate::emitter::core::date_time_only_adapter::emit_timeonly_new(
-                chunks, current, argc, line,
-            )
-        }
+        "dotnet.timeonly_new" => crate::emitter::core::date_time_only_adapter::emit_timeonly_new(
+            chunks, current, argc, line,
+        ),
         "dotnet.timeonly_from_datetime" => {
             crate::emitter::core::date_time_only_adapter::emit_timeonly_from_datetime(
                 chunks, current, line,
@@ -2367,6 +3164,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.timeonly_parse" => {
+            if argc > 1 {
+                for _ in 1..argc {
+                    chunks[current].emit_op(Op::DROP, line);
+                }
+            }
             crate::emitter::core::date_time_only_adapter::emit_timeonly_parse(chunks, current, line)
         }
         "dotnet.timeonly_min_value" => {
@@ -2399,6 +3201,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.timeonly_is_between" => {
+            crate::emitter::core::date_time_only_adapter::emit_timeonly_is_between(
+                chunks, current, line,
+            )
+        }
         "dotnet.timeonly_to_string" => {
             crate::emitter::core::date_time_only_adapter::emit_timeonly_to_string(
                 chunks, current, line,
@@ -2409,6 +3216,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datetime_add_hours" => {
             crate::emitter::core::datetime_adapter::emit_datetime_add_hours(chunks, current, line)
+        }
+        "dotnet.datetime_add_seconds" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_add_seconds(chunks, current, line)
         }
         "dotnet.datetime_add_months" => {
             crate::emitter::core::datetime_adapter::emit_datetime_add_months(chunks, current, line)
@@ -2512,7 +3322,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::timezone_adapter::emit_timezone_find_by_id(chunks, current, line)
         }
         "dotnet.timezone_convert_time" => {
-            crate::emitter::core::timezone_adapter::emit_timezone_convert_time(chunks, current, line)
+            crate::emitter::core::timezone_adapter::emit_timezone_convert_time(
+                chunks, current, line,
+            )
         }
         "dotnet.timezone_convert_to_utc" => {
             crate::emitter::core::timezone_adapter::emit_timezone_convert_to_utc(
@@ -2664,7 +3476,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks, current, argc, line,
         ),
         "dotnet.json_document_parse" => {
-            crate::emitter::core::json_dom_adapter::emit_document_parse(chunks, current, argc, line);
+            crate::emitter::core::json_dom_adapter::emit_document_parse(
+                chunks, current, argc, line,
+            );
         }
         "dotnet.json_options_new" => {
             crate::emitter::core::json_adapter::emit_serializer_options_new(
@@ -2679,36 +3493,46 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.json_naming_snake_lower" => {
             crate::emitter::core::json_naming_adapter::drop_args(&mut chunks[current], argc, line);
             crate::emitter::core::json_naming_adapter::emit_naming_policy(
-                chunks, current,
-                crate::emitter::core::json_naming_adapter::Policy::SeparatorLower("_"), line,
+                chunks,
+                current,
+                crate::emitter::core::json_naming_adapter::Policy::SeparatorLower("_"),
+                line,
             );
         }
         "dotnet.json_naming_snake_upper" => {
             crate::emitter::core::json_naming_adapter::drop_args(&mut chunks[current], argc, line);
             crate::emitter::core::json_naming_adapter::emit_naming_policy(
-                chunks, current,
-                crate::emitter::core::json_naming_adapter::Policy::SeparatorUpper("_"), line,
+                chunks,
+                current,
+                crate::emitter::core::json_naming_adapter::Policy::SeparatorUpper("_"),
+                line,
             );
         }
         "dotnet.json_naming_kebab_lower" => {
             crate::emitter::core::json_naming_adapter::drop_args(&mut chunks[current], argc, line);
             crate::emitter::core::json_naming_adapter::emit_naming_policy(
-                chunks, current,
-                crate::emitter::core::json_naming_adapter::Policy::SeparatorLower("-"), line,
+                chunks,
+                current,
+                crate::emitter::core::json_naming_adapter::Policy::SeparatorLower("-"),
+                line,
             );
         }
         "dotnet.json_naming_kebab_upper" => {
             crate::emitter::core::json_naming_adapter::drop_args(&mut chunks[current], argc, line);
             crate::emitter::core::json_naming_adapter::emit_naming_policy(
-                chunks, current,
-                crate::emitter::core::json_naming_adapter::Policy::SeparatorUpper("-"), line,
+                chunks,
+                current,
+                crate::emitter::core::json_naming_adapter::Policy::SeparatorUpper("-"),
+                line,
             );
         }
         "dotnet.json_naming_camel" => {
             crate::emitter::core::json_naming_adapter::drop_args(&mut chunks[current], argc, line);
             crate::emitter::core::json_naming_adapter::emit_naming_policy(
-                chunks, current,
-                crate::emitter::core::json_naming_adapter::Policy::Camel, line,
+                chunks,
+                current,
+                crate::emitter::core::json_naming_adapter::Policy::Camel,
+                line,
             );
         }
         "dotnet.json_serialize" => {
@@ -2863,6 +3687,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.vb_timeserial" => {
             crate::emitter::core::vb_dateandtime_adapter::emit_vb_time_serial(chunks, current, line)
         }
+        "dotnet.vb_timer" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_timer(chunks, current, line)
+        }
         "dotnet.vb_weekday" => crate::emitter::core::vb_dateandtime_adapter::emit_vb_weekday(
             chunks, current, argc, line,
         ),
@@ -2945,6 +3772,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.string_reader_read_line_async" => {
+            crate::emitter::core::stream_io_adapter::emit_string_reader_read_line_async(
+                chunks, current, line,
+            )
+        }
         "dotnet.stream_reader_read_to_end" => {
             crate::emitter::core::stream_io_adapter::emit_stream_reader_read_to_end(
                 chunks, current, line,
@@ -3021,9 +3853,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // The three text verbs: `filesystem.*` underneath, `System.IO`'s
         // exceptions on top. See `filesystem_adapter`'s failure-model section.
         "dotnet.file_read_all_text" => {
-            crate::emitter::core::filesystem_adapter::emit_file_read_all_text(
-                chunks, current, line,
-            )
+            crate::emitter::core::filesystem_adapter::emit_file_read_all_text(chunks, current, line)
         }
         "dotnet.file_write_all_text" => {
             crate::emitter::core::filesystem_adapter::emit_file_write_all_text(
@@ -3058,6 +3888,226 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.file_info_new" => {
             crate::emitter::core::filesystem_adapter::emit_file_info_new(chunks, current, line)
+        }
+        "dotnet.directory_info_new" => {
+            crate::emitter::core::filesystem_adapter::emit_directory_info_new(chunks, current, line)
+        }
+        "dotnet.directory_create_directory" => {
+            crate::emitter::core::filesystem_adapter::emit_directory_create_directory(
+                chunks, current, line,
+            )
+        }
+        "dotnet.directory_get_parent" => {
+            crate::emitter::core::filesystem_adapter::emit_directory_get_parent(
+                chunks, current, line,
+            )
+        }
+        "dotnet.Cmdlets.Path.JoinPath" => {
+            crate::emitter::core::cmdlets_adapter::emit_join_path(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Path.TestPath" => {
+            crate::emitter::core::cmdlets_adapter::emit_test_path(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Path.ConvertPath" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_path(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Path.ResolvePath" => {
+            crate::emitter::core::cmdlets_adapter::emit_resolve_path(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Path.SplitPath" => {
+            crate::emitter::core::cmdlets_adapter::emit_split_path(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Json.ConvertToJson" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_to_json(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Json.ConvertFromJson" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_from_json(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Json.TestJson" => {
+            crate::emitter::core::cmdlets_adapter::emit_test_json(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Csv.ConvertFromCsv" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_from_csv(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Csv.ConvertToCsv" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_to_csv(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Csv.ImportCsv" => {
+            crate::emitter::core::cmdlets_adapter::emit_import_csv(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Csv.ExportCsv" => {
+            crate::emitter::core::cmdlets_adapter::emit_export_csv(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.CliXml.ImportCliXml" => {
+            crate::emitter::core::cmdlets_adapter::emit_import_clixml(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.CliXml.ExportCliXml" => {
+            crate::emitter::core::cmdlets_adapter::emit_export_clixml(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Utility.OutNull" => {
+            crate::emitter::core::cmdlets_adapter::emit_out_null(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Utility.OutString" => {
+            crate::emitter::core::cmdlets_adapter::emit_out_string(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Utility.StartSleep" => {
+            crate::emitter::core::cmdlets_adapter::emit_start_sleep(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Utility.GetLastErrorRecord" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_last_error_record(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Streams.WriteOutput" => {
+            crate::emitter::core::cmdlets_adapter::emit_write_output(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Streams.WriteHost" => {
+            crate::emitter::core::cmdlets_adapter::emit_write_host(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Strings.JoinString" => {
+            crate::emitter::core::cmdlets_adapter::emit_join_string(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Formatting.ConvertToHtml" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_to_html(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Formatting.ConvertFromMarkdown" => {
+            crate::emitter::core::cmdlets_adapter::emit_convert_from_markdown(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Formatting.FormatList" => {
+            crate::emitter::core::cmdlets_adapter::emit_format_list(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Formatting.FormatTable" => {
+            crate::emitter::core::cmdlets_adapter::emit_format_table(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Formatting.FormatWide" => {
+            crate::emitter::core::cmdlets_adapter::emit_format_wide(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Scripting.InvokeExpression" => {
+            crate::emitter::core::cmdlets_adapter::emit_invoke_expression(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Objects.NewObject" => {
+            crate::emitter::core::cmdlets_adapter::emit_new_object(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Collections.GetUnique" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_unique(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Collections.CompareObject" => {
+            crate::emitter::core::cmdlets_adapter::emit_compare_object(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Collections.SelectObject" => {
+            crate::emitter::core::cmdlets_adapter::emit_select_object(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Text.SelectString" => {
+            crate::emitter::core::cmdlets_adapter::emit_select_string(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Xml.SelectXml" => {
+            crate::emitter::core::cmdlets_adapter::emit_select_xml(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSDrive.GetPSDrive" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_psdrive(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSDrive.NewPSDrive" => {
+            crate::emitter::core::cmdlets_adapter::emit_new_psdrive(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSDrive.RemovePSDrive" => {
+            crate::emitter::core::cmdlets_adapter::emit_remove_psdrive(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSDrive.GetLocation" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_location(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSDrive.SetLocation"
+        | "dotnet.Cmdlets.PSDrive.PushLocation"
+        | "dotnet.Cmdlets.PSDrive.PopLocation" => {
+            crate::emitter::core::cmdlets_adapter::emit_set_location(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.PSCmdlet.WriteDebug" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_write_debug(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.PSCmdlet.WriteError" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_write_error(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.PSCmdlet.WriteInformation" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_write_information(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.PSCmdlet.WriteWarning" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_write_warning(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.PSCmdlet.WriteVerbose" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_write_verbose(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.PSCmdlet.ShouldProcess" => {
+            crate::emitter::core::cmdlets_adapter::emit_pscmdlet_should_process(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.Cmdlets.Date.GetDate" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_date(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.Globalization.GetCulture" | "dotnet.Cmdlets.Globalization.GetUICulture" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_culture(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.GetContent" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_content(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.SetContent" => {
+            crate::emitter::core::cmdlets_adapter::emit_set_content(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.SetItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_set_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.AddContent" => {
+            crate::emitter::core::cmdlets_adapter::emit_add_content(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.ClearContent" => {
+            crate::emitter::core::cmdlets_adapter::emit_clear_content(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.RemoveItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_remove_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.NewItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_new_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.ClearItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_clear_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.RenameItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_rename_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.InvokeItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_invoke_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.OutFile" => {
+            crate::emitter::core::cmdlets_adapter::emit_out_file(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.CopyItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_copy_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.MoveItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_move_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.GetChildItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_child_item(chunks, current, argc, line)
+        }
+        "dotnet.Cmdlets.FileSystem.GetItem" => {
+            crate::emitter::core::cmdlets_adapter::emit_get_item(chunks, current, argc, line)
         }
         "dotnet.path_combine" => {
             crate::emitter::core::filesystem_adapter::emit_path_combine(chunks, current, argc, line)
@@ -3389,6 +4439,96 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.environment_user_domain_name" => {
+            crate::emitter::core::environment_adapter::emit_environment_user_domain_name(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_machine_name" => {
+            crate::emitter::core::environment_adapter::emit_environment_machine_name(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_new_line" => {
+            crate::emitter::core::environment_adapter::emit_environment_new_line(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_command_line" => {
+            crate::emitter::core::environment_adapter::emit_environment_command_line(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_current_managed_thread_id" => {
+            crate::emitter::core::environment_adapter::emit_environment_current_managed_thread_id(
+                chunks, current, line,
+            )
+        }
+        "dotnet.thread_current" => {
+            crate::emitter::core::thread_adapter::emit_thread_current(chunks, current, line)
+        }
+        "dotnet.thread_managed_thread_id" => {
+            crate::emitter::core::thread_adapter::emit_thread_managed_thread_id(
+                chunks, current, line,
+            )
+        }
+        "dotnet.thread_is_alive" => {
+            crate::emitter::core::thread_adapter::emit_thread_is_alive(chunks, current, line)
+        }
+        "dotnet.threadpool_queue_user_work_item" => {
+            crate::emitter::core::thread_adapter::emit_threadpool_queue_user_work_item(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.threadpool_get_threads_noop" => {
+            crate::emitter::core::thread_adapter::emit_threadpool_get_threads_noop(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.volatile_read" => {
+            crate::emitter::core::thread_adapter::emit_volatile_read(chunks, current, line)
+        }
+        "dotnet.volatile_write" => {
+            crate::emitter::core::thread_adapter::emit_volatile_write(chunks, current, line)
+        }
+        "dotnet.monitor_is_entered" => {
+            crate::emitter::core::thread_adapter::emit_monitor_is_entered(chunks, current, line)
+        }
+        "dotnet.environment_has_shutdown_started" => {
+            crate::emitter::core::environment_adapter::emit_environment_has_shutdown_started(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_is_64bit" => {
+            crate::emitter::core::environment_adapter::emit_environment_is_64bit(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_system_page_size" => {
+            crate::emitter::core::environment_adapter::emit_environment_system_page_size(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_working_set" => {
+            crate::emitter::core::environment_adapter::emit_environment_working_set(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_tick_count64" => {
+            crate::emitter::core::environment_adapter::emit_environment_tick_count64(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_get_logical_drives" => {
+            crate::emitter::core::environment_adapter::emit_environment_get_logical_drives(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_os_version" => {
+            crate::emitter::core::environment_adapter::emit_environment_os_version(
+                chunks, current, line,
+            )
+        }
         "dotnet.environment_version" => {
             crate::emitter::core::environment_adapter::emit_environment_version(
                 chunks, current, line,
@@ -3571,7 +4711,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Bytecode over `wasi:sql`'s four real WIT functions; nothing here is a
         // host call. See `core/sqlclient_adapter.rs`.
         "dotnet.sql_connection_new" => {
-            crate::emitter::core::sqlclient_adapter::emit_connection_new(chunks, current, argc, line)
+            crate::emitter::core::sqlclient_adapter::emit_connection_new(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.sql_connection_open" => {
             crate::emitter::core::sqlclient_adapter::emit_connection_open(chunks, current, line)
@@ -3663,7 +4805,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::sqlclient_adapter::emit_transaction_commit(chunks, current, line)
         }
         "dotnet.sql_transaction_rollback" => {
-            crate::emitter::core::sqlclient_adapter::emit_transaction_rollback(chunks, current, line)
+            crate::emitter::core::sqlclient_adapter::emit_transaction_rollback(
+                chunks, current, line,
+            )
         }
 
         // ── LINQ surface — composed bytecode shared by every .NET-shape language ──
@@ -3674,7 +4818,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_last(chunks, current, argc, line)
         }
         "dotnet.linq_last_or_default" => {
-            crate::emitter::core::linq_adapter::emit_linq_last_or_default(chunks, current, argc, line)
+            crate::emitter::core::linq_adapter::emit_linq_last_or_default(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.linq_skip" => {
             crate::emitter::core::linq_adapter::emit_linq_skip(chunks, current, line)
@@ -3688,8 +4834,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_average" => {
             crate::emitter::core::linq_adapter::emit_linq_average(chunks, current, line)
         }
+        "dotnet.linq_average_selector" => {
+            crate::emitter::core::linq_adapter::emit_linq_average_selector(chunks, current, line)
+        }
         "dotnet.linq_first_or_default" => {
-            crate::emitter::core::linq_adapter::emit_linq_first_or_default(chunks, current, argc, line)
+            crate::emitter::core::linq_adapter::emit_linq_first_or_default(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.linq_distinct" => {
             crate::emitter::core::linq_adapter::emit_linq_distinct(chunks, current, line)
@@ -3767,6 +4918,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_to_lookup" => {
             crate::emitter::core::linq_adapter::emit_linq_to_lookup(chunks, current, line)
         }
+        "dotnet.linq_to_lookup_element" => {
+            crate::emitter::core::linq_adapter::emit_linq_to_lookup_element(chunks, current, line)
+        }
         "dotnet.linq_zip" => {
             crate::emitter::core::linq_adapter::emit_linq_zip(chunks, current, line)
         }
@@ -3808,14 +4962,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.linq_element_at_or_default" => {
             crate::emitter::core::linq_adapter::emit_linq_element_at_or_default(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.linq_single" => {
             crate::emitter::core::linq_adapter::emit_linq_single(chunks, current, argc, line)
         }
         "dotnet.linq_single_or_default" => {
-            crate::emitter::core::linq_adapter::emit_linq_single_or_default(chunks, current, argc, line)
+            crate::emitter::core::linq_adapter::emit_linq_single_or_default(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.linq_max_by" => {
             crate::emitter::core::linq_adapter::emit_linq_max_by(chunks, current, line)
@@ -3963,16 +5119,46 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::collections_adapter::emit_set_to_array(chunks, current, line)
         }
         "dotnet.set_copy_to" => {
-            crate::emitter::core::collections_adapter::emit_set_copy_to(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_set_copy_to(chunks, current, argc, line)
         }
-        "dotnet.tuple_create" => {
-            crate::emitter::core::collections_adapter::emit_tuple_create(
-                chunks, current, "Tuple", argc, line,
+        "dotnet.sorted_set_add" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_add(chunks, current, line)
+        }
+        "dotnet.sorted_set_new" => crate::emitter::core::collections_adapter::emit_sorted_set_new(
+            chunks, current, argc, line,
+        ),
+        "dotnet.sorted_set_copy_to" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_copy_to(
+                chunks, current, argc, line,
             )
+        }
+        "dotnet.set_remove_where" => {
+            crate::emitter::core::collections_adapter::emit_set_remove_where(chunks, current, line)
+        }
+        "dotnet.sorted_set_reverse" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_reverse(
+                chunks, current, line,
+            )
+        }
+        "dotnet.tuple_create" => crate::emitter::core::collections_adapter::emit_tuple_create(
+            chunks, current, "Tuple", argc, line,
+        ),
+        "dotnet.tuple_to_string" => {
+            crate::emitter::core::collections_adapter::emit_tuple_to_string(chunks, current, line)
+        }
+        "dotnet.tuple_compare_to" => {
+            crate::emitter::core::collections_adapter::emit_tuple_compare_to(chunks, current, line)
+        }
+        "dotnet.tuple_equals" => {
+            crate::emitter::core::collections_adapter::emit_tuple_equals(chunks, current, line)
         }
         "dotnet.value_tuple_create" => {
             crate::emitter::core::collections_adapter::emit_tuple_create(
-                chunks, current, "ValueTuple", argc, line,
+                chunks,
+                current,
+                "ValueTuple",
+                argc,
+                line,
             )
         }
         "dotnet.rune_new" => {
@@ -3998,6 +5184,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.rune_replacement_char" => {
             crate::emitter::core::char_adapter::emit_rune_replacement_char(chunks, current, line)
+        }
+        "dotnet.rune_try_create" => {
+            crate::emitter::core::char_adapter::emit_rune_try_create(chunks, current, line)
         }
         "dotnet.rune_numeric_value" => {
             crate::emitter::core::char_adapter::emit_rune_numeric_value(chunks, current, line)
@@ -4163,12 +5352,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.crypto_hmac_sha256" => {
             crate::emitter::core::crypto_adapter::emit_hmac_data(
-                chunks, current, "HMAC/SHA-256", argc, line,
+                chunks,
+                current,
+                "HMAC/SHA-256",
+                argc,
+                line,
             );
         }
         "dotnet.crypto_hmac_sha512" => {
             crate::emitter::core::crypto_adapter::emit_hmac_data(
-                chunks, current, "HMAC/SHA-512", argc, line,
+                chunks,
+                current,
+                "HMAC/SHA-512",
+                argc,
+                line,
             );
         }
         "dotnet.crypto_incremental_create" => {
@@ -4201,6 +5398,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.memory_slice" => {
             crate::emitter::core::span_adapter::emit_memory_slice(chunks, current, argc, line);
+        }
+        "dotnet.memory_empty" => {
+            crate::emitter::core::span_adapter::emit_memory_empty(chunks, current, line);
         }
         "dotnet.as_memory" => {
             crate::emitter::core::span_adapter::emit_as_memory(chunks, current, argc, line);
@@ -4286,29 +5486,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── .NET parse helpers — `int.Parse`, `double.Parse`, `bool.Parse`
         // Throw a `FormatException`-shape error on invalid input
         // (matches ECMA-335; JS `Number(s)` returns NaN silently).
-        "dotnet.parse_int" => {
-            crate::emitter::core::parse_adapter::emit_parse_int(chunks, current, line)
-        }
+        "dotnet.parse_int" => crate::emitter::core::parse_adapter::emit_parse_int_with_style(
+            chunks, current, argc, line,
+        ),
         "dotnet.try_parse_int" => {
             crate::emitter::core::parse_adapter::emit_try_parse_int(chunks, current, line)
         }
         "dotnet.try_parse_double" => {
             crate::emitter::core::parse_adapter::emit_try_parse_double(chunks, current, line)
         }
-        "dotnet.parse_byte" => {
-            crate::emitter::core::parse_adapter::emit_parse_int(chunks, current, line)
-        }
-        "dotnet.parse_long" => {
-            crate::emitter::core::parse_adapter::emit_parse_int(chunks, current, line)
-        }
+        "dotnet.parse_byte" => crate::emitter::core::parse_adapter::emit_parse_int_with_style(
+            chunks, current, argc, line,
+        ),
+        "dotnet.parse_long" => crate::emitter::core::parse_adapter::emit_parse_int_with_style(
+            chunks, current, argc, line,
+        ),
         "dotnet.parse_float" => {
-            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, line)
+            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, argc, line)
         }
         "dotnet.parse_decimal" => {
-            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, line)
+            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, argc, line)
         }
         "dotnet.parse_double" => {
-            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, line)
+            crate::emitter::core::parse_adapter::emit_parse_double(chunks, current, argc, line)
         }
         "dotnet.parse_bool" => {
             crate::emitter::core::parse_adapter::emit_parse_bool(chunks, current, line)
@@ -4398,80 +5598,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.
         "dotnet.dict_get_or_throw" => {
-            // map[key] — get or throw KeyNotFoundException
-            let chunk = &mut chunks[current];
-            let has = chunk.add_import("ecma:map", "has");
-            let get = chunk.add_import("ecma:map", "get");
-            let key_slot = chunk.alloc_scratch(1);
-            let map_slot = chunk.alloc_scratch(1);
-            chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-            chunk.emit_call(has, 2, line);
-            chunk.emit_if_value(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-            chunk.emit_call(get, 2, line);
-            chunk.emit_else(line);
-            vybe_compiler::primitives::errors::emit_exception_new(
-                chunk,
-                "KeyNotFoundException",
-                class_slots::ValueSource::ConstStr("The given key was not present in the dictionary.".to_string()),
-                line,
-            );
-            vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
-                chunk,
-                "KeyNotFoundException",
-                line,
-            );
-            vybe_compiler::primitives::errors::emit_throw(chunk, line);
-            chunk.emit_end(line);
+            crate::emitter::core::collections_adapter::emit_dict_get_or_throw(chunks, current, line)
+        }
+        "dotnet.dict_set_item" => {
+            crate::emitter::core::collections_adapter::emit_dict_set_item(chunks, current, line)
+        }
+        "dotnet.dict_add" => {
+            crate::emitter::core::collections_adapter::emit_dict_add(chunks, current, line)
+        }
+        "dotnet.dict_contains_key" => {
+            crate::emitter::core::collections_adapter::emit_dict_contains_key(chunks, current, line)
+        }
+        "dotnet.dict_contains_value" => {
+            crate::emitter::core::collections_adapter::emit_dict_contains_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dict_to_array" => {
+            crate::emitter::core::collections_adapter::emit_dict_to_array(chunks, current, line)
         }
         "dotnet.dict_get_value_or_default" => {
-            // Stack: [map, key] or [map, key, default]
-            // map.has(key) ? map.get(key) : default
-            let chunk = &mut chunks[current];
-            let has = chunk.add_import("ecma:map", "has");
-            let get = chunk.add_import("ecma:map", "get");
-            if argc >= 3 {
-                // Explicit default: [map, key, default]
-                let default_slot = chunk.alloc_scratch(1);
-                let key_slot = chunk.alloc_scratch(1);
-                let map_slot = chunk.alloc_scratch(1);
-                chunk.emit_op_u16(Op::LOCAL_SET, default_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-                chunk.emit_call(has, 2, line);
-                chunk.emit_if_value(line);
-                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-                chunk.emit_call(get, 2, line);
-                chunk.emit_else(line);
-                chunk.emit_op_u16(Op::LOCAL_GET, default_slot, line);
-                chunk.emit_end(line);
-            } else {
-                // No explicit default: [map, key] → default is 0
-                let key_slot = chunk.alloc_scratch(1);
-                let map_slot = chunk.alloc_scratch(1);
-                chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-                chunk.emit_call(has, 2, line);
-                chunk.emit_if_value(line);
-                chunk.emit_op_u16(Op::LOCAL_GET, map_slot, line);
-                chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-                chunk.emit_call(get, 2, line);
-                chunk.emit_else(line);
-                chunk.emit_f64_const(0.0, line);
-                chunk.emit_end(line);
-            }
+            crate::emitter::core::collections_adapter::emit_dict_get_value_or_default(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.dict_try_get_value" => {
-            crate::emitter::core::collections_adapter::emit_dict_try_get_value(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_dict_try_get_value(
+                chunks, current, line,
+            )
         }
         "dotnet.concurrent_peek_last" => {
             crate::emitter::core::collections_adapter::emit_concurrent_peek_last(
@@ -4485,12 +5639,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.concurrent_stack_push_range" => {
             crate::emitter::core::collections_adapter::emit_concurrent_stack_push_range(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.concurrent_stack_try_pop_range" => {
             crate::emitter::core::collections_adapter::emit_concurrent_stack_try_pop_range(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.dict_try_update" => {
@@ -4503,7 +5657,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::collections_adapter::emit_dict_get_or_add(chunks, current, line)
         }
         "dotnet.dict_add_or_update" => {
-            crate::emitter::core::collections_adapter::emit_dict_add_or_update(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_dict_add_or_update(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dict_add_or_update_arg" => {
+            crate::emitter::core::collections_adapter::emit_dict_add_or_update_arg(
+                chunks, current, line,
+            )
         }
         "dotnet.nullability_info_context_new" => {
             crate::emitter::core::reflection_adapter::emit_nullability_info_context_new(
@@ -4515,10 +5676,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
+        "dotnet.assembly_get_executing_assembly" => {
+            crate::emitter::core::reflection_adapter::emit_assembly_get_executing_assembly(
+                &mut chunks[current],
+                line,
+            )
+        }
         // `OpCodes.<member>` — one common per member, so the emitter knows
         // WHICH opcode without a second table keyed the other way.
         other
-            if other.starts_with(crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX) =>
+            if other
+                .starts_with(crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX) =>
         {
             let member =
                 &other[crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX.len()..];
@@ -4528,9 +5696,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 line,
             )
         }
-        "dotnet.async_local_new" => {
-            crate::emitter::core::parallel_adapter::emit_async_local_new(chunks, current, argc, line)
-        }
+        "dotnet.async_local_new" => crate::emitter::core::parallel_adapter::emit_async_local_new(
+            chunks, current, argc, line,
+        ),
         "dotnet.parallel_options_new" => {
             crate::emitter::core::parallel_adapter::emit_parallel_options_new(
                 chunks, current, argc, line,
@@ -4544,9 +5712,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.parallel_invoke" => {
-            crate::emitter::core::parallel_adapter::emit_parallel_invoke(chunks, current, argc, line)
-        }
+        "dotnet.parallel_invoke" => crate::emitter::core::parallel_adapter::emit_parallel_invoke(
+            chunks, current, argc, line,
+        ),
         "dotnet.partitioner_create" => {
             crate::emitter::core::parallel_adapter::emit_partitioner_create(
                 chunks, current, argc, line,
@@ -4560,29 +5728,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // The .NET try-pattern: a BOOL answer with the item written through
         // the out-parameter. Each of these used to DROP the out-parameter and
         // answer the item instead.
-        "dotnet.try_take_front" => {
-            crate::emitter::core::collections_adapter::emit_try_out(
-                chunks, current, true, false, line,
-            )
-        }
-        "dotnet.try_take_back" => {
-            crate::emitter::core::collections_adapter::emit_try_out(
-                chunks, current, true, true, line,
-            )
-        }
-        "dotnet.try_peek_front" => {
-            crate::emitter::core::collections_adapter::emit_try_out(
-                chunks, current, false, false, line,
-            )
-        }
-        "dotnet.try_peek_back" => {
-            crate::emitter::core::collections_adapter::emit_try_out(
-                chunks, current, false, true, line,
-            )
-        }
+        "dotnet.try_take_front" => crate::emitter::core::collections_adapter::emit_try_out(
+            chunks, current, true, false, line,
+        ),
+        "dotnet.try_take_back" => crate::emitter::core::collections_adapter::emit_try_out(
+            chunks, current, true, true, line,
+        ),
+        "dotnet.try_peek_front" => crate::emitter::core::collections_adapter::emit_try_out(
+            chunks, current, false, false, line,
+        ),
+        "dotnet.try_peek_back" => crate::emitter::core::collections_adapter::emit_try_out(
+            chunks, current, false, true, line,
+        ),
         "dotnet.concurrent_stack_try_pop_range" => {
             crate::emitter::core::collections_adapter::emit_concurrent_stack_try_pop_range(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "dotnet.dict_try_update" => {
@@ -4595,7 +5755,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::collections_adapter::emit_dict_get_or_add(chunks, current, line)
         }
         "dotnet.dict_add_or_update" => {
-            crate::emitter::core::collections_adapter::emit_dict_add_or_update(chunks, current, line)
+            crate::emitter::core::collections_adapter::emit_dict_add_or_update(
+                chunks, current, line,
+            )
         }
         "dotnet.nullability_info_context_new" => {
             crate::emitter::core::reflection_adapter::emit_nullability_info_context_new(
@@ -4610,7 +5772,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `OpCodes.<member>` — one common per member, so the emitter knows
         // WHICH opcode without a second table keyed the other way.
         other
-            if other.starts_with(crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX) =>
+            if other
+                .starts_with(crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX) =>
         {
             let member =
                 &other[crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX.len()..];
@@ -4620,9 +5783,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 line,
             )
         }
-        "dotnet.async_local_new" => {
-            crate::emitter::core::parallel_adapter::emit_async_local_new(chunks, current, argc, line)
-        }
+        "dotnet.async_local_new" => crate::emitter::core::parallel_adapter::emit_async_local_new(
+            chunks, current, argc, line,
+        ),
         "dotnet.parallel_options_new" => {
             crate::emitter::core::parallel_adapter::emit_parallel_options_new(
                 chunks, current, argc, line,
@@ -4636,9 +5799,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.parallel_invoke" => {
-            crate::emitter::core::parallel_adapter::emit_parallel_invoke(chunks, current, argc, line)
-        }
+        "dotnet.parallel_invoke" => crate::emitter::core::parallel_adapter::emit_parallel_invoke(
+            chunks, current, argc, line,
+        ),
         "dotnet.partitioner_create" => {
             crate::emitter::core::parallel_adapter::emit_partitioner_create(
                 chunks, current, argc, line,
@@ -4674,6 +5837,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             vybe_compiler::primitives::collections::emit_get(chunks, current, line);
         }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
+        "dotnet.switch" => emit_switch(&mut chunks[current], argc, line),
+        "dotnet.vb_str_dup" => {
+            crate::emitter::core::visualbasic_adapter::emit_vb_str_dup(chunks, current, argc, line)
+        }
         "dotnet.string_compare" => {
             crate::emitter::core::string_adapter::emit_string_compare(chunks, current, argc, line)
         }
@@ -4806,15 +5973,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.bigint_is_even" => {
             crate::emitter::core::biginteger_adapter::emit_is_even(chunks, current, line)
         }
-        "dotnet.ms_flush_async" => {
-            crate::emitter::core::memory_stream_adapter::emit_flush_async(chunks, current, argc, line)
-        }
-        "dotnet.ms_write_async" => {
-            crate::emitter::core::memory_stream_adapter::emit_write_async(chunks, current, argc, line)
-        }
-        "dotnet.ms_read_async" => {
-            crate::emitter::core::memory_stream_adapter::emit_read_async(chunks, current, argc, line)
-        }
+        "dotnet.ms_flush_async" => crate::emitter::core::memory_stream_adapter::emit_flush_async(
+            chunks, current, argc, line,
+        ),
+        "dotnet.ms_write_async" => crate::emitter::core::memory_stream_adapter::emit_write_async(
+            chunks, current, argc, line,
+        ),
+        "dotnet.ms_read_async" => crate::emitter::core::memory_stream_adapter::emit_read_async(
+            chunks, current, argc, line,
+        ),
         "dotnet.ms_dispose_async" => {
             crate::emitter::core::memory_stream_adapter::emit_dispose_async(chunks, current, line)
         }
@@ -4879,65 +6046,49 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 1, line)
         }
         "dotnet.binary_read_u8" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 1, false, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 1, false, line)
         }
         "dotnet.binary_write_i8" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 1, line)
         }
         "dotnet.binary_read_i8" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 1, true, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 1, true, line)
         }
         "dotnet.binary_write_u16" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 2, line)
         }
         "dotnet.binary_read_u16" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 2, false, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 2, false, line)
         }
         "dotnet.binary_write_i16" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 2, line)
         }
         "dotnet.binary_read_i16" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 2, true, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 2, true, line)
         }
         "dotnet.binary_write_u32" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 4, line)
         }
         "dotnet.binary_read_u32" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 4, false, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 4, false, line)
         }
         "dotnet.binary_write_i32" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 4, line)
         }
         "dotnet.binary_read_i32" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 4, true, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 4, true, line)
         }
         "dotnet.binary_write_u64" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 8, line)
         }
         "dotnet.binary_read_u64" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 8, false, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 8, false, line)
         }
         "dotnet.binary_write_i64" => {
             crate::emitter::core::binary_io_adapter::emit_write_int(chunks, current, 8, line)
         }
         "dotnet.binary_read_i64" => {
-            crate::emitter::core::binary_io_adapter::emit_read_int(
-                chunks, current, 8, true, line,
-            )
+            crate::emitter::core::binary_io_adapter::emit_read_int(chunks, current, 8, true, line)
         }
         "dotnet.binary_write_f32" => {
             crate::emitter::core::binary_io_adapter::emit_write_float(chunks, current, 4, line)
@@ -4987,6 +6138,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.string_split" => {
             crate::emitter::core::string_adapter::emit_string_split(chunks, current, argc, line)
         }
+        "dotnet.str_insert" => {
+            crate::emitter::core::string_adapter::emit_string_insert(chunks, current, argc, line)
+        }
+        "dotnet.str_remove_start" => {
+            crate::emitter::core::string_adapter::emit_string_remove_start(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.str_remove_range" => {
+            crate::emitter::core::string_adapter::emit_string_remove_range(
+                chunks, current, argc, line,
+            )
+        }
         "dotnet.string_concat" => {
             crate::emitter::core::string_adapter::emit_string_concat(chunks, current, argc, line)
         }
@@ -5026,6 +6190,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.system.math.round" => {
             crate::emitter::core::math_adapter::emit_round(chunks, current, argc, line)
+        }
+        "dotnet.decimal_negate" => {
+            crate::emitter::core::math_adapter::emit_decimal_negate(chunks, current, line)
+        }
+        "dotnet.decimal_compare" => {
+            crate::emitter::core::math_adapter::emit_decimal_compare(chunks, current, line)
+        }
+        "dotnet.decimal_get_bits" => {
+            crate::emitter::core::math_adapter::emit_decimal_get_bits(chunks, current, line)
+        }
+        "dotnet.decimal_from_bits" => {
+            crate::emitter::core::math_adapter::emit_decimal_from_bits(chunks, current, line)
         }
         "dotnet.system.math.min" => chunks[current].emit_op(Op::F64_MIN, line),
         "dotnet.system.math.max" => chunks[current].emit_op(Op::F64_MAX, line),

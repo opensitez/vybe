@@ -1,5 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -56,6 +58,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.xml_attribute".into()),
                 ))
+                .with_method(MethodDef::new(
+                    "FirstNode",
+                    0,
+                    MethodBody::Common("dotnet.xml_first_node".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastNode",
+                    0,
+                    MethodBody::Common("dotnet.xml_last_node".into()),
+                ))
                 // See the `XDocument` note: the recursive DOM lookup IS
                 // `Descendants`.
                 .with_method(MethodDef::new(
@@ -63,10 +75,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.xml_elements".into()),
                 ))
+                .with_method(MethodDef::new(
+                    "Ancestors",
+                    0,
+                    MethodBody::Common("dotnet.xml_ancestors".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Parse",
                     1,
-                    MethodBody::Common("dotnet.xml_xdocument_parse".into()),
+                    MethodBody::Common("dotnet.xml_xelement_parse".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ToString",
@@ -84,31 +101,81 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.xml_xelement_remove".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "ReplaceWith",
+                    1,
+                    MethodBody::Common("dotnet.xml_xelement_replace_with".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ReplaceNodes",
                     1,
                     MethodBody::Common("dotnet.xml_xelement_replace_nodes".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "SetElementValue",
+                    2,
+                    MethodBody::Common("dotnet.xml_xelement_set_element_value".into()),
+                ))
+                .with_method(MethodDef::new(
                     "SetAttributeValue",
                     2,
                     MethodBody::Common("dotnet.xml_xelement_set_attribute_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Parent",
+                    0,
+                    MethodBody::Common("dotnet.xml_parent".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Xml.Linq",
+            ClassType::new("XNode")
+                .with_method(MethodDef::static_method(
+                    "DeepEquals",
+                    2,
+                    MethodBody::Common("dotnet.xml_xnode_deep_equals".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
                 )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Xml.Linq",
             ClassType::new("XDocument")
                 .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.xml_xdocument_new"),
+                )
+                .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.xml_xdocument_new"),
+                )
+                .with_constructor(
+                    ConstructorDef::new(2).with_common_backing("dotnet.xml_xdocument_new"),
                 )
                 .with_method(MethodDef::static_method(
                     "Parse",
                     1,
                     MethodBody::Common("dotnet.xml_xdocument_parse".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "Load",
+                    1,
+                    MethodBody::Common("dotnet.xml_xdocument_load".into()),
+                ))
                 .with_method(MethodDef::new(
                     "Root",
                     0,
                     MethodBody::Common("dotnet.xml_xdocument_root".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "FirstNode",
+                    0,
+                    MethodBody::Common("dotnet.xml_first_node".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastNode",
+                    0,
+                    MethodBody::Common("dotnet.xml_last_node".into()),
                 ))
                 // `XDocument` carried ONLY `Parse` and `Root`, so every query
                 // straight off the document resolved to nothing. These reach
@@ -142,6 +209,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToString",
                     0,
                     MethodBody::Common("dotnet.xml_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Save",
+                    1,
+                    MethodBody::Common("dotnet.xml_xdocument_save".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -162,20 +234,229 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 )),
         ),
         DotnetClassExport::new(
+            "dotnet.System.Xml.Linq",
+            ClassType::new("XComment")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.xml_xcomment_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Value",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Data",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Xml.Linq",
+            ClassType::new("XCData")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.xml_xcdata_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Value",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Data",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Xml.Linq",
+            ClassType::new("XProcessingInstruction")
+                .with_constructor(
+                    ConstructorDef::new(2)
+                        .with_common_backing("dotnet.xml_xprocessing_instruction_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Target",
+                    0,
+                    MethodBody::Common("dotnet.xml_node_name".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Data",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Value",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
             "dotnet.System.Xml",
             ClassType::new("XmlDocument")
                 .with_constructor(
-                    ConstructorDef::new(1).with_backing(HostTarget::new("web:dom-parser", "parse")),
+                    ConstructorDef::new(0).with_common_backing("dotnet.xml_xdocument_new"),
                 )
-                .with_method(MethodDef::new(
-                    "Load",
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.xml_xdocument_parse"),
+                )
+                .with_method(MethodDef::static_method(
+                    "Parse",
                     1,
-                    MethodBody::HostCall(HostTarget::new("web:dom-parser", "load")),
+                    MethodBody::Common("dotnet.xml_xdocument_parse".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LoadXml",
+                    1,
+                    MethodBody::Common("dotnet.xml_load_xml".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateElement",
+                    1,
+                    MethodBody::Common("dotnet.xml_create_element".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SelectNodes",
+                    1,
+                    MethodBody::Common("dotnet.xml_select_nodes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SelectSingleNode",
+                    1,
+                    MethodBody::Common("dotnet.xml_select_single_node".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CloneNode",
+                    1,
+                    MethodBody::Common("dotnet.xml_clone_node".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "DocumentElement",
+                    0,
+                    MethodBody::Common("dotnet.xml_xdocument_root".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "OuterXml",
+                    0,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "InnerXml",
+                    0,
+                    MethodBody::Common("dotnet.xml_inner_xml".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "InnerText",
+                    0,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "HasChildNodes",
+                    0,
+                    MethodBody::Common("dotnet.xml_has_child_nodes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Attributes",
+                    0,
+                    MethodBody::Common("dotnet.xml_attributes".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Save",
                     0,
-                    MethodBody::HostCall(HostTarget::new("web:dom-parser", "toString")),
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Xml",
+            ClassType::new("PowerShellXmlAdapter")
+                .with_method(MethodDef::static_method(
+                    "GetMember",
+                    2,
+                    MethodBody::Common("dotnet.xml_ps_get_member".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetMember",
+                    3,
+                    MethodBody::Common("dotnet.xml_ps_set_member".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SelectNodes",
+                    2,
+                    MethodBody::Common("dotnet.xml_select_nodes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SelectSingleNode",
+                    2,
+                    MethodBody::Common("dotnet.xml_select_single_node".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CreateElement",
+                    2,
+                    MethodBody::Common("dotnet.xml_create_element".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetAttribute",
+                    3,
+                    MethodBody::Common("dotnet.xml_set_attribute".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AppendChild",
+                    2,
+                    MethodBody::Common("dotnet.xml_append_child".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "RemoveChild",
+                    2,
+                    MethodBody::Common("dotnet.xml_remove_child".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CloneNode",
+                    2,
+                    MethodBody::Common("dotnet.xml_clone_node".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "LoadXml",
+                    2,
+                    MethodBody::Common("dotnet.xml_load_xml".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "OuterXml",
+                    1,
+                    MethodBody::Common("dotnet.xml_to_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "InnerXml",
+                    1,
+                    MethodBody::Common("dotnet.xml_inner_xml".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "InnerText",
+                    1,
+                    MethodBody::Common("dotnet.xml_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "HasChildNodes",
+                    1,
+                    MethodBody::Common("dotnet.xml_has_child_nodes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Attributes",
+                    1,
+                    MethodBody::Common("dotnet.xml_attributes".into()),
                 )),
         ),
         DotnetClassExport::new(

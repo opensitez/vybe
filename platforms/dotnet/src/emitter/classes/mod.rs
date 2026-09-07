@@ -90,7 +90,8 @@ pub mod text;
 /// Metadata for a single .NET BCL class wrapper.
 ///
 /// This table is DATA, not a build plan. `winforms::component_classes`
-/// converts each row into a `component_model::ClassType` — parent, properties,
+/// converts each row into a `vybe_compiler::component_classes::ClassType` —
+/// parent, properties,
 /// methods, ctor — and `emitter::tree_register` registers that as a namespace
 /// tree `Type`, flattening the parent chain at registration (the tree resolves
 /// by flat lookup, so a class's node carries its whole inherited surface).
@@ -327,7 +328,10 @@ pub enum MethodOp {
     /// popped from the stack (no implicit `this`). The class's
     /// constructor global must already be installed by an earlier
     /// `register_dotnet_classes` iteration. Result is left on the stack.
-    NewDotnet { class: &'static str, argc: u8 },
+    NewDotnet {
+        class: &'static str,
+        argc: u8,
+    },
     /// Build a `System.Drawing` VALUE TYPE in bytecode: pops one value per
     /// field (pushed in `fields` order) and leaves the object on the stack.
     ///

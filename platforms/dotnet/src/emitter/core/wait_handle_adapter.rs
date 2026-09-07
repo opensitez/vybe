@@ -25,11 +25,11 @@
 //! blocking. When the shared-word allocation lands, `emit_wait_one` is the one
 //! function to move onto `atomic_wait`.
 
+use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 /// Instance state keys.
 ///
@@ -39,6 +39,8 @@ use vybe_compiler::primitives::class_slots;
 /// `thread_adapter`'s `CANCELLED_KEY` already documents.
 const SIGNALED_KEY: &str = "__dotnet_signaled";
 const AUTO_RESET_KEY: &str = "__dotnet_auto_reset";
+const WAIT_TIMER_KEY: &str = "__dotnet_wait_timer";
+const TIMER_DUE_KEY: &str = "__dotnet_due";
 
 fn set_flag_from_slot(
     chunks: &mut [Chunk],
@@ -55,7 +57,14 @@ fn set_flag_from_slot(
     chunks[current].emit_op(Op::DROP, line);
 }
 
-fn set_flag_const(chunks: &mut [Chunk], current: usize, object: u16, key: &str, on: bool, line: u32) {
+fn set_flag_const(
+    chunks: &mut [Chunk],
+    current: usize,
+    object: u16,
+    key: &str,
+    on: bool,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
     chunks[current].emit_string_const(key, line);
     chunks[current].emit_bool_const(on, line);
@@ -67,6 +76,15 @@ fn get_flag(chunks: &mut [Chunk], current: usize, object: u16, key: &str, line: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
     chunks[current].emit_string_const(key, line);
     collections::emit_get(chunks, current, line);
+}
+
+fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let idx = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(idx, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
 }
 
 /// `New AutoResetEvent(initialState)` / `New ManualResetEvent(initialState)`.
@@ -132,18 +150,71 @@ pub fn emit_event_reset(chunks: &mut [Chunk], current: usize, line: u32) {
 ///
 /// Stack: `[event]` or `[event, timeout]` → `[bool]`.
 pub fn emit_wait_one(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = chunks[current].alloc_scratch(2);
-    let (event, signaled) = (base, base + 1);
+    let base = chunks[current].alloc_scratch(5);
+    let (event, signaled, timeout, timer, due) = (base, base + 1, base + 2, base + 3, base + 4);
     if argc > 0 {
-        // The timeout is read and discarded: with the state on the instance
-        // there is nothing to wait FOR. See the module header.
-        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, timeout, line);
+    } else {
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, timeout, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, event, line);
 
     get_flag(chunks, current, event, SIGNALED_KEY, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, signaled, line);
+
+    if argc > 0 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, signaled, line);
+        ops::emit_dyn_not(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+
+        get_flag(chunks, current, event, WAIT_TIMER_KEY, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, timer, line);
+        emit_slot_is_nullish(chunks, current, timer, line);
+        ops::emit_dyn_not(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+
+        get_flag(chunks, current, timer, TIMER_DUE_KEY, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, due, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, due, line);
+        chunks[current].emit_f64_const(0.0, line);
+        ops::emit_dyn_ge(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, due, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, timeout, line);
+        ops::emit_dyn_le(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+
+        get_flag(chunks, current, timer, "__cb", line);
+        get_flag(chunks, current, timer, "__state", line);
+        vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, timer, line);
+        chunks[current].emit_string_const("__period", line);
+        chunks[current].emit_f64_const(0.0, line);
+        collections::emit_set(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, timer, line);
+        chunks[current].emit_string_const(TIMER_DUE_KEY, line);
+        chunks[current].emit_f64_const(-1.0, line);
+        collections::emit_set(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+
+        get_flag(chunks, current, event, SIGNALED_KEY, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, signaled, line);
+    }
 
     // if signaled AND auto_reset { signaled = false }
     chunks[current].emit_op_u16(Op::LOCAL_GET, signaled, line);

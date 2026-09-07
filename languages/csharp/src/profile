@@ -67,6 +67,8 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 # `Convert.ToByte` does: it range-checks in every context, checked or not. That
 # only looked right while ours was a bare `parseInt`.
 __vybe_csharp_unchecked_byte = { emit = "intrinsic:unchecked_byte", min_args = 1, max_args = 1 }
+# The `checked` byte narrowing — range-checked, throwing `OverflowException`.
+__vybe_csharp_checked_byte_cast = { emit = "common:dotnet.checked_byte_cast", min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 

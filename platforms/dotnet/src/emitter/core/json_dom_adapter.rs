@@ -24,8 +24,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{json, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::object_fields::field_slot;
 
@@ -89,16 +89,43 @@ fn push_wrap_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let wrap_idx = chunks.len() - 1;
 
     let accessors: Vec<(&str, usize)> = vec![
-        ("GetProperty", push_get_property_chunk(chunks, wrap_idx, line)),
-        ("TryGetProperty", push_try_get_property_chunk(chunks, wrap_idx, line)),
-        ("GetInt32", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
-        ("GetInt64", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
-        ("GetDouble", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
-        ("GetDecimal", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
-        ("GetString", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
-        ("GetBoolean", push_identity_chunk(chunks, "__dotnet_json_get_int32", line)),
+        (
+            "GetProperty",
+            push_get_property_chunk(chunks, wrap_idx, line),
+        ),
+        (
+            "TryGetProperty",
+            push_try_get_property_chunk(chunks, wrap_idx, line),
+        ),
+        (
+            "GetInt32",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
+        (
+            "GetInt64",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
+        (
+            "GetDouble",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
+        (
+            "GetDecimal",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
+        (
+            "GetString",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
+        (
+            "GetBoolean",
+            push_identity_chunk(chunks, "__dotnet_json_get_int32", line),
+        ),
         ("GetArrayLength", push_array_length_chunk(chunks, line)),
-        ("EnumerateArray", push_enumerate_array_chunk(chunks, wrap_idx, line)),
+        (
+            "EnumerateArray",
+            push_enumerate_array_chunk(chunks, wrap_idx, line),
+        ),
         ("EnumerateObject", push_enumerate_object_chunk(chunks, line)),
         ("GetRawText", push_raw_text_chunk(chunks, line)),
         ("Clone", push_clone_chunk(chunks, wrap_idx, line)),

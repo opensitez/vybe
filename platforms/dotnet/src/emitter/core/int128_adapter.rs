@@ -280,7 +280,13 @@ pub fn emit_to_hex(chunks: &mut [Chunk], current: usize, line: u32) {
     let upper = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], upper, line);
     chunks[current].emit_i32_const(16, line);
-    host::emit(&mut chunks[current], "ecma:bigint", "toStringRadix", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:bigint",
+        "toStringRadix",
+        2,
+        line,
+    );
     let text = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], text, line);
     get(&mut chunks[current], upper, line);

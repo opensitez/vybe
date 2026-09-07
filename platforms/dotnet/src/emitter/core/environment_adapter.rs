@@ -26,6 +26,18 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
+fn emit_const_str(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {
+    push_const(&mut chunks[current], Value::String(Arc::from(value)), line);
+}
+
+fn emit_const_bool(chunks: &mut [Chunk], current: usize, value: bool, line: u32) {
+    chunks[current].emit_bool_const(value, line);
+}
+
+fn emit_const_i32(chunks: &mut [Chunk], current: usize, value: i32, line: u32) {
+    push_const(&mut chunks[current], Value::I32(value), line);
+}
+
 fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     let chunk = &mut chunks[current];
     let object_slot = reserve_slot(chunk);
@@ -62,6 +74,94 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
         Dest::Stack,
         line,
     );
+}
+
+pub fn emit_environment_user_domain_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_str(chunks, current, "localhost", line);
+}
+
+pub fn emit_environment_machine_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    let hostname = chunks[current].add_import("node:os", "hostname");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(hostname, 0, line);
+}
+
+pub fn emit_environment_new_line(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_str(chunks, current, "\n", line);
+}
+
+pub fn emit_environment_command_line(chunks: &mut [Chunk], current: usize, line: u32) {
+    let args = chunks[current].add_import("wasi:cli/environment", "get-arguments");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(args, 0, line);
+    push_const(chunk, Value::String(Arc::from(" ")), line);
+    host::emit(chunk, "ecma:array", "join", 2, line);
+}
+
+pub fn emit_environment_current_managed_thread_id(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_i32(chunks, current, 1, line);
+}
+
+pub fn emit_environment_has_shutdown_started(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_bool(chunks, current, false, line);
+}
+
+pub fn emit_environment_is_64bit(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_bool(chunks, current, true, line);
+}
+
+pub fn emit_environment_system_page_size(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_i32(chunks, current, 4096, line);
+}
+
+pub fn emit_environment_working_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_const_i32(chunks, current, 1, line);
+}
+
+pub fn emit_environment_tick_count64(chunks: &mut [Chunk], current: usize, line: u32) {
+    let uptime = chunks[current].add_import("node:process", "uptime");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(uptime, 0, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+}
+
+pub fn emit_environment_get_logical_drives(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::String(Arc::from("/")), line);
+    collections::emit_array_new(chunks, current, 1, line);
+}
+
+pub fn emit_environment_os_version(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        for value in [8.0, 0.0, 0.0, 0.0] {
+            push_const(chunk, Value::F64(value), line);
+        }
+    }
+    crate::emitter::core::version_adapter::emit_version_new(chunks, current, 4, line);
+    let chunk = &mut chunks[current];
+    let version_slot = reserve_slot(chunk);
+    let os_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, version_slot, line);
+
+    let object_new = chunk.add_import("ecma:object", "new");
+    chunk.emit_call(object_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, os_slot, line);
+
+    push_const(chunk, Value::String(Arc::from("Unix")), line);
+    let platform_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, platform_slot, line);
+    super::object_fields::set_both_spellings(chunk, os_slot, platform_slot, "Platform", line);
+    super::object_fields::set_both_spellings(chunk, os_slot, version_slot, "Version", line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(os_slot),
+        &field_slot("__type"),
+        ValueSource::ConstStr("OperatingSystem".to_string()),
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, os_slot, line);
 }
 
 pub fn emit_environment_version(chunks: &mut Vec<Chunk>, current: usize, line: u32) {

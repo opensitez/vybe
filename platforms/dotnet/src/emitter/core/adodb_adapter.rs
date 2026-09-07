@@ -113,13 +113,7 @@ fn get_prop_to_local(
     line: u32,
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
 }
 
@@ -500,8 +494,20 @@ pub fn emit_adodb_recordset_fields(chunks: &mut [Chunk], current: usize, line: u
     };
     {
         let chunk = &mut chunks[current];
-        class_slots::emit_class_get(chunk, ObjSource::Local(rs_slot), &field_slot(ROWS_KEY), Dest::Stack, line);
-        class_slots::emit_class_get(chunk, ObjSource::Local(rs_slot), &field_slot(POS_KEY), Dest::Stack, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(rs_slot),
+            &field_slot(ROWS_KEY),
+            Dest::Stack,
+            line,
+        );
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(rs_slot),
+            &field_slot(POS_KEY),
+            Dest::Stack,
+            line,
+        );
         chunk.emit_op(Op::I32_FROM_F64, line);
     }
     collections::emit_get(chunks, current, line);

@@ -47,8 +47,8 @@ use vybe_compiler::primitives::ops::emit_dyn_gt;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use super::object_fields::field_slot;
 use super::datetime_adapter;
+use super::object_fields::field_slot;
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";

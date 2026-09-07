@@ -22,8 +22,8 @@
 
 use vybe_compiler::primitives::ops::emit_i32_to_bool;
 use vybe_compiler::primitives::strings;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `.NET` classifies ASCII punctuation and symbols by Unicode CATEGORY, and the
 /// split is not derivable from "not alphanumeric, not space": `.` is `Po` but
@@ -641,6 +641,36 @@ pub fn emit_rune_case(chunks: &mut [Chunk], current: usize, upper: bool, line: u
 pub fn emit_rune_replacement_char(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_f64_const(0xFFFD as f64, line);
     emit_rune_new(chunks, current, line);
+}
+
+/// `Rune.TryCreate(value)` — the parse-or-null core used by language out-param
+/// lowerings. Valid Unicode scalar values are U+0000..U+10FFFF excluding the
+/// surrogate range U+D800..U+DFFF.
+pub fn emit_rune_try_create(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_i32_const(0x10FFFF, line);
+    chunks[current].emit_op(Op::I32_LE_S, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_i32_const(0xD800, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_i32_const(0xDFFF, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], value, line);
+    emit_rune_new(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
 }
 
 /// `Rune.GetNumericValue(r)` — the digit's value, or −1 when it has none.

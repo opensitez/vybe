@@ -8,10 +8,11 @@
 //!
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
+use super::object_fields::field_slot;
+use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -34,17 +35,66 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     // NaN — throw FormatException-shaped object so `e.Message` works.
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "FormatException",
         class_slots::ValueSource::ConstStr("Input string was not in a correct format.".to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
 
     // Floor for integer semantics (matches `intrinsic:cint`).
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+
+pub fn emit_parse_int_with_style(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc <= 1 {
+        emit_parse_int(chunks, current, line);
+        return;
+    }
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+    }
+    let parse_int = chunks[current].add_import("ecma:number", "parseInt");
+    let number = chunks[current].add_import("ecma:number", "Number");
+    let result = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunks[current].emit_f64_const(512.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_i32_const(16, line);
+    chunks[current].emit_call(parse_int, 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_call(number, 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+
+    let if_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
+        "FormatException",
+        class_slots::ValueSource::ConstStr("Input string was not in a correct format.".to_string()),
+        line,
+    );
+    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(if_block);
+
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op(Op::F64_FLOOR, line);
 }
@@ -74,8 +124,36 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 }
 
-/// `double.Parse(s)` — `Number(s)` with NaN guard. Stack: `[s]` → `[f64]`.
-pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
+/// `double.Parse(s[, provider])` — `Number(s)` with NaN guard.
+pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc >= 2 {
+        for _ in 2..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        let text = chunks[current].alloc_scratch(2);
+        let provider = text + 1;
+        chunks[current].emit_op_u16(Op::LOCAL_SET, provider, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, provider, line);
+        class_slots::emit_class_get(
+            &mut chunks[current],
+            class_slots::ObjSource::Stack,
+            &field_slot("numberdecimalseparator"),
+            class_slots::Dest::Stack,
+            line,
+        );
+        chunks[current].emit_string_const(",", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_string_const(",", line);
+        chunks[current].emit_string_const(".", line);
+        vybe_compiler::primitives::strings::emit_replace(&mut chunks[current], line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_end(line);
+    }
     let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
     chunk.emit_call(number_idx, 1, line);
@@ -91,12 +169,14 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     // threw a bare STRING, so `Catch ex As FormatException` never matched and
     // the error escaped to the top level with the right message and the wrong
     // identity.
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "FormatException",
         class_slots::ValueSource::ConstStr("Input string was not in a correct format.".to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
@@ -156,6 +236,42 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(number_idx, 1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // ⛔ `"Infinity"` IS NOT A .NET NUMBER. `Number` parses the ECMA word and
+    // it survives the `result == result` test below, so `TryParse("Infinity")`
+    // reported True where .NET answers False — the invariant culture's
+    // `PositiveInfinitySymbol` is `∞`, not the word. An infinite result is
+    // therefore only a success when the input actually spelled the symbol.
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    let is_finite = chunk.add_import("ecma:number", "isFinite");
+    chunk.emit_call(is_finite, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    let trim = chunk.add_import("ecma:string", "trim");
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_call(trim, 1, line);
+    let symbol = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, symbol, line);
+    let mut infinite_symbol = |chunk: &mut Chunk, text: &str| {
+        chunk.emit_op_u16(Op::LOCAL_GET, symbol, line);
+        chunk.emit_string_const(text, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    };
+    infinite_symbol(chunk, "\u{221E}");
+    infinite_symbol(chunk, "+\u{221E}");
+    chunk.emit_op(Op::I32_OR, line);
+    infinite_symbol(chunk, "-\u{221E}");
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
@@ -230,12 +346,16 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(not_false);
     // Neither — throw a FormatException-shape object.
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "FormatException",
-        class_slots::ValueSource::ConstStr("String was not recognized as a valid Boolean.".to_string()),
+        class_slots::ValueSource::ConstStr(
+            "String was not recognized as a valid Boolean.".to_string(),
+        ),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(outer);
@@ -256,12 +376,16 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
 
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "FormatException",
-        class_slots::ValueSource::ConstStr("String must be exactly one character long.".to_string()),
+        class_slots::ValueSource::ConstStr(
+            "String must be exactly one character long.".to_string(),
+        ),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(ok_block);

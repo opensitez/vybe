@@ -14,8 +14,8 @@
 
 use vybe_compiler::primitives::class_slots::ValueSource;
 use vybe_compiler::primitives::{classes, errors, globals, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `GC.Collect()` / `GC.WaitForPendingFinalizers()`.
 ///
@@ -33,16 +33,28 @@ pub fn emit_run_finalizers(chunks: &mut [Chunk], current: usize, line: u32) {
 /// A drain IS this runtime's collection, so `GC.CollectionCount` reports a real
 /// number rather than a constant.
 fn emit_count_collection(chunks: &mut [Chunk], current: usize, line: u32) {
-    globals::emit_read(&mut chunks[current], super::gc_adapter::COLLECTION_COUNT, line);
+    globals::emit_read(
+        &mut chunks[current],
+        super::gc_adapter::COLLECTION_COUNT,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
-    globals::emit_read(&mut chunks[current], super::gc_adapter::COLLECTION_COUNT, line);
+    globals::emit_read(
+        &mut chunks[current],
+        super::gc_adapter::COLLECTION_COUNT,
+        line,
+    );
     chunks[current].emit_i32_const(1, line);
     ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_end(line);
-    globals::emit_write(&mut chunks[current], super::gc_adapter::COLLECTION_COUNT, line);
+    globals::emit_write(
+        &mut chunks[current],
+        super::gc_adapter::COLLECTION_COUNT,
+        line,
+    );
 }
 
 /// `GC.SuppressFinalize(o)` — stack `[o]` → `[null]`.
@@ -66,8 +78,9 @@ fn emit_set_suppressed(chunks: &mut [Chunk], current: usize, value: bool, line: 
     chunks[current].emit_op_u16(Op::LOCAL_TEE, obj, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "ArgumentNullException",
         ValueSource::ConstStr("Value cannot be null.".into()),
         line,

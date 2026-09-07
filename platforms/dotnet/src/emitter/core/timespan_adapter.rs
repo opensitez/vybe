@@ -32,14 +32,14 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
-fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
     if let Some((idx, _)) = chunk
         .constants
         .iter()
         .enumerate()
         .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
     {
-        idx as u16
+        idx as u32
     } else {
         chunk.add_constant(Value::String(Arc::from(key)))
     }
@@ -354,12 +354,16 @@ pub fn emit_timespan_zero(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
 pub fn emit_timespan_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
+    let array_length_idx = chunks[current].add_import("ecma:array", "length");
     let chunk = &mut chunks[current];
-    let text_slot = chunk.alloc_scratch(5);
+    let text_slot = chunk.alloc_scratch(8);
     let parts_slot = text_slot + 1;
-    let hours_slot = text_slot + 2;
-    let minutes_slot = text_slot + 3;
-    let seconds_slot = text_slot + 4;
+    let first_slot = text_slot + 2;
+    let day_hour_parts_slot = text_slot + 3;
+    let days_slot = text_slot + 4;
+    let hours_slot = text_slot + 5;
+    let minutes_slot = text_slot + 6;
+    let seconds_slot = text_slot + 7;
 
     chunk.emit_call(to_str_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
@@ -369,14 +373,38 @@ pub fn emit_timespan_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     host::emit(chunk, "ecma:string", "split", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
 
-    emit_store_array_part_as_number(chunks, current, parts_slot, 0.0, hours_slot, line);
+    emit_array_get_const_index(&mut chunks[current], parts_slot, 0.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
+    push_const(&mut chunks[current], Value::String(Arc::from(".")), line);
+    host::emit(&mut chunks[current], "ecma:string", "split", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, day_hour_parts_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, day_hour_parts_slot, line);
+    chunks[current].emit_call(array_length_idx, 1, line);
+    push_const(&mut chunks[current], Value::F64(1.0), line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    emit_store_array_part_as_number(chunks, current, day_hour_parts_slot, 0.0, days_slot, line);
+    emit_store_array_part_as_number(chunks, current, day_hour_parts_slot, 1.0, hours_slot, line);
+    chunks[current].emit_else(line);
+    push_const(&mut chunks[current], Value::F64(0.0), line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, days_slot, line);
+    emit_parse_number_from_slot(chunks, current, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, hours_slot, line);
+    chunks[current].emit_end(line);
+
     emit_store_array_part_as_number(chunks, current, parts_slot, 1.0, minutes_slot, line);
     emit_store_array_part_as_number(chunks, current, parts_slot, 2.0, seconds_slot, line);
 
     let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, days_slot, line);
+    push_const(chunk, Value::F64(86_400.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
     push_const(chunk, Value::F64(3600.0), line);
     chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
     push_const(chunk, Value::F64(60.0), line);
     chunk.emit_op(Op::F64_MUL, line);
@@ -386,6 +414,31 @@ pub fn emit_timespan_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
     emit_build_timespan(chunks, current, line);
+}
+
+pub fn emit_timespan_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
+    let test_idx = chunks[current].add_import("ecma:regexp", "test");
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let text_slot = chunk.alloc_scratch(1);
+    chunk.emit_call(to_str_idx, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    push_const(
+        chunk,
+        Value::String(Arc::from("^-?(?:\\d+\\.)?\\d+:\\d+:\\d+(?:\\.\\d+)?$")),
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_call(test_idx, 2, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    emit_timespan_parse(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
@@ -704,7 +757,13 @@ fn emit_inherit_operator_slots(chunk: &mut Chunk, src_local: u16, dst_local: u16
             &class_slots::ClassSlot::Slot(*slot),
             &class_slots::PlainNames,
         );
-        class_slots::emit_class_get(chunk, ObjSource::Local(src_local), &bound, Dest::Stack, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(src_local),
+            &bound,
+            Dest::Stack,
+            line,
+        );
         class_slots::emit_class_set(
             chunk,
             ObjSource::Local(dst_local),
@@ -729,7 +788,11 @@ fn emit_operator_result(chunk: &mut Chunk, receiver_local: u16, line: u32) {
 /// `a + b` / `a - b` on two TimeSpans.
 fn push_timespan_addsub_chunk(chunks: &mut Vec<Chunk>, add: bool, line: u32) -> usize {
     let mut method = create_function_chunk(
-        if add { "__timespan_add" } else { "__timespan_sub" },
+        if add {
+            "__timespan_add"
+        } else {
+            "__timespan_sub"
+        },
         2,
     );
     method.local_count = 2;

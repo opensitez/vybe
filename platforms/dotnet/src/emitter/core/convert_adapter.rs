@@ -1,42 +1,53 @@
+use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots;
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
         exception_name,
-        class_slots::ValueSource::ConstStr(message.to_string()),
+        message,
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
-fn emit_throw_if_null(chunk: &mut Chunk, slot: u16, line: u32) {
+fn emit_throw_if_null(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentNullException",
         "Value cannot be null.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
 fn emit_throw_if_slice_out_of_range(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     bytes_slot: u16,
     offset_slot: u16,
     length_slot: u16,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     let array_len_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -57,11 +68,13 @@ fn emit_throw_if_slice_out_of_range(
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentOutOfRangeException",
         "Offset and length were out of bounds for the array.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
@@ -245,7 +258,8 @@ fn emit_filter_dotnet_base64(
     if throw_on_invalid {
         chunks[current].emit_if(line);
         emit_throw_dotnet_exception(
-            &mut chunks[current],
+            chunks,
+            current,
             "FormatException",
             "The input is not a valid Base-64 string.",
             line,
@@ -334,9 +348,10 @@ pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc:
             chunks[current].emit_op_u16(Op::LOCAL_SET, length_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
-            emit_throw_if_null(&mut chunks[current], bytes_slot, line);
+            emit_throw_if_null(chunks, current, bytes_slot, line);
             emit_throw_if_slice_out_of_range(
-                &mut chunks[current],
+                chunks,
+                current,
                 bytes_slot,
                 offset_slot,
                 length_slot,
@@ -358,7 +373,7 @@ pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc:
         2 => {
             chunks[current].emit_op_u16(Op::LOCAL_SET, options_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
-            emit_throw_if_null(&mut chunks[current], bytes_slot, line);
+            emit_throw_if_null(chunks, current, bytes_slot, line);
             emit_buffer_to_base64(chunks, current, bytes_slot, None, None, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, options_slot, line);
@@ -372,7 +387,7 @@ pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc:
         }
         _ => {
             chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
-            emit_throw_if_null(&mut chunks[current], bytes_slot, line);
+            emit_throw_if_null(chunks, current, bytes_slot, line);
             emit_buffer_to_base64(chunks, current, bytes_slot, None, None, line);
         }
     }
@@ -381,7 +396,7 @@ pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc:
 pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let text_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    emit_throw_if_null(&mut chunks[current], text_slot, line);
+    emit_throw_if_null(chunks, current, text_slot, line);
     emit_filter_dotnet_base64(chunks, current, text_slot, true, line);
     vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
     vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
@@ -396,7 +411,7 @@ pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _ar
 pub fn emit_convert_to_hex_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let bytes_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
-    emit_throw_if_null(&mut chunks[current], bytes_slot, line);
+    emit_throw_if_null(chunks, current, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     vybe_compiler::primitives::base64::emit_byte_array_to_binary_string(chunks, current, line);
     vybe_compiler::primitives::string_encoding::emit_bin2hex(chunks, current, 1, line);
@@ -408,7 +423,7 @@ pub fn emit_convert_to_hex_string(chunks: &mut [Chunk], current: usize, _argc: u
 pub fn emit_convert_from_hex_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let text_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    emit_throw_if_null(&mut chunks[current], text_slot, line);
+    emit_throw_if_null(chunks, current, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     vybe_compiler::primitives::string_encoding::emit_hex2bin(chunks, current, 1, line);
     vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
@@ -547,15 +562,9 @@ pub fn emit_convert_to_base64_char_array(
     chunks[current].emit_op_u16(Op::LOCAL_SET, length_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    emit_throw_if_null(&mut chunks[current], input_slot, line);
-    emit_throw_if_null(&mut chunks[current], out_slot, line);
-    emit_throw_if_slice_out_of_range(
-        &mut chunks[current],
-        input_slot,
-        offset_slot,
-        length_slot,
-        line,
-    );
+    emit_throw_if_null(chunks, current, input_slot, line);
+    emit_throw_if_null(chunks, current, out_slot, line);
+    emit_throw_if_slice_out_of_range(chunks, current, input_slot, offset_slot, length_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, length_slot, line);
@@ -609,6 +618,53 @@ pub fn emit_convert_to_base64_char_array(
 /// `255` and `Convert.ToSByte`/`ToUInt16` were not registered at all — an
 /// unregistered `To*` reads null and renders NaN.
 ///
+/// `Convert.ToBoolean(value)`: a string parses as `Boolean.Parse` does
+/// (`"True"`/`"False"`, case-insensitive, else `FormatException`); any other
+/// value converts by its truth.
+pub fn emit_convert_to_boolean(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("string", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    super::parse_adapter::emit_parse_bool(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+}
+
+/// `Convert.ToInt32(value, fromBase)` — the base-overload is a parser, not the
+/// checked numeric conversion used by the one-argument overload.
+pub fn emit_convert_to_int32_base(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let radix = reserve_slot(chunk);
+    let value = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, radix, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, radix, line);
+    host::emit(chunk, "ecma:number", "parseInt", 2, line);
+}
+
+/// `Convert.ToString(value, toBase)` — radix formatting, lowercase for base 16
+/// just like .NET's overload (`255, 16` => `"ff"`).
+pub fn emit_convert_to_string_base(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let radix = reserve_slot(chunk);
+    let value = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, radix, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, radix, line);
+    host::emit(chunk, "ecma:number", "toString", 2, line);
+}
+
 /// .NET also ROUNDS on the way in (banker's rounding, `Convert.ToInt32(2.5)`
 /// is 2), which is what separates this from a truncating cast.
 pub fn emit_convert_checked(
@@ -619,16 +675,60 @@ pub fn emit_convert_checked(
     type_name: &str,
     line: u32,
 ) {
+    emit_convert_checked_with_message(
+        chunks,
+        current,
+        min,
+        max,
+        &format!("Value was either too large or too small for a {type_name}."),
+        line,
+    );
+}
+
+/// C#'s `checked((byte)value)`: the `Convert.ToByte` range check with the
+/// message an overflowing checked cast reports.
+pub fn emit_checked_byte_cast(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_convert_checked_with_message(
+        chunks,
+        current,
+        0.0,
+        255.0,
+        "Arithmetic operation resulted in an overflow.",
+        line,
+    );
+}
+
+fn emit_convert_checked_with_message(
+    chunks: &mut [Chunk],
+    current: usize,
+    min: f64,
+    max: f64,
+    overflow_message: &str,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let value = reserve_slot(chunk);
     // Round to nearest, ties to EVEN — `Math.round` is ties-away, so the
     // shared rounding primitive is the one that matches .NET here.
-    vybe_compiler::primitives::math::emit_round(
-        chunk,
-        vybe_ast::MidpointPolicy::HalfEven,
+    vybe_compiler::primitives::math::emit_round(chunk, vybe_ast::MidpointPolicy::HalfEven, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    // A string that is not a number converts to NaN; .NET throws instead.
+    let numeric = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_br_if(0, line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "FormatException",
+        "Input string was not in a correct format.",
         line,
     );
-    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+    chunk.patch_block(numeric);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_f64_const(min, line);
@@ -638,12 +738,8 @@ pub fn emit_convert_checked(
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
-    emit_throw_dotnet_exception(
-        chunk,
-        "OverflowException",
-        &format!("Value was either too large or too small for a {type_name}."),
-        line,
-    );
+    emit_throw_dotnet_exception(chunks, current, "OverflowException", overflow_message, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
 }

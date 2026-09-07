@@ -14,8 +14,31 @@ use super::object_fields::field_slot;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
+        // A string answers itself, as `String.ToString()` returns `this`.
         let to_str = chunks[current].add_import("ecma:string", "String");
-        chunks[current].emit_call(to_str, argc, line);
+        let chunk = &mut chunks[current];
+        if argc == 1 {
+            let value = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+            vybe_compiler::primitives::instructions::host::emit(
+                chunk,
+                "ecma:value",
+                "typeof",
+                1,
+                line,
+            );
+            chunk.emit_string_const("string", line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            chunk.emit_if_value(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+            chunk.emit_else(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+            chunk.emit_call(to_str, 1, line);
+            chunk.emit_end(line);
+            return true;
+        }
+        chunk.emit_call(to_str, argc, line);
         return true;
     }
 
@@ -193,7 +216,7 @@ fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
 /// retired `zero_arg_tostring` fallback: primitives and objects with no
 /// `ToString` role go through `String()`; an object carrying the shared role
 /// method calls it; a Guid struct (`__type == "Guid"`) renders its `__value`.
-fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
+pub(crate) fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     let obj = chunk.alloc_scratch(1);
     let ty = chunk.alloc_scratch(1);
     let result = chunk.alloc_scratch(1);
@@ -237,7 +260,8 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, is_primitive, line);
     chunk.emit_if(line);
     // Primitive: .NET stringification. Booleans are capitalized (`True` /
-    // `False`), other primitives follow ECMA String().
+    // `False`), and numeric infinities use .NET's culture-invariant symbols
+    // rather than ECMA's `"Infinity"` spelling.
     chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
     chunk.emit_string_const("boolean", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
@@ -257,14 +281,43 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("False", line);
     chunk.emit_end(line);
     chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
+    chunk.emit_string_const("number", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_f64_const(f64::INFINITY, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("∞", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_f64_const(f64::NEG_INFINITY, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("-∞", line);
+    chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);
 
     // Object: look up its shared `ToString` role member.
-    class_slots::emit_class_get(chunk, ObjSource::Local(obj), &tostring, Dest::Local(func), line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(obj),
+        &tostring,
+        Dest::Local(func),
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
@@ -335,7 +388,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
 /// ECMA `Array.join` stringifies with JavaScript semantics (`true`,
 /// `[object]`). .NET goes through each element's `ToString` role first, then
 /// joins the materialized strings. Stack: `[separator, values] -> [string]`.
-fn emit_string_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
+pub(crate) fn emit_string_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
     let sep_slot = chunks[current].alloc_scratch(5);
     let values_slot = sep_slot + 1;
     let mapped_slot = sep_slot + 2;

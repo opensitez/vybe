@@ -4,7 +4,7 @@ pub mod host_map;
 pub mod imports;
 pub mod types;
 
-use vybe_runtime::component_model::ComponentDescriptor;
+use vybe_compiler::component_classes::ComponentDescriptor;
 
 #[path = "../classes/mod.rs"]
 pub mod classes;

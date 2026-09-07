@@ -72,13 +72,7 @@ fn field_set(chunk: &mut Chunk, key: &str, line: u32) {
 
 fn field(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     get(chunk, slot, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
@@ -89,16 +83,18 @@ fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     field_set(chunk, key, line);
 }
 
-fn throw(chunk: &mut Chunk, class: &str, message: &str, line: u32) {
-    errors::emit_exception_new(
-        chunk,
+fn throw(chunks: &mut [Chunk], current: usize, class: &str, message: &str, line: u32) {
+    let chunk = &mut chunks[current];
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         class,
         class_slots::ValueSource::ConstStr(message.to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     errors::emit_throw(chunk, line);
 }
-
 
 /// `[v, m] → [v mod m]` — arithmetic, so no host import is needed for what is
 /// just a division remainder.
@@ -245,7 +241,8 @@ fn put_byte(chunk: &mut Chunk, stream: u16, byte: u16, line: u32) {
 /// Read one byte at the cursor and advance. Past the end throws
 /// `EndOfStreamException`, which is what separates a `BinaryReader` from
 /// `Stream.ReadByte` (that answers -1).
-fn take_byte(chunk: &mut Chunk, stream: u16, out: u16, line: u32) {
+fn take_byte(chunks: &mut [Chunk], current: usize, stream: u16, out: u16, line: u32) {
+    let chunk = &mut chunks[current];
     field(chunk, stream, POS, line);
     field(chunk, stream, LEN, line);
     ops::emit_dyn_lt(chunk, line);
@@ -253,11 +250,13 @@ fn take_byte(chunk: &mut Chunk, stream: u16, out: u16, line: u32) {
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     throw(
-        chunk,
+        chunks,
+        current,
         "EndOfStreamException",
         "Unable to read beyond the end of the stream.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
     field(chunk, stream, BUF, line);
@@ -330,7 +329,8 @@ pub fn emit_read_int(chunks: &mut [Chunk], current: usize, width: u32, signed: b
     num(chunk, 0.0, line);
     set(chunk, acc, line);
     for i in 0..width {
-        take_byte(chunk, stream, byte, line);
+        take_byte(chunks, current, stream, byte, line);
+        let chunk = &mut chunks[current];
         get(chunk, acc, line);
         get(chunk, byte, line);
         num(chunk, 2f64.powi(8 * i as i32), line);
@@ -338,6 +338,7 @@ pub fn emit_read_int(chunks: &mut [Chunk], current: usize, width: u32, signed: b
         chunk.emit_op(Op::F64_ADD, line);
         set(chunk, acc, line);
     }
+    let chunk = &mut chunks[current];
     if signed {
         let half = 2f64.powi(8 * width as i32 - 1);
         let modulus = 2f64.powi(8 * width as i32);
@@ -516,7 +517,8 @@ fn emit_write_7bit(chunk: &mut Chunk, stream: u16, value: u16, line: u32) {
     chunk.patch_block(block);
 }
 
-fn emit_read_7bit(chunk: &mut Chunk, stream: u16, out: u16, line: u32) {
+fn emit_read_7bit(chunks: &mut [Chunk], current: usize, stream: u16, out: u16, line: u32) {
+    let chunk = &mut chunks[current];
     let scratch = chunk.alloc_scratch(3);
     let byte = scratch;
     let shift = scratch + 1;
@@ -528,7 +530,8 @@ fn emit_read_7bit(chunk: &mut Chunk, stream: u16, out: u16, line: u32) {
 
     let block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
-    take_byte(chunk, stream, byte, line);
+    take_byte(chunks, current, stream, byte, line);
+    let chunk = &mut chunks[current];
     get(chunk, acc, line);
     get(chunk, byte, line);
     num(chunk, 128.0, line);
@@ -575,7 +578,8 @@ pub fn emit_read_7bit_encoded_int(chunks: &mut [Chunk], current: usize, line: u3
     let out = scratch + 1;
     set(chunk, bio, line);
     let stream = stream_of(chunk, bio, line);
-    emit_read_7bit(chunk, stream, out, line);
+    emit_read_7bit(chunks, current, stream, out, line);
+    let chunk = &mut chunks[current];
     get(chunk, out, line);
 }
 
@@ -652,7 +656,8 @@ pub fn emit_read_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let byte = scratch + 4;
     set(chunk, bio, line);
     let stream = stream_of(chunk, bio, line);
-    emit_read_7bit(chunk, stream, count, line);
+    emit_read_7bit(chunks, current, stream, count, line);
+    let chunk = &mut chunks[current];
 
     call(chunk, "ecma:array", "new", 0, line);
     set(chunk, bytes, line);
@@ -666,7 +671,8 @@ pub fn emit_read_string(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_not(chunk, line);
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(1, line);
-    take_byte(chunk, stream, byte, line);
+    take_byte(chunks, current, stream, byte, line);
+    let chunk = &mut chunks[current];
     get(chunk, bytes, line);
     get(chunk, byte, line);
     call(chunk, "ecma:array", "push", 2, line);

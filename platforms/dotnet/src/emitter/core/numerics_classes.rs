@@ -24,9 +24,7 @@
 //! `interop_classes` documents: unconditional injection shifts typeidx
 //! numbering for every language while the class model is mid-conversion.
 
-use super::interop_classes::{
-    by_ref_param, class, getter, me, method, param, shared_method,
-};
+use super::interop_classes::{by_ref_param, class, getter, me, method, param, shared_method};
 use vybe_ast::{
     Argument, BinOp, ClassMember, ConstructorInitializerTarget, ExprKind, Expression, Literal,
     Modifiers, Param, PassBy, Statement, StmtKind, Visibility,
@@ -75,9 +73,7 @@ fn declares_type(body: &[Statement], wanted: &str) -> bool {
         StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
             name.eq_ignore_ascii_case(wanted)
         }
-        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
-            declares_type(body, wanted)
-        }
+        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => declares_type(body, wanted),
         StmtKind::ModuleDecl { members, .. } => members.iter().any(|m| match m {
             ClassMember::NestedType(stmt) => {
                 declares_type(std::slice::from_ref(stmt.as_ref()), wanted)
@@ -507,11 +503,7 @@ fn vector_class(name: &str, comps: &[&str]) -> Statement {
         let operand = |c: &str| -> Expression {
             if matches!(op, BinOp::Mul | BinOp::Div) {
                 Expression::new(ExprKind::Ternary {
-                    cond: Box::new(bin(
-                        BinOp::InstanceOf,
-                        ident("right"),
-                        ident(name),
-                    )),
+                    cond: Box::new(bin(BinOp::InstanceOf, ident("right"), ident(name))),
                     then: Box::new(field_of(ident("right"), c)),
                     else_: Box::new(ident("right")),
                 })
@@ -586,10 +578,7 @@ fn vector_class(name: &str, comps: &[&str]) -> Statement {
     members.push(shared_method(
         "Distance",
         vec![typed_param("left", name), typed_param("right", name)],
-        vec![ret(call(
-            field_of(ident("Math"), "Sqrt"),
-            vec![dist_sq],
-        ))],
+        vec![ret(call(field_of(ident("Math"), "Sqrt"), vec![dist_sq]))],
     ));
 
     // Normalize — .NET divides by the length and answers NaN components for a
@@ -717,17 +706,12 @@ fn vector_class(name: &str, comps: &[&str]) -> Statement {
                     ),
                 );
             }
-            add(
-                acc,
-                field_of(ident("transform"), &format!("M4{}", c + 1)),
-            )
+            add(acc, field_of(ident("transform"), &format!("M4{}", c + 1)))
         };
         // v + 2w×(w×v + sv) — the quaternion sandwich without building one.
         let qf = |c: &str| field_of(ident("transform"), c);
         let pf = |c: &str| field_of(ident("position"), c);
-        let cross1 = |a: &str, b: &str| {
-            bin(BinOp::Sub, mul(qf(a), pf(b)), mul(qf(b), pf(a)))
-        };
+        let cross1 = |a: &str, b: &str| bin(BinOp::Sub, mul(qf(a), pf(b)), mul(qf(b), pf(a)));
         let t = |c: usize| {
             let (a, b) = [("Y", "Z"), ("Z", "X"), ("X", "Y")][c];
             mul(
@@ -897,7 +881,10 @@ fn complex_class() -> Statement {
         });
     }
     members.push(ctor(
-        vec![typed_param("real", "double"), typed_param("imaginary", "double")],
+        vec![
+            typed_param("real", "double"),
+            typed_param("imaginary", "double"),
+        ],
         vec![
             Statement::new(StmtKind::Assign {
                 targets: vec![me("Real")],
@@ -914,17 +901,26 @@ fn complex_class() -> Statement {
 
     members.push(shared_value(
         "Zero",
-        new_of("Complex", vec![Expression::float(0.0), Expression::float(0.0)]),
+        new_of(
+            "Complex",
+            vec![Expression::float(0.0), Expression::float(0.0)],
+        ),
         "Complex",
     ));
     members.push(shared_value(
         "One",
-        new_of("Complex", vec![Expression::float(1.0), Expression::float(0.0)]),
+        new_of(
+            "Complex",
+            vec![Expression::float(1.0), Expression::float(0.0)],
+        ),
         "Complex",
     ));
     members.push(shared_value(
         "ImaginaryOne",
-        new_of("Complex", vec![Expression::float(0.0), Expression::float(1.0)]),
+        new_of(
+            "Complex",
+            vec![Expression::float(0.0), Expression::float(1.0)],
+        ),
         "Complex",
     ));
 
@@ -947,7 +943,10 @@ fn complex_class() -> Statement {
         vec![typed_param("value", "Complex")],
         vec![ret(math(
             "Sqrt",
-            vec![add(mul(re("value"), re("value")), mul(im("value"), im("value")))],
+            vec![add(
+                mul(re("value"), re("value")),
+                mul(im("value"), im("value")),
+            )],
         ))],
     ));
     members.push(shared_method(
@@ -1004,12 +1003,18 @@ fn complex_class() -> Statement {
         let body = vec![ret(new_of("Complex", vec![real, imag]))];
         members.push(shared_method(
             method_name,
-            vec![typed_param("left", "Complex"), typed_param("right", "Complex")],
+            vec![
+                typed_param("left", "Complex"),
+                typed_param("right", "Complex"),
+            ],
             body.clone(),
         ));
         members.push(shared_method(
             operator,
-            vec![typed_param("left", "Complex"), typed_param("right", "Complex")],
+            vec![
+                typed_param("left", "Complex"),
+                typed_param("right", "Complex"),
+            ],
             body,
         ));
     }
@@ -1038,7 +1043,10 @@ fn complex_class() -> Statement {
     for name in ["Divide", "op_Division"] {
         members.push(shared_method(
             name,
-            vec![typed_param("left", "Complex"), typed_param("right", "Complex")],
+            vec![
+                typed_param("left", "Complex"),
+                typed_param("right", "Complex"),
+            ],
             div_body.clone(),
         ));
     }
@@ -1104,7 +1112,10 @@ fn complex_class() -> Statement {
                     "Log",
                     vec![math(
                         "Sqrt",
-                        vec![add(mul(re("value"), re("value")), mul(im("value"), im("value")))],
+                        vec![add(
+                            mul(re("value"), re("value")),
+                            mul(im("value"), im("value")),
+                        )],
                     )],
                 ),
                 math("Atan2", vec![im("value"), re("value")]),
@@ -1120,7 +1131,10 @@ fn complex_class() -> Statement {
             // negative — `Sqrt(-4)` is `<0; 2>`, not `<1.2e-16; 2>`.
             let r = math(
                 "Sqrt",
-                vec![add(mul(re("value"), re("value")), mul(im("value"), im("value")))],
+                vec![add(
+                    mul(re("value"), re("value")),
+                    mul(im("value"), im("value")),
+                )],
             );
             let half = bin(
                 BinOp::Div,
@@ -1142,11 +1156,7 @@ fn complex_class() -> Statement {
             Expression::new(ExprKind::Ternary {
                 cond: Box::new(bin(BinOp::Eq, im("value"), Expression::float(0.0))),
                 then: Box::new(Expression::new(ExprKind::Ternary {
-                    cond: Box::new(bin(
-                        BinOp::Lt,
-                        re("value"),
-                        Expression::float(0.0),
-                    )),
+                    cond: Box::new(bin(BinOp::Lt, re("value"), Expression::float(0.0))),
                     then: Box::new(new_of(
                         "Complex",
                         vec![
@@ -1168,13 +1178,19 @@ fn complex_class() -> Statement {
     ));
     members.push(shared_method(
         "Pow",
-        vec![typed_param("value", "Complex"), typed_param("power", "double")],
+        vec![
+            typed_param("value", "Complex"),
+            typed_param("power", "double"),
+        ],
         vec![ret({
             // z^y = r^y · (cos yθ, sin yθ) — `Exp(y·Log z)` with both halves
             // folded, so no intermediate Complex is built.
             let r = math(
                 "Sqrt",
-                vec![add(mul(re("value"), re("value")), mul(im("value"), im("value")))],
+                vec![add(
+                    mul(re("value"), re("value")),
+                    mul(im("value"), im("value")),
+                )],
             );
             let theta = math("Atan2", vec![im("value"), re("value")]);
             let scale = math("Pow", vec![r, ident("power")]);
@@ -1188,10 +1204,7 @@ fn complex_class() -> Statement {
             )
         })],
     ));
-    for (name, outer, inner) in [
-        ("Sin", "Sin", "Cos"),
-        ("Cos", "Cos", "Sin"),
-    ] {
+    for (name, outer, inner) in [("Sin", "Sin", "Cos"), ("Cos", "Cos", "Sin")] {
         // sin(a+bi) = sin a cosh b + i cos a sinh b; cos flips the sign.
         let cosh = bin(
             BinOp::Div,
@@ -1235,10 +1248,7 @@ fn complex_class() -> Statement {
     }
 
     // Predicates — .NET asks about BOTH components.
-    for (name, probe) in [
-        ("IsNaN", "IsNaN"),
-        ("IsInfinity", "IsInfinity"),
-    ] {
+    for (name, probe) in [("IsNaN", "IsNaN"), ("IsInfinity", "IsInfinity")] {
         members.push(shared_method(
             name,
             vec![typed_param("value", "Complex")],
@@ -1280,12 +1290,18 @@ fn complex_class() -> Statement {
     );
     members.push(shared_method(
         "op_Equality",
-        vec![typed_param("left", "Complex"), typed_param("right", "Complex")],
+        vec![
+            typed_param("left", "Complex"),
+            typed_param("right", "Complex"),
+        ],
         vec![ret(operands_eq.clone())],
     ));
     members.push(shared_method(
         "op_Inequality",
-        vec![typed_param("left", "Complex"), typed_param("right", "Complex")],
+        vec![
+            typed_param("left", "Complex"),
+            typed_param("right", "Complex"),
+        ],
         vec![ret(Expression::new(ExprKind::Unary {
             op: vybe_ast::UnaryOp::Not,
             expr: Box::new(operands_eq),
@@ -1540,7 +1556,10 @@ fn quaternion_class() -> Statement {
     let half = bin(BinOp::Div, ident("angle"), Expression::float(2.0));
     members.push(shared_method(
         "CreateFromAxisAngle",
-        vec![typed_param("axis", "Vector3"), typed_param("angle", "float")],
+        vec![
+            typed_param("axis", "Vector3"),
+            typed_param("angle", "float"),
+        ],
         vec![ret(new_of(
             "Quaternion",
             vec![
@@ -1590,10 +1609,7 @@ fn quaternion_class() -> Statement {
                     mul(mul(cy.clone(), cp.clone()), sr.clone()),
                     mul(mul(sy.clone(), sp.clone()), cr.clone()),
                 ),
-                add(
-                    mul(mul(cy.clone(), cp.clone()), cr),
-                    mul(mul(sy, sp), sr),
-                ),
+                add(mul(mul(cy.clone(), cp.clone()), cr), mul(mul(sy, sp), sr)),
             ],
         ))],
     ));
@@ -1724,14 +1740,20 @@ fn plane_class() -> Statement {
     let pn = |c: &str| field_of(field_of(ident("plane"), "Normal"), c);
     members.push(shared_method(
         "DotNormal",
-        vec![typed_param("plane", "Plane"), typed_param("value", "Vector3")],
+        vec![
+            typed_param("plane", "Plane"),
+            typed_param("value", "Vector3"),
+        ],
         vec![ret(fold_components(&["X", "Y", "Z"], BinOp::Add, |c| {
             mul(pn(c), field_of(ident("value"), c))
         }))],
     ));
     members.push(shared_method(
         "DotCoordinate",
-        vec![typed_param("plane", "Plane"), typed_param("value", "Vector3")],
+        vec![
+            typed_param("plane", "Plane"),
+            typed_param("value", "Vector3"),
+        ],
         vec![ret(add(
             fold_components(&["X", "Y", "Z"], BinOp::Add, |c| {
                 mul(pn(c), field_of(ident("value"), c))
@@ -1758,11 +1780,7 @@ fn plane_class() -> Statement {
                         .map(|c| bin(BinOp::Div, pn(c), plane_len.clone()))
                         .collect(),
                 ),
-                bin(
-                    BinOp::Div,
-                    field_of(ident("plane"), "D"),
-                    plane_len.clone(),
-                ),
+                bin(BinOp::Div, field_of(ident("plane"), "D"), plane_len.clone()),
             ],
         ))],
     ));
@@ -1893,10 +1911,7 @@ fn plane_class() -> Statement {
                                 acc,
                                 mul(
                                     field_of(field_of(ident("plane"), "Normal"), comp),
-                                    field_of(
-                                        ident("inverse"),
-                                        &format!("M{}{}", row + 1, k + 2),
-                                    ),
+                                    field_of(ident("inverse"), &format!("M{}{}", row + 1, k + 2)),
                                 ),
                             );
                         }
@@ -2090,13 +2105,13 @@ fn matrix3x2_class(lowered: &str) -> Statement {
         ),
         "Matrix3x2",
     ));
-    members.push(getter("IsIdentity", vec![ret(is_identity_body(rows, cols, 2))]));
+    members.push(getter(
+        "IsIdentity",
+        vec![ret(is_identity_body(rows, cols, 2))],
+    ));
     members.push(getter(
         "Translation",
-        vec![ret(new_of(
-            "Vector2",
-            vec![me("M31"), me("M32")],
-        ))],
+        vec![ret(new_of("Vector2", vec![me("M31"), me("M32")]))],
     ));
     // The 2×2 linear part decides it; the translation row cannot.
     let det = bin(
@@ -2108,7 +2123,10 @@ fn matrix3x2_class(lowered: &str) -> Statement {
 
     members.push(shared_method(
         "CreateScale",
-        vec![typed_param("xScale", "float"), typed_param("yScale", "float")],
+        vec![
+            typed_param("xScale", "float"),
+            typed_param("yScale", "float"),
+        ],
         vec![ret(new_of(
             "Matrix3x2",
             vec![
@@ -2123,7 +2141,10 @@ fn matrix3x2_class(lowered: &str) -> Statement {
     ));
     members.push(shared_method(
         "CreateTranslation",
-        vec![typed_param("xPosition", "float"), typed_param("yPosition", "float")],
+        vec![
+            typed_param("xPosition", "float"),
+            typed_param("yPosition", "float"),
+        ],
         vec![ret(new_of(
             "Matrix3x2",
             vec![
@@ -2157,7 +2178,10 @@ fn matrix3x2_class(lowered: &str) -> Statement {
     ));
     members.push(shared_method(
         "CreateSkew",
-        vec![typed_param("radiansX", "float"), typed_param("radiansY", "float")],
+        vec![
+            typed_param("radiansX", "float"),
+            typed_param("radiansY", "float"),
+        ],
         vec![ret(new_of(
             "Matrix3x2",
             vec![
@@ -2320,7 +2344,9 @@ fn matrix4x4_class(lowered: &str) -> Statement {
         "Identity",
         new_of(
             "Matrix4x4",
-            cells_from(n, n, |r, c| Expression::float(if r == c { 1.0 } else { 0.0 })),
+            cells_from(n, n, |r, c| {
+                Expression::float(if r == c { 1.0 } else { 0.0 })
+            }),
         ),
         "Matrix4x4",
     ));
@@ -2336,7 +2362,8 @@ fn matrix4x4_class(lowered: &str) -> Statement {
             ))],
         ));
     }
-    if lowered.contains("getdeterminant") || lowered.contains("invert") || lowered.contains("plane") {
+    if lowered.contains("getdeterminant") || lowered.contains("invert") || lowered.contains("plane")
+    {
         members.push(method(
             "GetDeterminant",
             Vec::new(),
@@ -2402,7 +2429,11 @@ fn matrix4x4_class(lowered: &str) -> Statement {
     ));
 
     // Rotations about each axis — the two off-diagonal cells carry sin.
-    for (name, axis) in [("CreateRotationX", 0usize), ("CreateRotationY", 1), ("CreateRotationZ", 2)] {
+    for (name, axis) in [
+        ("CreateRotationX", 0usize),
+        ("CreateRotationY", 1),
+        ("CreateRotationZ", 2),
+    ] {
         let (a, b) = match axis {
             0 => (1usize, 2usize),
             1 => (2, 0),
@@ -2438,39 +2469,38 @@ fn matrix4x4_class(lowered: &str) -> Statement {
     let qc = |c: &str| field_of(ident("quaternion"), c);
     let two = |a: Expression, b: Expression| mul(Expression::float(2.0), mul(a, b));
     if lowered.contains("quaternion") {
-    members.push(shared_method(
-        "CreateFromQuaternion",
-        vec![typed_param("quaternion", "Quaternion")],
-        vec![ret(new_of(
-            "Matrix4x4",
-            cells_from(4, 4, |r, c| match (r, c) {
-                (0, 0) => bin(
-                    BinOp::Sub,
-                    Expression::float(1.0),
-                    add(two(qc("Y"), qc("Y")), two(qc("Z"), qc("Z"))),
-                ),
-                (0, 1) => add(two(qc("X"), qc("Y")), two(qc("W"), qc("Z"))),
-                (0, 2) => bin(BinOp::Sub, two(qc("X"), qc("Z")), two(qc("W"), qc("Y"))),
-                (1, 0) => bin(BinOp::Sub, two(qc("X"), qc("Y")), two(qc("W"), qc("Z"))),
-                (1, 1) => bin(
-                    BinOp::Sub,
-                    Expression::float(1.0),
-                    add(two(qc("X"), qc("X")), two(qc("Z"), qc("Z"))),
-                ),
-                (1, 2) => add(two(qc("Y"), qc("Z")), two(qc("W"), qc("X"))),
-                (2, 0) => add(two(qc("X"), qc("Z")), two(qc("W"), qc("Y"))),
-                (2, 1) => bin(BinOp::Sub, two(qc("Y"), qc("Z")), two(qc("W"), qc("X"))),
-                (2, 2) => bin(
-                    BinOp::Sub,
-                    Expression::float(1.0),
-                    add(two(qc("X"), qc("X")), two(qc("Y"), qc("Y"))),
-                ),
-                (3, 3) => Expression::float(1.0),
-                _ => Expression::float(0.0),
-            }),
-        ))],
-    ));
-
+        members.push(shared_method(
+            "CreateFromQuaternion",
+            vec![typed_param("quaternion", "Quaternion")],
+            vec![ret(new_of(
+                "Matrix4x4",
+                cells_from(4, 4, |r, c| match (r, c) {
+                    (0, 0) => bin(
+                        BinOp::Sub,
+                        Expression::float(1.0),
+                        add(two(qc("Y"), qc("Y")), two(qc("Z"), qc("Z"))),
+                    ),
+                    (0, 1) => add(two(qc("X"), qc("Y")), two(qc("W"), qc("Z"))),
+                    (0, 2) => bin(BinOp::Sub, two(qc("X"), qc("Z")), two(qc("W"), qc("Y"))),
+                    (1, 0) => bin(BinOp::Sub, two(qc("X"), qc("Y")), two(qc("W"), qc("Z"))),
+                    (1, 1) => bin(
+                        BinOp::Sub,
+                        Expression::float(1.0),
+                        add(two(qc("X"), qc("X")), two(qc("Z"), qc("Z"))),
+                    ),
+                    (1, 2) => add(two(qc("Y"), qc("Z")), two(qc("W"), qc("X"))),
+                    (2, 0) => add(two(qc("X"), qc("Z")), two(qc("W"), qc("Y"))),
+                    (2, 1) => bin(BinOp::Sub, two(qc("Y"), qc("Z")), two(qc("W"), qc("X"))),
+                    (2, 2) => bin(
+                        BinOp::Sub,
+                        Expression::float(1.0),
+                        add(two(qc("X"), qc("X")), two(qc("Y"), qc("Y"))),
+                    ),
+                    (3, 3) => Expression::float(1.0),
+                    _ => Expression::float(0.0),
+                }),
+            ))],
+        ));
     }
     // A right-handed view matrix: the camera basis, with the eye projected on.
     let v3 = |name: &str, c: &str| field_of(ident(name), c);
@@ -2478,61 +2508,64 @@ fn matrix4x4_class(lowered: &str) -> Statement {
         "Vector3",
         ["X", "Y", "Z"]
             .iter()
-            .map(|c| {
-                bin(
-                    BinOp::Sub,
-                    v3("cameraPosition", c),
-                    v3("cameraTarget", c),
-                )
-            })
+            .map(|c| bin(BinOp::Sub, v3("cameraPosition", c), v3("cameraTarget", c)))
             .collect(),
     );
     if lowered.contains("createlookat") {
-    members.push(shared_method(
-        "CreateLookAt",
-        vec![
-            typed_param("cameraPosition", "Vector3"),
-            typed_param("cameraTarget", "Vector3"),
-            typed_param("cameraUpVector", "Vector3"),
-        ],
-        vec![
-            local("zaxis", "Vector3", call(
-                    field_of(ident("Vector3"), "Normalize"),
-                    vec![zaxis],
-                )),
-            local("xaxis", "Vector3", call(
-                    field_of(ident("Vector3"), "Normalize"),
-                    vec![call(
+        members.push(shared_method(
+            "CreateLookAt",
+            vec![
+                typed_param("cameraPosition", "Vector3"),
+                typed_param("cameraTarget", "Vector3"),
+                typed_param("cameraUpVector", "Vector3"),
+            ],
+            vec![
+                local(
+                    "zaxis",
+                    "Vector3",
+                    call(field_of(ident("Vector3"), "Normalize"), vec![zaxis]),
+                ),
+                local(
+                    "xaxis",
+                    "Vector3",
+                    call(
+                        field_of(ident("Vector3"), "Normalize"),
+                        vec![call(
+                            field_of(ident("Vector3"), "Cross"),
+                            vec![ident("cameraUpVector"), ident("zaxis")],
+                        )],
+                    ),
+                ),
+                local(
+                    "yaxis",
+                    "Vector3",
+                    call(
                         field_of(ident("Vector3"), "Cross"),
-                        vec![ident("cameraUpVector"), ident("zaxis")],
-                    )],
-                )),
-            local("yaxis", "Vector3", call(
-                    field_of(ident("Vector3"), "Cross"),
-                    vec![ident("zaxis"), ident("xaxis")],
-                )),
-            ret(new_of(
-                "Matrix4x4",
-                cells_from(4, 4, |r, c| {
-                    let axes = ["xaxis", "yaxis", "zaxis"];
-                    let comps = ["X", "Y", "Z"];
-                    match (r, c) {
-                        (3, 3) => Expression::float(1.0),
-                        (3, _) => bin(
-                            BinOp::Sub,
-                            Expression::float(0.0),
-                            call(
-                                field_of(ident("Vector3"), "Dot"),
-                                vec![ident(axes[c]), ident("cameraPosition")],
+                        vec![ident("zaxis"), ident("xaxis")],
+                    ),
+                ),
+                ret(new_of(
+                    "Matrix4x4",
+                    cells_from(4, 4, |r, c| {
+                        let axes = ["xaxis", "yaxis", "zaxis"];
+                        let comps = ["X", "Y", "Z"];
+                        match (r, c) {
+                            (3, 3) => Expression::float(1.0),
+                            (3, _) => bin(
+                                BinOp::Sub,
+                                Expression::float(0.0),
+                                call(
+                                    field_of(ident("Vector3"), "Dot"),
+                                    vec![ident(axes[c]), ident("cameraPosition")],
+                                ),
                             ),
-                        ),
-                        (_, 3) => Expression::float(0.0),
-                        _ => field_of(ident(axes[c]), comps[r]),
-                    }
-                }),
-            )),
-        ],
-    ));
+                            (_, 3) => Expression::float(0.0),
+                            _ => field_of(ident(axes[c]), comps[r]),
+                        }
+                    }),
+                )),
+            ],
+        ));
     }
 
     members.push(shared_method(
@@ -2544,14 +2577,18 @@ fn matrix4x4_class(lowered: &str) -> Statement {
             typed_param("farPlaneDistance", "float"),
         ],
         vec![
-            local("yScale", "float", bin(
+            local(
+                "yScale",
+                "float",
+                bin(
                     BinOp::Div,
                     Expression::float(1.0),
                     math(
                         "Tan",
                         vec![mul(ident("fieldOfView"), Expression::float(0.5))],
                     ),
-                )),
+                ),
+            ),
             ret(new_of(
                 "Matrix4x4",
                 cells_from(4, 4, |r, c| match (r, c) {
@@ -2622,46 +2659,45 @@ fn matrix4x4_class(lowered: &str) -> Statement {
     // `Plane.Transform` died with `undefined is not callable`. A synthesized
     // class is a CALLER too, and its needs count.
     if lowered.contains("invert") || lowered.contains("plane") {
-    let det = minor_det("matrix", &[0, 1, 2, 3], &[0, 1, 2, 3]);
-    members.push(shared_method(
-        "Invert",
-        vec![typed_param("matrix", "Matrix4x4"), by_ref_param("result")],
-        vec![
-            local("det", "float", det),
-            Statement::new(StmtKind::Assign {
-                targets: vec![ident("result")],
-                value: Expression::new(ExprKind::Ternary {
-                    cond: Box::new(bin(BinOp::Eq, ident("det"), Expression::float(0.0))),
-                    then: Box::new(new_of(
-                        "Matrix4x4",
-                        (0..16).map(|_| Expression::float(0.0)).collect(),
-                    )),
-                    else_: Box::new(new_of(
-                        "Matrix4x4",
-                        // Transposed on purpose: the inverse is the ADJUGATE,
-                        // which is the cofactor matrix transposed.
-                        cells_from(4, 4, |r, c| {
-                            let rows: Vec<usize> = (0..4).filter(|i| *i != c).collect();
-                            let cols: Vec<usize> = (0..4).filter(|i| *i != r).collect();
-                            let cofactor = minor_det("matrix", &rows, &cols);
-                            let signed = if (r + c) % 2 == 0 {
-                                cofactor
-                            } else {
-                                bin(BinOp::Sub, Expression::float(0.0), cofactor)
-                            };
-                            bin(BinOp::Div, signed, ident("det"))
-                        }),
-                    )),
+        let det = minor_det("matrix", &[0, 1, 2, 3], &[0, 1, 2, 3]);
+        members.push(shared_method(
+            "Invert",
+            vec![typed_param("matrix", "Matrix4x4"), by_ref_param("result")],
+            vec![
+                local("det", "float", det),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ident("result")],
+                    value: Expression::new(ExprKind::Ternary {
+                        cond: Box::new(bin(BinOp::Eq, ident("det"), Expression::float(0.0))),
+                        then: Box::new(new_of(
+                            "Matrix4x4",
+                            (0..16).map(|_| Expression::float(0.0)).collect(),
+                        )),
+                        else_: Box::new(new_of(
+                            "Matrix4x4",
+                            // Transposed on purpose: the inverse is the ADJUGATE,
+                            // which is the cofactor matrix transposed.
+                            cells_from(4, 4, |r, c| {
+                                let rows: Vec<usize> = (0..4).filter(|i| *i != c).collect();
+                                let cols: Vec<usize> = (0..4).filter(|i| *i != r).collect();
+                                let cofactor = minor_det("matrix", &rows, &cols);
+                                let signed = if (r + c) % 2 == 0 {
+                                    cofactor
+                                } else {
+                                    bin(BinOp::Sub, Expression::float(0.0), cofactor)
+                                };
+                                bin(BinOp::Div, signed, ident("det"))
+                            }),
+                        )),
+                    }),
+                    by_ref: false,
                 }),
-                by_ref: false,
-            }),
-            ret(Expression::new(ExprKind::Unary {
-                op: vybe_ast::UnaryOp::Not,
-                expr: Box::new(bin(BinOp::Eq, ident("det"), Expression::float(0.0))),
-            })),
-        ],
-    ));
-
+                ret(Expression::new(ExprKind::Unary {
+                    op: vybe_ast::UnaryOp::Not,
+                    expr: Box::new(bin(BinOp::Eq, ident("det"), Expression::float(0.0))),
+                })),
+            ],
+        ));
     }
     members.extend(matrix_equality("Matrix4x4", n, n));
     add_vb_operator_slots(&mut members, "Matrix4x4");
@@ -2748,27 +2784,51 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
         array_bounds: None,
         storage: None,
     });
+    members.push(ClassMember::Field {
+        name: "__value".into(),
+        type_hint: None,
+        init: None,
+        modifiers: Modifiers::default(),
+        with_events: false,
+        array_bounds: None,
+        storage: None,
+    });
+    members.push(ClassMember::Field {
+        name: "__value_eq".into(),
+        type_hint: None,
+        init: None,
+        modifiers: Modifiers::default(),
+        with_events: false,
+        array_bounds: None,
+        storage: None,
+    });
     // The one place the width is applied.
     members.push(ctor(
         vec![typed_param("value", "object")],
-        vec![Statement::new(StmtKind::Assign {
-            targets: vec![me(PAYLOAD)],
-            value: call(ident(wrap_fn), vec![ident("value")]),
-            by_ref: false,
-        })],
+        vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![me(PAYLOAD)],
+                value: call(ident(wrap_fn), vec![ident("value")]),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![me("__value")],
+                value: me(PAYLOAD),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![me("__value_eq")],
+                value: Expression::bool(true),
+                by_ref: false,
+            }),
+        ],
     ));
 
     for (const_name, spelling) in [
         ("Zero", "0"),
         ("One", "1"),
-        (
-            "MinValue",
-            if signed { INT128_MIN } else { "0" },
-        ),
-        (
-            "MaxValue",
-            if signed { INT128_MAX } else { UINT128_MAX },
-        ),
+        ("MinValue", if signed { INT128_MIN } else { "0" }),
+        ("MaxValue", if signed { INT128_MAX } else { UINT128_MAX }),
         // ⚠ .NET declares `NegativeOne` on BOTH — `UInt128.NegativeOne` does
         // not exist, but `IAdditiveIdentity`-shaped constants do, and the
         // corpus only reads the signed one. Declared as `-1` wrapped, which for
@@ -2832,10 +2892,7 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
             vec![typed_param("left", name), typed_param("count", "int")],
             vec![ret(new_of(
                 name,
-                vec![call(
-                    ident(helper),
-                    vec![payload("left"), ident("count")],
-                )],
+                vec![call(ident(helper), vec![payload("left"), ident("count")])],
             ))],
         ));
     }
@@ -2864,25 +2921,16 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
     ));
     members.push(shared_method(
         "TryParse",
-        vec![typed_param("s", "string"), by_ref_param("result")],
+        vec![typed_param("s", "string")],
         vec![
             local_untyped("__ok", call(ident("__vybe_bi_is_num"), vec![ident("s")])),
-            Statement::new(StmtKind::Assign {
-                targets: vec![ident("result")],
-                value: new_of(
-                    name,
-                    vec![Expression::new(ExprKind::Ternary {
-                        cond: Box::new(ident("__ok")),
-                        then: Box::new(ident("s")),
-                        else_: Box::new(text("0")),
-                    })],
-                ),
-                by_ref: false,
-            }),
-            ret(ident("__ok")),
+            ret(Expression::new(ExprKind::Ternary {
+                cond: Box::new(ident("__ok")),
+                then: Box::new(new_of(name, vec![ident("s")])),
+                else_: Box::new(Expression::null()),
+            })),
         ],
     ));
-
     let is_neg = |v: &str| bin(BinOp::Lt, sign_of(v), Expression::int(0));
     members.push(shared_method(
         "IsNegative",
@@ -2911,12 +2959,18 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
         // rather than worked around silently — every other member in this file
         // that looked nested (`Abs`, `Clamp`, `Sign`) nests inside a ternary or
         // a `new`, which is fine; only builtin-inside-builtin trips it.
-        vec![ret(call(ident("__vybe_bi_is_even"), vec![payload("value")]))],
+        vec![ret(call(
+            ident("__vybe_bi_is_even"),
+            vec![payload("value")],
+        ))],
     ));
     members.push(shared_method(
         "IsPow2",
         vec![typed_param("value", name)],
-        vec![ret(call(ident("__vybe_bi_is_pow2"), vec![payload("value")]))],
+        vec![ret(call(
+            ident("__vybe_bi_is_pow2"),
+            vec![payload("value")],
+        ))],
     ));
     members.push(shared_method(
         "IsOddInteger",
@@ -2934,7 +2988,10 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
     members.push(shared_method(
         "Abs",
         vec![typed_param("value", name)],
-        vec![ret(new_of(name, vec![call(ident("__vybe_bi_abs"), vec![payload("value")])]))],
+        vec![ret(new_of(
+            name,
+            vec![call(ident("__vybe_bi_abs"), vec![payload("value")])],
+        ))],
     ));
     members.push(shared_method(
         "Sign",
@@ -2948,23 +3005,44 @@ fn fixed_int_class(name: &str, signed: bool) -> Statement {
             typed_param("min", name),
             typed_param("max", name),
         ],
-        vec![ret(new_of(name, vec![call(ident("__vybe_bi_clamp"), vec![payload("value"), payload("min"), payload("max")])]))],
+        vec![ret(new_of(
+            name,
+            vec![call(
+                ident("__vybe_bi_clamp"),
+                vec![payload("value"), payload("min"), payload("max")],
+            )],
+        ))],
     ));
     members.push(shared_method(
         "Min",
         vec![typed_param("left", name), typed_param("right", name)],
-        vec![ret(new_of(name, vec![call(ident("__vybe_bi_min"), vec![payload("left"), payload("right")])]))],
+        vec![ret(new_of(
+            name,
+            vec![call(
+                ident("__vybe_bi_min"),
+                vec![payload("left"), payload("right")],
+            )],
+        ))],
     ));
     members.push(shared_method(
         "Max",
         vec![typed_param("left", name), typed_param("right", name)],
-        vec![ret(new_of(name, vec![call(ident("__vybe_bi_max"), vec![payload("left"), payload("right")])]))],
+        vec![ret(new_of(
+            name,
+            vec![call(
+                ident("__vybe_bi_max"),
+                vec![payload("left"), payload("right")],
+            )],
+        ))],
     ));
 
     members.push(method(
         "CompareTo",
         vec![typed_param("other", name)],
-        vec![ret(call(ident("__vybe_bi_cmp"), vec![me(PAYLOAD), payload("other")]))],
+        vec![ret(call(
+            ident("__vybe_bi_cmp"),
+            vec![me(PAYLOAD), payload("other")],
+        ))],
         false,
     ));
     members.push(method(

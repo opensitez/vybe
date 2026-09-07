@@ -489,6 +489,29 @@ pub fn emit_vb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, result_slot, line);
 }
 
+pub fn emit_vb_str_dup(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        push_const(&mut chunks[current], Value::String(Arc::from("")), line);
+        return;
+    }
+
+    for _ in 2..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+
+    let char_slot = alloc_local(&mut chunks[current]);
+    let count_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, char_slot, line);
+        lset(chunk, count_slot, line);
+        lget(chunk, char_slot, line);
+        lget(chunk, count_slot, line);
+    }
+    vybe_compiler::primitives::convert::emit_to_int(&mut chunks[current], line);
+    vybe_compiler::primitives::strings::emit_repeat(&mut chunks[current], line);
+}
+
 pub fn emit_vb_random(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_host_call(chunks, current, "ecma:math", "random", argc, line);
 }

@@ -1,5 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn constructor_class(
     interface: &'static str,

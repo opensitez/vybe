@@ -17,10 +17,9 @@
 //! the SAME value, and the factory still runs exactly once per instance here.
 //! The flag is dropped rather than stored because nothing can observe it.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 
 use super::object_fields::field_slot;
 
@@ -28,9 +27,7 @@ const TYPE_KEY: &str = "__type";
 const FACTORY_KEY: &str = "__factory";
 const VALUE_KEY: &str = "__value";
 const CREATED_KEY: &str = "__created";
-
-
-
+const CREATING_KEY: &str = "__creating";
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -63,6 +60,26 @@ pub fn emit_lazy_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunk.emit_op_u16(Op::LOCAL_SET, factory_slot, line);
         }
+    }
+    if argc >= 1 {
+        {
+            let chunk = &mut chunks[current];
+            lget(chunk, factory_slot, line);
+            chunk.emit_op(Op::REF_IS_NULL, line);
+            lget(chunk, factory_slot, line);
+            let undef = chunk.add_import("wasm:js-undefined", "test");
+            chunk.emit_call(undef, 1, line);
+            chunk.emit_op(Op::I32_OR, line);
+            chunk.emit_if(line);
+        }
+        crate::emitter::core::exceptions::emit_throw_typed(
+            chunks,
+            current,
+            "ArgumentNullException",
+            "valueFactory",
+            line,
+        );
+        chunks[current].emit_end(line);
     }
 
     let obj_idx = chunks[current].add_import("ecma:object", "new");
@@ -112,6 +129,16 @@ pub fn emit_lazy_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
         );
 
         lget(chunk, obj_slot, line);
+        chunk.emit_bool_const(false, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATING_KEY),
+            ValueSource::Stack,
+            line,
+        );
+
+        lget(chunk, obj_slot, line);
     }
 }
 
@@ -143,6 +170,44 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunk.emit_if(line);
 
         lget(chunk, obj_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATING_KEY),
+            Dest::Stack,
+            line,
+        );
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+    }
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
+        "InvalidOperationException",
+        "ValueFactory attempted to access the Value property of this instance.",
+        line,
+    );
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+
+        lget(chunk, obj_slot, line);
+        chunk.emit_bool_const(true, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATING_KEY),
+            ValueSource::Stack,
+            line,
+        );
+    }
+
+    let after_factory = chunks[current].emit_block(line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, obj_slot, line);
         lget(chunk, obj_slot, line);
         class_slots::emit_class_get(
             chunk,
@@ -164,6 +229,16 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         );
 
         lget(chunk, obj_slot, line);
+        chunk.emit_bool_const(false, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATING_KEY),
+            ValueSource::Stack,
+            line,
+        );
+
+        lget(chunk, obj_slot, line);
         chunk.emit_bool_const(true, line);
         class_slots::emit_class_set(
             chunk,
@@ -172,6 +247,31 @@ pub fn emit_lazy_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
             ValueSource::Stack,
             line,
         );
+    }
+    vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
+    chunks[current].emit_br(1, line);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
+    {
+        let chunk = &mut chunks[current];
+        let caught_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, caught_slot, line);
+        lget(chunk, obj_slot, line);
+        chunk.emit_bool_const(false, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATING_KEY),
+            ValueSource::Stack,
+            line,
+        );
+        chunk.emit_op_u16(Op::LOCAL_GET, caught_slot, line);
+    }
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(after_factory);
+
+    {
+        let chunk = &mut chunks[current];
         chunk.emit_end(line);
 
         lget(chunk, obj_slot, line);
@@ -196,4 +296,43 @@ pub fn emit_lazy_is_value_created(chunks: &mut [Chunk], current: usize, line: u3
         Dest::Stack,
         line,
     );
+}
+
+/// `lazy.ToString()` — before the value is forced, .NET reports that the value
+/// has not been created; afterwards it stringifies the cached value.
+pub fn emit_lazy_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let obj_slot = {
+        let chunk = &mut chunks[current];
+        let slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        slot
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, obj_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(CREATED_KEY),
+            Dest::Stack,
+            line,
+        );
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+
+        lget(chunk, obj_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(VALUE_KEY),
+            Dest::Stack,
+            line,
+        );
+        super::runtime_adapter::emit_tostring_dispatch(chunk, line);
+
+        chunk.emit_else(line);
+        chunk.emit_string_const("Value is not created.", line);
+        chunk.emit_end(line);
+    }
 }

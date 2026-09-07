@@ -15,7 +15,8 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["Enabled", "Interval", "Tag"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // `BindingSource` is NOT declared here. It is a cursor over data, not a
         // control: it has no element, nothing paints it, and every member is a
         // position or a list. Declared in this table it got a host
@@ -41,7 +42,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ToolTip",
             parent: Some("Component"),
@@ -65,7 +67,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "NotifyIcon",
             parent: Some("Component"),
@@ -81,7 +84,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "ErrorProvider",
             parent: Some("Component"),
@@ -97,14 +101,16 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "HelpProvider",
             parent: Some("Component"),
             properties: &["HelpNamespace", "Tag"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "BackgroundWorker",
             parent: Some("Component"),
@@ -116,6 +122,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

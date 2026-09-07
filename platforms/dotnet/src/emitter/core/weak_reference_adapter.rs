@@ -30,9 +30,6 @@ const TYPE_KEY: &str = "__type";
 const TARGET_KEY: &str = "__wr_target";
 const TYPE_NAME: &str = "WeakReference";
 
-
-
-
 /// `New WeakReference(obj)`, `New WeakReference(obj, trackResurrection)` and
 /// `New WeakReference(Of T)(obj)`.
 ///

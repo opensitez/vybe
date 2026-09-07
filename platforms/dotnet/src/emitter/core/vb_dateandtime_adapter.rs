@@ -149,11 +149,11 @@ const MONTHS_PER_UNIT: &[(&[&str], f64)] = &[
 /// as behaving like `"d"` there, and only `DateDiff` reads it as a count of
 /// weeks.
 const MS_PER_UNIT: &[(&[&str], f64)] = &[
-    (&["y", "dayofyear", "d", "day", "w", "weekday"], dt::MS_PER_DAY),
     (
-        &["ww", "week", "weekofyear"],
-        dt::MS_PER_DAY * 7.0,
+        &["y", "dayofyear", "d", "day", "w", "weekday"],
+        dt::MS_PER_DAY,
     ),
+    (&["ww", "week", "weekofyear"], dt::MS_PER_DAY * 7.0),
     (&["h", "hour"], dt::MS_PER_HOUR),
     (&["n", "minute"], MS_PER_MINUTE),
     (&["s", "second"], MS_PER_SECOND),
@@ -166,7 +166,15 @@ pub fn emit_vb_date_add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let (date_slot, number_slot, interval_slot, months_slot, ms_slot, base_slot, obj_slot) = {
         let chunk = &mut chunks[current];
         let base = chunk.alloc_scratch(7);
-        (base, base + 1, base + 2, base + 3, base + 4, base + 5, base + 6)
+        (
+            base,
+            base + 1,
+            base + 2,
+            base + 3,
+            base + 4,
+            base + 5,
+            base + 6,
+        )
     };
 
     {
@@ -175,7 +183,14 @@ pub fn emit_vb_date_add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         lset(chunk, number_slot, line);
         emit_interval_into_slot(chunk, interval_slot, line);
 
-        emit_interval_lookup(chunk, interval_slot, months_slot, MONTHS_PER_UNIT, 0.0, line);
+        emit_interval_lookup(
+            chunk,
+            interval_slot,
+            months_slot,
+            MONTHS_PER_UNIT,
+            0.0,
+            line,
+        );
         lget(chunk, months_slot, line);
         lget(chunk, number_slot, line);
         chunk.emit_op(Op::F64_MUL, line);
@@ -288,7 +303,14 @@ pub fn emit_vb_date_diff(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_SUB, line);
     lset(chunk, months_slot, line);
 
-    emit_interval_lookup(chunk, interval_slot, month_div_slot, MONTH_DIVISOR, 0.0, line);
+    emit_interval_lookup(
+        chunk,
+        interval_slot,
+        month_div_slot,
+        MONTH_DIVISOR,
+        0.0,
+        line,
+    );
     emit_when_nonzero(chunk, month_div_slot, line, |chunk| {
         lget(chunk, months_slot, line);
         lget(chunk, month_div_slot, line);
@@ -471,6 +493,30 @@ pub fn emit_vb_time_serial(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     datetime_adapter::emit_datetime_from_millis(chunks, current, line);
 }
 
+/// VB `Timer` — seconds since midnight.
+///
+/// The older compiler intrinsic fed the millisecond NUMBER returned by
+/// `Date.now()` into date getter imports that expect a Date object. Keeping the
+/// calculation here makes the Microsoft.VisualBasic surface reusable by every
+/// dotnet language while staying on ordinary ECMA numeric primitives.
+pub fn emit_vb_timer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let ms_slot = chunk.alloc_scratch(1);
+    let now = chunk.add_import("ecma:date", "now");
+    chunk.emit_call(now, 0, line);
+    lset(chunk, ms_slot, line);
+    lget(chunk, ms_slot, line);
+    lget(chunk, ms_slot, line);
+    push_f64(chunk, dt::MS_PER_DAY, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    push_f64(chunk, dt::MS_PER_DAY, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_f64(chunk, MS_PER_SECOND, line);
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
 const WEEKDAY_NAMES: [&str; 7] = [
     "Sunday",
     "Monday",
@@ -572,13 +618,7 @@ pub fn emit_vb_weekday_name(chunks: &mut [Chunk], current: usize, argc: u8, line
     emit_indexed_name(chunks, current, argc, &WEEKDAY_NAMES, line);
 }
 
-fn emit_indexed_name(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    names: &[&str],
-    line: u32,
-) {
+fn emit_indexed_name(chunks: &mut [Chunk], current: usize, argc: u8, names: &[&str], line: u32) {
     let chunk = &mut chunks[current];
     let base = chunk.alloc_scratch(3);
     let (abbreviate_slot, index_slot, out_slot) = (base, base + 1, base + 2);

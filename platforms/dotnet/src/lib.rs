@@ -21,7 +21,7 @@ pub fn register() {
         emit_dispatch: Some(crate::emitter::dispatch::dispatch),
         register_tree: Some(crate::emitter::tree_register::register_namespace_tree),
         namespace_constants: Some(crate::emitter::namespace_constant_mappings),
-        component_descriptor: Some(crate::emitter::dotnet_component_descriptor),
+        component_descriptor: Some(|| Box::new(crate::emitter::dotnet_component_descriptor())),
         is_descriptor_class: Some(crate::emitter::is_component_descriptor_class),
         numeric_format_helper: Some(
             crate::emitter::core::numeric_format::build_dotnet_numeric_format,

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::loops;
+use vybe_compiler::primitives::{classes, strings};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -36,35 +37,52 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
+fn set_local(chunk: &mut Chunk, obj: u16, key: &str, value: u16, line: u32) {
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(obj),
+        &field_slot(key),
+        ValueSource::Local(value),
+        line,
+    );
+}
+
 fn emit_regex_pattern_arg(
     chunk: &mut Chunk,
     pattern_slot: u16,
     options_slot: Option<u16>,
     line: u32,
 ) {
-    let Some(options_slot) = options_slot else {
-        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-        return;
-    };
+    let replace_all = chunk.add_import("ecma:string", "replaceAll");
+    let pattern_norm_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::String(Arc::from(r"\w")), line);
+    push_const(chunk, Value::String(Arc::from(r"[\p{L}\p{N}_]")), line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern_norm_slot, line);
+
     let concat = chunk.add_import("wasm:js-string", "concat");
     let flags_slot = reserve_slot(chunk);
 
-    chunk.emit_string_const("", line);
+    chunk.emit_string_const("u", line);
     chunk.emit_op_u16(Op::LOCAL_SET, flags_slot, line);
-    for (bit, flag) in [(1, "i"), (2, "m"), (16, "s")] {
-        chunk.emit_op_u16(Op::LOCAL_GET, options_slot, line);
-        chunk.emit_i32_const(bit, line);
-        chunk.emit_op(Op::I32_AND, line);
-        chunk.emit_if(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, flags_slot, line);
-        chunk.emit_string_const(flag, line);
-        chunk.emit_call(concat, 2, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, flags_slot, line);
-        chunk.emit_end(line);
+    if let Some(options_slot) = options_slot {
+        for (bit, flag) in [(1, "i"), (2, "m"), (16, "s")] {
+            chunk.emit_op_u16(Op::LOCAL_GET, options_slot, line);
+            chunk.emit_i32_const(bit, line);
+            chunk.emit_op(Op::I32_AND, line);
+            chunk.emit_if(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, flags_slot, line);
+            chunk.emit_string_const(flag, line);
+            chunk.emit_call(concat, 2, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, flags_slot, line);
+            chunk.emit_end(line);
+        }
     }
 
     chunk.emit_string_const("/", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_norm_slot, line);
     chunk.emit_call(concat, 2, line);
     chunk.emit_string_const("/", line);
     chunk.emit_call(concat, 2, line);
@@ -74,6 +92,7 @@ fn emit_regex_pattern_arg(
 
 fn emit_dotnet_match_collection_shape(
     chunk: &mut Chunk,
+    group_typeidx: u16,
     result_slot: u16,
     count_slot: u16,
     line: u32,
@@ -135,6 +154,8 @@ fn emit_dotnet_match_collection_shape(
         ValueSource::Stack,
         line,
     );
+    emit_dotnet_match_properties(chunk, match_slot, match_slot, line);
+    emit_dotnet_match_groups_shape(chunk, group_typeidx, match_slot, match_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
@@ -147,80 +168,45 @@ fn emit_dotnet_match_collection_shape(
     chunk.emit_end(line);
 }
 
-fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u32) {
+fn emit_group_object_from_value_slot(
+    chunk: &mut Chunk,
+    group_typeidx: u16,
+    value_slot: u16,
+    line: u32,
+) {
     let group_slot = reserve_slot(chunk);
-    let length_idx = chunk.add_import("wasm:js-string", "length");
+    let length_slot = reserve_slot(chunk);
+    let success_slot = reserve_slot(chunk);
 
-    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, success_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, success_slot, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    strings::emit_to_string(chunk, line);
+    strings::emit_length(chunk, line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, length_slot, line);
+
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_SET, group_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_set(
+    classes::emit_new_typed_object(
         chunk,
-        ObjSource::Stack,
-        &field_slot(VALUE_KEY),
-        ValueSource::Stack,
+        group_slot,
+        "System.Text.RegularExpressions.Group",
+        group_typeidx,
         line,
     );
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("Value"),
-        ValueSource::Stack,
-        line,
-    );
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(SUCCESS_KEY),
-        ValueSource::Stack,
-        line,
-    );
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("Success"),
-        ValueSource::Stack,
-        line,
-    );
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_call(length_idx, 1, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("Length"),
-        ValueSource::Stack,
-        line,
-    );
-    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_call(length_idx, 1, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot("length"),
-        ValueSource::Stack,
-        line,
-    );
+    set_local(chunk, group_slot, VALUE_KEY, value_slot, line);
+    set_local(chunk, group_slot, "Value", value_slot, line);
+    set_local(chunk, group_slot, SUCCESS_KEY, success_slot, line);
+    set_local(chunk, group_slot, "Success", success_slot, line);
+    set_local(chunk, group_slot, "Length", length_slot, line);
+    set_local(chunk, group_slot, "length", length_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
 }
 
@@ -291,9 +277,17 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     );
 }
 
-fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot: u16, line: u32) {
+fn emit_dotnet_match_groups_shape(
+    chunk: &mut Chunk,
+    group_typeidx: u16,
+    result_slot: u16,
+    obj_slot: u16,
+    line: u32,
+) {
     let object_get = chunk.add_import("ecma:object", "get");
     let object_set = chunk.add_import("ecma:object", "set");
+    let array_length = chunk.add_import("ecma:array", "length");
+    let array_get = chunk.add_import("ecma:array", "get");
     let groups_slot = reserve_slot(chunk);
     let group_values_slot = reserve_slot(chunk);
     let raw_groups_slot = reserve_slot(chunk);
@@ -309,7 +303,7 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_SET, group_values_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_call(array_length, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     core_wasm::dup(chunk, line);
@@ -363,12 +357,17 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_br_if(1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_call(array_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    emit_group_object_from_value_slot(chunk, value_slot, line);
+    emit_group_object_from_value_slot(chunk, group_typeidx, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    emit_group_object_from_value_slot(chunk, group_typeidx, value_slot, line);
+    chunk.emit_call(object_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -415,7 +414,7 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    emit_group_object_from_value_slot(chunk, value_slot, line);
+    emit_group_object_from_value_slot(chunk, group_typeidx, value_slot, line);
     chunk.emit_call(object_set, 3, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
@@ -679,19 +678,33 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(TIMEOUT_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(TIMEOUT_KEY),
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "RegexMatchTimeoutException",
         class_slots::ValueSource::ConstStr("The regex operation timed out.".to_string()),
         line,
     );
+    let chunk = &mut chunks[current];
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PATTERN_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_call(test_idx, 2, line);
 }
@@ -792,7 +805,13 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PATTERN_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, replacement_slot, line);
     chunk.emit_call(replace_idx, 3, line);
 }
@@ -808,12 +827,20 @@ pub fn emit_regex_split(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PATTERN_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_call(split_idx, 2, line);
 }
 
 pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     let exec_idx = chunks[current].add_import("ecma:regexp", "exec");
+    let group_typeidx =
+        classes::reserve_platform_type(chunks, &["Group".to_string(), "Object".to_string()]);
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
@@ -824,7 +851,13 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PATTERN_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_call(exec_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -866,13 +899,15 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     );
 
     emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
-    emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
+    emit_dotnet_match_groups_shape(chunk, group_typeidx, result_slot, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let exec_idx = chunks[current].add_import("ecma:regexp", "exec");
+    let group_typeidx =
+        classes::reserve_platform_type(chunks, &["Group".to_string(), "Object".to_string()]);
     let chunk = &mut chunks[current];
     let options_slot = (argc >= 3).then(|| reserve_slot(chunk));
     let pattern_slot = reserve_slot(chunk);
@@ -931,13 +966,15 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     );
 
     emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
-    emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
+    emit_dotnet_match_groups_shape(chunk, group_typeidx, result_slot, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     let match_all_idx = chunks[current].add_import("ecma:regexp", "matchAll");
+    let group_typeidx =
+        classes::reserve_platform_type(chunks, &["Group".to_string(), "Object".to_string()]);
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
@@ -949,15 +986,23 @@ pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(PATTERN_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(PATTERN_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_call(match_all_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    emit_dotnet_match_collection_shape(chunk, result_slot, count_slot, line);
+    emit_dotnet_match_collection_shape(chunk, group_typeidx, result_slot, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 pub fn emit_regex_static_matches(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let match_all_idx = chunks[current].add_import("ecma:regexp", "matchAll");
+    let group_typeidx =
+        classes::reserve_platform_type(chunks, &["Group".to_string(), "Object".to_string()]);
     let chunk = &mut chunks[current];
     let options_slot = (argc >= 3).then(|| reserve_slot(chunk));
     let pattern_slot = reserve_slot(chunk);
@@ -978,14 +1023,20 @@ pub fn emit_regex_static_matches(chunks: &mut [Chunk], current: usize, argc: u8,
     emit_regex_pattern_arg(chunk, pattern_slot, options_slot, line);
     chunk.emit_call(match_all_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    emit_dotnet_match_collection_shape(chunk, result_slot, count_slot, line);
+    emit_dotnet_match_collection_shape(chunk, group_typeidx, result_slot, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 pub fn emit_regex_get_group_names(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
 
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUP_NAMES_KEY),
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_regex_group_name_from_number(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -996,7 +1047,13 @@ pub fn emit_regex_group_name_from_number(chunks: &mut [Chunk], current: usize, l
     chunk.emit_op_u16(Op::LOCAL_SET, number_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUP_NAMES_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
 }
@@ -1023,7 +1080,13 @@ pub fn emit_regex_group_number_from_name(chunks: &mut [Chunk], current: usize, l
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(GROUP_NAMES_KEY), Dest::Stack, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(GROUP_NAMES_KEY),
+        Dest::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_SET, names_slot, line);
 
     push_const(chunk, Value::F64(-1.0), line);

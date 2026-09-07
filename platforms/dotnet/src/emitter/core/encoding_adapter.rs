@@ -54,11 +54,26 @@ pub fn emit_encoding_value(chunks: &mut [Chunk], current: usize, encoding: &str,
         chunk,
         "Encoding",
         &[
-            (field_slot(ENCODING_KEY), ValueSource::ConstStr(encoding.to_string())),
-            (field_slot("WebName"), ValueSource::ConstStr(web_name.to_string())),
-            (field_slot("webname"), ValueSource::ConstStr(web_name.to_string())),
-            (field_slot("HeaderName"), ValueSource::ConstStr(web_name.to_string())),
-            (field_slot("headername"), ValueSource::ConstStr(web_name.to_string())),
+            (
+                field_slot(ENCODING_KEY),
+                ValueSource::ConstStr(encoding.to_string()),
+            ),
+            (
+                field_slot("WebName"),
+                ValueSource::ConstStr(web_name.to_string()),
+            ),
+            (
+                field_slot("webname"),
+                ValueSource::ConstStr(web_name.to_string()),
+            ),
+            (
+                field_slot("HeaderName"),
+                ValueSource::ConstStr(web_name.to_string()),
+            ),
+            (
+                field_slot("headername"),
+                ValueSource::ConstStr(web_name.to_string()),
+            ),
             (field_slot("IsReadOnly"), ValueSource::ConstBool(false)),
             (field_slot("isreadonly"), ValueSource::ConstBool(false)),
         ],
@@ -240,8 +255,9 @@ pub fn emit_encoding_get_bytes(
     chunks[current].emit_call(str_len_idx, 1, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "EncoderFallbackException",
         class_slots::ValueSource::ConstStr("Unable to encode character.".to_string()),
         line,
@@ -357,8 +373,9 @@ fn emit_throw_on_invalid_utf8_bytes(
     core_wasm::i32_const(&mut chunks[current], line, 247);
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
-    vybe_compiler::primitives::errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "DecoderFallbackException",
         class_slots::ValueSource::ConstStr("Unable to decode bytes.".to_string()),
         line,
@@ -814,7 +831,13 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
         ValueSource::Stack,
         line,
     );
-    for key in [ENCODING_KEY, "WebName", "webname", "HeaderName", "headername"] {
+    for key in [
+        ENCODING_KEY,
+        "WebName",
+        "webname",
+        "HeaderName",
+        "headername",
+    ] {
         vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
         class_slots::emit_class_set(
             chunk,

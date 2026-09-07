@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
-use vybe_runtime::component::FuncSig;
-use vybe_runtime::component_model::{
+use vybe_compiler::component_classes::{
     ClassType, ComponentDescriptor, ConstructorTarget, HostTarget, MethodBody,
 };
+use vybe_runtime::component::{FuncSig, Param};
 
 use super::class_exports;
 
@@ -81,13 +81,13 @@ fn register_component_class_imports(
 
     for method in &class.methods {
         if let MethodBody::HostCall(target) = &method.body {
-            register_host_import(descriptor, seen_host_imports, target, method.arity);
+            register_host_import(descriptor, seen_host_imports, target, method.arity());
         }
     }
 
     if let Some(constructor) = class.constructor() {
         if let Some(ConstructorTarget::Host(target)) = &constructor.backing {
-            register_host_import(descriptor, seen_host_imports, target, constructor.arity);
+            register_host_import(descriptor, seen_host_imports, target, constructor.arity());
         }
     }
 }
@@ -105,7 +105,10 @@ fn register_host_import(
             &target.name,
             FuncSig {
                 name: target.name.clone(),
-                params: vec![vybe_runtime::component::ValType::Any; arity as usize],
+                params: Param::unnamed_list(vec![
+                    vybe_runtime::component::ValType::Any;
+                    arity as usize
+                ]),
                 results: vec![vybe_runtime::component::ValType::Any],
             },
         );

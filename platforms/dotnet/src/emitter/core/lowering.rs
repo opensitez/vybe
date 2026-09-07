@@ -5,7 +5,7 @@
 //! prevents each .NET language frontend from inventing a slightly different
 //! TryParse/TryGetValue/ConcurrentCollection rewrite.
 
-use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal};
+use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal, PlaceExpr};
 
 use crate::emitter;
 
@@ -53,6 +53,20 @@ fn contains_key_expr(object: &Expression, key: &Expression) -> Expression {
         member_expr(object.clone(), "ContainsKey"),
         vec![Argument::positional(key.clone())],
     )
+}
+
+fn out_argument(out_target: &Expression) -> Argument {
+    let value = PlaceExpr::from_expr(out_target)
+        .map(|place| {
+            Expression::with_span(ExprKind::RefOf(Box::new(place)), out_target.span.clone())
+        })
+        .unwrap_or_else(|| out_target.clone());
+    Argument {
+        value,
+        name: None,
+        by_ref: true,
+        spread: false,
+    }
 }
 
 fn assignment_truthy(target: &Expression, value: Expression) -> Expression {
@@ -104,6 +118,9 @@ pub fn collection_local_type(type_name: &str) -> Option<String> {
     let is_collection = emitter::is_component_descriptor_class_in_namespace(
         &canonical,
         "dotnet.System.Collections",
+    ) || emitter::is_component_descriptor_class_in_namespace(
+        &canonical,
+        "dotnet.System.Collections.Concurrent",
     );
     if !is_collection {
         return None;
@@ -341,20 +358,21 @@ pub fn try_parse_desugar(
         || recv.eq_ignore_ascii_case("System.DateTimeOffset")
         || recv.eq_ignore_ascii_case("BigInteger")
         || recv.eq_ignore_ascii_case("System.Numerics.BigInteger")
+        || recv.eq_ignore_ascii_case("Int128")
+        || recv.eq_ignore_ascii_case("System.Int128")
+        || recv.eq_ignore_ascii_case("UInt128")
+        || recv.eq_ignore_ascii_case("System.UInt128")
+        || recv.eq_ignore_ascii_case("IPAddress")
+        || recv.eq_ignore_ascii_case("System.Net.IPAddress")
     {
-        let success = Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(core.clone()),
-            right: Box::new(null_lit()),
-        });
         let assign_success = Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
+            op: BinOp::IsNot,
             left: Box::new(assign_core),
             right: Box::new(null_lit()),
         });
         return Some(Expression::new(ExprKind::Ternary {
-            cond: Box::new(success),
-            then: Box::new(assign_success),
+            cond: Box::new(assign_success),
+            then: Box::new(Expression::bool(true)),
             else_: Box::new(Expression::bool(false)),
         }));
     }
@@ -365,8 +383,18 @@ pub fn try_parse_desugar(
     // OUT-PARAM as its input, and leaks the extra operand onto the stack.
     if matches!(
         vybe_platform_dotnet_canonical(recv).as_str(),
-        "Int16" | "Int32" | "Int64" | "Byte" | "SByte" | "UInt16" | "UInt32" | "UInt64"
-            | "Single" | "Double" | "Decimal"
+        "Int16"
+            | "Int32"
+            | "Int64"
+            | "Byte"
+            | "SByte"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Single"
+            | "Half"
+            | "Double"
+            | "Decimal"
     ) {
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
@@ -381,10 +409,10 @@ pub fn try_parse_desugar(
             })),
             right: Box::new(null_lit()),
         });
-        return Some(Expression::new(ExprKind::Binary {
-            op: BinOp::Or,
-            left: Box::new(success),
-            right: Box::new(fallback),
+        return Some(Expression::new(ExprKind::Ternary {
+            cond: Box::new(success),
+            then: Box::new(Expression::bool(true)),
+            else_: Box::new(fallback),
         }));
     }
     None
@@ -409,6 +437,31 @@ pub fn try_create_desugar(
             Argument::positional(kind.clone()),
         ],
     );
+    let assign_core = Expression::new(ExprKind::Assign {
+        target: Box::new(out_target.clone()),
+        value: Box::new(core),
+    });
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(assign_core),
+        right: Box::new(null_lit()),
+    }))
+}
+
+/// `Rune.TryCreate(value, result)` out-param normalization. The platform class
+/// exposes the one-argument value-or-null core; languages contribute only their
+/// out-param syntax.
+pub fn try_create_rune_desugar(
+    recv: Option<&str>,
+    callee: &Expression,
+    input: &Expression,
+    out_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    if !(recv.eq_ignore_ascii_case("Rune") || recv.eq_ignore_ascii_case("System.Text.Rune")) {
+        return None;
+    }
+    let core = call_expr(callee.clone(), vec![Argument::positional(input.clone())]);
     let assign_core = Expression::new(ExprKind::Assign {
         target: Box::new(out_target.clone()),
         value: Box::new(core),
@@ -515,34 +568,21 @@ pub fn try_get_value_desugar_with_default(
     out_target: &Expression,
     default_value: Expression,
 ) -> Expression {
-    let then_branch = Expression::new(ExprKind::Binary {
+    let call = call_expr(
+        member_expr(object.clone(), "TryGetValue"),
+        vec![Argument::positional(key.clone()), out_argument(out_target)],
+    );
+    Expression::new(ExprKind::Binary {
         op: BinOp::Or,
-        left: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(Expression::new(ExprKind::Assign {
-                target: Box::new(out_target.clone()),
-                value: Box::new(index_expr(object.clone(), key.clone())),
-            })),
-            right: Box::new(null_lit()),
-        })),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-    });
-    let else_branch = Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
+        left: Box::new(call),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::And,
             left: Box::new(Expression::new(ExprKind::Assign {
                 target: Box::new(out_target.clone()),
                 value: Box::new(default_value),
             })),
-            right: Box::new(null_lit()),
+            right: Box::new(Expression::bool(false)),
         })),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-    });
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(contains_key_expr(object, key)),
-        then: Box::new(then_branch),
-        else_: Box::new(else_branch),
     })
 }
 
@@ -623,23 +663,30 @@ pub fn try_remove_desugar(
     key: &Expression,
     out_target: &Expression,
 ) -> Expression {
-    let assign_out = assignment_truthy(out_target, index_expr(object.clone(), key.clone()));
-    let remove_call = call_expr(
-        member_expr(object.clone(), "Remove"),
+    let removed_value = call_expr(
+        member_expr(object.clone(), "TryRemove"),
         vec![Argument::positional(key.clone())],
     );
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(contains_key_expr(object, key)),
-        then: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::And,
-            left: Box::new(assign_out),
-            right: Box::new(remove_call),
+    Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(removed_value),
         })),
-        else_: Box::new(Expression::bool(false)),
+        right: Box::new(null_lit()),
     })
 }
 
 pub fn try_take_desugar(object: &Expression, method: &str, out_target: &Expression) -> Expression {
+    try_take_desugar_with_default(object, method, out_target, null_lit())
+}
+
+pub fn try_take_desugar_with_default(
+    object: &Expression,
+    method: &str,
+    out_target: &Expression,
+    default_value: Expression,
+) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Gt,
@@ -647,13 +694,22 @@ pub fn try_take_desugar(object: &Expression, method: &str, out_target: &Expressi
             right: Box::new(Expression::int(0)),
         })),
         then: Box::new(assignment_truthy(
+            // ⛔ NO ARGUMENT. The arity-1 registrations are the true .NET
+            // try-pattern — they answer a BOOL and write the item through an
+            // out-parameter CELL — and a bare identifier is not a cell, so the
+            // writeback lands nowhere and the bool is what gets assigned. The
+            // value-returning arity-0 overloads exist for exactly this desugar.
             out_target,
-            call_expr(
-                member_expr(object.clone(), method),
-                vec![Argument::positional(out_target.clone())],
-            ),
+            call_expr(member_expr(object.clone(), method), Vec::new()),
         )),
-        else_: Box::new(Expression::bool(false)),
+        else_: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(Expression::new(ExprKind::Assign {
+                target: Box::new(out_target.clone()),
+                value: Box::new(default_value),
+            })),
+            right: Box::new(Expression::bool(false)),
+        })),
     })
 }
 
@@ -911,10 +967,7 @@ pub fn change_type_method(target_type: &str) -> Option<&'static str> {
 pub fn change_type_expr(value: Expression, target_type: &str) -> Option<Expression> {
     let method = change_type_method(target_type)?;
     Some(call_expr(
-        member_expr(
-            member_expr(Expression::ident("System"), "Convert"),
-            method,
-        ),
+        member_expr(member_expr(Expression::ident("System"), "Convert"), method),
         vec![Argument::positional(value)],
     ))
 }

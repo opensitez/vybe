@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, MethodBody, MethodDef};
 
 pub(super) fn apply_linq_registrations(exports: &mut [DotnetClassExport]) {
     for export in exports.iter_mut() {
@@ -37,6 +37,16 @@ pub(super) fn enumerable_static_export() -> DotnetClassExport {
                 MethodBody::Common("dotnet.linq_sum_selector".into()),
             ))
             .with_method(MethodDef::static_method(
+                "Average",
+                1,
+                MethodBody::Common("dotnet.linq_average".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "Average",
+                2,
+                MethodBody::Common("dotnet.linq_average_selector".into()),
+            ))
+            .with_method(MethodDef::static_method(
                 "Range",
                 2,
                 MethodBody::Common("dotnet.linq_range".into()),
@@ -45,6 +55,16 @@ pub(super) fn enumerable_static_export() -> DotnetClassExport {
                 "Repeat",
                 2,
                 MethodBody::Common("dotnet.linq_repeat".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "ElementAt",
+                2,
+                MethodBody::Common("dotnet.linq_element_at".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "ElementAtOrDefault",
+                2,
+                MethodBody::Common("dotnet.linq_element_at_or_default".into()),
             )),
     )
 }
@@ -165,6 +185,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_average".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Average",
+        1,
+        MethodBody::Common("dotnet.linq_average_selector".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "FirstOrDefault",
         0,
         MethodBody::Common("dotnet.linq_first_or_default".into()),
@@ -206,6 +231,16 @@ fn add_linq_instance_methods(class: &mut ClassType) {
     ));
     class.methods.push(MethodDef::new(
         "OrderByDescending",
+        1,
+        MethodBody::Common("dotnet.linq_order_by_descending".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ThenBy",
+        1,
+        MethodBody::Common("dotnet.linq_order_by".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ThenByDescending",
         1,
         MethodBody::Common("dotnet.linq_order_by_descending".into()),
     ));
@@ -263,6 +298,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "ToLookup",
         1,
         MethodBody::Common("dotnet.linq_to_lookup".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ToLookup",
+        2,
+        MethodBody::Common("dotnet.linq_to_lookup_element".into()),
     ));
     class.methods.push(MethodDef::new(
         "Zip",
@@ -423,6 +463,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "SingleOrDefault",
         2,
         MethodBody::Common("dotnet.linq_single_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ElementAtOrDefault",
+        1,
+        MethodBody::Common("dotnet.linq_element_at_or_default".into()),
     ));
     class.methods.push(MethodDef::new(
         "ElementAtOrDefault",

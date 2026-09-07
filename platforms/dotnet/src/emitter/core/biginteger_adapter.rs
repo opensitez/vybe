@@ -306,9 +306,10 @@ fn ensure_value_chunks(chunks: &mut Vec<Chunk>, line: u32) -> [usize; VALUE_CHUN
     // exist yet.
     let ts = to_string_chunk(chunks, line);
     let cmp = compare_to_chunk(chunks, line);
+    let num = to_number_chunk(chunks, line);
     for i in 0..idxs.len() {
         let target = idxs[i];
-        bind_slots_on(chunks, target, obj_slots[i], &idxs, ts, cmp, line);
+        bind_slots_on(chunks, target, obj_slots[i], &idxs, ts, cmp, num, line);
         get(&mut chunks[target], obj_slots[i], line);
         chunks[target].emit_op(Op::RETURN, line);
     }
@@ -323,6 +324,7 @@ fn bind_slots_on(
     idxs: &[usize; VALUE_CHUNKS],
     to_string: usize,
     compare_to: usize,
+    to_number: usize,
     line: u32,
 ) {
     let bind = |chunks: &mut Vec<Chunk>, key: &str, method: usize| {
@@ -359,6 +361,10 @@ fn bind_slots_on(
         compare_to,
     );
     bind(chunks, "CompareTo", compare_to);
+    // ⛔ `Int`/`Float`/`ValueOf` are NOT what a VB `CInt` reads — it is a Cast,
+    // not a protocol dispatch. Binding them changed nothing; the conversion is
+    // normalized in the VB walker instead.
+    let _ = to_number;
 }
 
 /// The `ToString` slot — one unary chunk, memoised.
@@ -372,6 +378,32 @@ fn to_string_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     get(&mut method, 0, line);
     unwrap_payload(&mut method, line);
     call(&mut method, "ecma:bigint", "toString", 1, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// The numeric-conversion chunk — `[v] → [Number]`.
+///
+/// ⛔ WITHOUT THIS `CInt(b)` THREW. A BigInteger value is an OBJECT carrying
+/// its payload, so every numeric conversion — `CInt`, `CLng`, `CDbl`, `CSng`,
+/// `CDec` — has to be told how to read it. It only ever appeared to work while
+/// `Dim b As BigInteger = 123456` left a plain Number in the local: the moment
+/// the declared type actually minted a BigInteger, the conversion had nothing
+/// to unwrap.
+fn to_number_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    const NAME: &str = "__bigint_to_number";
+    if let Some(idx) = chunks.iter().position(|c| c.name == NAME) {
+        return idx;
+    }
+    let mut method = create_function_chunk(NAME, 1);
+    method.local_count = 1;
+    get(&mut method, 0, line);
+    unwrap_payload(&mut method, line);
+    // ⛔ `ecma:number.Number` is the ECMA conversion — the SAME import
+    // `bigint::emit_as_int_n_number` already uses. There is no
+    // `ecma:bigint.toNumber`.
+    call(&mut method, "ecma:number", "Number", 1, line);
     method.emit_op(Op::RETURN, line);
     chunks.push(method);
     chunks.len() - 1
@@ -435,9 +467,9 @@ fn bind_value_slots(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     let idxs = ensure_value_chunks(chunks, line);
     let ts = to_string_chunk(chunks, line);
     let cmp = compare_to_chunk(chunks, line);
-    bind_slots_on(chunks, current, obj_slot, &idxs, ts, cmp, line);
+    let num = to_number_chunk(chunks, line);
+    bind_slots_on(chunks, current, obj_slot, &idxs, ts, cmp, num, line);
 }
-
 
 /// Pop `argc` operands into consecutive slots, each unwrapped to its payload.
 /// Returns the base slot; operand `i` is at `base + i`.
@@ -596,6 +628,39 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     call(chunk, "ecma:string", "toUpperCase", 1, line);
     chunk.emit_else(line);
     get(chunk, digits, line);
+    chunk.emit_end(line);
+    set(chunk, digits, line);
+
+    // ⛔ THE HEX FORMAT SIGN-PADS. `BigInteger`'s `X` renders a two's-complement
+    // string, so a POSITIVE value whose leading nibble is >= 8 takes a leading
+    // `0` to keep it from reading as negative: 255 is `0FF`, not `FF`. This is
+    // documented .NET behaviour, not a rounding artifact — `Int32.ToString("X")`
+    // does NOT do it, which is exactly why it looks surprising.
+    get(chunk, v, line);
+    core_wasm::i32_const(chunk, line, 0);
+    to_bigint(chunk, line);
+    ops::emit_dyn_lt(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    get(chunk, digits, line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("0x", line);
+    get(chunk, digits, line);
+    core_wasm::i32_const(chunk, line, 0);
+    core_wasm::i32_const(chunk, line, 1);
+    call(chunk, "ecma:string", "substring", 3, line);
+    ops::emit_dyn_add(chunk, line);
+    call(chunk, "ecma:number", "Number", 1, line);
+    core_wasm::f64_const(chunk, line, 8.0);
+    ops::emit_dyn_lt(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    get(chunk, digits, line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("0", line);
+    get(chunk, digits, line);
+    ops::emit_dyn_add(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     get(chunk, v, line);
@@ -764,6 +829,43 @@ pub fn emit_mod_pow(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
 /// `BigInteger.GreatestCommonDivisor(a, b)` — Euclid on absolute values, which
 /// is what .NET returns: a GCD is never negative.
+/// The five arithmetic STATICS — `BigInteger.Add/Subtract/Multiply/Divide/
+/// Remainder`.
+///
+/// ⛔ NONE OF THESE WERE REGISTERED. The operator SLOTS were bound, so `a / b`
+/// on two BigIntegers was exact, but `BigInteger.Divide(a, b)` — the spelling
+/// .NET documents and the only one for a language without the operator —
+/// resolved to nothing and answered 0. `ecma:bigint.div` truncates, which is
+/// what .NET's `Divide` means.
+fn emit_binary_static(chunks: &mut Vec<Chunk>, current: usize, op: &str, line: u32) {
+    let base = stash_bigints(chunks, current, 2, line);
+    let chunk = &mut chunks[current];
+    get(chunk, base, line);
+    get(chunk, base + 1, line);
+    call(chunk, "ecma:bigint", op, 2, line);
+    wrap(chunks, current, line);
+}
+
+pub fn emit_add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "add", line);
+}
+
+pub fn emit_subtract(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "sub", line);
+}
+
+pub fn emit_multiply(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "mul", line);
+}
+
+pub fn emit_divide(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "div", line);
+}
+
+pub fn emit_remainder(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "rem", line);
+}
+
 pub fn emit_gcd(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let base = stash_bigints(chunks, current, 2, line);
     let a = base;
@@ -947,24 +1049,35 @@ fn emit_log10_core(chunk: &mut Chunk, v: u16, line: u32) {
     call(chunk, "ecma:string", "substring", 3, line);
     set(chunk, head, line);
 
+    // ⛔ THE NATURAL LOG IS THE PRIMITIVE, base ten is DERIVED from it — the
+    // order .NET uses, and the order is observable. `BigInteger.Log10(1000)`
+    // answers 2.9999999999999996 there, not 3: it computes `Log(v) / Log(10)`
+    // and the division loses the last bit. Deriving the other way (an exact
+    // base-ten answer scaled by LN_10) gives a clean 3.0 and disagrees with
+    // every .NET build.
     get(chunk, head, line);
     call(chunk, "ecma:number", "Number", 1, line);
-    call(chunk, "ecma:math", "log10", 1, line);
+    call(chunk, "ecma:math", "log", 1, line);
     get(chunk, text, line);
     call(chunk, "ecma:string", "length", 1, line);
     call(chunk, "ecma:number", "Number", 1, line);
-    chunk.emit_op(Op::F64_ADD, line);
     get(chunk, head, line);
     call(chunk, "ecma:string", "length", 1, line);
     call(chunk, "ecma:number", "Number", 1, line);
     chunk.emit_op(Op::F64_SUB, line);
+    core_wasm::f64_const(chunk, line, std::f64::consts::LN_10);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_end(line);
 }
 
 /// `BigInteger.Log10(value)` → Double.
 pub fn emit_log10(chunks: &mut [Chunk], current: usize, line: u32) {
     let v = stash_bigints(chunks, current, 1, line);
-    emit_log10_core(&mut chunks[current], v, line);
+    let chunk = &mut chunks[current];
+    emit_log10_core(chunk, v, line);
+    core_wasm::f64_const(chunk, line, std::f64::consts::LN_10);
+    chunk.emit_op(Op::F64_DIV, line);
 }
 
 /// `BigInteger.Log(value)` → the NATURAL logarithm, `BigInteger.Log(value,
@@ -973,10 +1086,7 @@ pub fn emit_log10(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_log(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 2 {
         let v = stash_bigints(chunks, current, 1, line);
-        let chunk = &mut chunks[current];
-        emit_log10_core(chunk, v, line);
-        core_wasm::f64_const(chunk, line, std::f64::consts::LN_10);
-        chunk.emit_op(Op::F64_MUL, line);
+        emit_log10_core(&mut chunks[current], v, line);
         return;
     }
 

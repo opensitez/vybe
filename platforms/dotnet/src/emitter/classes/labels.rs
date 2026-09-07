@@ -30,7 +30,8 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<label>` — created by the element mapping, not a factory.
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         DotnetClass {
             name: "LinkLabel",
             parent: Some("Label"),
@@ -48,6 +49,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<a>`
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

@@ -255,7 +255,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: CONTROL_METHODS,
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // ── ScrollableControl ──────────────────────────────────────────────
         // Adds the autoscroll surface used by Form, Panel, …
         DotnetClass {
@@ -271,7 +272,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
         // ── ContainerControl ───────────────────────────────────────────────
         // Adds the active-control / parent-form tracking used by Form,
         // UserControl, …
@@ -281,6 +283,7 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["ActiveControl", "ParentForm", "AutoValidate"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,        },
+            widget_host_fn: None,
+        },
     ]
 }

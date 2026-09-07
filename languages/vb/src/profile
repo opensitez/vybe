@@ -149,6 +149,7 @@ cdec    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 val     = { emit = "common:dotnet.val",            min_args = 1, max_args = 1 }
+"__vb_timer" = { emit = "common:dotnet.vb_timer",  min_args = 0, max_args = 0 }
 hex     = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 "hex$"  = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 oct     = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
@@ -300,7 +301,7 @@ formatcurrency = { emit = "common:dotnet.format_picture", min_args = 1, max_args
 formatpercent  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 formatdatetime = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 strconv        = { emit = "common:dotnet.vb_to_string", min_args = 1, max_args = 2 }
-strdup         = { emit = "common:dotnet.vb_to_string", min_args = 1, max_args = 1 }
+strdup         = { emit = "common:dotnet.vb_str_dup", min_args = 2, max_args = 2 }
 
 # ── Array functions ──────────────────────────────────────────────────────────
 
@@ -317,7 +318,7 @@ date         = { emit = "common:dotnet.datetime_today", min_args = 0, max_args =
 today        = { emit = "common:dotnet.datetime_today", min_args = 0, max_args = 0 }
 time         = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
 timeofday    = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
-timer        = { emit = "intrinsic:timer",               min_args = 0, max_args = 0 }
+timer        = { emit = "common:dotnet.vb_timer",        min_args = 0, max_args = 0 }
 year         = { emit = "common:dotnet.datetime_year",   min_args = 1, max_args = 1 }
 month        = { emit = "common:dotnet.datetime_month",  min_args = 1, max_args = 1 }
 day          = { emit = "common:dotnet.datetime_day",    min_args = 1, max_args = 1 }
@@ -558,6 +559,7 @@ contains      = { emit = "common:str_contains",     min_args = 1, max_args = 1 }
 Command = "String"
 Environ = "String"
 Timer   = "Double"
+"__vb_timer" = "Double"
 
 # DateTime field-extractor functions: `Year(d)` → `d.Year` (applied only when the
 # argument is a DateTime). Function name (case-insensitive) → DateTime field.
@@ -636,8 +638,8 @@ extra_imports = [
 "comparemethod.binary" = 0.0
 "comparemethod.text" = 1.0
 "vbtab" = "\t"
-"vbcrlf" = "\r\n"
-"vbnewline" = "\r\n"
+"vbcrlf" = "\n"
+"vbnewline" = "\n"
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS (namespaceplan.md, dotnet phase): `System.*` qualified chains

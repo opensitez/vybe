@@ -108,7 +108,12 @@ pub fn emit_custom_attribute_data(chunks: &mut [Chunk], current: usize, argc: u8
 /// members hang off something.
 ///
 /// Stack: `[args…]` → `[context]`.
-pub fn emit_nullability_info_context_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_nullability_info_context_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
@@ -119,6 +124,26 @@ pub fn emit_nullability_info_context_new(chunks: &mut [Chunk], current: usize, a
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_string_const("NullabilityInfoContext", line);
     set_field(chunk, "__type", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+}
+
+/// `Assembly.GetExecutingAssembly()` — a non-null descriptor for the synthetic
+/// assembly that contains the current module.
+///
+/// Stack: `[]` -> `[assembly]`.
+pub fn emit_assembly_get_executing_assembly(chunk: &mut Chunk, line: u32) {
+    let obj = chunk.alloc_scratch(1);
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const("Assembly", line);
+    set_field(chunk, "__type", line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const("VybeProgram", line);
+    set_field(chunk, "FullName", line);
+
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
 }
 

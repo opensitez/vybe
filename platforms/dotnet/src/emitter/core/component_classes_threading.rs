@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut task = ClassType::new("Task")
@@ -362,10 +362,94 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("threading.thread_join".into()),
                 ))
+                .with_method(MethodDef::new(
+                    "ManagedThreadId",
+                    0,
+                    MethodBody::Common("dotnet.thread_managed_thread_id".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsAlive",
+                    0,
+                    MethodBody::Common("dotnet.thread_is_alive".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CurrentThread",
+                    0,
+                    MethodBody::Common("dotnet.thread_current".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Sleep",
                     1,
                     MethodBody::Common("threading.sleep".to_string()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("ThreadPool")
+                .with_method(MethodDef::static_method(
+                    "QueueUserWorkItem",
+                    1,
+                    MethodBody::Common("dotnet.threadpool_queue_user_work_item".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "QueueUserWorkItem",
+                    2,
+                    MethodBody::Common("dotnet.threadpool_queue_user_work_item".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetMaxThreads",
+                    2,
+                    MethodBody::Common("dotnet.threadpool_get_threads_noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetMinThreads",
+                    2,
+                    MethodBody::Common("dotnet.threadpool_get_threads_noop".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("Volatile")
+                .with_method(MethodDef::static_method(
+                    "Read",
+                    1,
+                    MethodBody::Common("dotnet.volatile_read".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Write",
+                    2,
+                    MethodBody::Common("dotnet.volatile_write".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("Monitor")
+                .with_method(MethodDef::static_method(
+                    "Enter",
+                    1,
+                    MethodBody::Common("dotnet.noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Exit",
+                    1,
+                    MethodBody::Common("dotnet.noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsEntered",
+                    1,
+                    MethodBody::Common("dotnet.monitor_is_entered".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("ThreadLocal")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.threadlocal_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.noop".into()),
                 )),
         ),
         DotnetClassExport::new(

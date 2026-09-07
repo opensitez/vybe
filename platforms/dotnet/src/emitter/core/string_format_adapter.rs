@@ -13,10 +13,10 @@
 //!   `{N:fmt}` / `{N,W:fmt}` — format spec and alignment are routed through
 //!                              the shared .NET numeric formatter.
 //!
-//! Call shape: at the call site, stack on entry is `[fmt, arg0, arg1, ..., argN-2]`
-//! (so `argc` is the number of args including the format string). The adapter
-//! packs `arg0..` into an array local, then walks the format string emitting
-//! literal chars or `String(args[idx])` substitutions.
+//! Call shape: at the call site, stack on entry is either
+//! `[fmt, arg0, arg1, ...]` or `[provider, fmt, arg0, arg1, ...]`. The adapter
+//! packs the whole call into an array, then chooses whether arg0 is the format
+//! string or an `IFormatProvider`.
 
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
@@ -111,19 +111,16 @@ pub fn emit_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         return;
     }
 
-    // Stash trailing args in an array local so the format walker can
-    // index into them by `{N}` placeholder.
-    let n = (argc as u16) - 1;
+    // Stash all call arguments first. `String.Format(provider, fmt, ...)` and
+    // `String.Format(fmt, ...)` differ by overload, and PowerShell/C#/VB all
+    // reach this common emit after overload selection has become a plain argc.
+    // Runtime shape is still enough: the first argument is a string in the
+    // non-provider overload, and a CultureInfo/provider object otherwise.
+    let all_slot = chunk.alloc_scratch(1);
+    chunk.emit_array_new_fixed(0, argc as u16, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, all_slot, line);
+
     let args_slot = chunk.alloc_scratch(1);
-
-    // Build the args array from the top `n` stack entries.
-    // `ARRAY_NEW_FIXED n` pops the top n values (in stack order) and
-    // builds an array — preserves order, so args[0] is the first
-    // placeholder value as written in source.
-    chunk.emit_array_new_fixed(0, n, line);
-
-    // Save args array to a local; stack now `[fmt]`.
-    chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
 
     // Now emit the runtime walker:
     //   fmt_slot   = current local
@@ -135,8 +132,40 @@ pub fn emit_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let len_slot = fmt_slot + 2;
     let out_slot = fmt_slot + 3;
 
-    // fmt_slot = pop fmt
+    let values_start_slot = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, all_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    let is_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, all_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, all_slot, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, all_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(2, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, values_start_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, all_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, values_start_slot, line);
+    let slice = chunk.add_import("ecma:array", "slice");
+    chunk.emit_call(slice, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
 
     // i = 0
     core_wasm::i32_const(chunk, line, 0);
@@ -358,7 +387,7 @@ fn emit_handle_open_brace(
     host::emit(chunk, "ecma:string", "indexOf", 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, colon_slot, line);
 
-    chunk.emit_string_const("G", line);
+    chunk.emit_string_const("__vybe_default", line);
     chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
 
     chunk.emit_f64_const(0.0, line);
@@ -410,7 +439,13 @@ fn emit_handle_open_brace(
     // out = out + format(args[idx], format, width)
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     emit_dotnet_format_value_call(
-        chunks, current, args_slot, idx_slot, format_slot, width_slot, line,
+        chunks,
+        current,
+        args_slot,
+        idx_slot,
+        format_slot,
+        width_slot,
+        line,
     );
     let chunk = &mut chunks[current];
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);

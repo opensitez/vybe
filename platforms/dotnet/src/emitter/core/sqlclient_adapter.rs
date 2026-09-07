@@ -45,7 +45,14 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
@@ -61,13 +68,7 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 /// `obj.key` — reads a property off the object held in `obj_slot`.
 fn get_prop(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     lget(chunk, obj_slot, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 /// `obj.key = <local>` — consumes nothing from the stack.
@@ -136,9 +137,7 @@ fn emit_params_collection(chunks: &mut [Chunk], current: usize, line: u32) -> u1
     class_slots::emit_class_construct(
         chunk,
         "SqlParameterCollection",
-        &[
-            (field_slot(ITEMS_KEY), ValueSource::Local(items_slot)),
-        ],
+        &[(field_slot(ITEMS_KEY), ValueSource::Local(items_slot))],
         line,
     );
     lset(chunk, slot, line);
@@ -168,10 +167,19 @@ pub fn emit_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line:
         &[
             (field_slot("__conn_id"), ValueSource::ConstF64(0.0)),
             (field_slot("connectionstring"), ValueSource::Local(raw_slot)),
-            (field_slot("provider"), ValueSource::ConstStr("".to_string())),
-            (field_slot("serverversion"), ValueSource::ConstStr("".to_string())),
+            (
+                field_slot("provider"),
+                ValueSource::ConstStr("".to_string()),
+            ),
+            (
+                field_slot("serverversion"),
+                ValueSource::ConstStr("".to_string()),
+            ),
             (field_slot("connectiontimeout"), ValueSource::ConstF64(30.0)),
-            (field_slot("state"), ValueSource::ConstStr("Closed".to_string())),
+            (
+                field_slot("state"),
+                ValueSource::ConstStr("Closed".to_string()),
+            ),
         ],
         line,
     );
@@ -214,7 +222,14 @@ pub fn emit_connection_open(chunks: &mut [Chunk], current: usize, line: u32) {
     };
 
     lget(&mut chunks[current], cs_slot, line);
-    call_import(chunks, current, WASI_TYPES, "[static]connection.open", 1, line);
+    call_import(
+        chunks,
+        current,
+        WASI_TYPES,
+        "[static]connection.open",
+        1,
+        line,
+    );
     let res_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -894,7 +909,11 @@ pub fn emit_command_create_parameter(chunks: &mut [Chunk], current: usize, argc:
 fn emit_col_names_of(chunks: &mut [Chunk], current: usize, rows_slot: u16, line: u32) -> u16 {
     let (names_slot, n_slot, first_slot) = {
         let chunk = &mut chunks[current];
-        (reserve_slot(chunk), reserve_slot(chunk), reserve_slot(chunk))
+        (
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+            reserve_slot(chunk),
+        )
     };
     lget(&mut chunks[current], rows_slot, line);
     collections::emit_len(chunks, current, line);
@@ -1070,8 +1089,7 @@ fn emit_reader_struct(chunks: &mut [Chunk], current: usize, rows_slot: u16, line
 /// The dialect's "list every user table" query, chosen at runtime from the
 /// connection's `provider`. These strings were `SqlDriver::tables_sql` on the
 /// three drivers; selecting one is a string choice, not a host operation.
-const SQLITE_TABLES_SQL: &str =
-    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name";
+const SQLITE_TABLES_SQL: &str = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name";
 const POSTGRES_TABLES_SQL: &str = "SELECT table_name AS name FROM information_schema.tables \
      WHERE table_schema = 'public' ORDER BY table_name";
 const MYSQL_TABLES_SQL: &str = "SELECT table_name AS name FROM information_schema.tables \
@@ -1356,7 +1374,12 @@ pub fn emit_adapter_fill(chunks: &mut [Chunk], current: usize, line: u32) {
 // ── SqlDataReader ─────────────────────────────────────────────────────────────
 
 /// Reader state, unpacked into locals: `(rows, col_names, pos_as_i32)`.
-fn reader_state(chunks: &mut [Chunk], current: usize, reader_slot: u16, line: u32) -> (u16, u16, u16) {
+fn reader_state(
+    chunks: &mut [Chunk],
+    current: usize,
+    reader_slot: u16,
+    line: u32,
+) -> (u16, u16, u16) {
     let chunk = &mut chunks[current];
     let rows_slot = reserve_slot(chunk);
     let names_slot = reserve_slot(chunk);
@@ -1615,9 +1638,10 @@ pub fn emit_reader_get_schema_table(chunks: &mut [Chunk], current: usize, line: 
     class_slots::emit_class_construct(
         chunk,
         "DataTable",
-        &[
-            (field_slot("tablename"), ValueSource::ConstStr("SchemaTable".to_string())),
-        ],
+        &[(
+            field_slot("tablename"),
+            ValueSource::ConstStr("SchemaTable".to_string()),
+        )],
         line,
     );
     set_field(

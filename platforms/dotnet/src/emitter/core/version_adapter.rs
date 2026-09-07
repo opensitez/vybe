@@ -41,14 +41,20 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        chunk,
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    crate::emitter::core::exceptions::emit_throw_typed(
+        chunks,
+        current,
         exception_name,
-        class_slots::ValueSource::ConstStr(message.to_string()),
+        message,
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, line: u32) {
@@ -63,6 +69,11 @@ fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: 
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_call(parse_int_idx, 1, line);
     chunk.emit_op(Op::F64_FLOOR, line);
+}
+
+fn emit_coerce_version_part_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_parse_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
 fn emit_store_optional_array_part_as_number(
@@ -100,7 +111,14 @@ fn emit_store_optional_array_part_as_number(
     chunk.emit_end(line);
 }
 
-fn emit_validate_number_slot(chunk: &mut Chunk, slot: u16, allow_negative: bool, line: u32) {
+fn emit_validate_number_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    slot: u16,
+    allow_negative: bool,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
@@ -108,11 +126,13 @@ fn emit_validate_number_slot(chunk: &mut Chunk, slot: u16, allow_negative: bool,
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentException",
         "Version string portion was not valid.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
     if !allow_negative {
@@ -121,32 +141,38 @@ fn emit_validate_number_slot(chunk: &mut Chunk, slot: u16, allow_negative: bool,
         chunk.emit_op(Op::F64_LT, line);
         chunk.emit_if(line);
         emit_throw_dotnet_exception(
-            chunk,
+            chunks,
+            current,
             "ArgumentOutOfRangeException",
             "Version component must be non-negative.",
             line,
         );
+        let chunk = &mut chunks[current];
         chunk.emit_end(line);
     }
 }
 
 fn emit_validate_optional_number_slot(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     len_slot: u16,
     min_len: i32,
     slot: u16,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_i32_const(min_len, line);
     chunk.emit_op(Op::I32_GE_S, line);
     chunk.emit_if(line);
-    emit_validate_number_slot(chunk, slot, false, line);
+    emit_validate_number_slot(chunks, current, slot, false, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 
 fn emit_validate_version_parts(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     len_slot: u16,
     major_slot: u16,
     minor_slot: u16,
@@ -154,16 +180,19 @@ fn emit_validate_version_parts(
     revision_slot: u16,
     line: u32,
 ) {
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_i32_const(2, line);
     chunk.emit_op(Op::I32_LT_S, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentException",
         "Version string must contain between two and four components.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
@@ -171,17 +200,20 @@ fn emit_validate_version_parts(
     chunk.emit_op(Op::I32_GT_S, line);
     chunk.emit_if(line);
     emit_throw_dotnet_exception(
-        chunk,
+        chunks,
+        current,
         "ArgumentException",
         "Version string must contain between two and four components.",
         line,
     );
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
-    emit_validate_number_slot(chunk, major_slot, false, line);
-    emit_validate_number_slot(chunk, minor_slot, false, line);
-    emit_validate_optional_number_slot(chunk, len_slot, 3, build_slot, line);
-    emit_validate_optional_number_slot(chunk, len_slot, 4, revision_slot, line);
+    emit_validate_number_slot(chunks, current, major_slot, false, line);
+    let chunk = &mut chunks[current];
+    emit_validate_number_slot(chunks, current, minor_slot, false, line);
+    emit_validate_optional_number_slot(chunks, current, len_slot, 3, build_slot, line);
+    emit_validate_optional_number_slot(chunks, current, len_slot, 4, revision_slot, line);
 }
 
 fn emit_version_parts_from_string(
@@ -229,7 +261,8 @@ fn emit_version_parts_from_string(
     if validate {
         let chunk = &mut chunks[current];
         emit_validate_version_parts(
-            chunk,
+            chunks,
+            current,
             len_slot,
             major_slot,
             minor_slot,
@@ -237,6 +270,7 @@ fn emit_version_parts_from_string(
             revision_slot,
             line,
         );
+        let chunk = &mut chunks[current];
     }
 }
 
@@ -290,6 +324,7 @@ fn emit_build_version_from_slots(
     current: usize,
     tostring_method_idx: usize,
     compare_method_idx: usize,
+    hash_method_idx: usize,
     major_slot: u16,
     minor_slot: u16,
     build_slot: u16,
@@ -393,18 +428,13 @@ fn emit_build_version_from_slots(
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     bind_version_to_string(chunk, obj_slot, tostring_method_idx, line);
     bind_version_compare(chunk, obj_slot, compare_method_idx, line);
+    bind_version_hash(chunk, obj_slot, hash_method_idx, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 fn emit_version_part(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key: &str, line: u32) {
@@ -416,6 +446,44 @@ fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key
     chunk.emit_call(to_str_idx, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+}
+
+fn push_version_hash_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = create_function_chunk("__dotnet_version_hash", 1);
+    method.local_count = 2;
+    let obj_slot = 0;
+    let hash_slot = 1;
+
+    push_const(&mut method, Value::F64(17.0), line);
+    method.emit_op_u16(Op::LOCAL_SET, hash_slot, line);
+    for key in [MAJOR_KEY, MINOR_KEY, BUILD_KEY, REVISION_KEY] {
+        method.emit_op_u16(Op::LOCAL_GET, hash_slot, line);
+        push_const(&mut method, Value::F64(31.0), line);
+        method.emit_op(Op::F64_MUL, line);
+        emit_version_part(&mut method, obj_slot, key, line);
+        method.emit_op(Op::F64_ADD, line);
+        method.emit_op_u16(Op::LOCAL_SET, hash_slot, line);
+    }
+
+    method.emit_op_u16(Op::LOCAL_GET, hash_slot, line);
+    method.emit_op(Op::I32_FROM_F64, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+fn bind_version_hash(chunk: &mut Chunk, obj_slot: u16, method_idx: usize, line: u32) {
+    for name in ["GetHashCode", "gethashcode"] {
+        emit_bind_method_with_slot(
+            chunk,
+            obj_slot,
+            name,
+            Some(vybe_ast::ProtocolSlot::Hash),
+            method_idx,
+            None,
+            line,
+        );
+    }
 }
 
 fn push_version_tostring_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -512,6 +580,7 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
     let compare_method_idx = push_version_compare_chunk(chunks, line);
+    let hash_method_idx = push_version_hash_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let revision_slot = reserve_slot(chunk);
     let build_slot = reserve_slot(chunk);
@@ -552,11 +621,30 @@ pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         }
     }
 
+    emit_coerce_version_part_slot(chunks, current, major_slot, line);
+    emit_coerce_version_part_slot(chunks, current, minor_slot, line);
+    emit_coerce_version_part_slot(chunks, current, build_slot, line);
+    emit_coerce_version_part_slot(chunks, current, revision_slot, line);
+    let len_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(argc as i32, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    emit_validate_version_parts(
+        chunks,
+        current,
+        len_slot,
+        major_slot,
+        minor_slot,
+        build_slot,
+        revision_slot,
+        line,
+    );
+
     emit_build_version_from_slots(
         chunks,
         current,
         tostring_method_idx,
         compare_method_idx,
+        hash_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -568,6 +656,7 @@ pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
     let compare_method_idx = push_version_compare_chunk(chunks, line);
+    let hash_method_idx = push_version_hash_chunk(chunks, line);
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
@@ -600,6 +689,7 @@ pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         current,
         tostring_method_idx,
         compare_method_idx,
+        hash_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -611,6 +701,7 @@ pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
     let compare_method_idx = push_version_compare_chunk(chunks, line);
+    let hash_method_idx = push_version_hash_chunk(chunks, line);
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
@@ -703,6 +794,7 @@ pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32
         current,
         tostring_method_idx,
         compare_method_idx,
+        hash_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -756,18 +848,20 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_end(line);
 
     if has_field_count {
-        chunk.emit_op_u16(Op::LOCAL_GET, field_count_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, defined_count_slot, line);
-        chunk.emit_op(Op::F64_GT, line);
-        chunk.emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, field_count_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, defined_count_slot, line);
+        chunks[current].emit_op(Op::F64_GT, line);
+        chunks[current].emit_if(line);
         emit_throw_dotnet_exception(
-            chunk,
+            chunks,
+            current,
             "ArgumentException",
             "Field count exceeds the number of defined Version components.",
             line,
         );
-        chunk.emit_end(line);
+        chunks[current].emit_end(line);
     }
+    let chunk = &mut chunks[current];
 
     emit_version_part(chunk, obj_slot, MAJOR_KEY, line);
     chunk.emit_call(to_str_idx, 1, line);
@@ -811,6 +905,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
 pub fn emit_version_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
     let compare_method_idx = push_version_compare_chunk(chunks, line);
+    let hash_method_idx = push_version_hash_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let major_slot = reserve_slot(chunk);
@@ -832,6 +927,7 @@ pub fn emit_version_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         current,
         tostring_method_idx,
         compare_method_idx,
+        hash_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -842,6 +938,26 @@ pub fn emit_version_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
 pub fn emit_version_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
+}
+
+pub fn emit_version_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = reserve_slot(chunk);
+    let hash_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    push_const(chunk, Value::F64(17.0), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, hash_slot, line);
+    for key in [MAJOR_KEY, MINOR_KEY, BUILD_KEY, REVISION_KEY] {
+        chunk.emit_op_u16(Op::LOCAL_GET, hash_slot, line);
+        push_const(chunk, Value::F64(31.0), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        emit_version_part(chunk, obj_slot, key, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, hash_slot, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, hash_slot, line);
+    chunk.emit_op(Op::I32_FROM_F64, line);
 }
 
 pub fn emit_version_compare_instance(chunks: &mut [Chunk], current: usize, line: u32) {

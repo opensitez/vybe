@@ -33,7 +33,9 @@ use vybe_compiler::primitives::datetime::{
     DOTNET_DATETIME_MAX_UNIX_MS, DOTNET_DATETIME_MIN_UNIX_MS, DOTNET_TICKS_PER_MS, MS_PER_DAY,
     MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND,
 };
+use vybe_compiler::primitives::instructions::host;
 use vybe_compiler::primitives::object::emit_bind_method;
+use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -73,13 +75,7 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
 }
 
 fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 fn field_from_slot(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
@@ -92,9 +88,43 @@ fn field_from_slot(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
     );
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, func: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    func: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, func);
     chunks[current].emit_call(idx, argc, line);
+}
+
+fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    push_const(chunk, Value::F64(index), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
+    let parse_int = chunks[current].add_import("ecma:number", "parseInt");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_call(parse_int, 1, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+}
+
+fn emit_store_array_part_as_number(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    index: f64,
+    out_slot: u16,
+    line: u32,
+) {
+    emit_array_get_const_index(&mut chunks[current], array_slot, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    emit_parse_number_from_slot(chunks, current, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
 }
 
 fn create_function_chunk(name: &str, arity: u8) -> Chunk {
@@ -107,12 +137,7 @@ fn create_function_chunk(name: &str, arity: u8) -> Chunk {
 /// standard pattern, through the same formatter `DateTime.ToString(fmt)` uses.
 /// Deduplicated by name the way `datetime_format_adapter::format_chunk` is, so
 /// a program with a hundred `DateOnly`s carries one chunk.
-fn push_fixed_format_chunk(
-    chunks: &mut Vec<Chunk>,
-    name: &str,
-    pattern: &str,
-    line: u32,
-) -> usize {
+fn push_fixed_format_chunk(chunks: &mut Vec<Chunk>, name: &str, pattern: &str, line: u32) -> usize {
     if let Some(idx) = chunks.iter().position(|chunk| chunk.name == name) {
         return idx;
     }
@@ -127,7 +152,13 @@ fn push_fixed_format_chunk(
     idx
 }
 
-fn bind_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, method_idx: usize, line: u32) {
+fn bind_to_string(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    obj_slot: u16,
+    method_idx: usize,
+    line: u32,
+) {
     emit_bind_method(
         &mut chunks[current],
         obj_slot,
@@ -172,6 +203,12 @@ pub fn emit_wrap_dateonly(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
             chunk.emit_op_u16(Op::LOCAL_GET, day_slot, line);
             push_const(chunk, Value::F64(DAYS_TO_UNIX_EPOCH), line);
             chunk.emit_op(Op::F64_ADD, line);
+            struct_set_named_field(chunk, spelling, line);
+        }
+        for spelling in ["DayOfWeek", "dayofweek"] {
+            chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+            field_from_slot(chunk, obj_slot, spelling, line);
+            struct_get_named_field(chunk, "__index", line);
             struct_set_named_field(chunk, spelling, line);
         }
     }
@@ -426,8 +463,36 @@ pub fn emit_timeonly_from_timespan(chunks: &mut Vec<Chunk>, current: usize, line
 
 /// `TimeOnly.Parse(text)` — the DateTime parser, reduced to its clock part.
 pub fn emit_timeonly_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    datetime_adapter::emit_datetime_parse(chunks, current, line);
-    struct_get_named_field(&mut chunks[current], TIME_KEY, line);
+    {
+        let chunk = &mut chunks[current];
+        let text_slot = chunk.alloc_scratch(5);
+        let parts_slot = text_slot + 1;
+        let hour_slot = text_slot + 2;
+        let minute_slot = text_slot + 3;
+        let second_slot = text_slot + 4;
+        chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        push_const(chunk, Value::String(Arc::from(":")), line);
+        host::emit(chunk, "ecma:string", "split", 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
+
+        emit_store_array_part_as_number(chunks, current, parts_slot, 0.0, hour_slot, line);
+        emit_store_array_part_as_number(chunks, current, parts_slot, 1.0, minute_slot, line);
+        emit_store_array_part_as_number(chunks, current, parts_slot, 2.0, second_slot, line);
+
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
+        push_const(chunk, Value::F64(MS_PER_HOUR), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, minute_slot, line);
+        push_const(chunk, Value::F64(MS_PER_MINUTE), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, second_slot, line);
+        push_const(chunk, Value::F64(MS_PER_SECOND), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_ADD, line);
+    }
     emit_wrap_timeonly(chunks, current, line);
 }
 
@@ -487,6 +552,51 @@ pub fn emit_timeonly_to_timespan(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
     struct_get_named_field(chunk, TIME_KEY, line);
     timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
+}
+
+/// `t.IsBetween(start, end)` — inclusive start, exclusive end, with midnight wrap.
+pub fn emit_timeonly_is_between(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let end_slot = chunk.alloc_scratch(3);
+    let start_slot = end_slot + 1;
+    let value_slot = end_slot + 2;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    field_from_slot(chunk, value_slot, TIME_KEY, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    field_from_slot(chunk, start_slot, TIME_KEY, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    field_from_slot(chunk, end_slot, TIME_KEY, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op(Op::F64_LE, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_AND, line);
+
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_OR, line);
+
+    chunk.emit_end(line);
+    ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `d.ToString()` / `t.ToString()` — the standard pattern .NET's parameterless

@@ -38,13 +38,7 @@ pub fn field_slot(key: &str) -> ResolvedSlot {
 
 /// Store the value in `value_slot` on the object in `obj_slot` under `key`,
 /// under both the declared spelling and its folded one.
-pub fn set_both_spellings(
-    chunk: &mut Chunk,
-    obj_slot: u16,
-    value_slot: u16,
-    key: &str,
-    line: u32,
-) {
+pub fn set_both_spellings(chunk: &mut Chunk, obj_slot: u16, value_slot: u16, key: &str, line: u32) {
     let folded = key.to_ascii_lowercase();
     let spellings: &[&str] = if folded == key {
         &[key]

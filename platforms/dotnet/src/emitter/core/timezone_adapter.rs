@@ -53,18 +53,18 @@ fn set_field(chunk: &mut Chunk, key: &str, line: u32) {
 /// `[] → [value]`
 fn get_field_from(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    class_slots::emit_class_get(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        Dest::Stack,
-        line,
-    );
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
 /// Both spellings of one field. A case-insensitive front end folds the member
 /// name, so a PascalCase-only field is invisible to it.
-fn set_field_both_spellings(chunk: &mut Chunk, obj_slot: u16, value_slot: u16, key: &str, line: u32) {
+fn set_field_both_spellings(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    value_slot: u16,
+    key: &str,
+    line: u32,
+) {
     for spelling in [key.to_string(), key.to_ascii_lowercase()] {
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -101,7 +101,13 @@ fn emit_build_timezone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         let chunk = &mut chunks[current];
         let zone_slot = chunk.alloc_scratch(5);
         chunk.emit_op_u16(Op::LOCAL_SET, zone_slot, line);
-        (zone_slot, zone_slot + 1, zone_slot + 2, zone_slot + 3, zone_slot + 4)
+        (
+            zone_slot,
+            zone_slot + 1,
+            zone_slot + 2,
+            zone_slot + 3,
+            zone_slot + 4,
+        )
     };
 
     let now_idx = chunks[current].add_import("ecma:date", "now");

@@ -35,7 +35,6 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
     STATIC_METHOD_MAPPINGS.as_slice()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

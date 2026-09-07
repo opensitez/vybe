@@ -7,14 +7,13 @@
 //!
 //! Both functions are WASI 0.2 spec and already registered in vybe_host.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::{Chunk, Value, opcode::Op};
 
-use super::object_fields::field_slot;
+use super::object_fields::{field_slot, set_both_spellings};
 
 // ⛔ THE VM'S TASK-PROTOCOL SPELLING, NOT A .NET ONE. The await path reads this
 // flag off a task's cancellation token, and it reads it for every language —
@@ -29,6 +28,8 @@ const LINKED_KEY: &str = "__dotnet_linked_tokens";
 // case-insensitive frontend, which folds `cts.Token` to `token` and reads EMPTY.
 const TOKEN_KEY: &str = "token";
 const REQUESTED_KEY: &str = "iscancellationrequested";
+const WAIT_TIMER_KEY: &str = "__dotnet_wait_timer";
+const TIMER_DUE_KEY: &str = "__dotnet_due";
 /// The CancellationToken a task carries — `task.IsCanceled` asks it, and so
 /// does the VM's await. Shared with `memory_stream_adapter`, whose
 /// `CopyToAsync` stamps the same field. The spelling is the VM's task
@@ -121,6 +122,102 @@ fn emit_attach_task_members(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
 
 fn emit_now_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     call_import(chunks, current, "ecma:date", "now", 0, line);
+}
+
+pub fn emit_thread_current(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(2);
+    let value_slot = obj_slot + 1;
+
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunk.emit_string_const("Thread", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, "__type", line);
+
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, "ManagedThreadId", line);
+
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, "IsAlive", line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_thread_managed_thread_id(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::core::environment_adapter::emit_environment_current_managed_thread_id(
+        chunks, current, line,
+    );
+}
+
+pub fn emit_thread_is_alive(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_bool_const(true, line);
+}
+
+pub fn emit_threadpool_queue_user_work_item(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    match argc {
+        1 => {
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 2, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_bool_const(true, line);
+        }
+        2 => {
+            vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 2, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_bool_const(true, line);
+        }
+        _ => {
+            for _ in 0..argc {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            chunks[current].emit_bool_const(false, line);
+        }
+    }
+}
+
+pub fn emit_threadpool_get_threads_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_volatile_read(chunks: &mut [Chunk], current: usize, line: u32) {
+    let _ = (chunks, current, line);
+}
+
+pub fn emit_volatile_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_monitor_is_entered(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(false, line);
+}
+
+pub fn emit_threadlocal_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    crate::emitter::core::lazy_adapter::emit_lazy_new(chunks, current, argc, line);
+}
+
+pub fn emit_threadlocal_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    crate::emitter::core::lazy_adapter::emit_lazy_value(chunks, current, line);
+}
+
+pub fn emit_threadlocal_is_value_created(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::emitter::core::lazy_adapter::emit_lazy_is_value_created(chunks, current, line);
 }
 
 fn emit_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -386,8 +483,9 @@ fn emit_throw_task_cancelled(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_compiler::primitives::errors::emit_exception_new(
-        &mut chunks[current],
+    crate::emitter::core::exceptions::emit_new_typed(
+        chunks,
+        current,
         "OperationCanceledException",
         class_slots::ValueSource::ConstStr("The operation was canceled.".to_string()),
         line,
@@ -550,19 +648,22 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 /// no setInterval: one cancellation path instead of two.
 fn emit_threading_timer_tick_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let self_idx = chunks.len();
-    let mut tick =
-        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_threading_timer_tick", 0);
+    let mut tick = vybe_compiler::primitives::functions::create_function_chunk(
+        "__dotnet_threading_timer_tick",
+        0,
+    );
     tick.capture_base = 0;
     tick.capture_count = 1;
     tick.local_count = 1;
     let obj_slot = 0u16;
 
-    // __cb(__state)
+    // __cb(__state) through the shared delegate primitive. TimerCallback is a
+    // delegate object in the .NET surface, not a raw wasm funcref.
     tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(&mut tick, "__cb", line);
     tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(&mut tick, "__state", line);
-    tick.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::delegates::emit_invoke(std::slice::from_mut(&mut tick), 0, 2, line);
     tick.emit_op(Op::DROP, line);
 
     // period > 0 → reschedule self
@@ -655,6 +756,12 @@ pub fn emit_threading_timer_new(chunks: &mut Vec<Chunk>, current: usize, line: u
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, period_slot, line);
         struct_set_drop(chunk, "__period", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, due_slot, line);
+        struct_set_drop(chunk, TIMER_DUE_KEY, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        struct_set_drop(chunk, WAIT_TIMER_KEY, line);
         obj_slot
     };
     emit_threading_timer_schedule(chunks, current, obj_slot, due_slot, line);
@@ -680,6 +787,9 @@ pub fn emit_threading_timer_change(chunks: &mut Vec<Chunk>, current: usize, line
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, period_slot, line);
         struct_set_drop(chunk, "__period", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, due_slot, line);
+        struct_set_drop(chunk, TIMER_DUE_KEY, line);
     }
     emit_threading_timer_schedule(chunks, current, obj_slot, due_slot, line);
     chunks[current].emit_bool_const(true, line);
@@ -701,6 +811,9 @@ pub fn emit_threading_timer_dispose(chunks: &mut Vec<Chunk>, current: usize, lin
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_f64_const(0.0, line);
     struct_set_drop(chunk, "__period", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_f64_const(-1.0, line);
+    struct_set_drop(chunk, TIMER_DUE_KEY, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 

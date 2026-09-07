@@ -11,7 +11,7 @@
 //! .NET member uses.
 
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, MethodBody, MethodDef};
 
 fn comparer_members(class: ClassType) -> ClassType {
     class

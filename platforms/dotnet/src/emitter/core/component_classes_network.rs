@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -242,10 +242,60 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.ip_address_parse".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "TryParse",
+                    1,
+                    MethodBody::Common("dotnet.ip_address_try_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TryParse",
+                    2,
+                    MethodBody::Common("dotnet.ip_address_try_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Any",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_any".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Broadcast",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_broadcast".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Loopback",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_loopback".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IPv6Loopback",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_ipv6_loopback".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "None",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_broadcast".into()),
+                ))
                 .with_method(MethodDef::new(
                     "ToString",
                     0,
                     MethodBody::Common("dotnet.ip_address_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetAddressBytes",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_get_address_bytes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MapToIPv6",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_map_to_ipv6".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MapToIPv4",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_map_to_ipv4".into()),
                 ))
                 // Network byte order is big-endian and the host here is
                 // little-endian, so both directions are the same 32-bit
